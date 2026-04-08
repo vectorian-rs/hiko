@@ -1,13 +1,27 @@
 use std::collections::HashMap;
 
 use hiko_syntax::ast::*;
+use hiko_types::infer::{InferCtx, TypeError};
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use crate::op::Op;
 
 #[derive(Debug)]
-pub struct CompileError {
-    pub message: String,
+pub enum CompileError {
+    Type(TypeError),
+    Codegen(String),
+}
+
+impl From<TypeError> for CompileError {
+    fn from(e: TypeError) -> Self {
+        CompileError::Type(e)
+    }
+}
+
+impl CompileError {
+    fn codegen(msg: impl Into<String>) -> Self {
+        CompileError::Codegen(msg.into())
+    }
 }
 
 struct Local {
@@ -37,7 +51,16 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// Compile a program. Type inference is run first; ill-typed programs
+    /// are rejected before any bytecode is emitted.
     pub fn compile(program: &Program) -> Result<CompiledProgram, CompileError> {
+        let mut ctx = InferCtx::new();
+        ctx.infer_program(program)?;
+        Self::compile_unchecked(program)
+    }
+
+    /// Compile without type checking. Only for internal use (e.g., testing codegen in isolation).
+    fn compile_unchecked(program: &Program) -> Result<CompiledProgram, CompileError> {
         let mut c = Compiler {
             functions: Vec::new(),
             func_stack: vec![FuncCtx {
@@ -317,9 +340,10 @@ impl Compiler {
                 Ok(())
             }
             PatKind::Paren(p) | PatKind::Ann(p, _) => self.compile_binding_pattern(p),
-            _ => Err(CompileError {
-                message: format!("unsupported pattern in binding: {:?}", pat.kind),
-            }),
+            _ => Err(CompileError::codegen(format!(
+                "unsupported pattern in binding: {:?}",
+                pat.kind
+            ))),
         }
     }
 
@@ -530,7 +554,10 @@ impl Compiler {
             self.ctx_mut().scope_depth = depth_before;
         }
 
-        self.emit(Op::Halt); // non-exhaustive safety net
+        // Non-exhaustive match: emit runtime panic
+        let msg_idx = self.add_string_constant("non-exhaustive match");
+        self.emit(Op::Panic);
+        self.emit_u16(msg_idx);
 
         for j in end_jumps {
             self.patch_jump(j);
@@ -577,9 +604,7 @@ impl Compiler {
                 let tag = *self
                     .constructor_tags
                     .get(name)
-                    .ok_or_else(|| CompileError {
-                        message: format!("unknown constructor: {name}"),
-                    })?;
+                    .ok_or_else(|| CompileError::codegen(format!("unknown constructor: {name}")))?;
                 self.emit_tag_check(slot, tag as i64, fail_jumps);
                 if let Some(sub_pat) = payload {
                     // Need to test sub-pattern against field 0

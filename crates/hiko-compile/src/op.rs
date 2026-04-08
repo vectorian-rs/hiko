@@ -64,6 +64,8 @@ pub enum Op {
     Call,
     Return,
 
+    Panic, // Panic <u16 message_const_idx> — runtime error
+
     Halt,
 }
 

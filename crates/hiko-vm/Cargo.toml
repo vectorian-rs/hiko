@@ -8,4 +8,3 @@ hiko-compile = { path = "../hiko-compile" }
 
 [dev-dependencies]
 hiko-syntax = { path = "../hiko-syntax" }
-hiko-types = { path = "../hiko-types" }

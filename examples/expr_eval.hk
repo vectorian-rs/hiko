@@ -1,0 +1,18 @@
+(* A small expression evaluator *)
+
+datatype expr =
+    Num of Int
+  | Add of expr * expr
+  | Mul of expr * expr
+
+fun eval e =
+  case e of
+    Num n      => n
+  | Add (a, b) => eval a + eval b
+  | Mul (a, b) => eval a * eval b
+
+(* (1 + 2) * (3 + 4) = 21 *)
+val program = Mul (Add (Num 1, Num 2), Add (Num 3, Num 4))
+val result  = eval program
+
+val _ = println (int_to_string result)
