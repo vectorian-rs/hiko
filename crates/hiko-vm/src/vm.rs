@@ -751,4 +751,156 @@ mod tests {
         let vm = run("val u = ()");
         assert!(matches!(vm.get_global("u").unwrap(), Value::Unit));
     }
+
+    // ── Phase 4: ADTs + Pattern Matching ─────────────────────────────
+
+    #[test]
+    fn test_nullary_constructor() {
+        let vm = run("datatype color = Red | Blue val x = Red");
+        match vm.get_global("x").unwrap() {
+            Value::Data(d) => assert_eq!(d.tag, 0),
+            v => panic!("expected Data, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unary_constructor() {
+        let vm = run("datatype 'a option = None | Some of 'a val x = Some 42");
+        match vm.get_global("x").unwrap() {
+            Value::Data(d) => {
+                assert_eq!(d.tag, 1);
+                assert!(matches!(&d.fields[0], Value::Int(42)));
+            }
+            v => panic!("expected Data, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn test_case_simple() {
+        let vm = run("datatype 'a option = None | Some of 'a
+             val x = case Some 42 of None => 0 | Some n => n");
+        assert_eq!(global_int(&vm, "x"), 42);
+    }
+
+    #[test]
+    fn test_case_none() {
+        let vm = run("datatype 'a option = None | Some of 'a
+             val x = case None of None => 99 | Some n => n");
+        assert_eq!(global_int(&vm, "x"), 99);
+    }
+
+    #[test]
+    fn test_case_list() {
+        let vm = run("fun hd xs = case xs of x :: _ => x | [] => 0
+             val x = hd [42, 1, 2]");
+        assert_eq!(global_int(&vm, "x"), 42);
+    }
+
+    #[test]
+    fn test_case_empty_list() {
+        let vm = run("fun hd xs = case xs of x :: _ => x | [] => 0
+             val x = hd []");
+        assert_eq!(global_int(&vm, "x"), 0);
+    }
+
+    #[test]
+    fn test_clausal_fun() {
+        let vm = run("fun fact 0 = 1
+               | fact n = n * fact (n - 1)
+             val result = fact 10");
+        assert_eq!(global_int(&vm, "result"), 3628800);
+    }
+
+    #[test]
+    fn test_map() {
+        let vm = run("fun map f xs = case xs of
+                [] => []
+              | x :: xs => f x :: map f xs
+             val result = map (fn x => x * 2) [1, 2, 3]");
+        // result should be [2, 4, 6] = Cons(2, Cons(4, Cons(6, Nil)))
+        match vm.get_global("result").unwrap() {
+            Value::Data(d) => {
+                assert_eq!(d.tag, 1); // Cons
+                assert!(matches!(&d.fields[0], Value::Int(2)));
+            }
+            v => panic!("expected Data, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn test_filter() {
+        let vm = run("fun filter p xs = case xs of
+                [] => []
+              | x :: xs => if p x then x :: filter p xs else filter p xs
+             fun length xs = case xs of [] => 0 | _ :: xs => 1 + length xs
+             val result = length (filter (fn x => x > 2) [1, 2, 3, 4, 5])");
+        assert_eq!(global_int(&vm, "result"), 3);
+    }
+
+    #[test]
+    fn test_foldl() {
+        // Simpler: use a different var name to avoid shadowing confusion
+        let vm = run("fun foldl f init xs = case xs of
+                [] => init
+              | x :: rest => foldl f (f (init, x)) rest
+             val result = foldl (fn (a, b) => a + b) 0 [1, 2, 3, 4, 5]");
+        assert_eq!(global_int(&vm, "result"), 15);
+    }
+
+    #[test]
+    fn test_option_map() {
+        let vm = run("datatype 'a option = None | Some of 'a
+             fun map_opt f opt = case opt of
+                None => None
+              | Some x => Some (f x)
+             val result = map_opt (fn x => x + 1) (Some 41)
+             val n = case result of None => 0 | Some x => x");
+        assert_eq!(global_int(&vm, "n"), 42);
+    }
+
+    #[test]
+    fn test_nested_pattern() {
+        let vm = run("datatype 'a option = None | Some of 'a
+             fun get_or opt d = case opt of Some x => x | None => d
+             val x = get_or (Some 42) 0");
+        assert_eq!(global_int(&vm, "x"), 42);
+    }
+
+    #[test]
+    fn test_tuple_pattern_in_case() {
+        let vm = run("val x = case (1, 2) of (a, b) => a + b");
+        assert_eq!(global_int(&vm, "x"), 3);
+    }
+
+    #[test]
+    fn test_tuple_destructure_val() {
+        let vm = run("val (x, y) = (10, 20) val z = x + y");
+        assert_eq!(global_int(&vm, "z"), 30);
+    }
+
+    #[test]
+    fn test_3arg_simple() {
+        let vm = run("fun f a b c = a + b + c val result = f 1 2 3");
+        assert_eq!(global_int(&vm, "result"), 6);
+    }
+
+    #[test]
+    fn test_3arg_case() {
+        let vm = run("fun f a b xs = case xs of [] => a + b | x :: _ => a + b + x
+             val result = f 10 20 [3]");
+        assert_eq!(global_int(&vm, "result"), 33);
+    }
+
+    #[test]
+    fn test_expr_eval() {
+        let vm = run(
+            "datatype expr = Num of Int | Add of expr * expr | Mul of expr * expr
+             fun eval e = case e of
+                Num n => n
+              | Add (a, b) => eval a + eval b
+              | Mul (a, b) => eval a * eval b
+             val result = eval (Add (Num 1, Mul (Num 2, Num 3)))",
+        );
+        assert_eq!(global_int(&vm, "result"), 7);
+    }
 }
