@@ -1,0 +1,1160 @@
+use std::collections::{HashMap, HashSet};
+
+use hiko_syntax::ast::*;
+use hiko_syntax::span::Span;
+
+use crate::ty::{Scheme, Type};
+
+// ── Errors ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct TypeError {
+    pub message: String,
+    pub span: Span,
+}
+
+// ── Inference context ────────────────────────────────────────────────
+
+pub struct InferCtx {
+    subst: HashMap<u32, Type>,
+    next_var: u32,
+    scopes: Vec<HashMap<String, Scheme>>,
+    constructors: HashMap<String, Scheme>,
+    type_arities: HashMap<String, usize>,
+    type_aliases: HashMap<String, (Vec<u32>, Type)>,
+}
+
+impl Default for InferCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InferCtx {
+    pub fn new() -> Self {
+        let mut ctx = Self {
+            subst: HashMap::new(),
+            next_var: 0,
+            scopes: vec![HashMap::new()],
+            constructors: HashMap::new(),
+            type_arities: HashMap::new(),
+            type_aliases: HashMap::new(),
+        };
+        ctx.type_arities.insert("list".into(), 1);
+        ctx
+    }
+
+    // ── Fresh variables ──────────────────────────────────────────────
+
+    fn fresh(&mut self) -> Type {
+        let v = self.next_var;
+        self.next_var += 1;
+        Type::Var(v)
+    }
+
+    // ── Substitution ─────────────────────────────────────────────────
+
+    fn apply(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Var(v) => {
+                if let Some(t) = self.subst.get(v) {
+                    self.apply(t)
+                } else {
+                    ty.clone()
+                }
+            }
+            Type::Arrow(a, b) => Type::arrow(self.apply(a), self.apply(b)),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply(t)).collect()),
+            Type::App(n, args) => {
+                Type::App(n.clone(), args.iter().map(|t| self.apply(t)).collect())
+            }
+            Type::Con(_) => ty.clone(),
+        }
+    }
+
+    fn apply_scheme(&self, scheme: &Scheme) -> Scheme {
+        Scheme {
+            vars: scheme.vars.clone(),
+            ty: self.apply(&scheme.ty),
+        }
+    }
+
+    // ── Unification ──────────────────────────────────────────────────
+
+    fn unify(&mut self, t1: &Type, t2: &Type, span: Span) -> Result<(), TypeError> {
+        let t1 = self.apply(t1);
+        let t2 = self.apply(t2);
+        match (&t1, &t2) {
+            (Type::Var(a), Type::Var(b)) if a == b => Ok(()),
+            (Type::Var(v), _) => {
+                if self.occurs(*v, &t2) {
+                    return Err(self.err("infinite type (occurs check failed)", span));
+                }
+                self.subst.insert(*v, t2);
+                Ok(())
+            }
+            (_, Type::Var(v)) => {
+                if self.occurs(*v, &t1) {
+                    return Err(self.err("infinite type (occurs check failed)", span));
+                }
+                self.subst.insert(*v, t1);
+                Ok(())
+            }
+            (Type::Con(a), Type::Con(b)) if a == b => Ok(()),
+            (Type::Arrow(a1, b1), Type::Arrow(a2, b2)) => {
+                self.unify(a1, a2, span)?;
+                self.unify(b1, b2, span)
+            }
+            (Type::Tuple(ts1), Type::Tuple(ts2)) if ts1.len() == ts2.len() => {
+                for (a, b) in ts1.iter().zip(ts2.iter()) {
+                    self.unify(a, b, span)?;
+                }
+                Ok(())
+            }
+            (Type::App(n1, args1), Type::App(n2, args2))
+                if n1 == n2 && args1.len() == args2.len() =>
+            {
+                for (a, b) in args1.iter().zip(args2.iter()) {
+                    self.unify(a, b, span)?;
+                }
+                Ok(())
+            }
+            _ => Err(self.err(
+                &format!(
+                    "type mismatch: expected {}, found {}",
+                    self.display(&t1),
+                    self.display(&t2)
+                ),
+                span,
+            )),
+        }
+    }
+
+    fn occurs(&self, v: u32, ty: &Type) -> bool {
+        match ty {
+            Type::Var(u) => {
+                if let Some(t) = self.subst.get(u) {
+                    self.occurs(v, t)
+                } else {
+                    v == *u
+                }
+            }
+            Type::Arrow(a, b) => self.occurs(v, a) || self.occurs(v, b),
+            Type::Tuple(ts) | Type::App(_, ts) => ts.iter().any(|t| self.occurs(v, t)),
+            Type::Con(_) => false,
+        }
+    }
+
+    // ── Generalization and instantiation ─────────────────────────────
+
+    fn generalize(&self, ty: &Type, exclude_scope: bool) -> Scheme {
+        let ty = self.apply(ty);
+        let env_vars = self.free_vars_in_env(exclude_scope);
+        let ty_vars = ty.free_vars();
+        let vars: Vec<u32> = ty_vars
+            .into_iter()
+            .filter(|v| !env_vars.contains(v))
+            .collect();
+        Scheme { vars, ty }
+    }
+
+    fn instantiate(&mut self, scheme: &Scheme) -> Type {
+        let scheme = self.apply_scheme(scheme);
+        let mapping: HashMap<u32, Type> = scheme.vars.iter().map(|&v| (v, self.fresh())).collect();
+        self.substitute_vars(&scheme.ty, &mapping)
+    }
+
+    fn substitute_vars(&self, ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
+        #![allow(clippy::only_used_in_recursion)]
+        match ty {
+            Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Arrow(a, b) => Type::arrow(
+                self.substitute_vars(a, mapping),
+                self.substitute_vars(b, mapping),
+            ),
+            Type::Tuple(ts) => Type::Tuple(
+                ts.iter()
+                    .map(|t| self.substitute_vars(t, mapping))
+                    .collect(),
+            ),
+            Type::App(n, args) => Type::App(
+                n.clone(),
+                args.iter()
+                    .map(|t| self.substitute_vars(t, mapping))
+                    .collect(),
+            ),
+            Type::Con(_) => ty.clone(),
+        }
+    }
+
+    fn free_vars_in_env(&self, exclude_top_scope: bool) -> HashSet<u32> {
+        let mut vars = HashSet::new();
+        let limit = if exclude_top_scope {
+            self.scopes.len() - 1
+        } else {
+            self.scopes.len()
+        };
+        for scope in &self.scopes[..limit] {
+            for scheme in scope.values() {
+                let scheme = self.apply_scheme(scheme);
+                let fv = scheme.ty.free_vars();
+                for v in fv {
+                    if !scheme.vars.contains(&v) {
+                        vars.insert(v);
+                    }
+                }
+            }
+        }
+        vars
+    }
+
+    // ── Environment ──────────────────────────────────────────────────
+
+    fn lookup(&self, name: &str) -> Option<&Scheme> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(s) = scope.get(name) {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    fn bind(&mut self, name: String, scheme: Scheme) {
+        self.scopes.last_mut().unwrap().insert(name, scheme);
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    // ── Program inference ────────────────────────────────────────────
+
+    pub fn infer_program(&mut self, program: &Program) -> Result<(), TypeError> {
+        for decl in &program.decls {
+            self.infer_decl(decl)?;
+        }
+        Ok(())
+    }
+
+    // ── Declaration inference ────────────────────────────────────────
+
+    fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
+        match &decl.kind {
+            DeclKind::Val(pat, expr) => {
+                let expr_ty = self.infer_expr(expr)?;
+                let (pat_ty, bindings) = self.infer_pat(pat)?;
+                self.unify(&expr_ty, &pat_ty, decl.span)?;
+                let can_gen = is_syntactic_value(expr);
+                for (name, ty) in bindings {
+                    if self.constructors.contains_key(&name) {
+                        return Err(self.err(
+                            &format!("cannot shadow constructor '{name}' with a value binding"),
+                            decl.span,
+                        ));
+                    }
+                    let scheme = if can_gen {
+                        self.generalize(&ty, false)
+                    } else {
+                        Scheme::mono(self.apply(&ty))
+                    };
+                    self.bind(name, scheme);
+                }
+                Ok(())
+            }
+            DeclKind::ValRec(name, expr) => {
+                let func_var = self.fresh();
+                self.bind(name.clone(), Scheme::mono(func_var.clone()));
+                let expr_ty = self.infer_expr(expr)?;
+                self.unify(&func_var, &expr_ty, decl.span)?;
+                let scheme = self.generalize(&func_var, false);
+                self.bind(name.clone(), scheme);
+                Ok(())
+            }
+            DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings, decl.span),
+            DeclKind::Datatype(dt) => self.register_datatype(dt),
+            DeclKind::TypeAlias(ta) => self.register_type_alias(ta),
+            DeclKind::Local(locals, body) => {
+                self.push_scope();
+                for d in locals {
+                    self.infer_decl(d)?;
+                }
+                for d in body {
+                    self.infer_decl(d)?;
+                }
+                self.pop_scope();
+                Ok(())
+            }
+            DeclKind::Use(_) => Ok(()),
+        }
+    }
+
+    fn infer_fun_bindings(&mut self, bindings: &[FunBinding], span: Span) -> Result<(), TypeError> {
+        self.push_scope();
+
+        // Add monomorphic bindings for all functions (enables mutual recursion)
+        let func_vars: Vec<Type> = bindings
+            .iter()
+            .map(|b| {
+                let v = self.fresh();
+                self.bind(b.name.clone(), Scheme::mono(v.clone()));
+                v
+            })
+            .collect();
+
+        // Infer each function's type
+        for (binding, func_var) in bindings.iter().zip(func_vars.iter()) {
+            let func_ty = self.infer_fun_binding(binding)?;
+            self.unify(func_var, &func_ty, binding.span)?;
+        }
+
+        // Generalize (exclude the current scope with monomorphic bindings)
+        let schemes: Vec<(String, Scheme)> = bindings
+            .iter()
+            .zip(func_vars.iter())
+            .map(|(b, v)| (b.name.clone(), self.generalize(v, true)))
+            .collect();
+
+        self.pop_scope();
+
+        for (name, scheme) in schemes {
+            self.bind(name, scheme);
+        }
+        let _ = span;
+        Ok(())
+    }
+
+    fn infer_fun_binding(&mut self, binding: &FunBinding) -> Result<Type, TypeError> {
+        let arity = binding.clauses[0].pats.len();
+        let arg_vars: Vec<Type> = (0..arity).map(|_| self.fresh()).collect();
+        let result_var = self.fresh();
+
+        for clause in &binding.clauses {
+            if clause.pats.len() != arity {
+                return Err(self.err("clauses have different arities", clause.span));
+            }
+            self.push_scope();
+            for (pat, arg_var) in clause.pats.iter().zip(arg_vars.iter()) {
+                let (pat_ty, bindings) = self.infer_pat(pat)?;
+                self.unify(&pat_ty, arg_var, pat.span)?;
+                for (name, ty) in bindings {
+                    self.bind(name, Scheme::mono(ty));
+                }
+            }
+            let body_ty = self.infer_expr(&clause.body)?;
+            self.unify(&body_ty, &result_var, clause.body.span)?;
+            self.pop_scope();
+        }
+
+        // Build the curried function type: arg1 -> arg2 -> ... -> result
+        let mut ty = result_var;
+        for arg in arg_vars.into_iter().rev() {
+            ty = Type::arrow(arg, ty);
+        }
+        Ok(ty)
+    }
+
+    fn register_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), TypeError> {
+        let arity = dt.tyvars.len();
+        self.type_arities.insert(dt.name.clone(), arity);
+
+        // Create type variables for the parameters
+        let param_vars: Vec<(String, u32)> = dt
+            .tyvars
+            .iter()
+            .map(|tv| {
+                let v = self.next_var;
+                self.next_var += 1;
+                (tv.clone(), v)
+            })
+            .collect();
+
+        // The result type: T 'a 'b ...
+        let result_ty = if arity == 0 {
+            Type::Con(dt.name.clone())
+        } else {
+            Type::App(
+                dt.name.clone(),
+                param_vars.iter().map(|(_, v)| Type::Var(*v)).collect(),
+            )
+        };
+
+        let all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
+
+        for con in &dt.constructors {
+            let con_ty = if let Some(ref payload_texpr) = con.payload {
+                let tyvar_map: HashMap<String, u32> = param_vars.iter().cloned().collect();
+                let payload_ty = self.resolve_type_expr(payload_texpr, &mut tyvar_map.clone())?;
+                Type::arrow(payload_ty, result_ty.clone())
+            } else {
+                result_ty.clone()
+            };
+            let scheme = Scheme {
+                vars: all_vars.clone(),
+                ty: con_ty,
+            };
+            self.constructors.insert(con.name.clone(), scheme.clone());
+            self.bind(con.name.clone(), scheme);
+        }
+        Ok(())
+    }
+
+    fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
+        let mut tyvar_map: HashMap<String, u32> = HashMap::new();
+        let mut param_vars = Vec::new();
+        for tv in &ta.tyvars {
+            let v = self.next_var;
+            self.next_var += 1;
+            tyvar_map.insert(tv.clone(), v);
+            param_vars.push(v);
+        }
+        let body = self.resolve_type_expr(&ta.ty, &mut tyvar_map)?;
+        self.type_aliases
+            .insert(ta.name.clone(), (param_vars, body));
+        self.type_arities.insert(ta.name.clone(), ta.tyvars.len());
+        Ok(())
+    }
+
+    // ── Expression inference ─────────────────────────────────────────
+
+    fn infer_expr(&mut self, expr: &Expr) -> Result<Type, TypeError> {
+        match &expr.kind {
+            ExprKind::IntLit(_) => Ok(Type::int()),
+            ExprKind::FloatLit(_) => Ok(Type::float()),
+            ExprKind::StringLit(_) => Ok(Type::string()),
+            ExprKind::CharLit(_) => Ok(Type::char()),
+            ExprKind::BoolLit(_) => Ok(Type::bool()),
+            ExprKind::Unit => Ok(Type::unit()),
+
+            ExprKind::Var(name) => {
+                if let Some(scheme) = self.lookup(name).cloned() {
+                    Ok(self.instantiate(&scheme))
+                } else {
+                    Err(self.err(&format!("unbound variable: {name}"), expr.span))
+                }
+            }
+            ExprKind::Constructor(name) => {
+                if let Some(scheme) = self.constructors.get(name).cloned() {
+                    Ok(self.instantiate(&scheme))
+                } else {
+                    Err(self.err(&format!("unknown constructor: {name}"), expr.span))
+                }
+            }
+
+            ExprKind::Tuple(elems) => {
+                let tys: Vec<Type> = elems
+                    .iter()
+                    .map(|e| self.infer_expr(e))
+                    .collect::<Result<_, _>>()?;
+                Ok(Type::Tuple(tys))
+            }
+            ExprKind::List(elems) => {
+                let elem_var = self.fresh();
+                for e in elems {
+                    let ty = self.infer_expr(e)?;
+                    self.unify(&ty, &elem_var, e.span)?;
+                }
+                Ok(Type::list(elem_var))
+            }
+            ExprKind::Cons(hd, tl) => {
+                let hd_ty = self.infer_expr(hd)?;
+                let tl_ty = self.infer_expr(tl)?;
+                let list_ty = Type::list(hd_ty);
+                self.unify(&tl_ty, &list_ty, expr.span)?;
+                Ok(list_ty)
+            }
+
+            ExprKind::BinOp(op, lhs, rhs) => self.infer_binop(*op, lhs, rhs, expr.span),
+
+            ExprKind::UnaryNeg(e) => {
+                let ty = self.infer_expr(e)?;
+                let resolved = self.apply(&ty);
+                match &resolved {
+                    Type::Con(n) if n == "Int" || n == "Float" => Ok(ty),
+                    Type::Var(_) => {
+                        Err(self.err("~ requires Int or Float, but type is unconstrained", e.span))
+                    }
+                    _ => Err(self.err(
+                        &format!("~ requires Int or Float, found {}", self.display(&resolved)),
+                        e.span,
+                    )),
+                }
+            }
+            ExprKind::Not(e) => {
+                let ty = self.infer_expr(e)?;
+                self.unify(&ty, &Type::bool(), e.span)?;
+                Ok(Type::bool())
+            }
+
+            ExprKind::App(func, arg) => {
+                let func_ty = self.infer_expr(func)?;
+                let arg_ty = self.infer_expr(arg)?;
+                let result = self.fresh();
+                let expected = Type::arrow(arg_ty, result.clone());
+                self.unify(&func_ty, &expected, expr.span)?;
+                Ok(result)
+            }
+
+            ExprKind::Fn(pat, body) => {
+                self.push_scope();
+                let (param_ty, bindings) = self.infer_pat(pat)?;
+                for (name, ty) in bindings {
+                    self.bind(name, Scheme::mono(ty));
+                }
+                let body_ty = self.infer_expr(body)?;
+                self.pop_scope();
+                Ok(Type::arrow(param_ty, body_ty))
+            }
+
+            ExprKind::If(cond, then_br, else_br) => {
+                let cond_ty = self.infer_expr(cond)?;
+                self.unify(&cond_ty, &Type::bool(), cond.span)?;
+                let then_ty = self.infer_expr(then_br)?;
+                let else_ty = self.infer_expr(else_br)?;
+                self.unify(&then_ty, &else_ty, expr.span)?;
+                Ok(then_ty)
+            }
+
+            ExprKind::Let(decls, body) => {
+                self.push_scope();
+                for d in decls {
+                    self.infer_decl(d)?;
+                }
+                let ty = self.infer_expr(body)?;
+                self.pop_scope();
+                Ok(ty)
+            }
+
+            ExprKind::Case(scrutinee, branches) => {
+                let scrut_ty = self.infer_expr(scrutinee)?;
+                let result_var = self.fresh();
+                for (pat, body) in branches {
+                    self.push_scope();
+                    let (pat_ty, bindings) = self.infer_pat(pat)?;
+                    self.unify(&pat_ty, &scrut_ty, pat.span)?;
+                    for (name, ty) in bindings {
+                        self.bind(name, Scheme::mono(ty));
+                    }
+                    let body_ty = self.infer_expr(body)?;
+                    self.unify(&body_ty, &result_var, body.span)?;
+                    self.pop_scope();
+                }
+                Ok(result_var)
+            }
+
+            ExprKind::Ann(e, ty_expr) => {
+                let inferred = self.infer_expr(e)?;
+                let mut tyvar_map = HashMap::new();
+                let declared = self.resolve_type_expr(ty_expr, &mut tyvar_map)?;
+                self.unify(&inferred, &declared, expr.span)?;
+                Ok(declared)
+            }
+
+            ExprKind::Paren(e) => self.infer_expr(e),
+        }
+    }
+
+    fn infer_binop(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+    ) -> Result<Type, TypeError> {
+        let lhs_ty = self.infer_expr(lhs)?;
+        let rhs_ty = self.infer_expr(rhs)?;
+
+        let (expected_lhs, expected_rhs, result) = match op {
+            BinOp::AddInt | BinOp::SubInt | BinOp::MulInt | BinOp::DivInt | BinOp::ModInt => {
+                (Type::int(), Type::int(), Type::int())
+            }
+            BinOp::AddFloat | BinOp::SubFloat | BinOp::MulFloat | BinOp::DivFloat => {
+                (Type::float(), Type::float(), Type::float())
+            }
+            BinOp::ConcatStr => (Type::string(), Type::string(), Type::string()),
+            BinOp::LtInt | BinOp::GtInt | BinOp::LeInt | BinOp::GeInt => {
+                (Type::int(), Type::int(), Type::bool())
+            }
+            BinOp::LtFloat | BinOp::GtFloat | BinOp::LeFloat | BinOp::GeFloat => {
+                (Type::float(), Type::float(), Type::bool())
+            }
+            BinOp::Andalso | BinOp::Orelse => (Type::bool(), Type::bool(), Type::bool()),
+            BinOp::Eq | BinOp::Ne => {
+                self.unify(&lhs_ty, &rhs_ty, span)?;
+                let resolved = self.apply(&lhs_ty);
+                if !resolved.is_scalar() {
+                    return Err(self.err(
+                        &format!(
+                            "= and <> require scalar types, found {}",
+                            self.display(&resolved)
+                        ),
+                        span,
+                    ));
+                }
+                return Ok(Type::bool());
+            }
+        };
+
+        self.unify(&lhs_ty, &expected_lhs, lhs.span)?;
+        self.unify(&rhs_ty, &expected_rhs, rhs.span)?;
+        Ok(result)
+    }
+
+    // ── Pattern inference ────────────────────────────────────────────
+
+    fn infer_pat(&mut self, pat: &Pat) -> Result<(Type, Vec<(String, Type)>), TypeError> {
+        match &pat.kind {
+            PatKind::Wildcard => Ok((self.fresh(), vec![])),
+            PatKind::Var(name) => {
+                let ty = self.fresh();
+                Ok((ty.clone(), vec![(name.clone(), ty)]))
+            }
+            PatKind::IntLit(_) => Ok((Type::int(), vec![])),
+            PatKind::FloatLit(_) => Ok((Type::float(), vec![])),
+            PatKind::StringLit(_) => Ok((Type::string(), vec![])),
+            PatKind::CharLit(_) => Ok((Type::char(), vec![])),
+            PatKind::BoolLit(_) => Ok((Type::bool(), vec![])),
+            PatKind::Unit => Ok((Type::unit(), vec![])),
+
+            PatKind::Tuple(pats) => {
+                let mut tys = Vec::new();
+                let mut all_bindings = Vec::new();
+                for p in pats {
+                    let (ty, bindings) = self.infer_pat(p)?;
+                    tys.push(ty);
+                    all_bindings.extend(bindings);
+                }
+                Ok((Type::Tuple(tys), all_bindings))
+            }
+            PatKind::List(pats) => {
+                let elem = self.fresh();
+                let mut all_bindings = Vec::new();
+                for p in pats {
+                    let (ty, bindings) = self.infer_pat(p)?;
+                    self.unify(&ty, &elem, p.span)?;
+                    all_bindings.extend(bindings);
+                }
+                Ok((Type::list(elem), all_bindings))
+            }
+            PatKind::Cons(hd, tl) => {
+                let (hd_ty, mut bindings) = self.infer_pat(hd)?;
+                let (tl_ty, tl_bindings) = self.infer_pat(tl)?;
+                bindings.extend(tl_bindings);
+                let list_ty = Type::list(hd_ty);
+                self.unify(&tl_ty, &list_ty, pat.span)?;
+                Ok((list_ty, bindings))
+            }
+
+            PatKind::Constructor(name, payload) => {
+                let scheme =
+                    self.constructors.get(name).cloned().ok_or_else(|| {
+                        self.err(&format!("unknown constructor: {name}"), pat.span)
+                    })?;
+                let con_ty = self.instantiate(&scheme);
+                match payload {
+                    None => Ok((con_ty, vec![])),
+                    Some(payload_pat) => {
+                        let result = self.fresh();
+                        let (payload_ty, bindings) = self.infer_pat(payload_pat)?;
+                        let expected = Type::arrow(payload_ty, result.clone());
+                        self.unify(&con_ty, &expected, pat.span)?;
+                        Ok((result, bindings))
+                    }
+                }
+            }
+
+            PatKind::Ann(p, ty_expr) => {
+                let (pat_ty, bindings) = self.infer_pat(p)?;
+                let mut tyvar_map = HashMap::new();
+                let declared = self.resolve_type_expr(ty_expr, &mut tyvar_map)?;
+                self.unify(&pat_ty, &declared, pat.span)?;
+                Ok((declared, bindings))
+            }
+            PatKind::As(name, p) => {
+                let (pat_ty, mut bindings) = self.infer_pat(p)?;
+                bindings.push((name.clone(), pat_ty.clone()));
+                Ok((pat_ty, bindings))
+            }
+            PatKind::Paren(p) => self.infer_pat(p),
+        }
+    }
+
+    // ── Type expression resolution ───────────────────────────────────
+
+    fn resolve_type_expr(
+        &mut self,
+        ty_expr: &TypeExpr,
+        tyvar_map: &mut HashMap<String, u32>,
+    ) -> Result<Type, TypeError> {
+        match &ty_expr.kind {
+            TypeExprKind::Named(name) => {
+                // Check built-in types
+                match name.as_str() {
+                    "Int" => return Ok(Type::int()),
+                    "Float" => return Ok(Type::float()),
+                    "Bool" => return Ok(Type::bool()),
+                    "String" => return Ok(Type::string()),
+                    "Char" => return Ok(Type::char()),
+                    "Unit" => return Ok(Type::unit()),
+                    _ => {}
+                }
+                // Check type aliases (0-arg)
+                if let Some((params, body)) = self.type_aliases.get(name).cloned() {
+                    if params.is_empty() {
+                        return Ok(body);
+                    }
+                    return Err(self.err(
+                        &format!("type {name} expects {} argument(s)", params.len()),
+                        ty_expr.span,
+                    ));
+                }
+                // Check type constructors (0-arg)
+                if let Some(&arity) = self.type_arities.get(name) {
+                    if arity == 0 {
+                        return Ok(Type::Con(name.clone()));
+                    }
+                    return Err(self.err(
+                        &format!("type {name} expects {arity} argument(s)"),
+                        ty_expr.span,
+                    ));
+                }
+                Err(self.err(&format!("unknown type: {name}"), ty_expr.span))
+            }
+            TypeExprKind::Var(name) => {
+                if let Some(&v) = tyvar_map.get(name) {
+                    Ok(Type::Var(v))
+                } else {
+                    let v = self.next_var;
+                    self.next_var += 1;
+                    tyvar_map.insert(name.clone(), v);
+                    Ok(Type::Var(v))
+                }
+            }
+            TypeExprKind::App(name, args) => {
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|a| self.resolve_type_expr(a, tyvar_map))
+                    .collect::<Result<_, _>>()?;
+                // Check alias
+                if let Some((param_vars, body)) = self.type_aliases.get(name).cloned() {
+                    if param_vars.len() != resolved_args.len() {
+                        return Err(self.err(
+                            &format!(
+                                "type {name} expects {} argument(s), got {}",
+                                param_vars.len(),
+                                resolved_args.len()
+                            ),
+                            ty_expr.span,
+                        ));
+                    }
+                    let mapping: HashMap<u32, Type> = param_vars
+                        .iter()
+                        .zip(resolved_args.iter())
+                        .map(|(&v, arg)| (v, arg.clone()))
+                        .collect();
+                    return Ok(self.substitute_vars(&body, &mapping));
+                }
+                // Check type constructor
+                if let Some(&arity) = self.type_arities.get(name) {
+                    if arity != resolved_args.len() {
+                        return Err(self.err(
+                            &format!(
+                                "type {name} expects {arity} argument(s), got {}",
+                                resolved_args.len()
+                            ),
+                            ty_expr.span,
+                        ));
+                    }
+                    return Ok(Type::App(name.clone(), resolved_args));
+                }
+                Err(self.err(&format!("unknown type constructor: {name}"), ty_expr.span))
+            }
+            TypeExprKind::Arrow(a, b) => {
+                let a = self.resolve_type_expr(a, tyvar_map)?;
+                let b = self.resolve_type_expr(b, tyvar_map)?;
+                Ok(Type::arrow(a, b))
+            }
+            TypeExprKind::Tuple(ts) => {
+                let resolved: Vec<Type> = ts
+                    .iter()
+                    .map(|t| self.resolve_type_expr(t, tyvar_map))
+                    .collect::<Result<_, _>>()?;
+                Ok(Type::Tuple(resolved))
+            }
+            TypeExprKind::Paren(t) => self.resolve_type_expr(t, tyvar_map),
+        }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+
+    fn display(&self, ty: &Type) -> String {
+        format!("{}", self.apply(ty))
+    }
+
+    fn err(&self, message: &str, span: Span) -> TypeError {
+        TypeError {
+            message: message.to_string(),
+            span,
+        }
+    }
+
+    /// Get the inferred type of a binding by name (for testing/REPL).
+    pub fn lookup_type(&self, name: &str) -> Option<Scheme> {
+        self.lookup(name).map(|s| self.apply_scheme(s))
+    }
+}
+
+fn is_syntactic_value(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::IntLit(_)
+        | ExprKind::FloatLit(_)
+        | ExprKind::StringLit(_)
+        | ExprKind::CharLit(_)
+        | ExprKind::BoolLit(_)
+        | ExprKind::Unit
+        | ExprKind::Var(_)
+        | ExprKind::Constructor(_)
+        | ExprKind::Fn(_, _) => true,
+        ExprKind::Tuple(elems) | ExprKind::List(elems) => elems.iter().all(is_syntactic_value),
+        ExprKind::App(func, arg) => {
+            matches!(&func.kind, ExprKind::Constructor(_)) && is_syntactic_value(arg)
+        }
+        ExprKind::Paren(e) => is_syntactic_value(e),
+        ExprKind::Ann(e, _) => is_syntactic_value(e),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hiko_syntax::lexer::Lexer;
+    use hiko_syntax::parser::Parser;
+
+    fn infer(input: &str) -> InferCtx {
+        let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let mut ctx = InferCtx::new();
+        ctx.infer_program(&program).expect("type error");
+        ctx
+    }
+
+    fn infer_err(input: &str) -> String {
+        let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let mut ctx = InferCtx::new();
+        ctx.infer_program(&program).unwrap_err().message
+    }
+
+    fn type_of(ctx: &InferCtx, name: &str) -> String {
+        let scheme = ctx.lookup_type(name).expect(&format!("no binding: {name}"));
+        format!("{}", scheme.ty)
+    }
+
+    // ── Literals ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_int_lit() {
+        let ctx = infer("val x = 42");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_float_lit() {
+        let ctx = infer("val x = 3.14");
+        assert_eq!(type_of(&ctx, "x"), "Float");
+    }
+
+    #[test]
+    fn test_string_lit() {
+        let ctx = infer(r#"val x = "hello""#);
+        assert_eq!(type_of(&ctx, "x"), "String");
+    }
+
+    #[test]
+    fn test_bool_lit() {
+        let ctx = infer("val x = true");
+        assert_eq!(type_of(&ctx, "x"), "Bool");
+    }
+
+    #[test]
+    fn test_unit() {
+        let ctx = infer("val x = ()");
+        assert_eq!(type_of(&ctx, "x"), "Unit");
+    }
+
+    // ── Functions ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_identity() {
+        let ctx = infer("val id = fn x => x");
+        let scheme = ctx.lookup_type("id").unwrap();
+        assert!(!scheme.vars.is_empty(), "id should be polymorphic");
+    }
+
+    #[test]
+    fn test_const_fn() {
+        let ctx = infer("fun f x y = x + y");
+        assert_eq!(type_of(&ctx, "f"), "Int -> Int -> Int");
+    }
+
+    #[test]
+    fn test_higher_order() {
+        let ctx = infer("fun twice f x = f (f x)");
+        let scheme = ctx.lookup_type("twice").unwrap();
+        assert!(!scheme.vars.is_empty());
+    }
+
+    // ── Let-polymorphism ─────────────────────────────────────────────
+
+    #[test]
+    fn test_let_poly() {
+        let ctx = infer("val r = let val id = fn x => x in (id 42, id true) end");
+        assert_eq!(type_of(&ctx, "r"), "Int * Bool");
+    }
+
+    // ── Value restriction ────────────────────────────────────────────
+
+    #[test]
+    fn test_value_restriction() {
+        let ctx = infer("val f = fn x => x val r = f 42");
+        // f is polymorphic, r is Int
+        assert_eq!(type_of(&ctx, "r"), "Int");
+    }
+
+    // ── Datatypes ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_option() {
+        let ctx = infer("datatype 'a option = None | Some of 'a val x = Some 42");
+        assert_eq!(type_of(&ctx, "x"), "Int option");
+    }
+
+    #[test]
+    fn test_option_none() {
+        let ctx = infer("datatype 'a option = None | Some of 'a val x = None");
+        let scheme = ctx.lookup_type("x").unwrap();
+        assert!(!scheme.vars.is_empty(), "None should be polymorphic");
+    }
+
+    // ── Pattern matching ─────────────────────────────────────────────
+
+    #[test]
+    fn test_case_option() {
+        let ctx = infer(
+            "datatype 'a option = None | Some of 'a
+             fun get_or_default opt d = case opt of None => d | Some x => x",
+        );
+        let scheme = ctx.lookup_type("get_or_default").unwrap();
+        assert!(!scheme.vars.is_empty());
+    }
+
+    #[test]
+    fn test_pattern_tuple() {
+        let ctx = infer("val (x, y) = (1, true)");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "y"), "Bool");
+    }
+
+    // ── Lists ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_literal() {
+        let ctx = infer("val xs = [1, 2, 3]");
+        assert_eq!(type_of(&ctx, "xs"), "Int list");
+    }
+
+    #[test]
+    fn test_cons() {
+        let ctx = infer("val xs = 1 :: [2, 3]");
+        assert_eq!(type_of(&ctx, "xs"), "Int list");
+    }
+
+    #[test]
+    fn test_list_pattern() {
+        let ctx = infer("fun hd (x :: _) = x");
+        // hd : 'a list -> 'a
+        let scheme = ctx.lookup_type("hd").unwrap();
+        assert!(!scheme.vars.is_empty());
+    }
+
+    // ── Operators ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_int_arith() {
+        let ctx = infer("val x = 1 + 2 * 3");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_float_arith() {
+        let ctx = infer("val x = 1.0 +. 2.0");
+        assert_eq!(type_of(&ctx, "x"), "Float");
+    }
+
+    #[test]
+    fn test_comparison() {
+        let ctx = infer("val b = 1 < 2");
+        assert_eq!(type_of(&ctx, "b"), "Bool");
+    }
+
+    #[test]
+    fn test_equality() {
+        let ctx = infer("val b = 42 = 42");
+        assert_eq!(type_of(&ctx, "b"), "Bool");
+    }
+
+    // ── Type errors ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_type_mismatch() {
+        let msg = infer_err("val x = 1 + true");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_occurs_check() {
+        let msg = infer_err("val f = fn x => x x");
+        assert!(msg.contains("infinite type"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_unbound_var() {
+        let msg = infer_err("val x = y");
+        assert!(msg.contains("unbound variable"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_equality_on_list() {
+        let msg = infer_err("val b = [1] = [1]");
+        assert!(msg.contains("scalar"), "got: {msg}");
+    }
+
+    // ── If/then/else ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_if() {
+        let ctx = infer("val x = if true then 1 else 2");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_if_branch_mismatch() {
+        let msg = infer_err("val x = if true then 1 else true");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    // ── Mutual recursion ─────────────────────────────────────────────
+
+    #[test]
+    fn test_mutual_recursion() {
+        let ctx = infer(
+            "fun is_even 0 = true | is_even n = is_odd (n - 1)
+             and is_odd 0 = false | is_odd n = is_even (n - 1)",
+        );
+        assert_eq!(type_of(&ctx, "is_even"), "Int -> Bool");
+        assert_eq!(type_of(&ctx, "is_odd"), "Int -> Bool");
+    }
+
+    // ── Type annotations ─────────────────────────────────────────────
+
+    #[test]
+    fn test_annotation() {
+        let ctx = infer("val x = (42 : Int)");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_annotation_mismatch() {
+        let msg = infer_err("val x = (42 : Bool)");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    // ── Val rec ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_val_rec() {
+        let ctx = infer("val rec f = fn n => if n = 0 then 1 else n * f (n - 1)");
+        assert_eq!(type_of(&ctx, "f"), "Int -> Int");
+    }
+
+    // ── Complex programs ─────────────────────────────────────────────
+
+    #[test]
+    fn test_map() {
+        let ctx = infer("fun map f xs = case xs of [] => [] | x :: xs => f x :: map f xs");
+        let scheme = ctx.lookup_type("map").unwrap();
+        // map should be polymorphic: ('a -> 'b) -> 'a list -> 'b list
+        assert!(scheme.vars.len() >= 2, "map should have ≥2 type vars");
+    }
+
+    #[test]
+    fn test_complex_program() {
+        let ctx = infer(
+            "datatype 'a option = None | Some of 'a
+             fun map_opt f opt = case opt of None => None | Some x => Some (f x)
+             val result = map_opt (fn x => x + 1) (Some 42)",
+        );
+        assert_eq!(type_of(&ctx, "result"), "Int option");
+    }
+
+    // ── Constructor shadowing ────────────────────────────────────────
+
+    #[test]
+    fn test_constructor_pattern_type_mismatch() {
+        // `val Red = 42` — Red is a constructor pattern of type color, not Int
+        let msg = infer_err("datatype color = Red | Blue val Red = 42");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    // ── Equality on polymorphic vars ─────────────────────────────────
+
+    #[test]
+    fn test_equality_polymorphic_rejected() {
+        let msg = infer_err("fun f x y = x = y");
+        assert!(msg.contains("scalar"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_equality_on_option_rejected() {
+        let msg = infer_err(
+            "datatype 'a option = None | Some of 'a
+             val b = Some 1 = Some 2",
+        );
+        assert!(msg.contains("scalar"), "got: {msg}");
+    }
+
+    // ── Type alias with parameters ───────────────────────────────────
+
+    #[test]
+    fn test_type_alias_param() {
+        let ctx = infer(
+            "type 'a pair = 'a * 'a
+             val x = (1, 2) : Int pair",
+        );
+        assert_eq!(type_of(&ctx, "x"), "Int * Int");
+    }
+
+    // ── Unary neg ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_neg_int() {
+        let ctx = infer("val x = ~42");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_neg_float() {
+        let ctx = infer("val x = ~3.14");
+        assert_eq!(type_of(&ctx, "x"), "Float");
+    }
+
+    #[test]
+    fn test_neg_bool_rejected() {
+        let msg = infer_err("val x = ~true");
+        assert!(msg.contains("Int or Float"), "got: {msg}");
+    }
+}
