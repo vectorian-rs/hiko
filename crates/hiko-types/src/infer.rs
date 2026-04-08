@@ -3,12 +3,21 @@ use std::collections::{HashMap, HashSet};
 use hiko_syntax::ast::*;
 use hiko_syntax::span::Span;
 
+use crate::exhaustive::{self, TypeInfo};
 use crate::ty::{Scheme, Type};
 
 // ── Errors ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct TypeError {
+    pub message: String,
+    pub span: Span,
+}
+
+// ── Warnings ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct Warning {
     pub message: String,
     pub span: Span,
 }
@@ -22,6 +31,12 @@ pub struct InferCtx {
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     type_aliases: HashMap<String, (Vec<u32>, Type)>,
+    /// Constructor name → tag (for exhaustiveness checking)
+    constructor_tags: HashMap<String, u16>,
+    /// Type name → list of (constructor_name, arity) (for exhaustiveness)
+    datatype_constructors: HashMap<String, Vec<(String, usize)>>,
+    /// Accumulated warnings (redundant clauses, etc.)
+    pub warnings: Vec<Warning>,
 }
 
 impl Default for InferCtx {
@@ -39,6 +54,9 @@ impl InferCtx {
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             type_aliases: HashMap::new(),
+            constructor_tags: HashMap::new(),
+            datatype_constructors: HashMap::new(),
+            warnings: Vec::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
         // Register runtime builtins
@@ -375,6 +393,28 @@ impl InferCtx {
             self.pop_scope();
         }
 
+        // Exhaustiveness and redundancy checking for clausal function
+        if arity == 1 {
+            let resolved = self.apply(&arg_vars[0]);
+            let type_info = self.type_info_for(&resolved);
+            let pats: Vec<&Pat> = binding.clauses.iter().map(|c| &c.pats[0]).collect();
+            self.check_exhaustiveness(&pats, &type_info, binding.span)?;
+        } else {
+            // Multi-arg: check as tuple patterns
+            let tuple_ty = Type::Tuple(arg_vars.iter().map(|v| self.apply(v)).collect());
+            let type_info = self.type_info_for(&tuple_ty);
+            let tuple_pats: Vec<Pat> = binding
+                .clauses
+                .iter()
+                .map(|c| Pat {
+                    kind: PatKind::Tuple(c.pats.clone()),
+                    span: c.span,
+                })
+                .collect();
+            let pat_refs: Vec<&Pat> = tuple_pats.iter().collect();
+            self.check_exhaustiveness(&pat_refs, &type_info, binding.span)?;
+        }
+
         // Build the curried function type: arg1 -> arg2 -> ... -> result
         let mut ty = result_var;
         for arg in arg_vars.into_iter().rev() {
@@ -435,6 +475,18 @@ impl InferCtx {
             self.constructors.insert(con.name.clone(), scheme.clone());
             self.bind(con.name.clone(), scheme);
         }
+        // Store metadata for exhaustiveness checking
+        let con_info: Vec<(String, usize)> = dt
+            .constructors
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                self.constructor_tags.insert(c.name.clone(), i as u16);
+                let arity = if c.payload.is_some() { 1 } else { 0 };
+                (c.name.clone(), arity)
+            })
+            .collect();
+        self.datatype_constructors.insert(dt.name.clone(), con_info);
         Ok(())
     }
 
@@ -581,6 +633,11 @@ impl InferCtx {
                     self.unify(&body_ty, &result_var, body.span)?;
                     self.pop_scope();
                 }
+                // Exhaustiveness and redundancy checking
+                let resolved = self.apply(&scrut_ty);
+                let type_info = self.type_info_for(&resolved);
+                let pats: Vec<&Pat> = branches.iter().map(|(p, _)| p).collect();
+                self.check_exhaustiveness(&pats, &type_info, expr.span)?;
                 Ok(result_var)
             }
 
@@ -860,6 +917,54 @@ impl InferCtx {
 
     // ── Helpers ──────────────────────────────────────────────────────
 
+    fn type_info_for(&self, ty: &Type) -> TypeInfo {
+        match ty {
+            Type::Con(name) => match name.as_str() {
+                "Bool" => TypeInfo::bool_type(),
+                "Unit" => TypeInfo::unit_type(),
+                "Int" | "Float" | "String" | "Char" => TypeInfo::infinite(),
+                _ => {
+                    if let Some(cons) = self.datatype_constructors.get(name) {
+                        TypeInfo::adt_type(name, cons)
+                    } else {
+                        TypeInfo::infinite()
+                    }
+                }
+            },
+            Type::App(name, _) => {
+                if name == "list" {
+                    TypeInfo::list_type()
+                } else if let Some(cons) = self.datatype_constructors.get(name) {
+                    TypeInfo::adt_type(name, cons)
+                } else {
+                    TypeInfo::infinite()
+                }
+            }
+            Type::Tuple(elems) => TypeInfo::tuple_type(elems.len()),
+            Type::Var(_) => TypeInfo::infinite(), // unconstrained — assume infinite
+            Type::Arrow(_, _) => TypeInfo::infinite(),
+        }
+    }
+
+    fn check_exhaustiveness(
+        &mut self,
+        pats: &[&Pat],
+        type_info: &TypeInfo,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let result = exhaustive::check_match(pats, type_info, &self.constructor_tags);
+        if !result.exhaustive {
+            return Err(self.err("non-exhaustive match", span));
+        }
+        for idx in result.redundant_clauses {
+            self.warnings.push(Warning {
+                message: format!("redundant match clause (clause {})", idx + 1),
+                span: pats[idx].span,
+            });
+        }
+        Ok(())
+    }
+
     fn display(&self, ty: &Type) -> String {
         format!("{}", self.apply(ty))
     }
@@ -1045,10 +1150,9 @@ mod tests {
 
     #[test]
     fn test_list_pattern() {
-        let ctx = infer("fun hd (x :: _) = x");
-        // hd : 'a list -> 'a
-        let scheme = ctx.lookup_type("hd").unwrap();
-        assert!(!scheme.vars.is_empty());
+        // Note: hd returns 0 for empty list, so type is Int list -> Int
+        let ctx = infer("fun hd (x :: _) = x | hd [] = 0");
+        assert!(ctx.lookup_type("hd").is_some());
     }
 
     // ── Operators ────────────────────────────────────────────────────
@@ -1293,5 +1397,77 @@ mod tests {
     fn test_builtin_int_to_string() {
         let ctx = infer("val s = int_to_string 42");
         assert_eq!(type_of(&ctx, "s"), "String");
+    }
+
+    // ── Exhaustiveness checking ──────────────────────────────────────
+
+    #[test]
+    fn test_non_exhaustive_case_bool() {
+        let msg = infer_err("val x = case true of false => 0");
+        assert!(msg.contains("non-exhaustive"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_non_exhaustive_clausal_fun() {
+        let msg = infer_err("fun f 0 = 1");
+        assert!(msg.contains("non-exhaustive"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_exhaustive_bool() {
+        let ctx = infer("val x = case true of true => 1 | false => 0");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_exhaustive_option() {
+        let _ctx = infer(
+            "datatype 'a option = None | Some of 'a
+             fun f opt = case opt of None => 0 | Some x => x",
+        );
+    }
+
+    #[test]
+    fn test_exhaustive_wildcard() {
+        let ctx = infer("val x = case 42 of _ => 1");
+        assert_eq!(type_of(&ctx, "x"), "Int");
+    }
+
+    #[test]
+    fn test_exhaustive_list() {
+        let _ctx = infer("fun f xs = case xs of [] => 0 | _ :: _ => 1");
+    }
+
+    #[test]
+    fn test_non_exhaustive_list() {
+        let msg = infer_err("fun f (x :: _) = x");
+        assert!(msg.contains("non-exhaustive"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_exhaustive_3way_adt() {
+        let _ctx = infer(
+            "datatype expr = Num of Int | Add of expr * expr | Mul of expr * expr
+             fun eval e = case e of Num n => n | Add (a, b) => eval a + eval b | Mul (a, b) => eval a * eval b
+             val result = eval (Add (Num 1, Mul (Num 2, Num 3)))",
+        );
+    }
+
+    #[test]
+    fn test_redundant_clause_warning() {
+        let mut ctx = InferCtx::new();
+        let tokens = hiko_syntax::lexer::Lexer::new("val x = case true of _ => 1 | false => 2", 0)
+            .tokenize()
+            .unwrap();
+        let program = hiko_syntax::parser::Parser::new(tokens)
+            .parse_program()
+            .unwrap();
+        ctx.infer_program(&program).unwrap();
+        assert!(!ctx.warnings.is_empty(), "expected redundancy warning");
+        assert!(
+            ctx.warnings[0].message.contains("redundant"),
+            "got: {}",
+            ctx.warnings[0].message
+        );
     }
 }
