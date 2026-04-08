@@ -51,6 +51,8 @@ impl VM {
         fn bi_println(args: &[Value]) -> Result<Value, String> {
             Ok(Value::String(Rc::new(format!("{}\n", args[0]))))
         }
+        // print/println return String values that the VM captures as output,
+        // then replaces with Unit so the program sees Unit as the return value.
         fn bi_int_to_string(args: &[Value]) -> Result<Value, String> {
             match &args[0] {
                 Value::Int(n) => Ok(Value::String(Rc::new(n.to_string()))),
@@ -403,21 +405,22 @@ impl VM {
                                 captures: closure.captures.clone(),
                             });
                         }
-                        Value::Builtin { func, .. } => {
+                        Value::Builtin { func, name, .. } => {
                             let args_start = callee_pos + 1;
                             let args: Vec<Value> =
                                 self.stack[args_start..args_start + arity].to_vec();
                             let result =
                                 func(&args).map_err(|msg| RuntimeError { message: msg })?;
-                            // Handle println/print side effects
-                            if let Value::String(ref s) = result
-                                && !s.is_empty()
-                            {
-                                self.output.push((**s).clone());
-                            }
-                            // Pop callee + args, push result
                             self.stack.truncate(callee_pos);
-                            self.push(result)?;
+                            // print/println: capture output, return Unit
+                            if matches!(name, "print" | "println") {
+                                if let Value::String(ref s) = result {
+                                    self.output.push((**s).clone());
+                                }
+                                self.push(Value::Unit)?;
+                            } else {
+                                self.push(result)?;
+                            }
                         }
                         _ => {
                             return Err(RuntimeError {
