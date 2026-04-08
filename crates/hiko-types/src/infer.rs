@@ -597,6 +597,10 @@ impl InferCtx {
                 }
                 let body_ty = self.infer_expr(body)?;
                 self.pop_scope();
+                // Check exhaustiveness for the fn pattern
+                let resolved = self.apply(&param_ty);
+                let type_info = self.type_info_for(&resolved);
+                self.check_exhaustiveness(&[pat], &type_info, expr.span)?;
                 Ok(Type::arrow(param_ty, body_ty))
             }
 
@@ -952,7 +956,12 @@ impl InferCtx {
         type_info: &TypeInfo,
         span: Span,
     ) -> Result<(), TypeError> {
-        let result = exhaustive::check_match(pats, type_info, &self.constructor_tags);
+        let result = exhaustive::check_match(
+            pats,
+            type_info,
+            &self.constructor_tags,
+            &self.datatype_constructors,
+        );
         if !result.exhaustive {
             return Err(self.err("non-exhaustive match", span));
         }
@@ -1468,6 +1477,60 @@ mod tests {
             ctx.warnings[0].message.contains("redundant"),
             "got: {}",
             ctx.warnings[0].message
+        );
+    }
+
+    // ── Nested ADT payload exhaustiveness ────────────────────────────
+
+    #[test]
+    fn test_nested_adt_non_exhaustive() {
+        let msg = infer_err(
+            "datatype flag = On | Off
+             datatype t = A of flag | B
+             val x = case A Off of A On => 1 | B => 0",
+        );
+        assert!(msg.contains("non-exhaustive"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_nested_adt_exhaustive() {
+        let _ctx = infer(
+            "datatype flag = On | Off
+             datatype t = A of flag | B
+             val x = case A Off of A On => 1 | A Off => 2 | B => 0",
+        );
+    }
+
+    // ── fn pattern exhaustiveness ────────────────────────────────────
+
+    #[test]
+    fn test_fn_non_exhaustive() {
+        let msg = infer_err("val f = fn true => 1");
+        assert!(msg.contains("non-exhaustive"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_fn_exhaustive() {
+        let _ctx = infer("val f = fn _ => 1");
+    }
+
+    // ── Distinct literal redundancy ──────────────────────────────────
+
+    #[test]
+    fn test_distinct_literals_not_redundant() {
+        let mut ctx = InferCtx::new();
+        let tokens =
+            hiko_syntax::lexer::Lexer::new("val x = case 2 of 1 => 1 | 2 => 2 | _ => 3", 0)
+                .tokenize()
+                .unwrap();
+        let program = hiko_syntax::parser::Parser::new(tokens)
+            .parse_program()
+            .unwrap();
+        ctx.infer_program(&program).unwrap();
+        assert!(
+            ctx.warnings.is_empty(),
+            "distinct literals should not be redundant, got: {:?}",
+            ctx.warnings
         );
     }
 }

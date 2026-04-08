@@ -53,10 +53,13 @@ pub struct Compiler {
 impl Compiler {
     /// Compile a program. Type inference is run first; ill-typed programs
     /// are rejected before any bytecode is emitted.
-    pub fn compile(program: &Program) -> Result<CompiledProgram, CompileError> {
+    pub fn compile(
+        program: &Program,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let mut ctx = InferCtx::new();
         ctx.infer_program(program)?;
-        Self::compile_unchecked(program)
+        let compiled = Self::compile_unchecked(program)?;
+        Ok((compiled, ctx.warnings))
     }
 
     /// Compile without type checking. Only for internal use (e.g., testing codegen in isolation).

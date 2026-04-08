@@ -66,13 +66,17 @@ fn run_file(path: &str) {
         }
     };
 
-    let compiled = match Compiler::compile(&program) {
-        Ok(c) => c,
+    let (compiled, warnings) = match Compiler::compile(&program) {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("Compile error: {e:?}");
             process::exit(1);
         }
     };
+
+    for w in &warnings {
+        eprintln!("Warning: {}", w.message);
+    }
 
     let mut vm = VM::new(compiled);
     match vm.run() {
