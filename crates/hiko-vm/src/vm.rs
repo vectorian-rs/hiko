@@ -142,8 +142,8 @@ impl VM {
 
             let op_byte = chunk.code[ip];
             self.frames[fi].ip = ip + 1;
-            let op = Op::from_byte(op_byte).ok_or_else(|| RuntimeError {
-                message: format!("invalid opcode: {op_byte}"),
+            let op = Op::try_from(op_byte).map_err(|b| RuntimeError {
+                message: format!("invalid opcode: {b}"),
             })?;
 
             match op {
@@ -229,7 +229,7 @@ impl VM {
                         Value::Float(f) => self.push(Value::Float(-f))?,
                         _ => {
                             return Err(RuntimeError {
-                                message: "NegInt: expected number".into(),
+                                message: "NegInt: expected Int or Float".into(),
                             });
                         }
                     }
@@ -437,6 +437,41 @@ impl VM {
                     self.push(result)?;
                     if self.frames.is_empty() {
                         return Ok(());
+                    }
+                }
+
+                Op::TailCall => {
+                    let arity = self.read_u8() as usize;
+                    let callee_pos = self.stack.len() - 1 - arity;
+                    let callee = self.stack[callee_pos].clone();
+                    match callee {
+                        Value::Closure(closure) => {
+                            let proto = &self.protos[closure.proto_idx];
+                            if proto.arity as usize != arity {
+                                return Err(RuntimeError {
+                                    message: format!(
+                                        "tail call: function expects {} arg(s), got {arity}",
+                                        proto.arity
+                                    ),
+                                });
+                            }
+                            let fi = self.frames.len() - 1;
+                            let base = self.frames[fi].base;
+                            // Copy new args over the current frame's locals
+                            let args_start = callee_pos + 1;
+                            for i in 0..arity {
+                                self.stack[base + i] = self.stack[args_start + i].clone();
+                            }
+                            self.stack.truncate(base + arity);
+                            self.frames[fi].ip = 0;
+                            self.frames[fi].proto_idx = closure.proto_idx;
+                            self.frames[fi].captures = closure.captures.clone();
+                        }
+                        _ => {
+                            return Err(RuntimeError {
+                                message: "tail call: expected closure".into(),
+                            });
+                        }
                     }
                 }
 
@@ -908,5 +943,35 @@ mod tests {
              val result = eval (Add (Num 1, Mul (Num 2, Num 3)))",
         );
         assert_eq!(global_int(&vm, "result"), 7);
+    }
+
+    // ── Tail-call optimization ───────────────────────────────────────
+
+    #[test]
+    fn test_tco_loop() {
+        // This would stack overflow without TCO (100K iterations)
+        let vm = run("fun loop n = if n = 0 then 42 else loop (n - 1)
+             val result = loop 100000");
+        assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    #[test]
+    fn test_tco_accumulator() {
+        // Tail-recursive sum
+        let vm = run(
+            "fun sum_acc acc n = if n = 0 then acc else sum_acc (acc + n) (n - 1)
+             val result = sum_acc 0 10000",
+        );
+        assert_eq!(global_int(&vm, "result"), 50005000);
+    }
+
+    #[test]
+    fn test_tco_case() {
+        // TCO through case branches (100K iterations)
+        let vm = run(
+            "fun count_down n = case n of 0 => 42 | _ => count_down (n - 1)
+             val result = count_down 100000",
+        );
+        assert_eq!(global_int(&vm, "result"), 42);
     }
 }

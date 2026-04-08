@@ -467,7 +467,7 @@ impl Compiler {
         if idx + 1 < pats.len() {
             self.compile_curried_fn(None, pats, idx + 1, body)?;
         } else {
-            self.compile_expr(body)?;
+            self.compile_expr_tail(body)?;
         }
         self.emit(Op::Return);
         self.finish_function()
@@ -477,7 +477,7 @@ impl Compiler {
         self.push_new_function(None);
         if is_simple_pat(pat) {
             self.add_local(simple_pat_name(pat));
-            self.compile_expr(body)?;
+            self.compile_expr_tail(body)?;
         } else {
             self.add_local("_arg".to_string());
             self.begin_scope();
@@ -525,6 +525,15 @@ impl Compiler {
         scrut_slot: u16,
         branches: &[(&Pat, &Expr)],
     ) -> Result<(), CompileError> {
+        self.compile_case_branches_inner(scrut_slot, branches, false)
+    }
+
+    fn compile_case_branches_inner(
+        &mut self,
+        scrut_slot: u16,
+        branches: &[(&Pat, &Expr)],
+        tail: bool,
+    ) -> Result<(), CompileError> {
         let mut end_jumps = Vec::new();
 
         for (pat, body) in branches {
@@ -532,15 +541,11 @@ impl Compiler {
             let depth_before = self.ctx().scope_depth;
             self.begin_scope();
 
-            // Pass 1: test pattern (no locals pushed, only JumpIfFalse on fail)
             let mut fail_jumps = Vec::new();
             self.compile_pattern_test(scrut_slot, pat, &mut fail_jumps)?;
-
-            // Pass 2: bind pattern variables (all tests passed)
             self.compile_pattern_bind(scrut_slot, pat)?;
 
-            // Compile body
-            self.compile_expr(body)?;
+            self.compile_expr_inner(body, tail)?;
             self.end_scope_keep_result();
             end_jumps.push(self.emit_jump(Op::Jump));
 
@@ -739,6 +744,14 @@ impl Compiler {
     // ── Expressions ──────────────────────────────────────────────────
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        self.compile_expr_inner(expr, false)
+    }
+
+    fn compile_expr_tail(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        self.compile_expr_inner(expr, true)
+    }
+
+    fn compile_expr_inner(&mut self, expr: &Expr, tail: bool) -> Result<(), CompileError> {
         match &expr.kind {
             ExprKind::IntLit(n) => self.emit_constant(Constant::Int(*n)),
             ExprKind::FloatLit(f) => self.emit_constant(Constant::Float(*f)),
@@ -829,7 +842,11 @@ impl Compiler {
             ExprKind::App(func, arg) => {
                 self.compile_expr(func)?;
                 self.compile_expr(arg)?;
-                self.emit(Op::Call);
+                if tail {
+                    self.emit(Op::TailCall);
+                } else {
+                    self.emit(Op::Call);
+                }
                 self.emit_u8(1);
             }
 
@@ -838,10 +855,10 @@ impl Compiler {
             ExprKind::If(cond, then_br, else_br) => {
                 self.compile_expr(cond)?;
                 let else_jump = self.emit_jump(Op::JumpIfFalse);
-                self.compile_expr(then_br)?;
+                self.compile_expr_inner(then_br, tail)?;
                 let end_jump = self.emit_jump(Op::Jump);
                 self.patch_jump(else_jump);
-                self.compile_expr(else_br)?;
+                self.compile_expr_inner(else_br, tail)?;
                 self.patch_jump(end_jump);
             }
 
@@ -850,7 +867,7 @@ impl Compiler {
                 for d in decls {
                     self.compile_decl(d)?;
                 }
-                self.compile_expr(body)?;
+                self.compile_expr_inner(body, tail)?;
                 self.end_scope_keep_result();
             }
 
@@ -860,11 +877,11 @@ impl Compiler {
                 self.add_local("_scrut".to_string());
                 let scrut_slot = (self.ctx().locals.len() - 1) as u16;
                 let branch_refs: Vec<_> = branches.iter().map(|(p, e)| (p, e)).collect();
-                self.compile_case_branches(scrut_slot, &branch_refs)?;
+                self.compile_case_branches_inner(scrut_slot, &branch_refs, tail)?;
                 self.end_scope_keep_result();
             }
 
-            ExprKind::Ann(e, _) | ExprKind::Paren(e) => self.compile_expr(e)?,
+            ExprKind::Ann(e, _) | ExprKind::Paren(e) => self.compile_expr_inner(e, tail)?,
         }
         Ok(())
     }
