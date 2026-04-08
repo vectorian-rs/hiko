@@ -586,10 +586,13 @@ mod tests {
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use hiko_types::infer::InferCtx;
 
     fn run(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
+        let mut ctx = InferCtx::new();
+        ctx.infer_program(&program).expect("type error");
         let compiled = Compiler::compile(&program).expect("compile error");
         let mut vm = VM::new(compiled);
         vm.run().expect("runtime error");

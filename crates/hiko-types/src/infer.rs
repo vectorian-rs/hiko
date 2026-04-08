@@ -41,6 +41,20 @@ impl InferCtx {
             type_aliases: HashMap::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
+        // Register runtime builtins
+        let builtins: &[(&str, Type)] = &[
+            ("print", Type::arrow(Type::string(), Type::unit())),
+            ("println", Type::arrow(Type::string(), Type::unit())),
+            ("int_to_string", Type::arrow(Type::int(), Type::string())),
+            (
+                "float_to_string",
+                Type::arrow(Type::float(), Type::string()),
+            ),
+            ("string_length", Type::arrow(Type::string(), Type::int())),
+        ];
+        for &(name, ref ty) in builtins {
+            ctx.bind(name.to_string(), Scheme::mono(ty.clone()));
+        }
         ctx
     }
 
@@ -631,6 +645,18 @@ impl InferCtx {
     // ── Pattern inference ────────────────────────────────────────────
 
     fn infer_pat(&mut self, pat: &Pat) -> Result<(Type, Vec<(String, Type)>), TypeError> {
+        let (ty, bindings) = self.infer_pat_inner(pat)?;
+        // Check for duplicate variable binders
+        let mut seen = HashSet::new();
+        for (name, _) in &bindings {
+            if name != "_" && !seen.insert(name.clone()) {
+                return Err(self.err(&format!("duplicate variable in pattern: {name}"), pat.span));
+            }
+        }
+        Ok((ty, bindings))
+    }
+
+    fn infer_pat_inner(&mut self, pat: &Pat) -> Result<(Type, Vec<(String, Type)>), TypeError> {
         match &pat.kind {
             PatKind::Wildcard => Ok((self.fresh(), vec![])),
             PatKind::Var(name) => {
@@ -648,7 +674,7 @@ impl InferCtx {
                 let mut tys = Vec::new();
                 let mut all_bindings = Vec::new();
                 for p in pats {
-                    let (ty, bindings) = self.infer_pat(p)?;
+                    let (ty, bindings) = self.infer_pat_inner(p)?;
                     tys.push(ty);
                     all_bindings.extend(bindings);
                 }
@@ -658,15 +684,15 @@ impl InferCtx {
                 let elem = self.fresh();
                 let mut all_bindings = Vec::new();
                 for p in pats {
-                    let (ty, bindings) = self.infer_pat(p)?;
+                    let (ty, bindings) = self.infer_pat_inner(p)?;
                     self.unify(&ty, &elem, p.span)?;
                     all_bindings.extend(bindings);
                 }
                 Ok((Type::list(elem), all_bindings))
             }
             PatKind::Cons(hd, tl) => {
-                let (hd_ty, mut bindings) = self.infer_pat(hd)?;
-                let (tl_ty, tl_bindings) = self.infer_pat(tl)?;
+                let (hd_ty, mut bindings) = self.infer_pat_inner(hd)?;
+                let (tl_ty, tl_bindings) = self.infer_pat_inner(tl)?;
                 bindings.extend(tl_bindings);
                 let list_ty = Type::list(hd_ty);
                 self.unify(&tl_ty, &list_ty, pat.span)?;
@@ -683,7 +709,7 @@ impl InferCtx {
                     None => Ok((con_ty, vec![])),
                     Some(payload_pat) => {
                         let result = self.fresh();
-                        let (payload_ty, bindings) = self.infer_pat(payload_pat)?;
+                        let (payload_ty, bindings) = self.infer_pat_inner(payload_pat)?;
                         let expected = Type::arrow(payload_ty, result.clone());
                         self.unify(&con_ty, &expected, pat.span)?;
                         Ok((result, bindings))
@@ -692,18 +718,18 @@ impl InferCtx {
             }
 
             PatKind::Ann(p, ty_expr) => {
-                let (pat_ty, bindings) = self.infer_pat(p)?;
+                let (pat_ty, bindings) = self.infer_pat_inner(p)?;
                 let mut tyvar_map = HashMap::new();
                 let declared = self.resolve_type_expr(ty_expr, &mut tyvar_map)?;
                 self.unify(&pat_ty, &declared, pat.span)?;
                 Ok((declared, bindings))
             }
             PatKind::As(name, p) => {
-                let (pat_ty, mut bindings) = self.infer_pat(p)?;
+                let (pat_ty, mut bindings) = self.infer_pat_inner(p)?;
                 bindings.push((name.clone(), pat_ty.clone()));
                 Ok((pat_ty, bindings))
             }
-            PatKind::Paren(p) => self.infer_pat(p),
+            PatKind::Paren(p) => self.infer_pat_inner(p),
         }
     }
 
@@ -1251,5 +1277,21 @@ mod tests {
         let ctx = infer("val rec id = fn x => x val a = id 1 val b = id true");
         assert_eq!(type_of(&ctx, "a"), "Int");
         assert_eq!(type_of(&ctx, "b"), "Bool");
+    }
+
+    // ── Duplicate pattern variables rejected ─────────────────────────
+
+    #[test]
+    fn test_duplicate_pat_var() {
+        let msg = infer_err("val (x, x) = (1, 2)");
+        assert!(msg.contains("duplicate variable"), "got: {msg}");
+    }
+
+    // ── Builtins are typed ───────────────────────────────────────────
+
+    #[test]
+    fn test_builtin_int_to_string() {
+        let ctx = infer("val s = int_to_string 42");
+        assert_eq!(type_of(&ctx, "s"), "String");
     }
 }

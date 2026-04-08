@@ -207,15 +207,6 @@ impl Compiler {
         }
     }
 
-    fn end_scope_no_result(&mut self) {
-        let depth = self.ctx().scope_depth;
-        while self.ctx().locals.last().is_some_and(|l| l.depth == depth) {
-            self.ctx_mut().locals.pop();
-            self.emit(Op::Pop);
-        }
-        self.ctx_mut().scope_depth -= 1;
-    }
-
     // ── Declarations ─────────────────────────────────────────────────
 
     fn compile_decl(&mut self, decl: &Decl) -> Result<(), CompileError> {
@@ -236,16 +227,40 @@ impl Compiler {
                 }
                 Ok(())
             }
-            DeclKind::Datatype(_) | DeclKind::TypeAlias(_) | DeclKind::Use(_) => Ok(()),
+            DeclKind::Datatype(_) => Err(CompileError {
+                message: "datatype declarations not yet supported in the compiler (Phase 4)"
+                    .to_string(),
+            }),
+            DeclKind::TypeAlias(_) | DeclKind::Use(_) => Ok(()),
             DeclKind::Local(locals, body) => {
+                // Locals are in a private scope
                 self.begin_scope();
                 for d in locals {
                     self.compile_decl(d)?;
                 }
+                // Body bindings: compiled with locals visible,
+                // but at the ENCLOSING scope depth so they survive
+                // when we pop the private scope.
+                // We achieve this by compiling body decls, then
+                // manually removing only the private locals.
+                let private_depth = self.ctx().scope_depth;
                 for d in body {
+                    // Body declarations bind at the enclosing scope depth
+                    self.ctx_mut().scope_depth -= 1;
                     self.compile_decl(d)?;
+                    self.ctx_mut().scope_depth += 1;
                 }
-                self.end_scope_no_result();
+                // Pop only the private locals (at private_depth)
+                while self
+                    .ctx()
+                    .locals
+                    .last()
+                    .is_some_and(|l| l.depth == private_depth)
+                {
+                    self.ctx_mut().locals.pop();
+                    self.emit(Op::Pop);
+                }
+                self.ctx_mut().scope_depth -= 1;
                 Ok(())
             }
         }
@@ -311,7 +326,7 @@ impl Compiler {
             name: fn_name,
         });
 
-        self.add_local(simple_pat_name(&pats[idx]));
+        self.add_local(simple_pat_name(&pats[idx])?);
 
         if idx + 1 < pats.len() {
             // More parameters: emit a nested closure
@@ -335,7 +350,7 @@ impl Compiler {
             name: None,
         });
 
-        self.add_local(simple_pat_name(pat));
+        self.add_local(simple_pat_name(pat)?);
         self.compile_expr(body)?;
         self.emit(Op::Return);
 
@@ -482,12 +497,18 @@ impl Compiler {
     }
 }
 
-fn simple_pat_name(pat: &Pat) -> String {
+fn simple_pat_name(pat: &Pat) -> Result<String, CompileError> {
     match &pat.kind {
-        PatKind::Var(name) => name.clone(),
+        PatKind::Var(name) => Ok(name.clone()),
+        PatKind::Wildcard => Ok("_".to_string()),
         PatKind::Paren(p) => simple_pat_name(p),
         PatKind::Ann(p, _) => simple_pat_name(p),
-        _ => "_".to_string(),
+        _ => Err(CompileError {
+            message: format!(
+                "complex pattern in function parameter not yet supported (wrap in parentheses or use case): {:?}",
+                pat.kind
+            ),
+        }),
     }
 }
 
