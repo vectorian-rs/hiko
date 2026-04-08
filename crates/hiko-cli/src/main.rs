@@ -122,7 +122,12 @@ fn check_file(path: &str) {
 
     let mut ctx = hiko_types::infer::InferCtx::new();
     match ctx.infer_program(&program) {
-        Ok(()) => println!("OK"),
+        Ok(()) => {
+            for w in &ctx.warnings {
+                eprintln!("Warning: {}", w.message);
+            }
+            println!("OK");
+        }
         Err(e) => {
             eprintln!("Type error: {}", e.message);
             process::exit(1);

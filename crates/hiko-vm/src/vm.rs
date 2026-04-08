@@ -150,7 +150,7 @@ impl VM {
                 Op::Halt => return Ok(()),
 
                 Op::Const => {
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u16()? as usize;
                     let val = self.read_const(proto_idx, idx);
                     self.push(val)?;
                 }
@@ -159,24 +159,24 @@ impl VM {
                 Op::False => self.push(Value::Bool(false))?,
 
                 Op::GetLocal => {
-                    let slot = self.read_u16() as usize;
+                    let slot = self.read_u16()? as usize;
                     let base = self.frames[fi].base;
                     let val = self.stack[base + slot].clone();
                     self.push(val)?;
                 }
                 Op::SetLocal => {
-                    let slot = self.read_u16() as usize;
+                    let slot = self.read_u16()? as usize;
                     let base = self.frames[fi].base;
                     let val = self.pop();
                     self.stack[base + slot] = val;
                 }
                 Op::GetUpvalue => {
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u16()? as usize;
                     let val = self.frames[fi].captures[idx].clone();
                     self.push(val)?;
                 }
                 Op::GetGlobal => {
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx);
                     let val = self
                         .globals
@@ -188,7 +188,7 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::SetGlobal => {
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx).to_string();
                     let val = self.pop();
                     self.globals.insert(name, val);
@@ -304,13 +304,13 @@ impl VM {
 
                 // ── Tuples and data ─────────────────────────────
                 Op::MakeTuple => {
-                    let arity = self.read_u8() as usize;
+                    let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
                     let elems: Vec<Value> = self.stack.drain(start..).collect();
                     self.push(Value::Tuple(Rc::new(elems)))?;
                 }
                 Op::GetField => {
-                    let idx = self.read_u8() as usize;
+                    let idx = self.read_u8()? as usize;
                     let val = self.pop();
                     match val {
                         Value::Tuple(t) => self.push(t[idx].clone())?,
@@ -323,8 +323,8 @@ impl VM {
                     }
                 }
                 Op::MakeData => {
-                    let tag = self.read_u16();
-                    let arity = self.read_u8() as usize;
+                    let tag = self.read_u16()?;
+                    let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
                     let fields: Vec<Value> = self.stack.drain(start..).collect();
                     self.push(Value::Data(Rc::new(DataValue { tag, fields })))?;
@@ -342,12 +342,12 @@ impl VM {
 
                 // ── Control flow ────────────────────────────────
                 Op::Jump => {
-                    let offset = self.read_i16();
+                    let offset = self.read_i16()?;
                     let frame = &mut self.frames[fi];
                     frame.ip = (frame.ip as i64 + offset as i64) as usize;
                 }
                 Op::JumpIfFalse => {
-                    let offset = self.read_i16();
+                    let offset = self.read_i16()?;
                     let cond = self.pop_bool()?;
                     if !cond {
                         let frame = &mut self.frames[fi];
@@ -357,12 +357,12 @@ impl VM {
 
                 // ── Functions ───────────────────────────────────
                 Op::MakeClosure => {
-                    let proto_idx = self.read_u16() as usize;
-                    let n_captures = self.read_u8() as usize;
+                    let proto_idx = self.read_u16()? as usize;
+                    let n_captures = self.read_u8()? as usize;
                     let mut captures = Vec::with_capacity(n_captures);
                     for _ in 0..n_captures {
-                        let is_local = self.read_u8() != 0;
-                        let index = self.read_u16() as usize;
+                        let is_local = self.read_u8()? != 0;
+                        let index = self.read_u16()? as usize;
                         let val = if is_local {
                             let base = self.frames[fi].base;
                             self.stack[base + index].clone()
@@ -378,7 +378,7 @@ impl VM {
                 }
 
                 Op::Call => {
-                    let arity = self.read_u8() as usize;
+                    let arity = self.read_u8()? as usize;
                     let callee_pos = self.stack.len() - 1 - arity;
                     let callee = self.stack[callee_pos].clone();
                     match callee {
@@ -406,21 +406,7 @@ impl VM {
                             });
                         }
                         Value::Builtin { func, name, .. } => {
-                            let args_start = callee_pos + 1;
-                            let args: Vec<Value> =
-                                self.stack[args_start..args_start + arity].to_vec();
-                            let result =
-                                func(&args).map_err(|msg| RuntimeError { message: msg })?;
-                            self.stack.truncate(callee_pos);
-                            // print/println: capture output, return Unit
-                            if matches!(name, "print" | "println") {
-                                if let Value::String(ref s) = result {
-                                    self.output.push((**s).clone());
-                                }
-                                self.push(Value::Unit)?;
-                            } else {
-                                self.push(result)?;
-                            }
+                            self.call_builtin(func, name, callee_pos, arity)?;
                         }
                         _ => {
                             return Err(RuntimeError {
@@ -441,7 +427,7 @@ impl VM {
                 }
 
                 Op::TailCall => {
-                    let arity = self.read_u8() as usize;
+                    let arity = self.read_u8()? as usize;
                     let callee_pos = self.stack.len() - 1 - arity;
                     let callee = self.stack[callee_pos].clone();
                     match callee {
@@ -467,16 +453,19 @@ impl VM {
                             self.frames[fi].proto_idx = closure.proto_idx;
                             self.frames[fi].captures = closure.captures.clone();
                         }
+                        Value::Builtin { func, name, .. } => {
+                            self.call_builtin(func, name, callee_pos, arity)?;
+                        }
                         _ => {
                             return Err(RuntimeError {
-                                message: "tail call: expected closure".into(),
+                                message: "tail call: expected function".into(),
                             });
                         }
                     }
                 }
 
                 Op::Panic => {
-                    let idx = self.read_u16() as usize;
+                    let idx = self.read_u16()? as usize;
                     let msg = self.read_const_string(proto_idx, idx).to_string();
                     return Err(RuntimeError { message: msg });
                 }
@@ -587,40 +576,77 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
-    fn read_u8(&mut self) -> u8 {
-        let frame = self.frames.last_mut().unwrap();
-        let chunk = if frame.proto_idx == usize::MAX {
-            &self.main_chunk
+    fn call_builtin(
+        &mut self,
+        func: crate::value::BuiltinFn,
+        name: &str,
+        callee_pos: usize,
+        arity: usize,
+    ) -> Result<(), RuntimeError> {
+        let args_start = callee_pos + 1;
+        let args: Vec<Value> = self.stack[args_start..args_start + arity].to_vec();
+        let result = func(&args).map_err(|msg| RuntimeError { message: msg })?;
+        self.stack.truncate(callee_pos);
+        if matches!(name, "print" | "println") {
+            if let Value::String(ref s) = result {
+                self.output.push((**s).clone());
+            }
+            self.push(Value::Unit)?;
         } else {
-            &self.protos[frame.proto_idx].chunk
-        };
-        let val = chunk.code[frame.ip];
-        frame.ip += 1;
-        val
+            self.push(result)?;
+        }
+        Ok(())
     }
 
-    fn read_u16(&mut self) -> u16 {
-        let frame = self.frames.last_mut().unwrap();
-        let chunk = if frame.proto_idx == usize::MAX {
-            &self.main_chunk
+    fn current_code(&self) -> &[u8] {
+        let frame = self.frames.last().unwrap();
+        if frame.proto_idx == usize::MAX {
+            &self.main_chunk.code
         } else {
-            &self.protos[frame.proto_idx].chunk
-        };
-        let val = u16::from_le_bytes([chunk.code[frame.ip], chunk.code[frame.ip + 1]]);
-        frame.ip += 2;
-        val
+            &self.protos[frame.proto_idx].chunk.code
+        }
     }
 
-    fn read_i16(&mut self) -> i16 {
-        let frame = self.frames.last_mut().unwrap();
-        let chunk = if frame.proto_idx == usize::MAX {
-            &self.main_chunk
-        } else {
-            &self.protos[frame.proto_idx].chunk
-        };
-        let val = i16::from_le_bytes([chunk.code[frame.ip], chunk.code[frame.ip + 1]]);
-        frame.ip += 2;
-        val
+    fn read_u8(&mut self) -> Result<u8, RuntimeError> {
+        let fi = self.frames.len() - 1;
+        let ip = self.frames[fi].ip;
+        let code = self.current_code();
+        if ip >= code.len() {
+            return Err(RuntimeError {
+                message: "truncated bytecode: expected u8 operand".into(),
+            });
+        }
+        let val = code[ip];
+        self.frames[fi].ip += 1;
+        Ok(val)
+    }
+
+    fn read_u16(&mut self) -> Result<u16, RuntimeError> {
+        let fi = self.frames.len() - 1;
+        let ip = self.frames[fi].ip;
+        let code = self.current_code();
+        if ip + 1 >= code.len() {
+            return Err(RuntimeError {
+                message: "truncated bytecode: expected u16 operand".into(),
+            });
+        }
+        let val = u16::from_le_bytes([code[ip], code[ip + 1]]);
+        self.frames[fi].ip += 2;
+        Ok(val)
+    }
+
+    fn read_i16(&mut self) -> Result<i16, RuntimeError> {
+        let fi = self.frames.len() - 1;
+        let ip = self.frames[fi].ip;
+        let code = self.current_code();
+        if ip + 1 >= code.len() {
+            return Err(RuntimeError {
+                message: "truncated bytecode: expected i16 operand".into(),
+            });
+        }
+        let val = i16::from_le_bytes([code[ip], code[ip + 1]]);
+        self.frames[fi].ip += 2;
+        Ok(val)
     }
 }
 
