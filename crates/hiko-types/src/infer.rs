@@ -266,11 +266,14 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::ValRec(name, expr) => {
+                // Push scope for the monomorphic self-binding, generalize excluding it
+                self.push_scope();
                 let func_var = self.fresh();
                 self.bind(name.clone(), Scheme::mono(func_var.clone()));
                 let expr_ty = self.infer_expr(expr)?;
                 self.unify(&func_var, &expr_ty, decl.span)?;
-                let scheme = self.generalize(&func_var, false);
+                let scheme = self.generalize(&func_var, true);
+                self.pop_scope();
                 self.bind(name.clone(), scheme);
                 Ok(())
             }
@@ -278,14 +281,23 @@ impl InferCtx {
             DeclKind::Datatype(dt) => self.register_datatype(dt),
             DeclKind::TypeAlias(ta) => self.register_type_alias(ta),
             DeclKind::Local(locals, body) => {
+                // locals are in a private scope
                 self.push_scope();
                 for d in locals {
                     self.infer_decl(d)?;
                 }
+                // body bindings are exported to the enclosing scope
+                // so we collect them, pop the private scope, then re-bind
+                self.push_scope();
                 for d in body {
                     self.infer_decl(d)?;
                 }
-                self.pop_scope();
+                let exported = self.scopes.pop().unwrap();
+                self.pop_scope(); // pop the locals scope
+                // re-bind exported names in the enclosing scope
+                for (name, scheme) in exported {
+                    self.bind(name, scheme);
+                }
                 Ok(())
             }
             DeclKind::Use(_) => Ok(()),
@@ -358,6 +370,9 @@ impl InferCtx {
     }
 
     fn register_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), TypeError> {
+        if self.type_arities.contains_key(&dt.name) {
+            return Err(self.err(&format!("duplicate type name: {}", dt.name), dt.span));
+        }
         let arity = dt.tyvars.len();
         self.type_arities.insert(dt.name.clone(), arity);
 
@@ -385,9 +400,16 @@ impl InferCtx {
         let all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
 
         for con in &dt.constructors {
+            if self.constructors.contains_key(&con.name) {
+                return Err(self.err(
+                    &format!("duplicate constructor name: {}", con.name),
+                    con.span,
+                ));
+            }
             let con_ty = if let Some(ref payload_texpr) = con.payload {
                 let tyvar_map: HashMap<String, u32> = param_vars.iter().cloned().collect();
-                let payload_ty = self.resolve_type_expr(payload_texpr, &mut tyvar_map.clone())?;
+                let payload_ty =
+                    self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map.clone())?;
                 Type::arrow(payload_ty, result_ty.clone())
             } else {
                 result_ty.clone()
@@ -403,6 +425,9 @@ impl InferCtx {
     }
 
     fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
+        if self.type_arities.contains_key(&ta.name) || self.type_aliases.contains_key(&ta.name) {
+            return Err(self.err(&format!("duplicate type name: {}", ta.name), ta.span));
+        }
         let mut tyvar_map: HashMap<String, u32> = HashMap::new();
         let mut param_vars = Vec::new();
         for tv in &ta.tyvars {
@@ -411,7 +436,7 @@ impl InferCtx {
             tyvar_map.insert(tv.clone(), v);
             param_vars.push(v);
         }
-        let body = self.resolve_type_expr(&ta.ty, &mut tyvar_map)?;
+        let body = self.resolve_type_expr_strict(&ta.ty, &mut tyvar_map)?;
         self.type_aliases
             .insert(ta.name.clone(), (param_vars, body));
         self.type_arities.insert(ta.name.clone(), ta.tyvars.len());
@@ -684,10 +709,27 @@ impl InferCtx {
 
     // ── Type expression resolution ───────────────────────────────────
 
+    fn resolve_type_expr_strict(
+        &mut self,
+        ty_expr: &TypeExpr,
+        tyvar_map: &mut HashMap<String, u32>,
+    ) -> Result<Type, TypeError> {
+        self.resolve_type_expr_inner(ty_expr, tyvar_map, true)
+    }
+
     fn resolve_type_expr(
         &mut self,
         ty_expr: &TypeExpr,
         tyvar_map: &mut HashMap<String, u32>,
+    ) -> Result<Type, TypeError> {
+        self.resolve_type_expr_inner(ty_expr, tyvar_map, false)
+    }
+
+    fn resolve_type_expr_inner(
+        &mut self,
+        ty_expr: &TypeExpr,
+        tyvar_map: &mut HashMap<String, u32>,
+        strict_tyvars: bool,
     ) -> Result<Type, TypeError> {
         match &ty_expr.kind {
             TypeExprKind::Named(name) => {
@@ -726,6 +768,8 @@ impl InferCtx {
             TypeExprKind::Var(name) => {
                 if let Some(&v) = tyvar_map.get(name) {
                     Ok(Type::Var(v))
+                } else if strict_tyvars {
+                    Err(self.err(&format!("unbound type variable: {name}"), ty_expr.span))
                 } else {
                     let v = self.next_var;
                     self.next_var += 1;
@@ -736,7 +780,7 @@ impl InferCtx {
             TypeExprKind::App(name, args) => {
                 let resolved_args: Vec<Type> = args
                     .iter()
-                    .map(|a| self.resolve_type_expr(a, tyvar_map))
+                    .map(|a| self.resolve_type_expr_inner(a, tyvar_map, strict_tyvars))
                     .collect::<Result<_, _>>()?;
                 // Check alias
                 if let Some((param_vars, body)) = self.type_aliases.get(name).cloned() {
@@ -773,18 +817,18 @@ impl InferCtx {
                 Err(self.err(&format!("unknown type constructor: {name}"), ty_expr.span))
             }
             TypeExprKind::Arrow(a, b) => {
-                let a = self.resolve_type_expr(a, tyvar_map)?;
-                let b = self.resolve_type_expr(b, tyvar_map)?;
+                let a = self.resolve_type_expr_inner(a, tyvar_map, strict_tyvars)?;
+                let b = self.resolve_type_expr_inner(b, tyvar_map, strict_tyvars)?;
                 Ok(Type::arrow(a, b))
             }
             TypeExprKind::Tuple(ts) => {
                 let resolved: Vec<Type> = ts
                     .iter()
-                    .map(|t| self.resolve_type_expr(t, tyvar_map))
+                    .map(|t| self.resolve_type_expr_inner(t, tyvar_map, strict_tyvars))
                     .collect::<Result<_, _>>()?;
                 Ok(Type::Tuple(resolved))
             }
-            TypeExprKind::Paren(t) => self.resolve_type_expr(t, tyvar_map),
+            TypeExprKind::Paren(t) => self.resolve_type_expr_inner(t, tyvar_map, strict_tyvars),
         }
     }
 
@@ -1156,5 +1200,56 @@ mod tests {
     fn test_neg_bool_rejected() {
         let msg = infer_err("val x = ~true");
         assert!(msg.contains("Int or Float"), "got: {msg}");
+    }
+
+    // ── Local exports body bindings ──────────────────────────────────
+
+    #[test]
+    fn test_local_exports_body() {
+        let ctx = infer("local val x = 1 in val y = x end val z = y");
+        assert_eq!(type_of(&ctx, "z"), "Int");
+    }
+
+    #[test]
+    fn test_local_hides_private() {
+        let msg = infer_err("local val x = 1 in val y = x end val z = x");
+        assert!(msg.contains("unbound variable"), "got: {msg}");
+    }
+
+    // ── Unbound type variables rejected ──────────────────────────────
+
+    #[test]
+    fn test_unbound_tyvar_in_datatype() {
+        let msg = infer_err("datatype 'a bad = Bad of 'b");
+        assert!(msg.contains("unbound type variable"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_unbound_tyvar_in_type_alias() {
+        let msg = infer_err("type 'a bad = 'b");
+        assert!(msg.contains("unbound type variable"), "got: {msg}");
+    }
+
+    // ── Duplicate type/constructor names rejected ────────────────────
+
+    #[test]
+    fn test_duplicate_constructor() {
+        let msg = infer_err("datatype a = Red datatype b = Red");
+        assert!(msg.contains("duplicate constructor"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_duplicate_type_name() {
+        let msg = infer_err("datatype color = Red type color = Int");
+        assert!(msg.contains("duplicate type"), "got: {msg}");
+    }
+
+    // ── val rec polymorphism ─────────────────────────────────────────
+
+    #[test]
+    fn test_val_rec_polymorphic() {
+        let ctx = infer("val rec id = fn x => x val a = id 1 val b = id true");
+        assert_eq!(type_of(&ctx, "a"), "Int");
+        assert_eq!(type_of(&ctx, "b"), "Bool");
     }
 }
