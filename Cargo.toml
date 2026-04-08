@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "crates/hiko-syntax",
+    "crates/hiko-types",
+    "crates/hiko-compile",
+    "crates/hiko-vm",
+    "crates/hiko-cli",
+]
+resolver = "2"

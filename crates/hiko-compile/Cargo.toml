@@ -1,0 +1,8 @@
+[package]
+name = "hiko-compile"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hiko-syntax = { path = "../hiko-syntax" }
+hiko-types = { path = "../hiko-types" }
