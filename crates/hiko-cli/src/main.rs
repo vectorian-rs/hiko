@@ -66,7 +66,7 @@ fn run_file(path: &str) {
         }
     };
 
-    let (compiled, warnings) = match Compiler::compile(&program) {
+    let (compiled, warnings) = match Compiler::compile_file(&program, std::path::Path::new(path)) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Compile error: {e:?}");
@@ -125,16 +125,16 @@ fn check_file(path: &str) {
         }
     };
 
-    let mut ctx = hiko_types::infer::InferCtx::new();
-    match ctx.infer_program(&program) {
-        Ok(()) => {
-            for w in &ctx.warnings {
+    // Use the full compile pipeline (which handles imports) but discard the bytecode
+    match Compiler::compile_file(&program, std::path::Path::new(path)) {
+        Ok((_compiled, warnings)) => {
+            for w in &warnings {
                 eprintln!("Warning: {}", w.message);
             }
             println!("OK");
         }
         Err(e) => {
-            eprintln!("Type error: {}", e.message);
+            eprintln!("Error: {e:?}");
             process::exit(1);
         }
     }

@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use hiko_syntax::ast::*;
+use hiko_syntax::lexer::Lexer;
+use hiko_syntax::parser::Parser;
 use hiko_types::infer::{InferCtx, TypeError};
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
@@ -48,22 +51,41 @@ pub struct Compiler {
     func_stack: Vec<FuncCtx>,
     constructor_tags: HashMap<String, u16>,
     constructor_arities: HashMap<String, u8>,
+    /// Base directory for resolving relative imports.
+    base_dir: PathBuf,
+    /// Canonical paths of files already loaded (cycle detection + single eval).
+    loaded_files: HashSet<PathBuf>,
+    /// Shared type inference context (imports add to the same environment).
+    infer_ctx: InferCtx,
 }
 
 impl Compiler {
-    /// Compile a program. Type inference is run first; ill-typed programs
-    /// are rejected before any bytecode is emitted.
+    /// Compile a program from a file. Type inference is run first.
+    /// `file_path` is used to resolve relative `use` imports.
+    pub fn compile_file(
+        program: &Program,
+        file_path: &Path,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let canonical =
+            std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+        let mut loaded = HashSet::new();
+        loaded.insert(canonical);
+        Self::compile_with_ctx(program, base_dir, loaded)
+    }
+
+    /// Compile a program without a file context (e.g., from a string).
     pub fn compile(
         program: &Program,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        let mut ctx = InferCtx::new();
-        ctx.infer_program(program)?;
-        let compiled = Self::compile_unchecked(program)?;
-        Ok((compiled, ctx.warnings))
+        Self::compile_with_ctx(program, PathBuf::from("."), HashSet::new())
     }
 
-    /// Compile without type checking. Only for internal use (e.g., testing codegen in isolation).
-    fn compile_unchecked(program: &Program) -> Result<CompiledProgram, CompileError> {
+    fn compile_with_ctx(
+        program: &Program,
+        base_dir: PathBuf,
+        loaded_files: HashSet<PathBuf>,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let mut c = Compiler {
             functions: Vec::new(),
             func_stack: vec![FuncCtx {
@@ -76,16 +98,24 @@ impl Compiler {
             }],
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
+            base_dir,
+            loaded_files,
+            infer_ctx: InferCtx::new(),
         };
         for decl in &program.decls {
+            c.infer_ctx.infer_decl(decl)?;
             c.compile_decl(decl)?;
         }
         c.emit(Op::Halt);
         let main = c.func_stack.pop().unwrap();
-        Ok(CompiledProgram {
-            main: main.chunk,
-            functions: c.functions,
-        })
+        let warnings = c.infer_ctx.warnings;
+        Ok((
+            CompiledProgram {
+                main: main.chunk,
+                functions: c.functions,
+            },
+            warnings,
+        ))
     }
 
     // ── Utilities ────────────────────────────────────────────────────
@@ -296,7 +326,8 @@ impl Compiler {
                 Ok(())
             }
             DeclKind::Datatype(dt) => self.compile_datatype(dt),
-            DeclKind::TypeAlias(_) | DeclKind::Use(_) => Ok(()),
+            DeclKind::TypeAlias(_) => Ok(()),
+            DeclKind::Use(path) => self.compile_use(path),
             DeclKind::Local(locals, body) => {
                 self.begin_scope();
                 for d in locals {
@@ -321,6 +352,43 @@ impl Compiler {
                 Ok(())
             }
         }
+    }
+
+    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
+        let resolved = self.base_dir.join(path);
+        let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
+            CompileError::codegen(format!(
+                "cannot resolve import '{}': {e}",
+                resolved.display()
+            ))
+        })?;
+
+        // Single evaluation: skip if already loaded
+        if self.loaded_files.contains(&canonical) {
+            return Ok(());
+        }
+        self.loaded_files.insert(canonical.clone());
+
+        // Read, lex, parse
+        let source = std::fs::read_to_string(&canonical).map_err(|e| {
+            CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
+        })?;
+        let tokens = Lexer::new(&source, 0)
+            .tokenize()
+            .map_err(|e| CompileError::codegen(format!("lex error in '{path}': {}", e.message)))?;
+        let program = Parser::new(tokens).parse_program().map_err(|e| {
+            CompileError::codegen(format!("parse error in '{path}': {}", e.message))
+        })?;
+
+        // Type-check and compile imported declarations
+        let old_base = self.base_dir.clone();
+        self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
+        for decl in &program.decls {
+            self.infer_ctx.infer_decl(decl)?;
+            self.compile_decl(decl)?;
+        }
+        self.base_dir = old_base;
+        Ok(())
     }
 
     fn compile_binding_pattern(&mut self, pat: &Pat) -> Result<(), CompileError> {

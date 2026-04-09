@@ -1,0 +1,2 @@
+fun square x = x * x
+fun double x = x + x

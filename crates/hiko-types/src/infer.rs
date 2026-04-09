@@ -274,7 +274,7 @@ impl InferCtx {
 
     // ── Declaration inference ────────────────────────────────────────
 
-    fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
+    pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
         match &decl.kind {
             DeclKind::Val(pat, expr) => {
                 let expr_ty = self.infer_expr(expr)?;
