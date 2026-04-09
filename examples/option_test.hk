@@ -1,0 +1,7 @@
+use "../stdlib/option.hk"
+
+val x = map_option (fn n => n + 1) (Some 41)
+val n = get_or x 0
+val _ = println (int_to_string n)
+val _ = println (if is_some x then "some" else "none")
+val _ = println (if is_none None then "none" else "some")

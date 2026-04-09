@@ -1,0 +1,13 @@
+use "../stdlib/either.hk"
+
+fun safe_div a b =
+  if b = 0 then Left "division by zero"
+  else Right (a / b)
+
+val ok = safe_div 10 3
+val err = safe_div 10 0
+
+val _ = println (int_to_string (from_right 0 ok))
+val _ = println (from_left "" err)
+val _ = println (if is_right ok then "right" else "left")
+val _ = println (if is_left err then "left" else "right")

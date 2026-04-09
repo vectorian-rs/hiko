@@ -1,0 +1,83 @@
+(* List operations *)
+
+fun map f xs =
+  case xs of
+    []      => []
+  | x :: xs => f x :: map f xs
+
+fun filter p xs =
+  case xs of
+    []      => []
+  | x :: xs =>
+      if p x then x :: filter p xs
+      else filter p xs
+
+fun foldl f acc xs =
+  case xs of
+    []       => acc
+  | x :: rest => foldl f (f (acc, x)) rest
+
+fun foldr f init xs =
+  case xs of
+    []       => init
+  | x :: rest => f (x, foldr f init rest)
+
+fun length xs =
+  case xs of
+    []      => 0
+  | _ :: xs => 1 + length xs
+
+fun reverse xs = foldl (fn (acc, x) => x :: acc) [] xs
+
+fun append xs ys =
+  case xs of
+    []       => ys
+  | x :: rest => x :: append rest ys
+
+fun nth xs n =
+  case xs of
+    []      => panic "nth: index out of bounds"
+  | x :: rest =>
+      if n = 0 then x
+      else nth rest (n - 1)
+
+fun last xs =
+  case xs of
+    x :: [] => x
+  | _ :: rest => last rest
+  | []       => panic "last: empty list"
+
+fun take n xs =
+  if n = 0 then []
+  else case xs of
+    []       => []
+  | x :: rest => x :: take (n - 1) rest
+
+fun drop n xs =
+  if n = 0 then xs
+  else case xs of
+    []       => []
+  | _ :: rest => drop (n - 1) rest
+
+fun zip xs ys =
+  case (xs, ys) of
+    ([], _)             => []
+  | (_, [])             => []
+  | (x :: xs, y :: ys)  => (x, y) :: zip xs ys
+
+fun all p xs =
+  case xs of
+    []      => true
+  | x :: xs => p x andalso all p xs
+
+fun any p xs =
+  case xs of
+    []      => false
+  | x :: xs => p x orelse any p xs
+
+fun find p xs =
+  case xs of
+    []      => panic "find: not found"
+  | x :: xs =>
+      if p x then x
+      else find p xs

@@ -1,0 +1,19 @@
+use "../stdlib/list.hk"
+
+val nums = [1, 2, 3, 4, 5]
+val sum = foldl (fn (acc, x) => acc + x) 0 nums
+val product = foldr (fn (x, acc) => x * acc) 1 nums
+val len = length nums
+val rev = reverse nums
+val joined = append [1, 2] [3, 4, 5]
+
+val _ = println (int_to_string sum)
+val _ = println (int_to_string product)
+val _ = println (int_to_string len)
+val _ = println (int_to_string (nth rev 0))
+val _ = println (int_to_string (last nums))
+val _ = println (int_to_string (length (take 3 nums)))
+val _ = println (int_to_string (nth (drop 2 nums) 0))
+val _ = println (int_to_string (length joined))
+val _ = println (if all (fn x => x > 0) nums then "all positive" else "not all")
+val _ = println (if any (fn x => x > 4) nums then "found >4" else "none >4")
