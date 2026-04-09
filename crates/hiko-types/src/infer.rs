@@ -1080,6 +1080,7 @@ fn is_syntactic_value(expr: &Expr) -> bool {
         | ExprKind::Constructor(_)
         | ExprKind::Fn(_, _) => true,
         ExprKind::Tuple(elems) | ExprKind::List(elems) => elems.iter().all(is_syntactic_value),
+        ExprKind::Cons(hd, tl) => is_syntactic_value(hd) && is_syntactic_value(tl),
         ExprKind::App(func, arg) => {
             matches!(&func.kind, ExprKind::Constructor(_)) && is_syntactic_value(arg)
         }

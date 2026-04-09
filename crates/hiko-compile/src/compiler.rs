@@ -508,7 +508,7 @@ impl Compiler {
                 self.add_local("_scrut".to_string());
                 let scrut_slot = (self.ctx().locals.len() - 1) as u16;
                 let branches: Vec<_> = clauses.iter().map(|c| (&c.pats[0], &c.body)).collect();
-                self.compile_case_branches(scrut_slot, &branches)?;
+                self.compile_case_branches_inner(scrut_slot, &branches, true)?;
             } else {
                 for i in 0..arity {
                     self.emit_get_var(&format!("_arg{i}"));
@@ -528,7 +528,7 @@ impl Compiler {
                     .iter()
                     .zip(clauses.iter().map(|c| &c.body))
                     .collect();
-                self.compile_case_branches(scrut_slot, &branches)?;
+                self.compile_case_branches_inner(scrut_slot, &branches, true)?;
             }
             self.end_scope_keep_result();
         }
@@ -571,7 +571,7 @@ impl Compiler {
             self.emit_u16(0);
             self.add_local("_scrut".to_string());
             let scrut_slot = (self.ctx().locals.len() - 1) as u16;
-            self.compile_case_branches(scrut_slot, &[(pat, body)])?;
+            self.compile_case_branches_inner(scrut_slot, &[(pat, body)], true)?;
             self.end_scope_keep_result();
         }
         self.emit(Op::Return);
@@ -605,14 +605,6 @@ impl Compiler {
     //   Pass 1 (test): check all conditions, emit JumpIfFalse to shared fail
     //   Pass 2 (bind): if all tests pass, extract and bind variables
     // On failure, NO locals have been pushed, so NO cleanup is needed.
-
-    fn compile_case_branches(
-        &mut self,
-        scrut_slot: u16,
-        branches: &[(&Pat, &Expr)],
-    ) -> Result<(), CompileError> {
-        self.compile_case_branches_inner(scrut_slot, branches, false)
-    }
 
     fn compile_case_branches_inner(
         &mut self,
