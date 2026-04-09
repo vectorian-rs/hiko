@@ -8,3 +8,4 @@ hiko-syntax = { path = "../hiko-syntax" }
 hiko-types = { path = "../hiko-types" }
 hiko-compile = { path = "../hiko-compile" }
 hiko-vm = { path = "../hiko-vm" }
+codespan-reporting = "0.11"

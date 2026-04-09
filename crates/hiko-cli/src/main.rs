@@ -2,9 +2,15 @@ use std::env;
 use std::fs;
 use std::process;
 
-use hiko_compile::compiler::Compiler;
+use codespan_reporting::diagnostic::{Diagnostic, Label, Severity};
+use codespan_reporting::files::SimpleFiles;
+use codespan_reporting::term;
+use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+
+use hiko_compile::compiler::{CompileError, Compiler};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
+use hiko_syntax::span::Span;
 use hiko_vm::vm::VM;
 
 fn main() {
@@ -41,44 +47,106 @@ fn main() {
     }
 }
 
-fn run_file(path: &str) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {path}: {e}");
-            process::exit(1);
-        }
-    };
+// ── Diagnostics ──────────────────────────────────────────────────────
+
+struct DiagCtx {
+    files: SimpleFiles<String, String>,
+    file_id: usize,
+}
+
+impl DiagCtx {
+    fn new(name: &str, source: String) -> Self {
+        let mut files = SimpleFiles::new();
+        let file_id = files.add(name.to_string(), source);
+        Self { files, file_id }
+    }
+
+    fn emit(&self, severity: Severity, message: &str, span: Option<Span>) {
+        let writer = StandardStream::stderr(ColorChoice::Auto);
+        let config = term::Config::default();
+        let diag = if let Some(span) = span {
+            Diagnostic::new(severity)
+                .with_message(message)
+                .with_labels(vec![Label::primary(
+                    self.file_id,
+                    span.start as usize..span.end as usize,
+                )])
+        } else {
+            Diagnostic::new(severity).with_message(message)
+        };
+        term::emit(&mut writer.lock(), &config, &self.files, &diag).ok();
+    }
+
+    fn error(&self, message: &str, span: Option<Span>) {
+        self.emit(Severity::Error, message, span);
+    }
+
+    fn warning(&self, message: &str, span: Option<Span>) {
+        self.emit(Severity::Warning, message, span);
+    }
+}
+
+// ── Shared pipeline ──────────────────────────────────────────────────
+
+struct Compiled {
+    program: hiko_compile::chunk::CompiledProgram,
+    warnings: Vec<hiko_types::infer::Warning>,
+    ctx: DiagCtx,
+}
+
+fn compile_source(path: &str) -> Result<Compiled, ()> {
+    let source = fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("error: cannot read {path}: {e}");
+        process::exit(1);
+    });
+
+    let ctx = DiagCtx::new(path, source.clone());
 
     let tokens = match Lexer::new(&source, 0).tokenize() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Lex error: {}", e.message);
-            process::exit(1);
+            ctx.error(&e.message, Some(e.span));
+            return Err(());
         }
     };
 
     let program = match Parser::new(tokens).parse_program() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Parse error: {}", e.message);
-            process::exit(1);
+            ctx.error(&e.message, Some(e.span));
+            return Err(());
         }
     };
 
-    let (compiled, warnings) = match Compiler::compile_file(&program, std::path::Path::new(path)) {
-        Ok(r) => r,
+    match Compiler::compile_file(&program, std::path::Path::new(path)) {
+        Ok((compiled, warnings)) => Ok(Compiled {
+            program: compiled,
+            warnings,
+            ctx,
+        }),
         Err(e) => {
-            eprintln!("Compile error: {e:?}");
-            process::exit(1);
+            match &e {
+                CompileError::Type(te) => ctx.error(&te.message, Some(te.span)),
+                CompileError::Codegen(msg) => ctx.error(msg, None),
+            }
+            Err(())
         }
+    }
+}
+
+// ── Commands ─────────────────────────────────────────────────────────
+
+fn run_file(path: &str) {
+    let compiled = match compile_source(path) {
+        Ok(c) => c,
+        Err(()) => process::exit(1),
     };
 
-    for w in &warnings {
-        eprintln!("Warning: {}", w.message);
+    for w in &compiled.warnings {
+        compiled.ctx.warning(&w.message, Some(w.span));
     }
 
-    let mut vm = VM::new(compiled);
+    let mut vm = VM::new(compiled.program);
     match vm.run() {
         Ok(()) => {
             for line in vm.get_output() {
@@ -89,70 +157,20 @@ fn run_file(path: &str) {
             for line in vm.get_output() {
                 print!("{line}");
             }
-            if let Some(span) = vm.error_span() {
-                let (line, col) = line_col(&source, span.start as usize);
-                eprintln!("Runtime error at line {line}, column {col}: {}", e.message);
-            } else {
-                eprintln!("Runtime error: {}", e.message);
-            }
+            compiled.ctx.error(&e.message, vm.error_span());
             process::exit(1);
         }
     }
 }
 
 fn check_file(path: &str) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {path}: {e}");
-            process::exit(1);
-        }
+    let compiled = match compile_source(path) {
+        Ok(c) => c,
+        Err(()) => process::exit(1),
     };
 
-    let tokens = match Lexer::new(&source, 0).tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Lex error: {}", e.message);
-            process::exit(1);
-        }
-    };
-
-    let program = match Parser::new(tokens).parse_program() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Parse error: {}", e.message);
-            process::exit(1);
-        }
-    };
-
-    // Use the full compile pipeline (which handles imports) but discard the bytecode
-    match Compiler::compile_file(&program, std::path::Path::new(path)) {
-        Ok((_compiled, warnings)) => {
-            for w in &warnings {
-                eprintln!("Warning: {}", w.message);
-            }
-            println!("OK");
-        }
-        Err(e) => {
-            eprintln!("Error: {e:?}");
-            process::exit(1);
-        }
+    for w in &compiled.warnings {
+        compiled.ctx.warning(&w.message, Some(w.span));
     }
-}
-
-fn line_col(source: &str, offset: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut col = 1;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
+    println!("OK");
 }

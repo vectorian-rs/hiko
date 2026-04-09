@@ -1,0 +1,17 @@
+(* String operations *)
+
+val s = "  Hello, World!  "
+val trimmed = trim s
+val _ = println trimmed
+
+val _ = println (if string_contains (trimmed, "World") then "found World" else "not found")
+val _ = println (substring (trimmed, 7, 5))
+
+val csv = "alice,bob,charlie"
+val names = split (csv, ",")
+fun print_list xs = case xs of
+    [] => ()
+  | x :: rest => let val _ = println ("  - " ^ x) in print_list rest end
+val _ = print_list names
+
+val _ = println (int_to_string (string_length "café"))

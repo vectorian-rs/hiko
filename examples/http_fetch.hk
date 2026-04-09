@@ -1,0 +1,5 @@
+(* Fetch data from a URL and print the first 200 characters *)
+
+val url = "https://httpbin.org/get"
+val body = http_get url
+val _ = println (substring (body, 0, 200))
