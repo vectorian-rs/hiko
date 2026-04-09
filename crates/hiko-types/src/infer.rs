@@ -130,7 +130,22 @@ impl InferCtx {
             ("http_get", Type::arrow(Type::string(), Type::string())),
             // System
             ("exit", Type::arrow(Type::int(), Type::unit())),
-            ("panic", Type::arrow(Type::string(), a)),
+            ("panic", Type::arrow(Type::string(), a.clone())),
+            // Testing
+            (
+                "assert",
+                Type::arrow(
+                    Type::Tuple(vec![Type::bool(), Type::string()]),
+                    Type::unit(),
+                ),
+            ),
+            (
+                "assert_eq",
+                Type::arrow(
+                    Type::Tuple(vec![a.clone(), a, Type::string()]),
+                    Type::unit(),
+                ),
+            ),
         ];
         for &(name, ref ty) in builtins {
             ctx.bind(name.to_string(), Scheme::mono(ty.clone()));

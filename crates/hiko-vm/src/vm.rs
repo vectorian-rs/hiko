@@ -313,6 +313,47 @@ impl VM {
                 _ => Err("panic: expected String".into()),
             }
         }
+        fn bi_assert(args: &[Value]) -> Result<Value, String> {
+            let tup = match &args[0] {
+                Value::Tuple(t) => t,
+                _ => return Err("assert: expected (Bool, String)".into()),
+            };
+            match (&tup[0], &tup[1]) {
+                (Value::Bool(true), _) => Ok(Value::Unit),
+                (Value::Bool(false), Value::String(msg)) => Err(format!("assertion failed: {msg}")),
+                _ => Err("assert: expected (Bool, String)".into()),
+            }
+        }
+        fn bi_assert_eq(args: &[Value]) -> Result<Value, String> {
+            let tup = match &args[0] {
+                Value::Tuple(t) => t,
+                _ => return Err("assert_eq: expected (a, a, String)".into()),
+            };
+            if tup.len() < 3 {
+                return Err("assert_eq: expected (a, a, String)".into());
+            }
+            let eq = match (&tup[0], &tup[1]) {
+                (Value::Int(a), Value::Int(b)) => a == b,
+                (Value::Float(a), Value::Float(b)) => a == b,
+                (Value::Bool(a), Value::Bool(b)) => a == b,
+                (Value::Char(a), Value::Char(b)) => a == b,
+                (Value::String(a), Value::String(b)) => a == b,
+                (Value::Unit, Value::Unit) => true,
+                _ => false,
+            };
+            if eq {
+                Ok(Value::Unit)
+            } else {
+                let msg = match &tup[2] {
+                    Value::String(s) => s.to_string(),
+                    _ => "".to_string(),
+                };
+                Err(format!(
+                    "assertion failed: {msg}: expected {:?}, got {:?}",
+                    tup[1], tup[0]
+                ))
+            }
+        }
 
         let builtins: &[(&str, crate::value::BuiltinFn)] = &[
             // I/O
@@ -350,6 +391,8 @@ impl VM {
             // System
             ("exit", bi_exit),
             ("panic", bi_panic),
+            ("assert", bi_assert),
+            ("assert_eq", bi_assert_eq),
         ];
         for &(name, func) in builtins {
             self.globals

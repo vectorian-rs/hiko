@@ -1,0 +1,15 @@
+(* Tests for stdlib/option.hk *)
+
+use "../../stdlib/option.hk"
+
+val _ = assert (is_some (Some 1), "is_some Some")
+val _ = assert (is_none None, "is_none None")
+val _ = assert (not (is_some None), "not is_some None")
+
+val _ = assert_eq (get_or (Some 42) 0, 42, "get_or Some")
+val _ = assert_eq (get_or None 99, 99, "get_or None")
+
+val _ = assert_eq (get_or (map_option (fn x => x + 1) (Some 41)) 0, 42, "map_option Some")
+val _ = assert (is_none (map_option (fn x => x + 1) None), "map_option None")
+
+val _ = println "option tests passed"

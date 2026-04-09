@@ -1,0 +1,34 @@
+(* Tests for stdlib/list.hk *)
+
+use "../../stdlib/list.hk"
+
+val _ = assert_eq (length [], 0, "length empty")
+val _ = assert_eq (length [1, 2, 3], 3, "length 3")
+
+val _ = assert_eq (nth [10, 20, 30] 0, 10, "nth 0")
+val _ = assert_eq (nth [10, 20, 30] 2, 30, "nth 2")
+
+val _ = assert_eq (last [1, 2, 3], 3, "last")
+
+val _ = assert_eq (length (map (fn x => x * 2) [1, 2, 3]), 3, "map length")
+val _ = assert_eq (nth (map (fn x => x * 2) [1, 2, 3]) 0, 2, "map head")
+
+val _ = assert_eq (length (filter (fn x => x > 2) [1, 2, 3, 4, 5]), 3, "filter")
+
+val _ = assert_eq (foldl (fn (acc, x) => acc + x) 0 [1, 2, 3], 6, "foldl sum")
+val _ = assert_eq (foldr (fn (x, acc) => x * acc) 1 [1, 2, 3, 4], 24, "foldr product")
+
+val _ = assert_eq (nth (reverse [1, 2, 3]) 0, 3, "reverse head")
+val _ = assert_eq (length (reverse [1, 2, 3]), 3, "reverse length")
+
+val _ = assert_eq (length (append [1, 2] [3, 4, 5]), 5, "append length")
+val _ = assert_eq (nth (append [1, 2] [3, 4, 5]) 2, 3, "append middle")
+
+val _ = assert_eq (length (take 3 [1, 2, 3, 4, 5]), 3, "take 3")
+val _ = assert_eq (nth (drop 2 [1, 2, 3, 4, 5]) 0, 3, "drop 2")
+
+val _ = assert (all (fn x => x > 0) [1, 2, 3], "all positive")
+val _ = assert (any (fn x => x > 4) [1, 2, 3, 4, 5], "any > 4")
+val _ = assert (not (any (fn x => x > 10) [1, 2, 3]), "none > 10")
+
+val _ = println "list tests passed"
