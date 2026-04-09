@@ -379,10 +379,17 @@ impl Compiler {
             return Ok(());
         }
 
-        // Mark as currently loading (for cycle detection)
         self.loading_files.insert(canonical.clone());
+        let result = self.compile_use_inner(path, &canonical);
+        self.loading_files.remove(&canonical);
+        if result.is_ok() {
+            self.loaded_files.insert(canonical);
+        }
+        result
+    }
 
-        let source = std::fs::read_to_string(&canonical).map_err(|e| {
+    fn compile_use_inner(&mut self, path: &str, canonical: &Path) -> Result<(), CompileError> {
+        let source = std::fs::read_to_string(canonical).map_err(|e| {
             CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
         })?;
         let tokens = Lexer::new(&source, 0)
@@ -399,10 +406,6 @@ impl Compiler {
             self.compile_decl(decl)?;
         }
         self.base_dir = old_base;
-
-        // Mark as fully loaded, remove from loading set
-        self.loading_files.remove(&canonical);
-        self.loaded_files.insert(canonical);
         Ok(())
     }
 

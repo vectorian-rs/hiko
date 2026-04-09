@@ -521,9 +521,15 @@ impl VM {
                 }
 
                 // ── Arithmetic ──────────────────────────────────
-                Op::AddInt => self.int_binop(|a, b| a + b)?,
-                Op::SubInt => self.int_binop(|a, b| a - b)?,
-                Op::MulInt => self.int_binop(|a, b| a * b)?,
+                Op::AddInt => {
+                    self.int_checked_binop(|a, b| a.checked_add(b), "integer overflow (addition)")?
+                }
+                Op::SubInt => self
+                    .int_checked_binop(|a, b| a.checked_sub(b), "integer overflow (subtraction)")?,
+                Op::MulInt => self.int_checked_binop(
+                    |a, b| a.checked_mul(b),
+                    "integer overflow (multiplication)",
+                )?,
                 Op::DivInt => {
                     let b = self.pop_int()?;
                     let a = self.pop_int()?;
@@ -874,10 +880,19 @@ impl VM {
         }
     }
 
-    fn int_binop(&mut self, f: impl Fn(i64, i64) -> i64) -> Result<(), RuntimeError> {
+    fn int_checked_binop(
+        &mut self,
+        f: impl Fn(i64, i64) -> Option<i64>,
+        err_msg: &str,
+    ) -> Result<(), RuntimeError> {
         let b = self.pop_int()?;
         let a = self.pop_int()?;
-        self.push(Value::Int(f(a, b)))
+        match f(a, b) {
+            Some(result) => self.push(Value::Int(result)),
+            None => Err(RuntimeError {
+                message: err_msg.to_string(),
+            }),
+        }
     }
 
     fn float_binop(&mut self, f: impl Fn(f64, f64) -> f64) -> Result<(), RuntimeError> {
