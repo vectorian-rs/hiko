@@ -1322,4 +1322,50 @@ mod tests {
         );
         assert_eq!(global_int(&vm, "result"), 42);
     }
+
+    // ── Scalar equality regression tests ─────────────────────────────
+
+    #[test]
+    fn test_string_equality() {
+        let vm = run(r#"val a = "hello" = "hello" val b = "hello" = "world""#);
+        assert!(global_bool(&vm, "a"));
+        assert!(!global_bool(&vm, "b"));
+    }
+
+    #[test]
+    fn test_bool_equality() {
+        let vm = run("val a = true = true val b = true = false");
+        assert!(global_bool(&vm, "a"));
+        assert!(!global_bool(&vm, "b"));
+    }
+
+    #[test]
+    fn test_float_equality() {
+        let vm = run("val a = 1.0 = 1.0 val b = 1.0 = 2.0");
+        assert!(global_bool(&vm, "a"));
+        assert!(!global_bool(&vm, "b"));
+    }
+
+    #[test]
+    fn test_char_equality() {
+        let vm = run(r#"val a = #"x" = #"x" val b = #"x" = #"y""#);
+        assert!(global_bool(&vm, "a"));
+        assert!(!global_bool(&vm, "b"));
+    }
+
+    #[test]
+    fn test_string_inequality() {
+        let vm = run(r#"val a = "a" <> "b" val b = "a" <> "a""#);
+        assert!(global_bool(&vm, "a"));
+        assert!(!global_bool(&vm, "b"));
+    }
+
+    #[test]
+    fn test_float_negation() {
+        let vm = run("val x = ~3.14");
+        match vm.get_global("x").unwrap() {
+            Value::Float(f) => assert!((*f - (-3.14)).abs() < 0.001),
+            v => panic!("expected Float, got {v:?}"),
+        }
+    }
 }
