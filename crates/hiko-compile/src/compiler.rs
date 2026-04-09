@@ -53,7 +53,9 @@ pub struct Compiler {
     constructor_arities: HashMap<String, u8>,
     /// Base directory for resolving relative imports.
     base_dir: PathBuf,
-    /// Canonical paths of files already loaded (cycle detection + single eval).
+    /// Files currently being loaded (for cycle detection).
+    loading_files: HashSet<PathBuf>,
+    /// Files fully loaded (for single evaluation).
     loaded_files: HashSet<PathBuf>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
@@ -69,9 +71,9 @@ impl Compiler {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
-        let mut loaded = HashSet::new();
-        loaded.insert(canonical);
-        Self::compile_with_ctx(program, base_dir, loaded)
+        let mut loading = HashSet::new();
+        loading.insert(canonical);
+        Self::compile_with_ctx(program, base_dir, loading)
     }
 
     /// Compile a program without a file context (e.g., from a string).
@@ -84,7 +86,7 @@ impl Compiler {
     fn compile_with_ctx(
         program: &Program,
         base_dir: PathBuf,
-        loaded_files: HashSet<PathBuf>,
+        loading_files: HashSet<PathBuf>,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let mut c = Compiler {
             functions: Vec::new(),
@@ -99,7 +101,8 @@ impl Compiler {
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
             base_dir,
-            loaded_files,
+            loading_files,
+            loaded_files: HashSet::new(),
             infer_ctx: InferCtx::new(),
         };
         for decl in &program.decls {
@@ -363,13 +366,22 @@ impl Compiler {
             ))
         })?;
 
-        // Single evaluation: skip if already loaded
+        // Cycle detection: error if file is currently being loaded
+        if self.loading_files.contains(&canonical) {
+            return Err(CompileError::codegen(format!(
+                "circular import detected: '{}'",
+                canonical.display()
+            )));
+        }
+
+        // Single evaluation: skip if already fully loaded
         if self.loaded_files.contains(&canonical) {
             return Ok(());
         }
-        self.loaded_files.insert(canonical.clone());
 
-        // Read, lex, parse
+        // Mark as currently loading (for cycle detection)
+        self.loading_files.insert(canonical.clone());
+
         let source = std::fs::read_to_string(&canonical).map_err(|e| {
             CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
         })?;
@@ -380,7 +392,6 @@ impl Compiler {
             CompileError::codegen(format!("parse error in '{path}': {}", e.message))
         })?;
 
-        // Type-check and compile imported declarations
         let old_base = self.base_dir.clone();
         self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
         for decl in &program.decls {
@@ -388,6 +399,10 @@ impl Compiler {
             self.compile_decl(decl)?;
         }
         self.base_dir = old_base;
+
+        // Mark as fully loaded, remove from loading set
+        self.loading_files.remove(&canonical);
+        self.loaded_files.insert(canonical);
         Ok(())
     }
 
