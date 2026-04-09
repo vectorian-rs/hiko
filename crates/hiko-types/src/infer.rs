@@ -60,15 +60,77 @@ impl InferCtx {
         };
         ctx.type_arities.insert("list".into(), 1);
         // Register runtime builtins
+        // 'a type variable for polymorphic builtins
+        let a_var = ctx.next_var;
+        ctx.next_var += 1;
+        let a = Type::Var(a_var);
+
         let builtins: &[(&str, Type)] = &[
+            // I/O
             ("print", Type::arrow(Type::string(), Type::unit())),
             ("println", Type::arrow(Type::string(), Type::unit())),
+            ("read_line", Type::arrow(Type::unit(), Type::string())),
+            // Conversions
             ("int_to_string", Type::arrow(Type::int(), Type::string())),
             (
                 "float_to_string",
                 Type::arrow(Type::float(), Type::string()),
             ),
+            ("string_to_int", Type::arrow(Type::string(), Type::int())),
+            ("char_to_int", Type::arrow(Type::char(), Type::int())),
+            ("int_to_char", Type::arrow(Type::int(), Type::char())),
+            ("int_to_float", Type::arrow(Type::int(), Type::float())),
+            // String ops
             ("string_length", Type::arrow(Type::string(), Type::int())),
+            (
+                "substring",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::int(), Type::int()]),
+                    Type::string(),
+                ),
+            ),
+            (
+                "string_contains",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::bool(),
+                ),
+            ),
+            ("trim", Type::arrow(Type::string(), Type::string())),
+            (
+                "split",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::list(Type::string()),
+                ),
+            ),
+            // Math
+            ("sqrt", Type::arrow(Type::float(), Type::float())),
+            ("abs_int", Type::arrow(Type::int(), Type::int())),
+            ("abs_float", Type::arrow(Type::float(), Type::float())),
+            ("floor", Type::arrow(Type::float(), Type::int())),
+            ("ceil", Type::arrow(Type::float(), Type::int())),
+            // Filesystem
+            ("read_file", Type::arrow(Type::string(), Type::string())),
+            (
+                "write_file",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::unit(),
+                ),
+            ),
+            ("file_exists", Type::arrow(Type::string(), Type::bool())),
+            (
+                "list_dir",
+                Type::arrow(Type::string(), Type::list(Type::string())),
+            ),
+            ("remove_file", Type::arrow(Type::string(), Type::unit())),
+            ("create_dir", Type::arrow(Type::string(), Type::unit())),
+            // HTTP
+            ("http_get", Type::arrow(Type::string(), Type::string())),
+            // System
+            ("exit", Type::arrow(Type::int(), Type::unit())),
+            ("panic", Type::arrow(Type::string(), a)),
         ];
         for &(name, ref ty) in builtins {
             ctx.bind(name.to_string(), Scheme::mono(ty.clone()));

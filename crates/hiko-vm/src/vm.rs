@@ -6,6 +6,21 @@ use hiko_compile::op::Op;
 
 use crate::value::{ClosureValue, DataValue, Value};
 
+/// Build a Hiko list (Cons/Nil) from a Vec of values.
+fn build_list(items: Vec<Value>) -> Value {
+    let mut list = Value::Data(Rc::new(DataValue {
+        tag: 0,
+        fields: vec![],
+    })); // Nil
+    for item in items.into_iter().rev() {
+        list = Value::Data(Rc::new(DataValue {
+            tag: 1,
+            fields: vec![item, list],
+        })); // Cons
+    }
+    list
+}
+
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
 
@@ -45,14 +60,25 @@ impl VM {
     }
 
     fn register_builtins(&mut self) {
+        // ── I/O ──────────────────────────────────────────────────────
         fn bi_print(args: &[Value]) -> Result<Value, String> {
             Ok(Value::String(Rc::new(format!("{}", args[0]))))
         }
         fn bi_println(args: &[Value]) -> Result<Value, String> {
             Ok(Value::String(Rc::new(format!("{}\n", args[0]))))
         }
-        // print/println return String values that the VM captures as output,
-        // then replaces with Unit so the program sees Unit as the return value.
+        fn bi_read_line(_args: &[Value]) -> Result<Value, String> {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| format!("read_line: {e}"))?;
+            if line.ends_with('\n') {
+                line.pop();
+            }
+            Ok(Value::String(Rc::new(line)))
+        }
+
+        // ── Conversions ──────────────────────────────────────────────
         fn bi_int_to_string(args: &[Value]) -> Result<Value, String> {
             match &args[0] {
                 Value::Int(n) => Ok(Value::String(Rc::new(n.to_string()))),
@@ -65,19 +91,265 @@ impl VM {
                 _ => Err("float_to_string: expected Float".into()),
             }
         }
+        fn bi_string_to_int(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(s) => s
+                    .trim()
+                    .parse::<i64>()
+                    .map(Value::Int)
+                    .map_err(|e| format!("string_to_int: {e}")),
+                _ => Err("string_to_int: expected String".into()),
+            }
+        }
+        fn bi_char_to_int(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Char(c) => Ok(Value::Int(*c as i64)),
+                _ => Err("char_to_int: expected Char".into()),
+            }
+        }
+        fn bi_int_to_char(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Int(n) => char::from_u32(*n as u32)
+                    .map(Value::Char)
+                    .ok_or_else(|| format!("int_to_char: invalid codepoint {n}")),
+                _ => Err("int_to_char: expected Int".into()),
+            }
+        }
+
+        // ── String operations ────────────────────────────────────────
         fn bi_string_length(args: &[Value]) -> Result<Value, String> {
             match &args[0] {
-                Value::String(s) => Ok(Value::Int(s.len() as i64)),
+                Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
                 _ => Err("string_length: expected String".into()),
+            }
+        }
+        fn bi_substring(args: &[Value]) -> Result<Value, String> {
+            let tup = match &args[0] {
+                Value::Tuple(t) => t,
+                _ => return Err("substring: expected (String, Int, Int)".into()),
+            };
+            match (&tup[0], &tup[1], &tup[2]) {
+                (Value::String(s), Value::Int(start), Value::Int(len)) => {
+                    let start = *start as usize;
+                    let len = *len as usize;
+                    let result: String = s.chars().skip(start).take(len).collect();
+                    if result.chars().count() < len {
+                        Err("substring: out of bounds".to_string())
+                    } else {
+                        Ok(Value::String(Rc::new(result)))
+                    }
+                }
+                _ => Err("substring: expected (String, Int, Int)".into()),
+            }
+        }
+        fn bi_string_contains(args: &[Value]) -> Result<Value, String> {
+            let tup = match &args[0] {
+                Value::Tuple(t) => t,
+                _ => return Err("string_contains: expected (String, String)".into()),
+            };
+            match (&tup[0], &tup[1]) {
+                (Value::String(haystack), Value::String(needle)) => {
+                    Ok(Value::Bool(haystack.contains(needle.as_str())))
+                }
+                _ => Err("string_contains: expected (String, String)".into()),
+            }
+        }
+        fn bi_trim(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(s) => Ok(Value::String(Rc::new(s.trim().to_string()))),
+                _ => Err("trim: expected String".into()),
+            }
+        }
+        fn bi_split(args: &[Value]) -> Result<Value, String> {
+            let tup = match &args[0] {
+                Value::Tuple(t) => t,
+                _ => return Err("split: expected (String, String)".into()),
+            };
+            match (&tup[0], &tup[1]) {
+                (Value::String(s), Value::String(sep)) => {
+                    let parts: Vec<Value> = s
+                        .split(sep.as_str())
+                        .map(|p| Value::String(Rc::new(p.to_string())))
+                        .collect();
+                    Ok(build_list(parts))
+                }
+                _ => Err("split: expected (String, String)".into()),
+            }
+        }
+
+        // ── Math ─────────────────────────────────────────────────────
+        fn bi_sqrt(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Float(f.sqrt())),
+                _ => Err("sqrt: expected Float".into()),
+            }
+        }
+        fn bi_abs_int(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Int(n) => Ok(Value::Int(n.abs())),
+                _ => Err("abs_int: expected Int".into()),
+            }
+        }
+        fn bi_abs_float(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Float(f.abs())),
+                _ => Err("abs_float: expected Float".into()),
+            }
+        }
+        fn bi_floor(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Int(f.floor() as i64)),
+                _ => Err("floor: expected Float".into()),
+            }
+        }
+        fn bi_ceil(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Int(f.ceil() as i64)),
+                _ => Err("ceil: expected Float".into()),
+            }
+        }
+        fn bi_int_to_float(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Int(n) => Ok(Value::Float(*n as f64)),
+                _ => Err("int_to_float: expected Int".into()),
+            }
+        }
+
+        // ── Filesystem ───────────────────────────────────────────────
+        fn bi_read_file(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(path) => {
+                    let contents = std::fs::read_to_string(path.as_str())
+                        .map_err(|e| format!("read_file: {e}"))?;
+                    Ok(Value::String(Rc::new(contents)))
+                }
+                _ => Err("read_file: expected String".into()),
+            }
+        }
+        fn bi_write_file(args: &[Value]) -> Result<Value, String> {
+            let tup = match &args[0] {
+                Value::Tuple(t) => t,
+                _ => return Err("write_file: expected (String, String)".into()),
+            };
+            match (&tup[0], &tup[1]) {
+                (Value::String(path), Value::String(contents)) => {
+                    std::fs::write(path.as_str(), contents.as_str())
+                        .map_err(|e| format!("write_file: {e}"))?;
+                    Ok(Value::Unit)
+                }
+                _ => Err("write_file: expected (String, String)".into()),
+            }
+        }
+        fn bi_file_exists(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(path) => {
+                    Ok(Value::Bool(std::path::Path::new(path.as_str()).exists()))
+                }
+                _ => Err("file_exists: expected String".into()),
+            }
+        }
+        fn bi_list_dir(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(path) => {
+                    let entries: Vec<Value> = std::fs::read_dir(path.as_str())
+                        .map_err(|e| format!("list_dir: {e}"))?
+                        .filter_map(|entry| {
+                            entry.ok().map(|e| {
+                                Value::String(Rc::new(e.file_name().to_string_lossy().to_string()))
+                            })
+                        })
+                        .collect();
+                    Ok(build_list(entries))
+                }
+                _ => Err("list_dir: expected String".into()),
+            }
+        }
+        fn bi_remove_file(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(path) => {
+                    std::fs::remove_file(path.as_str()).map_err(|e| format!("remove_file: {e}"))?;
+                    Ok(Value::Unit)
+                }
+                _ => Err("remove_file: expected String".into()),
+            }
+        }
+        fn bi_create_dir(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(path) => {
+                    std::fs::create_dir_all(path.as_str())
+                        .map_err(|e| format!("create_dir: {e}"))?;
+                    Ok(Value::Unit)
+                }
+                _ => Err("create_dir: expected String".into()),
+            }
+        }
+
+        // ── HTTP ─────────────────────────────────────────────────────
+        fn bi_http_get(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(url) => {
+                    let body = ureq::get(url.as_str())
+                        .call()
+                        .map_err(|e| format!("http_get: {e}"))?
+                        .into_body()
+                        .read_to_string()
+                        .map_err(|e| format!("http_get: {e}"))?;
+                    Ok(Value::String(Rc::new(body)))
+                }
+                _ => Err("http_get: expected String".into()),
+            }
+        }
+
+        // ── System ───────────────────────────────────────────────────
+        fn bi_exit(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::Int(code) => std::process::exit(*code as i32),
+                _ => Err("exit: expected Int".into()),
+            }
+        }
+        fn bi_panic(args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::String(msg) => Err(msg.to_string()),
+                _ => Err("panic: expected String".into()),
             }
         }
 
         let builtins: &[(&str, crate::value::BuiltinFn)] = &[
+            // I/O
             ("print", bi_print),
             ("println", bi_println),
+            ("read_line", bi_read_line),
+            // Conversions
             ("int_to_string", bi_int_to_string),
             ("float_to_string", bi_float_to_string),
+            ("string_to_int", bi_string_to_int),
+            ("char_to_int", bi_char_to_int),
+            ("int_to_char", bi_int_to_char),
+            ("int_to_float", bi_int_to_float),
+            // String ops
             ("string_length", bi_string_length),
+            ("substring", bi_substring),
+            ("string_contains", bi_string_contains),
+            ("trim", bi_trim),
+            ("split", bi_split),
+            // Math
+            ("sqrt", bi_sqrt),
+            ("abs_int", bi_abs_int),
+            ("abs_float", bi_abs_float),
+            ("floor", bi_floor),
+            ("ceil", bi_ceil),
+            // Filesystem
+            ("read_file", bi_read_file),
+            ("write_file", bi_write_file),
+            ("file_exists", bi_file_exists),
+            ("list_dir", bi_list_dir),
+            ("remove_file", bi_remove_file),
+            ("create_dir", bi_create_dir),
+            // HTTP
+            ("http_get", bi_http_get),
+            // System
+            ("exit", bi_exit),
+            ("panic", bi_panic),
         ];
         for &(name, func) in builtins {
             self.globals
