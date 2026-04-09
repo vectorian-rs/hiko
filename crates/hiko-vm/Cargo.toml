@@ -5,6 +5,6 @@ edition = "2024"
 
 [dependencies]
 hiko-compile = { path = "../hiko-compile" }
+hiko-syntax = { path = "../hiko-syntax" }
 
 [dev-dependencies]
-hiko-syntax = { path = "../hiko-syntax" }

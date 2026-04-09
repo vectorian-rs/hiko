@@ -95,6 +95,13 @@ impl VM {
         self.dispatch()
     }
 
+    /// Get the source span for the most recent error (call after run() returns Err).
+    pub fn error_span(&self) -> Option<hiko_syntax::span::Span> {
+        let frame = self.frames.last()?;
+        let chunk = self.chunk_for(frame.proto_idx);
+        chunk.span_at(frame.ip.saturating_sub(1))
+    }
+
     pub fn get_global(&self, name: &str) -> Option<&Value> {
         self.globals.get(name)
     }

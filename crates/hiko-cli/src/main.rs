@@ -89,7 +89,12 @@ fn run_file(path: &str) {
             for line in vm.get_output() {
                 print!("{line}");
             }
-            eprintln!("Runtime error: {}", e.message);
+            if let Some(span) = vm.error_span() {
+                let (line, col) = line_col(&source, span.start as usize);
+                eprintln!("Runtime error at line {line}, column {col}: {}", e.message);
+            } else {
+                eprintln!("Runtime error: {}", e.message);
+            }
             process::exit(1);
         }
     }
@@ -133,4 +138,21 @@ fn check_file(path: &str) {
             process::exit(1);
         }
     }
+}
+
+fn line_col(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }

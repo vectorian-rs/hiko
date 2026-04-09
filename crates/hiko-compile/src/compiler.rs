@@ -102,6 +102,9 @@ impl Compiler {
     fn emit(&mut self, op: Op) {
         self.chunk().emit_op(op);
     }
+    fn emit_span(&mut self, span: hiko_syntax::span::Span) {
+        self.chunk().record_span(span);
+    }
     fn emit_u8(&mut self, val: u8) {
         self.chunk().emit_u8(val);
     }
@@ -752,6 +755,7 @@ impl Compiler {
     }
 
     fn compile_expr_inner(&mut self, expr: &Expr, tail: bool) -> Result<(), CompileError> {
+        self.emit_span(expr.span);
         match &expr.kind {
             ExprKind::IntLit(n) => self.emit_constant(Constant::Int(*n)),
             ExprKind::FloatLit(f) => self.emit_constant(Constant::Float(*f)),

@@ -1,9 +1,13 @@
+use hiko_syntax::span::Span;
+
 use crate::op::Op;
 
 #[derive(Debug, Clone, Default)]
 pub struct Chunk {
     pub code: Vec<u8>,
     pub constants: Vec<Constant>,
+    /// Maps bytecode offsets to source spans (sorted by offset).
+    pub spans: Vec<(usize, Span)>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +35,26 @@ pub struct CompiledProgram {
 impl Chunk {
     pub fn emit_op(&mut self, op: Op) {
         self.code.push(op as u8);
+    }
+
+    /// Record a source span for the current bytecode position.
+    pub fn record_span(&mut self, span: Span) {
+        let offset = self.code.len();
+        // Deduplicate: don't record if same offset already has a span
+        if self.spans.last().is_some_and(|(off, _)| *off == offset) {
+            return;
+        }
+        self.spans.push((offset, span));
+    }
+
+    /// Look up the source span for a bytecode offset.
+    pub fn span_at(&self, offset: usize) -> Option<Span> {
+        // Binary search for the largest offset <= target
+        match self.spans.binary_search_by_key(&offset, |(off, _)| *off) {
+            Ok(i) => Some(self.spans[i].1),
+            Err(0) => None,
+            Err(i) => Some(self.spans[i - 1].1),
+        }
     }
 
     pub fn emit_u8(&mut self, val: u8) {
