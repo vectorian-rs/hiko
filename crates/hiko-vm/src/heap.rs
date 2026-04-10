@@ -47,7 +47,7 @@ impl Heap {
     }
 
     pub fn should_collect(&self) -> bool {
-        self.alloc_since_gc >= self.gc_threshold && self.free_list.is_empty()
+        self.alloc_since_gc >= self.gc_threshold
     }
 
     /// Mark a single ref. Returns true if it was newly marked.

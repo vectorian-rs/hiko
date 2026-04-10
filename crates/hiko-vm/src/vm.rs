@@ -40,12 +40,14 @@ pub struct VM {
     heap: Heap,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
-    globals: HashMap<String, Value>,
+    globals: Vec<Value>,
+    global_names: HashMap<String, usize>,
     protos: Vec<hiko_compile::chunk::FunctionProto>,
     main_chunk: Chunk,
     output: Vec<String>,
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
+    string_cache: HashMap<(usize, usize), GcRef>,
 }
 
 fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -101,12 +103,14 @@ impl VM {
             heap: Heap::new(),
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
-            globals: HashMap::new(),
+            globals: Vec::new(),
+            global_names: HashMap::new(),
             protos: program.functions,
             main_chunk: program.main,
             output: Vec::new(),
             builtins: Vec::new(),
             handlers: Vec::new(),
+            string_cache: HashMap::new(),
         };
         vm.register_builtins();
         vm
@@ -136,12 +140,13 @@ impl VM {
             .stack
             .iter()
             .chain(self.frames.iter().flat_map(|f| f.captures.iter()))
-            .chain(self.globals.values())
+            .chain(self.globals.iter())
             .chain(self.handlers.iter().flat_map(|h| h.captures.iter()))
             .filter_map(|v| match v {
                 Value::Heap(r) => Some(*r),
                 _ => None,
-            });
+            })
+            .chain(self.string_cache.values().copied());
         self.heap.collect(roots);
     }
 
@@ -615,8 +620,19 @@ impl VM {
         ];
         for (i, (name, func)) in entries.into_iter().enumerate() {
             self.builtins.push(BuiltinEntry { name, func });
-            self.globals
-                .insert(name.to_string(), Value::Builtin(i as u16));
+            let slot = self.global_slot(name.to_string());
+            self.globals[slot] = Value::Builtin(i as u16);
+        }
+    }
+
+    fn global_slot(&mut self, name: String) -> usize {
+        if let Some(&slot) = self.global_names.get(&name) {
+            slot
+        } else {
+            let slot = self.globals.len();
+            self.globals.push(Value::Unit);
+            self.global_names.insert(name, slot);
+            slot
         }
     }
 
@@ -631,7 +647,7 @@ impl VM {
     }
 
     pub fn get_global(&self, name: &str) -> Option<&Value> {
-        self.globals.get(name)
+        self.global_names.get(name).map(|&slot| &self.globals[slot])
     }
 
     pub fn get_output(&self) -> &[String] {
@@ -720,7 +736,18 @@ impl VM {
                     let val = match &chunk.constants[idx] {
                         Constant::Int(n) => Value::Int(*n),
                         Constant::Float(f) => Value::Float(*f),
-                        Constant::String(s) => self.alloc_string(s.clone()),
+                        Constant::String(s) => {
+                            let key = (proto_idx, idx);
+                            if let Some(&cached) = self.string_cache.get(&key) {
+                                Value::Heap(cached)
+                            } else {
+                                let v = self.alloc_string(s.clone());
+                                if let Value::Heap(r) = v {
+                                    self.string_cache.insert(key, r);
+                                }
+                                v
+                            }
+                        }
                         Constant::Char(c) => Value::Char(*c),
                     };
                     self.push(val)?;
@@ -749,20 +776,18 @@ impl VM {
                 Op::GetGlobal => {
                     let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx);
-                    let val = self
-                        .globals
-                        .get(name)
-                        .copied()
-                        .ok_or_else(|| RuntimeError {
-                            message: format!("undefined global: {name}"),
-                        })?;
+                    let slot = *self.global_names.get(name).ok_or_else(|| RuntimeError {
+                        message: format!("undefined global: {name}"),
+                    })?;
+                    let val = self.globals[slot];
                     self.push(val)?;
                 }
                 Op::SetGlobal => {
                     let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx).to_string();
                     let val = self.pop()?;
-                    self.globals.insert(name, val);
+                    let slot = self.global_slot(name);
+                    self.globals[slot] = val;
                 }
 
                 Op::Pop => {
