@@ -65,6 +65,8 @@ pub struct Compiler {
     compiled_files: HashSet<PathBuf>,
     /// Cached desugared programs for imported files (used between passes).
     imported_programs: HashMap<PathBuf, Vec<Decl>>,
+    /// Global function name -> proto_idx (for direct calls).
+    global_protos: HashMap<String, u16>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
     /// String interner for resolving symbols from the AST.
@@ -123,6 +125,7 @@ impl Compiler {
             inferred_files: HashSet::new(),
             compiled_files: HashSet::new(),
             imported_programs: HashMap::new(),
+            global_protos: HashMap::new(),
             infer_ctx: InferCtx::new(),
             interner,
         };
@@ -698,6 +701,7 @@ impl Compiler {
     fn finish_function(&mut self) -> Result<(), CompileError> {
         let func_ctx = self.func_stack.pop().unwrap();
         let n_captures = func_ctx.upvalues.len() as u8;
+        let fn_name = func_ctx.name.clone();
         let proto = FunctionProto {
             name: func_ctx.name,
             arity: func_ctx.arity,
@@ -706,6 +710,12 @@ impl Compiler {
         };
         let proto_idx = self.functions.len() as u16;
         self.functions.push(proto);
+        // Register for direct calls if this is a top-level function with no captures
+        if n_captures == 0
+            && let Some(name) = &fn_name
+        {
+            self.global_protos.insert(name.clone(), proto_idx);
+        }
         self.emit(Op::MakeClosure);
         self.emit_u16(proto_idx);
         self.emit_u8(n_captures);
@@ -1008,14 +1018,43 @@ impl Compiler {
             }
 
             ExprKind::App(func, arg) => {
-                self.compile_expr(func)?;
-                self.compile_expr(arg)?;
-                if tail {
-                    self.emit(Op::TailCall);
+                // Check for direct call: App(Var(name), arg) where name
+                // is a known global function with no captures
+                let direct_proto = if let ExprKind::Var(sym) = &func.kind {
+                    let name = self.interner.resolve(*sym).to_string();
+                    if self.resolve_local(&name).is_none() && self.resolve_upvalue(&name).is_none()
+                    {
+                        // Global function
+                        self.global_protos.get(&name).copied()
+                    } else if self.ctx().name.as_deref() == Some(&name) {
+                        // Self-recursive call: proto_idx will be self.functions.len()
+                        Some(self.functions.len() as u16)
+                    } else {
+                        // Also check if name matches a known global even as upvalue
+                        // (recursive calls capture the function as an upvalue)
+                        self.global_protos.get(&name).copied()
+                    }
                 } else {
-                    self.emit(Op::Call);
+                    None
+                };
+                if let Some(proto_idx) = direct_proto {
+                    self.compile_expr(arg)?;
+                    if tail {
+                        self.emit(Op::TailCallDirect);
+                    } else {
+                        self.emit(Op::CallDirect);
+                    }
+                    self.emit_u16(proto_idx);
+                } else {
+                    self.compile_expr(func)?;
+                    self.compile_expr(arg)?;
+                    if tail {
+                        self.emit(Op::TailCall);
+                    } else {
+                        self.emit(Op::Call);
+                    }
+                    self.emit_u8(1);
                 }
-                self.emit_u8(1);
             }
 
             ExprKind::Fn(pat, body) => self.compile_lambda(pat, body)?,

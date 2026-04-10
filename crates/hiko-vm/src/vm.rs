@@ -655,6 +655,40 @@ impl VM {
                     }
                 }
 
+                Op::CallDirect => {
+                    let proto_idx = self.read_u16()? as usize;
+                    let proto = &self.protos[proto_idx];
+                    let arity = proto.arity as usize;
+                    let arg_start = self.stack.len() - arity;
+                    if self.frames.len() >= MAX_FRAMES {
+                        return Err(RuntimeError {
+                            message: "stack overflow".into(),
+                        });
+                    }
+                    self.frames.push(CallFrame {
+                        proto_idx,
+                        ip: 0,
+                        base: arg_start,
+                        captures: Rc::from([]),
+                    });
+                }
+
+                Op::TailCallDirect => {
+                    let proto_idx = self.read_u16()? as usize;
+                    let proto = &self.protos[proto_idx];
+                    let arity = proto.arity as usize;
+                    let args_start = self.stack.len() - arity;
+                    let fi = self.frames.len() - 1;
+                    let base = self.frames[fi].base;
+                    for i in 0..arity {
+                        self.stack[base + i] = self.stack[args_start + i];
+                    }
+                    self.stack.truncate(base + arity);
+                    self.frames[fi].ip = 0;
+                    self.frames[fi].proto_idx = proto_idx;
+                    self.frames[fi].captures = Rc::from([]);
+                }
+
                 Op::Return => {
                     let result = self.pop()?;
                     let frame = self.frames.pop().unwrap();

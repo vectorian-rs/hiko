@@ -60,6 +60,9 @@ pub enum Op {
 
     Halt = 52,
 
+    CallDirect = 57,
+    TailCallDirect = 58,
+
     InstallHandler = 53,
     Perform = 54,
     Resume = 55,
@@ -120,6 +123,8 @@ impl TryFrom<u8> for Op {
             54 => Ok(Op::Perform),
             55 => Ok(Op::Resume),
             56 => Ok(Op::RemoveHandler),
+            57 => Ok(Op::CallDirect),
+            58 => Ok(Op::TailCallDirect),
             _ => Err(b),
         }
     }
