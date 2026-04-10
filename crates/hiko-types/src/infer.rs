@@ -39,6 +39,8 @@ pub struct InferCtx {
     pub warnings: Vec<Warning>,
     /// Effect name -> (argument_type, result_type)
     effect_sigs: HashMap<String, (Type, Type)>,
+    /// Resolved types for expressions (keyed by span, for typed codegen)
+    pub expr_types: HashMap<hiko_syntax::span::Span, Type>,
 }
 
 impl Default for InferCtx {
@@ -60,6 +62,7 @@ impl InferCtx {
             datatype_constructors: HashMap::new(),
             warnings: Vec::new(),
             effect_sigs: HashMap::new(),
+            expr_types: HashMap::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
         // Register runtime builtins
@@ -665,7 +668,10 @@ impl InferCtx {
                 let ty = self.infer_expr(e)?;
                 let resolved = self.apply(&ty);
                 match &resolved {
-                    Type::Con(n) if n == "Int" || n == "Float" => Ok(ty),
+                    Type::Con(n) if n == "Int" || n == "Float" => {
+                        self.expr_types.insert(expr.span, resolved);
+                        Ok(ty)
+                    }
                     Type::Var(_) => {
                         Err(self.err("~ requires Int or Float, but type is unconstrained", e.span))
                     }

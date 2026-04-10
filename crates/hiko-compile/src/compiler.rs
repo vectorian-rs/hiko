@@ -953,7 +953,12 @@ impl Compiler {
 
             ExprKind::UnaryNeg(e) => {
                 self.compile_expr(e)?;
-                self.emit(Op::Neg);
+                let is_float = self
+                    .infer_ctx
+                    .expr_types
+                    .get(&expr.span)
+                    .is_some_and(|t| matches!(t, hiko_types::ty::Type::Con(n) if n == "Float"));
+                self.emit(if is_float { Op::NegFloat } else { Op::Neg });
             }
             ExprKind::Not(_) => {
                 unreachable!("desugared to if-then-else")

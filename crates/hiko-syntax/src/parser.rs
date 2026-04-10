@@ -56,11 +56,11 @@ impl Parser {
 
     /// Take a string payload from the current token and advance.
     fn take_string(&mut self) -> String {
-        let s = match &self.tokens[self.pos].kind {
+        let s = match &mut self.tokens[self.pos].kind {
             TokenKind::Ident(s)
             | TokenKind::UpperIdent(s)
             | TokenKind::TyVar(s)
-            | TokenKind::StringLit(s) => s.clone(),
+            | TokenKind::StringLit(s) => std::mem::take(s),
             _ => String::new(),
         };
         self.advance();
