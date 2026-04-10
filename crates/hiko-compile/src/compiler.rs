@@ -58,8 +58,12 @@ pub struct Compiler {
     base_dir: PathBuf,
     /// Files currently being loaded (for cycle detection).
     loading_files: HashSet<PathBuf>,
-    /// Files fully loaded (for single evaluation).
-    loaded_files: HashSet<PathBuf>,
+    /// Files whose type inference is complete.
+    inferred_files: HashSet<PathBuf>,
+    /// Files whose codegen is complete.
+    compiled_files: HashSet<PathBuf>,
+    /// Cached desugared programs for imported files (used between passes).
+    imported_programs: HashMap<PathBuf, Vec<Decl>>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
 }
@@ -107,13 +111,27 @@ impl Compiler {
             next_effect_tag: 0,
             base_dir,
             loading_files,
-            loaded_files: HashSet::new(),
+            inferred_files: HashSet::new(),
+            compiled_files: HashSet::new(),
+            imported_programs: HashMap::new(),
             infer_ctx: InferCtx::new(),
         };
-        for decl in &program.decls {
-            let decl = hiko_syntax::desugar::desugar_decl(decl.clone());
-            c.infer_ctx.infer_decl(&decl)?;
-            c.compile_decl(&decl)?;
+
+        // Desugar all declarations
+        let desugared: Vec<Decl> = program
+            .decls
+            .iter()
+            .map(|d| hiko_syntax::desugar::desugar_decl(d.clone()))
+            .collect();
+
+        // Pass 1: type inference (all type errors reported before any codegen)
+        for decl in &desugared {
+            c.infer_decl_pass(decl)?;
+        }
+
+        // Pass 2: codegen
+        for decl in &desugared {
+            c.compile_decl(decl)?;
         }
         c.emit(Op::Halt);
         let main = c.func_stack.pop().unwrap();
@@ -385,16 +403,42 @@ impl Compiler {
         }
     }
 
-    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
+    // ── Two-pass import handling ────────────────────────────────────
+
+    fn resolve_import(&self, path: &str) -> Result<PathBuf, CompileError> {
         let resolved = self.base_dir.join(path);
-        let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
+        std::fs::canonicalize(&resolved).map_err(|e| {
             CompileError::codegen(format!(
                 "cannot resolve import '{}': {e}",
                 resolved.display()
             ))
-        })?;
+        })
+    }
 
-        // Cycle detection: error if file is currently being loaded
+    /// Pass 1: type-check a single declaration (handles `use` recursively)
+    fn infer_decl_pass(&mut self, decl: &Decl) -> Result<(), CompileError> {
+        match &decl.kind {
+            DeclKind::Use(path) => self.infer_use(path),
+            DeclKind::Local(locals, body) => {
+                for d in locals {
+                    self.infer_decl_pass(d)?;
+                }
+                for d in body {
+                    self.infer_decl_pass(d)?;
+                }
+                Ok(())
+            }
+            _ => {
+                self.infer_ctx.infer_decl(decl)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Pass 1 for imports: load, parse, desugar, infer, and cache
+    fn infer_use(&mut self, path: &str) -> Result<(), CompileError> {
+        let canonical = self.resolve_import(path)?;
+
         if self.loading_files.contains(&canonical) {
             return Err(CompileError::codegen(format!(
                 "circular import detected: '{}'",
@@ -402,22 +446,11 @@ impl Compiler {
             )));
         }
 
-        // Single evaluation: skip if already fully loaded
-        if self.loaded_files.contains(&canonical) {
+        if self.inferred_files.contains(&canonical) {
             return Ok(());
         }
 
-        self.loading_files.insert(canonical.clone());
-        let result = self.compile_use_inner(path, &canonical);
-        self.loading_files.remove(&canonical);
-        if result.is_ok() {
-            self.loaded_files.insert(canonical);
-        }
-        result
-    }
-
-    fn compile_use_inner(&mut self, path: &str, canonical: &Path) -> Result<(), CompileError> {
-        let source = std::fs::read_to_string(canonical).map_err(|e| {
+        let source = std::fs::read_to_string(&canonical).map_err(|e| {
             CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
         })?;
         let tokens = Lexer::new(&source, 0)
@@ -427,14 +460,48 @@ impl Compiler {
             CompileError::codegen(format!("parse error in '{path}': {}", e.message))
         })?;
 
+        let desugared: Vec<Decl> = program
+            .decls
+            .iter()
+            .map(|d| hiko_syntax::desugar::desugar_decl(d.clone()))
+            .collect();
+
+        self.loading_files.insert(canonical.clone());
         let old_base = self.base_dir.clone();
         self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
-        for decl in &program.decls {
-            let decl = hiko_syntax::desugar::desugar_decl(decl.clone());
-            self.infer_ctx.infer_decl(&decl)?;
-            self.compile_decl(&decl)?;
+
+        let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
+
+        self.base_dir = old_base;
+        self.loading_files.remove(&canonical);
+
+        result?;
+        self.inferred_files.insert(canonical.clone());
+        self.imported_programs.insert(canonical, desugared);
+        Ok(())
+    }
+
+    /// Pass 2 for imports: compile from cached desugared AST
+    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
+        let canonical = self.resolve_import(path)?;
+
+        if self.compiled_files.contains(&canonical) {
+            return Ok(());
+        }
+
+        let desugared = self
+            .imported_programs
+            .get(&canonical)
+            .cloned()
+            .unwrap_or_default();
+
+        let old_base = self.base_dir.clone();
+        self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
+        for decl in &desugared {
+            self.compile_decl(decl)?;
         }
         self.base_dir = old_base;
+        self.compiled_files.insert(canonical);
         Ok(())
     }
 
