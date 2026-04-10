@@ -1371,7 +1371,7 @@ mod tests {
     fn run(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
-        let (compiled, _warnings) = Compiler::compile(&program).expect("compile error");
+        let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
         let mut vm = VM::new(compiled);
         vm.run().expect("runtime error");
         vm

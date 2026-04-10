@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 
 use hiko_syntax::ast::{Pat, PatKind};
+use hiko_syntax::intern::StringInterner;
 
 /// A simplified pattern for the exhaustiveness algorithm.
 #[derive(Debug, Clone)]
@@ -105,7 +106,11 @@ pub struct CheckResult {
 }
 
 /// Convert a surface pattern to a simplified pattern.
-fn simplify_pat(pat: &Pat, con_tags: &std::collections::HashMap<String, u16>) -> SPat {
+fn simplify_pat(
+    pat: &Pat,
+    con_tags: &std::collections::HashMap<String, u16>,
+    interner: &StringInterner,
+) -> SPat {
     match &pat.kind {
         PatKind::Wildcard | PatKind::Var(_) => SPat::Wild,
 
@@ -118,23 +123,30 @@ fn simplify_pat(pat: &Pat, con_tags: &std::collections::HashMap<String, u16>) ->
         PatKind::StringLit(s) => SPat::Con(Constructor::StringLit(s.clone()), vec![]),
         PatKind::CharLit(c) => SPat::Con(Constructor::CharLit(*c), vec![]),
 
-        PatKind::Constructor(name, payload) => {
+        PatKind::Constructor(sym, payload) => {
+            let name = interner.resolve(*sym);
             let tag = con_tags.get(name).copied().unwrap_or(0);
-            let type_name = name.clone(); // approximate; we don't track the parent type here
+            let type_name = name.to_string();
             let sub_pats = match payload {
-                Some(p) => vec![simplify_pat(p, con_tags)],
+                Some(p) => vec![simplify_pat(p, con_tags, interner)],
                 None => vec![],
             };
             SPat::Con(Constructor::Adt(type_name, tag), sub_pats)
         }
 
         PatKind::Tuple(pats) => {
-            let sub = pats.iter().map(|p| simplify_pat(p, con_tags)).collect();
+            let sub = pats
+                .iter()
+                .map(|p| simplify_pat(p, con_tags, interner))
+                .collect();
             SPat::Con(Constructor::Tuple(pats.len()), sub)
         }
 
         PatKind::Cons(hd, tl) => {
-            let sub = vec![simplify_pat(hd, con_tags), simplify_pat(tl, con_tags)];
+            let sub = vec![
+                simplify_pat(hd, con_tags, interner),
+                simplify_pat(tl, con_tags, interner),
+            ];
             SPat::Con(Constructor::Cons, sub)
         }
 
@@ -145,14 +157,17 @@ fn simplify_pat(pat: &Pat, con_tags: &std::collections::HashMap<String, u16>) ->
                 // [p1, p2, ...] = p1 :: p2 :: ... :: []
                 let mut result = SPat::Con(Constructor::Nil, vec![]);
                 for p in pats.iter().rev() {
-                    result = SPat::Con(Constructor::Cons, vec![simplify_pat(p, con_tags), result]);
+                    result = SPat::Con(
+                        Constructor::Cons,
+                        vec![simplify_pat(p, con_tags, interner), result],
+                    );
                 }
                 result
             }
         }
 
-        PatKind::As(_, p) => simplify_pat(p, con_tags),
-        PatKind::Paren(p) | PatKind::Ann(p, _) => simplify_pat(p, con_tags),
+        PatKind::As(_, p) => simplify_pat(p, con_tags, interner),
+        PatKind::Paren(p) | PatKind::Ann(p, _) => simplify_pat(p, con_tags, interner),
     }
 }
 
@@ -168,10 +183,11 @@ pub fn check_match(
     type_info: &TypeInfo,
     con_tags: &std::collections::HashMap<String, u16>,
     dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
+    interner: &StringInterner,
 ) -> CheckResult {
     let matrix: PatternMatrix = patterns
         .iter()
-        .map(|p| vec![simplify_pat(p, con_tags)])
+        .map(|p| vec![simplify_pat(p, con_tags, interner)])
         .collect();
 
     let wildcard = vec![SPat::Wild];

@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::intern::{StringInterner, Symbol};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
@@ -12,6 +13,7 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     depth: u32,
+    interner: StringInterner,
 }
 
 impl Parser {
@@ -20,6 +22,16 @@ impl Parser {
             tokens,
             pos: 0,
             depth: 0,
+            interner: StringInterner::new(),
+        }
+    }
+
+    pub fn with_interner(tokens: Vec<Token>, interner: StringInterner) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+            interner,
         }
     }
 
@@ -54,62 +66,71 @@ impl Parser {
             .ok_or_else(|| self.err(&format!("expected {desc}")))
     }
 
-    /// Take a string payload from the current token and advance.
-    fn take_string(&mut self) -> String {
+    /// Take an identifier/tyvar payload from the current token, intern it, and advance.
+    fn take_symbol(&mut self) -> Symbol {
         let s = match &mut self.tokens[self.pos].kind {
-            TokenKind::Ident(s)
-            | TokenKind::UpperIdent(s)
-            | TokenKind::TyVar(s)
-            | TokenKind::StringLit(s) => std::mem::take(s),
+            TokenKind::Ident(s) | TokenKind::UpperIdent(s) | TokenKind::TyVar(s) => {
+                std::mem::take(s)
+            }
+            _ => String::new(),
+        };
+        self.advance();
+        self.interner.intern(&s)
+    }
+
+    /// Take a string literal payload from the current token and advance.
+    fn take_string_lit(&mut self) -> String {
+        let s = match &mut self.tokens[self.pos].kind {
+            TokenKind::StringLit(s) => std::mem::take(s),
             _ => String::new(),
         };
         self.advance();
         s
     }
 
-    fn expect_ident(&mut self) -> Result<(String, Span), ParseError> {
+    fn expect_ident(&mut self) -> Result<(Symbol, Span), ParseError> {
         if matches!(self.peek(), TokenKind::Ident(_)) {
             let span = self.span();
-            Ok((self.take_string(), span))
+            Ok((self.take_symbol(), span))
         } else {
             Err(self.err("expected identifier"))
         }
     }
 
-    fn expect_ident_or_wildcard(&mut self) -> Result<(String, Span), ParseError> {
+    fn expect_ident_or_wildcard(&mut self) -> Result<(Symbol, Span), ParseError> {
         if matches!(self.peek(), TokenKind::Ident(_)) {
             let span = self.span();
-            Ok((self.take_string(), span))
+            Ok((self.take_symbol(), span))
         } else if matches!(self.peek(), TokenKind::Underscore) {
             let span = self.span();
             self.advance();
-            Ok(("_".to_string(), span))
+            Ok((self.interner.intern("_"), span))
         } else {
             Err(self.err("expected identifier or _"))
         }
     }
 
-    fn expect_upper_ident(&mut self) -> Result<(String, Span), ParseError> {
+    fn expect_upper_ident(&mut self) -> Result<(Symbol, Span), ParseError> {
         if matches!(self.peek(), TokenKind::UpperIdent(_)) {
             let span = self.span();
-            Ok((self.take_string(), span))
+            Ok((self.take_symbol(), span))
         } else {
             Err(self.err("expected constructor name"))
         }
     }
 
-    fn expect_name(&mut self) -> Result<(String, Span), ParseError> {
+    fn expect_name(&mut self) -> Result<(Symbol, Span), ParseError> {
         if matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_)) {
             let span = self.span();
-            Ok((self.take_string(), span))
+            Ok((self.take_symbol(), span))
         } else {
             Err(self.err("expected name"))
         }
     }
 
-    fn expect_tyvar(&mut self) -> Result<String, ParseError> {
+    fn expect_tyvar(&mut self) -> Result<Symbol, ParseError> {
         if matches!(self.peek(), TokenKind::TyVar(_)) {
-            Ok(self.take_string())
+            Ok(self.take_symbol())
         } else {
             Err(self.err("expected type variable"))
         }
@@ -178,7 +199,10 @@ impl Parser {
         while !matches!(self.peek(), TokenKind::Eof) {
             decls.push(self.parse_decl()?);
         }
-        Ok(Program { decls })
+        Ok(Program {
+            decls,
+            interner: std::mem::take(&mut self.interner),
+        })
     }
 
     // ── Declarations ─────────────────────────────────────────────────
@@ -274,7 +298,9 @@ impl Parser {
                 let (next_name, _) = self.expect_ident()?;
                 if next_name != name {
                     return Err(self.err(&format!(
-                        "clausal function name mismatch: expected '{name}', found '{next_name}'"
+                        "clausal function name mismatch: expected '{}', found '{}'",
+                        self.interner.resolve(name),
+                        self.interner.resolve(next_name),
                     )));
                 }
             } else {
@@ -379,7 +405,7 @@ impl Parser {
         self.advance(); // consume `use`
         if matches!(self.peek(), TokenKind::StringLit(_)) {
             let end = self.span();
-            let path = self.take_string();
+            let path = self.take_string_lit();
             let span = start.merge(end);
             Ok(Decl {
                 kind: DeclKind::Use(path),
@@ -406,9 +432,9 @@ impl Parser {
         })
     }
 
-    fn parse_tyvar_params(&mut self) -> Result<Vec<String>, ParseError> {
+    fn parse_tyvar_params(&mut self) -> Result<Vec<Symbol>, ParseError> {
         if matches!(self.peek(), TokenKind::TyVar(_)) {
-            return Ok(vec![self.take_string()]);
+            return Ok(vec![self.take_symbol()]);
         }
         if self.eat(&TokenKind::LParen).is_none() {
             return Ok(vec![]);
@@ -647,7 +673,7 @@ impl Parser {
                 })
             }
             TokenKind::StringLit(_) => {
-                let s = self.take_string();
+                let s = self.take_string_lit();
                 Ok(Expr {
                     kind: ExprKind::StringLit(s),
                     span: start,
@@ -676,14 +702,14 @@ impl Parser {
                 })
             }
             TokenKind::Ident(_) => {
-                let name = self.take_string();
+                let name = self.take_symbol();
                 Ok(Expr {
                     kind: ExprKind::Var(name),
                     span: start,
                 })
             }
             TokenKind::UpperIdent(_) => {
-                let name = self.take_string();
+                let name = self.take_symbol();
                 Ok(Expr {
                     kind: ExprKind::Constructor(name),
                     span: start,
@@ -911,7 +937,7 @@ impl Parser {
             && matches!(self.tokens[self.pos + 1].kind, TokenKind::As)
         {
             let start = self.span();
-            let name = self.take_string(); // consume ident
+            let name = self.take_symbol(); // consume ident
             self.advance(); // consume `as`
             let inner = self.parse_as_pat()?;
             let span = start.merge(inner.span);
@@ -940,7 +966,7 @@ impl Parser {
     fn parse_app_pat(&mut self) -> Result<Pat, ParseError> {
         if matches!(self.peek(), TokenKind::UpperIdent(_)) {
             let start = self.span();
-            let name = self.take_string();
+            let name = self.take_symbol();
             if self.can_start_atom_pat() {
                 let payload = self.parse_atom_pat()?;
                 let span = start.merge(payload.span);
@@ -970,14 +996,14 @@ impl Parser {
                 })
             }
             TokenKind::Ident(_) => {
-                let name = self.take_string();
+                let name = self.take_symbol();
                 Ok(Pat {
                     kind: PatKind::Var(name),
                     span: start,
                 })
             }
             TokenKind::UpperIdent(_) => {
-                let name = self.take_string();
+                let name = self.take_symbol();
                 Ok(Pat {
                     kind: PatKind::Constructor(name, None),
                     span: start,
@@ -1000,7 +1026,7 @@ impl Parser {
                 })
             }
             TokenKind::StringLit(_) => {
-                let s = self.take_string();
+                let s = self.take_string_lit();
                 Ok(Pat {
                     kind: PatKind::StringLit(s),
                     span: start,
@@ -1149,7 +1175,7 @@ impl Parser {
         let mut ty = self.parse_atom_type()?;
         while matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_)) {
             let end = self.span();
-            let name = self.take_string();
+            let name = self.take_symbol();
             let (args, base_span) = match ty.kind {
                 TypeExprKind::Tuple(elems) => (elems, ty.span),
                 _ => {
@@ -1170,14 +1196,14 @@ impl Parser {
         let start = self.span();
         match self.peek() {
             TokenKind::TyVar(_) => {
-                let name = self.take_string();
+                let name = self.take_symbol();
                 Ok(TypeExpr {
                     kind: TypeExprKind::Var(name),
                     span: start,
                 })
             }
             TokenKind::Ident(_) | TokenKind::UpperIdent(_) => {
-                let name = self.take_string();
+                let name = self.take_symbol();
                 Ok(TypeExpr {
                     kind: TypeExprKind::Named(name),
                     span: start,
@@ -1243,7 +1269,11 @@ mod tests {
     #[test]
     fn test_val_rec() {
         let prog = parse("val rec f = fn x => x");
-        assert!(matches!(&prog.decls[0].kind, DeclKind::ValRec(name, _) if name == "f"));
+        if let DeclKind::ValRec(name, _) = &prog.decls[0].kind {
+            assert_eq!(prog.interner.resolve(*name), "f");
+        } else {
+            panic!("expected ValRec");
+        }
     }
 
     #[test]
@@ -1295,7 +1325,7 @@ mod tests {
     fn test_fun_simple() {
         let prog = parse("fun add x y = x + y");
         if let DeclKind::Fun(bindings) = &prog.decls[0].kind {
-            assert_eq!(bindings[0].name, "add");
+            assert_eq!(prog.interner.resolve(bindings[0].name), "add");
             assert_eq!(bindings[0].clauses[0].pats.len(), 2);
         } else {
             panic!("expected fun");
@@ -1317,8 +1347,8 @@ mod tests {
         let prog = parse("fun f x = g x and g y = f y");
         if let DeclKind::Fun(bindings) = &prog.decls[0].kind {
             assert_eq!(bindings.len(), 2);
-            assert_eq!(bindings[0].name, "f");
-            assert_eq!(bindings[1].name, "g");
+            assert_eq!(prog.interner.resolve(bindings[0].name), "f");
+            assert_eq!(prog.interner.resolve(bindings[1].name), "g");
         } else {
             panic!("expected fun");
         }
@@ -1328,7 +1358,7 @@ mod tests {
     fn test_datatype_simple() {
         let prog = parse("datatype shape = Circle of Float | Rect of Float * Float");
         if let DeclKind::Datatype(dt) = &prog.decls[0].kind {
-            assert_eq!(dt.name, "shape");
+            assert_eq!(prog.interner.resolve(dt.name), "shape");
             assert_eq!(dt.tyvars.len(), 0);
             assert_eq!(dt.constructors.len(), 2);
         } else {
@@ -1340,7 +1370,12 @@ mod tests {
     fn test_datatype_parameterized() {
         let prog = parse("datatype 'a option = None | Some of 'a");
         if let DeclKind::Datatype(dt) = &prog.decls[0].kind {
-            assert_eq!(dt.tyvars, vec!["'a"]);
+            let tyvars: Vec<&str> = dt
+                .tyvars
+                .iter()
+                .map(|s| prog.interner.resolve(*s))
+                .collect();
+            assert_eq!(tyvars, vec!["'a"]);
             assert_eq!(dt.constructors.len(), 2);
         } else {
             panic!("expected datatype");
@@ -1351,7 +1386,12 @@ mod tests {
     fn test_datatype_multi_param() {
         let prog = parse("datatype ('a, 'b) either = Left of 'a | Right of 'b");
         if let DeclKind::Datatype(dt) = &prog.decls[0].kind {
-            assert_eq!(dt.tyvars, vec!["'a", "'b"]);
+            let tyvars: Vec<&str> = dt
+                .tyvars
+                .iter()
+                .map(|s| prog.interner.resolve(*s))
+                .collect();
+            assert_eq!(tyvars, vec!["'a", "'b"]);
         } else {
             panic!("expected datatype");
         }
@@ -1479,7 +1519,11 @@ mod tests {
     fn test_type_app() {
         let prog = parse("type xs = Int list");
         if let DeclKind::TypeAlias(ref ta) = prog.decls[0].kind {
-            assert!(matches!(&ta.ty.kind, TypeExprKind::App(name, _) if name == "list"));
+            if let TypeExprKind::App(sym, _) = &ta.ty.kind {
+                assert_eq!(prog.interner.resolve(*sym), "list");
+            } else {
+                panic!("expected App");
+            }
         }
     }
 
@@ -1504,7 +1548,11 @@ mod tests {
         let prog = parse("val (x as Some _) = y");
         if let DeclKind::Val(ref pat, _) = prog.decls[0].kind {
             if let PatKind::Paren(ref inner) = pat.kind {
-                assert!(matches!(&inner.kind, PatKind::As(name, _) if name == "x"));
+                if let PatKind::As(sym, _) = &inner.kind {
+                    assert_eq!(prog.interner.resolve(*sym), "x");
+                } else {
+                    panic!("expected As");
+                }
             }
         }
     }

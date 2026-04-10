@@ -118,7 +118,7 @@ fn compile_source(path: &str) -> Result<Compiled, ()> {
         }
     };
 
-    match Compiler::compile_file(&program, std::path::Path::new(path)) {
+    match Compiler::compile_file(program, std::path::Path::new(path)) {
         Ok((compiled, warnings)) => Ok(Compiled {
             program: compiled,
             warnings,

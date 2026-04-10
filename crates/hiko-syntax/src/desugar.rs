@@ -1,24 +1,41 @@
 use crate::ast::*;
+use crate::intern::StringInterner;
 
 pub fn desugar_program(mut program: Program) -> Program {
-    program.decls = program.decls.into_iter().map(desugar_decl).collect();
+    let mut interner = std::mem::take(&mut program.interner);
+    program.decls = program
+        .decls
+        .into_iter()
+        .map(|d| desugar_decl(d, &mut interner))
+        .collect();
+    program.interner = interner;
     program
 }
 
-pub fn desugar_decl(decl: Decl) -> Decl {
+pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
     let span = decl.span;
     let kind = match decl.kind {
-        DeclKind::Val(pat, expr) => DeclKind::Val(desugar_pat(pat), desugar_expr(expr)),
-        DeclKind::ValRec(name, expr) => DeclKind::ValRec(name, desugar_expr(expr)),
+        DeclKind::Val(pat, expr) => {
+            DeclKind::Val(desugar_pat(pat, interner), desugar_expr(expr, interner))
+        }
+        DeclKind::ValRec(name, expr) => DeclKind::ValRec(name, desugar_expr(expr, interner)),
         DeclKind::Fun(bindings) => {
-            let bindings = bindings.into_iter().map(desugar_fun_binding).collect();
+            let bindings = bindings
+                .into_iter()
+                .map(|b| desugar_fun_binding(b, interner))
+                .collect();
             DeclKind::Fun(bindings)
         }
         DeclKind::Datatype(dt) => DeclKind::Datatype(dt),
         DeclKind::TypeAlias(ta) => DeclKind::TypeAlias(ta),
         DeclKind::Local(locals, body) => DeclKind::Local(
-            locals.into_iter().map(desugar_decl).collect(),
-            body.into_iter().map(desugar_decl).collect(),
+            locals
+                .into_iter()
+                .map(|d| desugar_decl(d, interner))
+                .collect(),
+            body.into_iter()
+                .map(|d| desugar_decl(d, interner))
+                .collect(),
         ),
         DeclKind::Use(path) => DeclKind::Use(path),
         DeclKind::Effect(name, ty) => DeclKind::Effect(name, ty),
@@ -26,11 +43,11 @@ pub fn desugar_decl(decl: Decl) -> Decl {
     Decl { kind, span }
 }
 
-fn desugar_expr(expr: Expr) -> Expr {
+fn desugar_expr(expr: Expr, interner: &mut StringInterner) -> Expr {
     let span = expr.span;
     let kind = match expr.kind {
         // Unwrap parentheses
-        ExprKind::Paren(e) => return desugar_expr(*e),
+        ExprKind::Paren(e) => return desugar_expr(*e, interner),
 
         // List literal: desugar [e1, e2, e3] to e1 :: e2 :: e3 :: []
         ExprKind::List(elems) if !elems.is_empty() => {
@@ -40,7 +57,7 @@ fn desugar_expr(expr: Expr) -> Expr {
             };
             for elem in elems.into_iter().rev() {
                 result = Expr {
-                    kind: ExprKind::Cons(Box::new(desugar_expr(elem)), Box::new(result)),
+                    kind: ExprKind::Cons(Box::new(desugar_expr(elem, interner)), Box::new(result)),
                     span,
                 };
             }
@@ -49,25 +66,25 @@ fn desugar_expr(expr: Expr) -> Expr {
 
         // andalso/orelse: desugar to if-then-else
         ExprKind::BinOp(BinOp::Andalso, lhs, rhs) => ExprKind::If(
-            Box::new(desugar_expr(*lhs)),
-            Box::new(desugar_expr(*rhs)),
+            Box::new(desugar_expr(*lhs, interner)),
+            Box::new(desugar_expr(*rhs, interner)),
             Box::new(Expr {
                 kind: ExprKind::BoolLit(false),
                 span,
             }),
         ),
         ExprKind::BinOp(BinOp::Orelse, lhs, rhs) => ExprKind::If(
-            Box::new(desugar_expr(*lhs)),
+            Box::new(desugar_expr(*lhs, interner)),
             Box::new(Expr {
                 kind: ExprKind::BoolLit(true),
                 span,
             }),
-            Box::new(desugar_expr(*rhs)),
+            Box::new(desugar_expr(*rhs, interner)),
         ),
 
         // not: desugar to if e then false else true
         ExprKind::Not(e) => ExprKind::If(
-            Box::new(desugar_expr(*e)),
+            Box::new(desugar_expr(*e, interner)),
             Box::new(Expr {
                 kind: ExprKind::BoolLit(false),
                 span,
@@ -81,55 +98,71 @@ fn desugar_expr(expr: Expr) -> Expr {
         // Recursive cases
         ExprKind::BinOp(op, lhs, rhs) => ExprKind::BinOp(
             op,
-            Box::new(desugar_expr(*lhs)),
-            Box::new(desugar_expr(*rhs)),
+            Box::new(desugar_expr(*lhs, interner)),
+            Box::new(desugar_expr(*rhs, interner)),
         ),
-        ExprKind::UnaryNeg(e) => ExprKind::UnaryNeg(Box::new(desugar_expr(*e))),
-        ExprKind::App(f, arg) => {
-            ExprKind::App(Box::new(desugar_expr(*f)), Box::new(desugar_expr(*arg)))
-        }
-        ExprKind::Fn(pat, body) => ExprKind::Fn(desugar_pat(pat), Box::new(desugar_expr(*body))),
+        ExprKind::UnaryNeg(e) => ExprKind::UnaryNeg(Box::new(desugar_expr(*e, interner))),
+        ExprKind::App(f, arg) => ExprKind::App(
+            Box::new(desugar_expr(*f, interner)),
+            Box::new(desugar_expr(*arg, interner)),
+        ),
+        ExprKind::Fn(pat, body) => ExprKind::Fn(
+            desugar_pat(pat, interner),
+            Box::new(desugar_expr(*body, interner)),
+        ),
         ExprKind::If(c, t, e) => ExprKind::If(
-            Box::new(desugar_expr(*c)),
-            Box::new(desugar_expr(*t)),
-            Box::new(desugar_expr(*e)),
+            Box::new(desugar_expr(*c, interner)),
+            Box::new(desugar_expr(*t, interner)),
+            Box::new(desugar_expr(*e, interner)),
         ),
         ExprKind::Let(decls, body) => ExprKind::Let(
-            decls.into_iter().map(desugar_decl).collect(),
-            Box::new(desugar_expr(*body)),
+            decls
+                .into_iter()
+                .map(|d| desugar_decl(d, interner))
+                .collect(),
+            Box::new(desugar_expr(*body, interner)),
         ),
         ExprKind::Case(scrutinee, arms) => ExprKind::Case(
-            Box::new(desugar_expr(*scrutinee)),
+            Box::new(desugar_expr(*scrutinee, interner)),
             arms.into_iter()
-                .map(|(pat, body)| (desugar_pat(pat), desugar_expr(body)))
+                .map(|(pat, body)| (desugar_pat(pat, interner), desugar_expr(body, interner)))
                 .collect(),
         ),
-        ExprKind::Tuple(elems) => ExprKind::Tuple(elems.into_iter().map(desugar_expr).collect()),
-        ExprKind::Cons(hd, tl) => {
-            ExprKind::Cons(Box::new(desugar_expr(*hd)), Box::new(desugar_expr(*tl)))
+        ExprKind::Tuple(elems) => ExprKind::Tuple(
+            elems
+                .into_iter()
+                .map(|e| desugar_expr(e, interner))
+                .collect(),
+        ),
+        ExprKind::Cons(hd, tl) => ExprKind::Cons(
+            Box::new(desugar_expr(*hd, interner)),
+            Box::new(desugar_expr(*tl, interner)),
+        ),
+        ExprKind::Ann(e, ty) => ExprKind::Ann(Box::new(desugar_expr(*e, interner)), ty),
+        ExprKind::Perform(name, arg) => {
+            ExprKind::Perform(name, Box::new(desugar_expr(*arg, interner)))
         }
-        ExprKind::Ann(e, ty) => ExprKind::Ann(Box::new(desugar_expr(*e)), ty),
-        ExprKind::Perform(name, arg) => ExprKind::Perform(name, Box::new(desugar_expr(*arg))),
         ExprKind::Handle {
             body,
             return_var,
             return_body,
             handlers,
         } => ExprKind::Handle {
-            body: Box::new(desugar_expr(*body)),
+            body: Box::new(desugar_expr(*body, interner)),
             return_var,
-            return_body: Box::new(desugar_expr(*return_body)),
+            return_body: Box::new(desugar_expr(*return_body, interner)),
             handlers: handlers
                 .into_iter()
                 .map(|h| EffectHandler {
-                    body: desugar_expr(h.body),
+                    body: desugar_expr(h.body, interner),
                     ..h
                 })
                 .collect(),
         },
-        ExprKind::Resume(cont, arg) => {
-            ExprKind::Resume(Box::new(desugar_expr(*cont)), Box::new(desugar_expr(*arg)))
-        }
+        ExprKind::Resume(cont, arg) => ExprKind::Resume(
+            Box::new(desugar_expr(*cont, interner)),
+            Box::new(desugar_expr(*arg, interner)),
+        ),
 
         // Leaves (pass through)
         ExprKind::IntLit(_)
@@ -145,11 +178,12 @@ fn desugar_expr(expr: Expr) -> Expr {
     Expr { kind, span }
 }
 
-fn desugar_pat(pat: Pat) -> Pat {
+#[allow(clippy::only_used_in_recursion)]
+fn desugar_pat(pat: Pat, interner: &mut StringInterner) -> Pat {
     let span = pat.span;
     let kind = match pat.kind {
         // Unwrap parentheses
-        PatKind::Paren(p) => return desugar_pat(*p),
+        PatKind::Paren(p) => return desugar_pat(*p, interner),
 
         // List pattern: desugar [p1, p2] to p1 :: p2 :: []
         PatKind::List(pats) if !pats.is_empty() => {
@@ -159,7 +193,7 @@ fn desugar_pat(pat: Pat) -> Pat {
             };
             for p in pats.into_iter().rev() {
                 result = Pat {
-                    kind: PatKind::Cons(Box::new(desugar_pat(p)), Box::new(result)),
+                    kind: PatKind::Cons(Box::new(desugar_pat(p, interner)), Box::new(result)),
                     span,
                 };
             }
@@ -167,15 +201,18 @@ fn desugar_pat(pat: Pat) -> Pat {
         }
 
         // Recursive cases
-        PatKind::Tuple(pats) => PatKind::Tuple(pats.into_iter().map(desugar_pat).collect()),
+        PatKind::Tuple(pats) => {
+            PatKind::Tuple(pats.into_iter().map(|p| desugar_pat(p, interner)).collect())
+        }
         PatKind::Constructor(name, payload) => {
-            PatKind::Constructor(name, payload.map(|p| Box::new(desugar_pat(*p))))
+            PatKind::Constructor(name, payload.map(|p| Box::new(desugar_pat(*p, interner))))
         }
-        PatKind::Cons(hd, tl) => {
-            PatKind::Cons(Box::new(desugar_pat(*hd)), Box::new(desugar_pat(*tl)))
-        }
-        PatKind::Ann(p, ty) => PatKind::Ann(Box::new(desugar_pat(*p)), ty),
-        PatKind::As(name, p) => PatKind::As(name, Box::new(desugar_pat(*p))),
+        PatKind::Cons(hd, tl) => PatKind::Cons(
+            Box::new(desugar_pat(*hd, interner)),
+            Box::new(desugar_pat(*tl, interner)),
+        ),
+        PatKind::Ann(p, ty) => PatKind::Ann(Box::new(desugar_pat(*p, interner)), ty),
+        PatKind::As(name, p) => PatKind::As(name, Box::new(desugar_pat(*p, interner))),
 
         // Leaves
         PatKind::Wildcard
@@ -191,18 +228,25 @@ fn desugar_pat(pat: Pat) -> Pat {
     Pat { kind, span }
 }
 
-/// Desugar a fun binding: multi-clause → single-clause with case
-fn desugar_fun_binding(mut binding: FunBinding) -> FunBinding {
+/// Desugar a fun binding: multi-clause -> single-clause with case
+fn desugar_fun_binding(mut binding: FunBinding, interner: &mut StringInterner) -> FunBinding {
     // Desugar sub-expressions in all clauses first
     for clause in &mut binding.clauses {
-        clause.pats = clause.pats.drain(..).map(desugar_pat).collect();
-        clause.body = desugar_expr(std::mem::replace(
-            &mut clause.body,
-            Expr {
-                kind: ExprKind::Unit,
-                span: clause.span,
-            },
-        ));
+        clause.pats = clause
+            .pats
+            .drain(..)
+            .map(|p| desugar_pat(p, interner))
+            .collect();
+        clause.body = desugar_expr(
+            std::mem::replace(
+                &mut clause.body,
+                Expr {
+                    kind: ExprKind::Unit,
+                    span: clause.span,
+                },
+            ),
+            interner,
+        );
     }
 
     // Single clause, keep as is
@@ -214,7 +258,9 @@ fn desugar_fun_binding(mut binding: FunBinding) -> FunBinding {
     let span = binding.span;
     let arity = binding.clauses[0].pats.len();
 
-    let arg_names: Vec<String> = (0..arity).map(|i| format!("_arg{i}")).collect();
+    let arg_names: Vec<_> = (0..arity)
+        .map(|i| interner.intern(&format!("_arg{i}")))
+        .collect();
 
     // Build case arms from clauses
     let arms: Vec<(Pat, Expr)> = binding
@@ -236,7 +282,7 @@ fn desugar_fun_binding(mut binding: FunBinding) -> FunBinding {
     // Build scrutinee
     let scrutinee = if arity == 1 {
         Expr {
-            kind: ExprKind::Var(arg_names[0].clone()),
+            kind: ExprKind::Var(arg_names[0]),
             span,
         }
     } else {
@@ -245,7 +291,7 @@ fn desugar_fun_binding(mut binding: FunBinding) -> FunBinding {
                 arg_names
                     .iter()
                     .map(|n| Expr {
-                        kind: ExprKind::Var(n.clone()),
+                        kind: ExprKind::Var(*n),
                         span,
                     })
                     .collect(),

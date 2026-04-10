@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hiko_syntax::ast::*;
+use hiko_syntax::intern::StringInterner;
 use hiko_syntax::span::Span;
 
 use crate::exhaustive::{self, TypeInfo};
@@ -41,6 +42,8 @@ pub struct InferCtx {
     effect_sigs: HashMap<String, (Type, Type)>,
     /// Resolved types for expressions (keyed by span, for typed codegen)
     pub expr_types: HashMap<hiko_syntax::span::Span, Type>,
+    /// String interner for resolving symbols in the AST.
+    pub interner: StringInterner,
 }
 
 impl Default for InferCtx {
@@ -63,6 +66,7 @@ impl InferCtx {
             warnings: Vec::new(),
             effect_sigs: HashMap::new(),
             expr_types: HashMap::new(),
+            interner: StringInterner::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
         // Register runtime builtins
@@ -390,8 +394,9 @@ impl InferCtx {
                 }
                 Ok(())
             }
-            DeclKind::ValRec(name, expr) => {
+            DeclKind::ValRec(sym, expr) => {
                 // Push scope for the monomorphic self-binding, generalize excluding it
+                let name = self.interner.resolve(*sym).to_string();
                 self.push_scope();
                 let func_var = self.fresh();
                 self.bind(name.clone(), Scheme::mono(func_var.clone()));
@@ -399,7 +404,7 @@ impl InferCtx {
                 self.unify(&func_var, &expr_ty, decl.span)?;
                 let scheme = self.generalize(&func_var, true);
                 self.pop_scope();
-                self.bind(name.clone(), scheme);
+                self.bind(name, scheme);
                 Ok(())
             }
             DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings, decl.span),
@@ -426,7 +431,8 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::Use(_) => Ok(()),
-            DeclKind::Effect(name, payload) => {
+            DeclKind::Effect(sym, payload) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let arg_type = if let Some(ty_expr) = payload {
                     let mut tyvar_map = HashMap::new();
                     self.resolve_type_expr(ty_expr, &mut tyvar_map)?
@@ -434,8 +440,7 @@ impl InferCtx {
                     Type::unit()
                 };
                 let result_type = self.fresh();
-                self.effect_sigs
-                    .insert(name.clone(), (arg_type, result_type));
+                self.effect_sigs.insert(name, (arg_type, result_type));
                 Ok(())
             }
         }
@@ -449,7 +454,8 @@ impl InferCtx {
             .iter()
             .map(|b| {
                 let v = self.fresh();
-                self.bind(b.name.clone(), Scheme::mono(v.clone()));
+                let name = self.interner.resolve(b.name).to_string();
+                self.bind(name, Scheme::mono(v.clone()));
                 v
             })
             .collect();
@@ -464,7 +470,10 @@ impl InferCtx {
         let schemes: Vec<(String, Scheme)> = bindings
             .iter()
             .zip(func_vars.iter())
-            .map(|(b, v)| (b.name.clone(), self.generalize(v, true)))
+            .map(|(b, v)| {
+                let name = self.interner.resolve(b.name).to_string();
+                (name, self.generalize(v, true))
+            })
             .collect();
 
         self.pop_scope();
@@ -529,11 +538,12 @@ impl InferCtx {
     }
 
     fn register_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), TypeError> {
-        if self.type_arities.contains_key(&dt.name) {
-            return Err(self.err(&format!("duplicate type name: {}", dt.name), dt.span));
+        let dt_name = self.interner.resolve(dt.name).to_string();
+        if self.type_arities.contains_key(&dt_name) {
+            return Err(self.err(&format!("duplicate type name: {dt_name}"), dt.span));
         }
         let arity = dt.tyvars.len();
-        self.type_arities.insert(dt.name.clone(), arity);
+        self.type_arities.insert(dt_name.clone(), arity);
 
         // Create type variables for the parameters
         let param_vars: Vec<(String, u32)> = dt
@@ -542,16 +552,16 @@ impl InferCtx {
             .map(|tv| {
                 let v = self.next_var;
                 self.next_var += 1;
-                (tv.clone(), v)
+                (self.interner.resolve(*tv).to_string(), v)
             })
             .collect();
 
         // The result type: T 'a 'b ...
         let result_ty = if arity == 0 {
-            Type::Con(dt.name.clone())
+            Type::Con(dt_name.clone())
         } else {
             Type::App(
-                dt.name.clone(),
+                dt_name.clone(),
                 param_vars.iter().map(|(_, v)| Type::Var(*v)).collect(),
             )
         };
@@ -559,11 +569,9 @@ impl InferCtx {
         let all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
 
         for con in &dt.constructors {
-            if self.constructors.contains_key(&con.name) {
-                return Err(self.err(
-                    &format!("duplicate constructor name: {}", con.name),
-                    con.span,
-                ));
+            let con_name = self.interner.resolve(con.name).to_string();
+            if self.constructors.contains_key(&con_name) {
+                return Err(self.err(&format!("duplicate constructor name: {con_name}"), con.span));
             }
             let con_ty = if let Some(ref payload_texpr) = con.payload {
                 let tyvar_map: HashMap<String, u32> = param_vars.iter().cloned().collect();
@@ -577,8 +585,8 @@ impl InferCtx {
                 vars: all_vars.clone(),
                 ty: con_ty,
             };
-            self.constructors.insert(con.name.clone(), scheme.clone());
-            self.bind(con.name.clone(), scheme);
+            self.constructors.insert(con_name.clone(), scheme.clone());
+            self.bind(con_name, scheme);
         }
         // Store metadata for exhaustiveness checking
         let con_info: Vec<(String, usize)> = dt
@@ -586,31 +594,33 @@ impl InferCtx {
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                self.constructor_tags.insert(c.name.clone(), i as u16);
+                let c_name = self.interner.resolve(c.name).to_string();
+                self.constructor_tags.insert(c_name.clone(), i as u16);
                 let arity = if c.payload.is_some() { 1 } else { 0 };
-                (c.name.clone(), arity)
+                (c_name, arity)
             })
             .collect();
-        self.datatype_constructors.insert(dt.name.clone(), con_info);
+        self.datatype_constructors.insert(dt_name, con_info);
         Ok(())
     }
 
     fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
-        if self.type_arities.contains_key(&ta.name) || self.type_aliases.contains_key(&ta.name) {
-            return Err(self.err(&format!("duplicate type name: {}", ta.name), ta.span));
+        let ta_name = self.interner.resolve(ta.name).to_string();
+        if self.type_arities.contains_key(&ta_name) || self.type_aliases.contains_key(&ta_name) {
+            return Err(self.err(&format!("duplicate type name: {ta_name}"), ta.span));
         }
         let mut tyvar_map: HashMap<String, u32> = HashMap::new();
         let mut param_vars = Vec::new();
         for tv in &ta.tyvars {
             let v = self.next_var;
             self.next_var += 1;
-            tyvar_map.insert(tv.clone(), v);
+            tyvar_map.insert(self.interner.resolve(*tv).to_string(), v);
             param_vars.push(v);
         }
         let body = self.resolve_type_expr_strict(&ta.ty, &mut tyvar_map)?;
         self.type_aliases
-            .insert(ta.name.clone(), (param_vars, body));
-        self.type_arities.insert(ta.name.clone(), ta.tyvars.len());
+            .insert(ta_name.clone(), (param_vars, body));
+        self.type_arities.insert(ta_name, ta.tyvars.len());
         Ok(())
     }
 
@@ -625,14 +635,16 @@ impl InferCtx {
             ExprKind::BoolLit(_) => Ok(Type::bool()),
             ExprKind::Unit => Ok(Type::unit()),
 
-            ExprKind::Var(name) => {
+            ExprKind::Var(sym) => {
+                let name = self.interner.resolve(*sym);
                 if let Some(scheme) = self.lookup(name).cloned() {
                     Ok(self.instantiate(&scheme))
                 } else {
                     Err(self.err(&format!("unbound variable: {name}"), expr.span))
                 }
             }
-            ExprKind::Constructor(name) => {
+            ExprKind::Constructor(sym) => {
+                let name = self.interner.resolve(*sym);
                 if let Some(scheme) = self.constructors.get(name).cloned() {
                     Ok(self.instantiate(&scheme))
                 } else {
@@ -760,9 +772,10 @@ impl InferCtx {
 
             ExprKind::Paren(e) => self.infer_expr(e),
 
-            ExprKind::Perform(name, arg) => {
+            ExprKind::Perform(sym, arg) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let arg_ty = self.infer_expr(arg)?;
-                if let Some((declared_arg, _declared_res)) = self.effect_sigs.get(name).cloned() {
+                if let Some((declared_arg, _declared_res)) = self.effect_sigs.get(&name).cloned() {
                     self.unify(&arg_ty, &declared_arg, expr.span)?;
                     Ok(self.fresh())
                 } else {
@@ -779,22 +792,26 @@ impl InferCtx {
                 let _body_ty = self.infer_expr(body)?;
                 self.push_scope();
                 let ret_var = self.fresh();
-                self.bind(return_var.clone(), Scheme::mono(ret_var));
+                let return_var_name = self.interner.resolve(*return_var).to_string();
+                self.bind(return_var_name, Scheme::mono(ret_var));
                 let return_ty = self.infer_expr(return_body)?;
                 self.pop_scope();
                 for handler in handlers {
                     self.push_scope();
+                    let effect_name = self.interner.resolve(handler.effect_name).to_string();
                     let payload_ty = if let Some((declared_arg, _)) =
-                        self.effect_sigs.get(&handler.effect_name).cloned()
+                        self.effect_sigs.get(&effect_name).cloned()
                     {
                         declared_arg
                     } else {
                         self.fresh()
                     };
-                    self.bind(handler.payload_var.clone(), Scheme::mono(payload_ty));
+                    let payload_var_name = self.interner.resolve(handler.payload_var).to_string();
+                    self.bind(payload_var_name, Scheme::mono(payload_ty));
                     let resume_arg = self.fresh();
                     let cont_ty = Type::arrow(resume_arg, return_ty.clone());
-                    self.bind(handler.cont_var.clone(), Scheme::mono(cont_ty));
+                    let cont_var_name = self.interner.resolve(handler.cont_var).to_string();
+                    self.bind(cont_var_name, Scheme::mono(cont_ty));
                     let handler_ty = self.infer_expr(&handler.body)?;
                     self.unify(&handler_ty, &return_ty, handler.body.span)?;
                     self.pop_scope();
@@ -875,9 +892,10 @@ impl InferCtx {
     fn infer_pat_inner(&mut self, pat: &Pat) -> Result<(Type, Vec<(String, Type)>), TypeError> {
         match &pat.kind {
             PatKind::Wildcard => Ok((self.fresh(), vec![])),
-            PatKind::Var(name) => {
+            PatKind::Var(sym) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let ty = self.fresh();
-                Ok((ty.clone(), vec![(name.clone(), ty)]))
+                Ok((ty.clone(), vec![(name, ty)]))
             }
             PatKind::IntLit(_) => Ok((Type::int(), vec![])),
             PatKind::FloatLit(_) => Ok((Type::float(), vec![])),
@@ -912,9 +930,10 @@ impl InferCtx {
                 Ok((list_ty, bindings))
             }
 
-            PatKind::Constructor(name, payload) => {
+            PatKind::Constructor(sym, payload) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let scheme =
-                    self.constructors.get(name).cloned().ok_or_else(|| {
+                    self.constructors.get(&name).cloned().ok_or_else(|| {
                         self.err(&format!("unknown constructor: {name}"), pat.span)
                     })?;
                 let con_ty = self.instantiate(&scheme);
@@ -937,9 +956,10 @@ impl InferCtx {
                 self.unify(&pat_ty, &declared, pat.span)?;
                 Ok((declared, bindings))
             }
-            PatKind::As(name, p) => {
+            PatKind::As(sym, p) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let (pat_ty, mut bindings) = self.infer_pat_inner(p)?;
-                bindings.push((name.clone(), pat_ty.clone()));
+                bindings.push((name, pat_ty.clone()));
                 Ok((pat_ty, bindings))
             }
             PatKind::Paren(p) => self.infer_pat_inner(p),
@@ -971,9 +991,10 @@ impl InferCtx {
         strict_tyvars: bool,
     ) -> Result<Type, TypeError> {
         match &ty_expr.kind {
-            TypeExprKind::Named(name) => {
+            TypeExprKind::Named(sym) => {
+                let name = self.interner.resolve(*sym);
                 // Check built-in types
-                match name.as_str() {
+                match name {
                     "Int" => return Ok(Type::int()),
                     "Float" => return Ok(Type::float()),
                     "Bool" => return Ok(Type::bool()),
@@ -995,7 +1016,7 @@ impl InferCtx {
                 // Check type constructors (0-arg)
                 if let Some(&arity) = self.type_arities.get(name) {
                     if arity == 0 {
-                        return Ok(Type::Con(name.clone()));
+                        return Ok(Type::Con(name.to_string()));
                     }
                     return Err(self.err(
                         &format!("type {name} expects {arity} argument(s)"),
@@ -1004,7 +1025,8 @@ impl InferCtx {
                 }
                 Err(self.err(&format!("unknown type: {name}"), ty_expr.span))
             }
-            TypeExprKind::Var(name) => {
+            TypeExprKind::Var(sym) => {
+                let name = self.interner.resolve(*sym);
                 if let Some(&v) = tyvar_map.get(name) {
                     Ok(Type::Var(v))
                 } else if strict_tyvars {
@@ -1012,17 +1034,18 @@ impl InferCtx {
                 } else {
                     let v = self.next_var;
                     self.next_var += 1;
-                    tyvar_map.insert(name.clone(), v);
+                    tyvar_map.insert(name.to_string(), v);
                     Ok(Type::Var(v))
                 }
             }
-            TypeExprKind::App(name, args) => {
+            TypeExprKind::App(sym, args) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let resolved_args: Vec<Type> = args
                     .iter()
                     .map(|a| self.resolve_type_expr_inner(a, tyvar_map, strict_tyvars))
                     .collect::<Result<_, _>>()?;
                 // Check alias
-                if let Some((param_vars, body)) = self.type_aliases.get(name).cloned() {
+                if let Some((param_vars, body)) = self.type_aliases.get(&name).cloned() {
                     if param_vars.len() != resolved_args.len() {
                         return Err(self.err(
                             &format!(
@@ -1041,7 +1064,7 @@ impl InferCtx {
                     return Ok(self.substitute_vars(&body, &mapping));
                 }
                 // Check type constructor
-                if let Some(&arity) = self.type_arities.get(name) {
+                if let Some(&arity) = self.type_arities.get(&name) {
                     if arity != resolved_args.len() {
                         return Err(self.err(
                             &format!(
@@ -1051,7 +1074,7 @@ impl InferCtx {
                             ty_expr.span,
                         ));
                     }
-                    return Ok(Type::App(name.clone(), resolved_args));
+                    return Ok(Type::App(name, resolved_args));
                 }
                 Err(self.err(&format!("unknown type constructor: {name}"), ty_expr.span))
             }
@@ -1113,6 +1136,7 @@ impl InferCtx {
             type_info,
             &self.constructor_tags,
             &self.datatype_constructors,
+            &self.interner,
         );
         if !result.exhaustive {
             return Err(self.err("non-exhaustive match", span));
@@ -1176,6 +1200,7 @@ mod tests {
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let program = hiko_syntax::desugar::desugar_program(program);
         let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
         ctx.infer_program(&program).expect("type error");
         ctx
     }
@@ -1185,6 +1210,7 @@ mod tests {
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let program = hiko_syntax::desugar::desugar_program(program);
         let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
         ctx.infer_program(&program).unwrap_err().message
     }
 
@@ -1619,13 +1645,15 @@ mod tests {
 
     #[test]
     fn test_redundant_clause_warning() {
-        let mut ctx = InferCtx::new();
         let tokens = hiko_syntax::lexer::Lexer::new("val x = case true of _ => 1 | false => 2", 0)
             .tokenize()
             .unwrap();
         let program = hiko_syntax::parser::Parser::new(tokens)
             .parse_program()
             .unwrap();
+        let program = hiko_syntax::desugar::desugar_program(program);
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
         ctx.infer_program(&program).unwrap();
         assert!(!ctx.warnings.is_empty(), "expected redundancy warning");
         assert!(
@@ -1673,7 +1701,6 @@ mod tests {
 
     #[test]
     fn test_distinct_literals_not_redundant() {
-        let mut ctx = InferCtx::new();
         let tokens =
             hiko_syntax::lexer::Lexer::new("val x = case 2 of 1 => 1 | 2 => 2 | _ => 3", 0)
                 .tokenize()
@@ -1681,6 +1708,9 @@ mod tests {
         let program = hiko_syntax::parser::Parser::new(tokens)
             .parse_program()
             .unwrap();
+        let program = hiko_syntax::desugar::desugar_program(program);
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
         ctx.infer_program(&program).unwrap();
         assert!(
             ctx.warnings.is_empty(),

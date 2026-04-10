@@ -1,3 +1,4 @@
+use crate::intern::Symbol;
 use crate::span::Span;
 
 // ── Expressions ──────────────────────────────────────────────────────
@@ -16,8 +17,8 @@ pub enum ExprKind {
     CharLit(char),
     BoolLit(bool),
     Unit,
-    Var(String),
-    Constructor(String),
+    Var(Symbol),
+    Constructor(Symbol),
     Tuple(Vec<Expr>),
     List(Vec<Expr>),
     Cons(Box<Expr>, Box<Expr>),
@@ -32,11 +33,11 @@ pub enum ExprKind {
     Ann(Box<Expr>, TypeExpr),
     Paren(Box<Expr>),
     /// `perform EffectName arg`
-    Perform(String, Box<Expr>),
+    Perform(Symbol, Box<Expr>),
     /// `handle body with return x => e | Effect x k => e`
     Handle {
         body: Box<Expr>,
-        return_var: String,
+        return_var: Symbol,
         return_body: Box<Expr>,
         handlers: Vec<EffectHandler>,
     },
@@ -90,7 +91,7 @@ pub enum DeclKind {
     /// `val p = e`
     Val(Pat, Expr),
     /// `val rec f = fn x => e`
-    ValRec(String, Expr),
+    ValRec(Symbol, Expr),
     /// `fun f x1 x2 ... = e` (simple, possibly mutual via `and`)
     Fun(Vec<FunBinding>),
     /// `datatype ('a, 'b) T = C1 of t | C2 | ...`
@@ -102,12 +103,12 @@ pub enum DeclKind {
     /// `use "path/to/file.hml"`
     Use(String),
     /// `effect Yield of Int`
-    Effect(String, Option<TypeExpr>),
+    Effect(Symbol, Option<TypeExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunBinding {
-    pub name: String,
+    pub name: Symbol,
     pub clauses: Vec<FunClause>,
     pub span: Span,
 }
@@ -121,32 +122,32 @@ pub struct FunClause {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatatypeDecl {
-    pub tyvars: Vec<String>,
-    pub name: String,
+    pub tyvars: Vec<Symbol>,
+    pub name: Symbol,
     pub constructors: Vec<ConDecl>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConDecl {
-    pub name: String,
+    pub name: Symbol,
     pub payload: Option<TypeExpr>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeAliasDecl {
-    pub tyvars: Vec<String>,
-    pub name: String,
+    pub tyvars: Vec<Symbol>,
+    pub name: Symbol,
     pub ty: TypeExpr,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectHandler {
-    pub effect_name: String,
-    pub payload_var: String,
-    pub cont_var: String,
+    pub effect_name: Symbol,
+    pub payload_var: Symbol,
+    pub cont_var: Symbol,
     pub body: Expr,
     pub span: Span,
 }
@@ -162,7 +163,7 @@ pub struct Pat {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatKind {
     Wildcard,
-    Var(String),
+    Var(Symbol),
     IntLit(i64),
     FloatLit(f64),
     StringLit(String),
@@ -170,11 +171,11 @@ pub enum PatKind {
     BoolLit(bool),
     Unit,
     Tuple(Vec<Pat>),
-    Constructor(String, Option<Box<Pat>>),
+    Constructor(Symbol, Option<Box<Pat>>),
     Cons(Box<Pat>, Box<Pat>),
     List(Vec<Pat>),
     Ann(Box<Pat>, TypeExpr),
-    As(String, Box<Pat>),
+    As(Symbol, Box<Pat>),
     Paren(Box<Pat>),
 }
 
@@ -189,11 +190,11 @@ pub struct TypeExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExprKind {
     /// A named type: `Int`, `Bool`, `option`, etc.
-    Named(String),
+    Named(Symbol),
     /// A type variable: `'a`
-    Var(String),
+    Var(Symbol),
     /// Type application: `'a list`, `('a, 'b) either`
-    App(String, Vec<TypeExpr>),
+    App(Symbol, Vec<TypeExpr>),
     /// Arrow: `a -> b`
     Arrow(Box<TypeExpr>, Box<TypeExpr>),
     /// Tuple: `a * b * c`
@@ -204,7 +205,15 @@ pub enum TypeExprKind {
 
 // ── Program ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub decls: Vec<Decl>,
+    pub interner: crate::intern::StringInterner,
+}
+
+impl std::fmt::Debug for Program {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Program")
+            .field("decls", &self.decls)
+            .finish()
+    }
 }

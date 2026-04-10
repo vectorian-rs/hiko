@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use hiko_syntax::ast::*;
+use hiko_syntax::intern::StringInterner;
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_types::infer::{InferCtx, TypeError};
@@ -51,7 +52,7 @@ pub struct Compiler {
     func_stack: Vec<FuncCtx>,
     constructor_tags: HashMap<String, u16>,
     constructor_arities: HashMap<String, u8>,
-    /// Effect name → tag for effect handler dispatch.
+    /// Effect name -> tag for effect handler dispatch.
     effect_tags: HashMap<String, u16>,
     next_effect_tag: u16,
     /// Base directory for resolving relative imports.
@@ -66,13 +67,15 @@ pub struct Compiler {
     imported_programs: HashMap<PathBuf, Vec<Decl>>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
+    /// String interner for resolving symbols from the AST.
+    interner: StringInterner,
 }
 
 impl Compiler {
     /// Compile a program from a file. Type inference is run first.
     /// `file_path` is used to resolve relative `use` imports.
     pub fn compile_file(
-        program: &Program,
+        program: Program,
         file_path: &Path,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -85,16 +88,21 @@ impl Compiler {
 
     /// Compile a program without a file context (e.g., from a string).
     pub fn compile(
-        program: &Program,
+        program: Program,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         Self::compile_with_ctx(program, PathBuf::from("."), HashSet::new())
     }
 
     fn compile_with_ctx(
-        program: &Program,
+        program: Program,
         base_dir: PathBuf,
         loading_files: HashSet<PathBuf>,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        // Desugar all declarations (moves interner through Program)
+        let program = hiko_syntax::desugar::desugar_program(program);
+        let interner = program.interner;
+        let desugared = program.decls;
+
         let mut c = Compiler {
             functions: Vec::new(),
             func_stack: vec![FuncCtx {
@@ -115,19 +123,17 @@ impl Compiler {
             compiled_files: HashSet::new(),
             imported_programs: HashMap::new(),
             infer_ctx: InferCtx::new(),
+            interner,
         };
-
-        // Desugar all declarations
-        let desugared: Vec<Decl> = program
-            .decls
-            .iter()
-            .map(|d| hiko_syntax::desugar::desugar_decl(d.clone()))
-            .collect();
+        c.infer_ctx.interner = c.interner.clone();
 
         // Pass 1: type inference (all type errors reported before any codegen)
         for decl in &desugared {
             c.infer_decl_pass(decl)?;
         }
+
+        // Sync interner back after inference (imports may have added symbols)
+        c.interner = c.infer_ctx.interner.clone();
 
         // Pass 2: codegen
         for decl in &desugared {
@@ -356,24 +362,27 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 self.compile_binding_pattern(pat)
             }
-            DeclKind::ValRec(name, expr) => {
+            DeclKind::ValRec(sym, expr) => {
                 self.compile_expr(expr)?;
-                self.bind_name(name)?;
+                let name = self.interner.resolve(*sym).to_string();
+                self.bind_name(&name)?;
                 Ok(())
             }
             DeclKind::Fun(bindings) => {
                 for binding in bindings {
                     self.compile_fun_binding(binding)?;
-                    self.bind_name(&binding.name)?;
+                    let name = self.interner.resolve(binding.name).to_string();
+                    self.bind_name(&name)?;
                 }
                 Ok(())
             }
             DeclKind::Datatype(dt) => self.compile_datatype(dt),
             DeclKind::TypeAlias(_) => Ok(()),
-            DeclKind::Effect(name, _) => {
+            DeclKind::Effect(sym, _) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let tag = self.next_effect_tag;
                 self.next_effect_tag += 1;
-                self.effect_tags.insert(name.clone(), tag);
+                self.effect_tags.insert(name, tag);
                 Ok(())
             }
             DeclKind::Use(path) => self.compile_use(path),
@@ -456,15 +465,18 @@ impl Compiler {
         let tokens = Lexer::new(&source, 0)
             .tokenize()
             .map_err(|e| CompileError::codegen(format!("lex error in '{path}': {}", e.message)))?;
-        let program = Parser::new(tokens).parse_program().map_err(|e| {
-            CompileError::codegen(format!("parse error in '{path}': {}", e.message))
-        })?;
+        // Use the same interner for import parsing so symbols are shared
+        let import_interner = std::mem::take(&mut self.interner);
+        let program = Parser::with_interner(tokens, import_interner)
+            .parse_program()
+            .map_err(|e| {
+                CompileError::codegen(format!("parse error in '{path}': {}", e.message))
+            })?;
 
-        let desugared: Vec<Decl> = program
-            .decls
-            .iter()
-            .map(|d| hiko_syntax::desugar::desugar_decl(d.clone()))
-            .collect();
+        let program = hiko_syntax::desugar::desugar_program(program);
+        self.interner = program.interner;
+        self.infer_ctx.interner = self.interner.clone();
+        let desugared = program.decls;
 
         self.loading_files.insert(canonical.clone());
         let old_base = self.base_dir.clone();
@@ -506,8 +518,9 @@ impl Compiler {
 
     fn compile_binding_pattern(&mut self, pat: &Pat) -> Result<(), CompileError> {
         match &pat.kind {
-            PatKind::Var(name) => {
-                self.bind_name(name)?;
+            PatKind::Var(sym) => {
+                let name = self.interner.resolve(*sym).to_string();
+                self.bind_name(&name)?;
                 Ok(())
             }
             PatKind::Wildcard => {
@@ -536,14 +549,15 @@ impl Compiler {
 
     fn compile_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), CompileError> {
         for (i, con) in dt.constructors.iter().enumerate() {
+            let con_name = self.interner.resolve(con.name).to_string();
             let tag = i as u16;
             let has_payload = con.payload.is_some();
-            self.constructor_tags.insert(con.name.clone(), tag);
+            self.constructor_tags.insert(con_name.clone(), tag);
             self.constructor_arities
-                .insert(con.name.clone(), u8::from(has_payload));
+                .insert(con_name.clone(), u8::from(has_payload));
 
             if has_payload {
-                self.push_new_function(Some(con.name.clone()));
+                self.push_new_function(Some(con_name.clone()));
                 self.add_local("_arg".to_string());
                 self.emit(Op::GetLocal);
                 self.emit_u16(0);
@@ -557,7 +571,7 @@ impl Compiler {
                 self.emit_u16(tag);
                 self.emit_u8(0);
             }
-            self.bind_name(&con.name)?;
+            self.bind_name(&con_name)?;
         }
         Ok(())
     }
@@ -565,12 +579,13 @@ impl Compiler {
     // ── Functions ────────────────────────────────────────────────────
 
     fn compile_fun_binding(&mut self, binding: &FunBinding) -> Result<(), CompileError> {
+        let name = self.interner.resolve(binding.name).to_string();
         if binding.clauses.len() == 1 && binding.clauses[0].pats.iter().all(is_simple_pat) {
             let clause = &binding.clauses[0];
-            return self.compile_curried_fn(Some(&binding.name), &clause.pats, 0, &clause.body);
+            return self.compile_curried_fn(Some(&name), &clause.pats, 0, &clause.body);
         }
         let arity = binding.clauses[0].pats.len();
-        self.compile_clausal_fn(Some(&binding.name), arity, &binding.clauses)
+        self.compile_clausal_fn(Some(&name), arity, &binding.clauses)
     }
 
     fn compile_clausal_fn(
@@ -647,7 +662,7 @@ impl Compiler {
             None
         };
         self.push_new_function(fn_name);
-        self.add_local(simple_pat_name(&pats[idx]));
+        self.add_local(simple_pat_name(&pats[idx], &self.interner));
         if idx + 1 < pats.len() {
             self.compile_curried_fn(None, pats, idx + 1, body)?;
         } else {
@@ -660,7 +675,7 @@ impl Compiler {
     fn compile_lambda(&mut self, pat: &Pat, body: &Expr) -> Result<(), CompileError> {
         self.push_new_function(None);
         if is_simple_pat(pat) {
-            self.add_local(simple_pat_name(pat));
+            self.add_local(simple_pat_name(pat, &self.interner));
             self.compile_expr_tail(body)?;
         } else {
             self.add_local("_arg".to_string());
@@ -784,10 +799,11 @@ impl Compiler {
                 self.emit_scalar_check(slot, Constant::Char(*c), Op::Eq, fail_jumps)?;
             }
 
-            PatKind::Constructor(name, payload) => {
+            PatKind::Constructor(sym, payload) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let tag = *self
                     .constructor_tags
-                    .get(name)
+                    .get(&name)
                     .ok_or_else(|| CompileError::codegen(format!("unknown constructor: {name}")))?;
                 self.emit_tag_check(slot, tag as i64, fail_jumps)?;
                 if let Some(sub_pat) = payload {
@@ -851,10 +867,11 @@ impl Compiler {
     fn compile_pattern_bind(&mut self, slot: u16, pat: &Pat) -> Result<(), CompileError> {
         match &pat.kind {
             PatKind::Wildcard | PatKind::Unit => {}
-            PatKind::Var(name) => {
+            PatKind::Var(sym) => {
+                let name = self.interner.resolve(*sym).to_string();
                 self.emit(Op::GetLocal);
                 self.emit_u16(slot);
-                self.add_local(name.clone());
+                self.add_local(name);
             }
             PatKind::IntLit(_)
             | PatKind::FloatLit(_)
@@ -884,10 +901,11 @@ impl Compiler {
 
             PatKind::List(_) => {} // empty list, nothing to bind
 
-            PatKind::As(name, sub_pat) => {
+            PatKind::As(sym, sub_pat) => {
+                let name = self.interner.resolve(*sym).to_string();
                 self.emit(Op::GetLocal);
                 self.emit_u16(slot);
-                self.add_local(name.clone());
+                self.add_local(name);
                 self.compile_pattern_bind(slot, sub_pat)?;
             }
             PatKind::Paren(p) | PatKind::Ann(p, _) => self.compile_pattern_bind(slot, p)?,
@@ -915,8 +933,14 @@ impl Compiler {
             ExprKind::BoolLit(true) => self.emit(Op::True),
             ExprKind::BoolLit(false) => self.emit(Op::False),
             ExprKind::Unit => self.emit(Op::Unit),
-            ExprKind::Var(name) => self.emit_get_var(name)?,
-            ExprKind::Constructor(name) => self.emit_get_var(name)?,
+            ExprKind::Var(sym) => {
+                let name = self.interner.resolve(*sym).to_string();
+                self.emit_get_var(&name)?;
+            }
+            ExprKind::Constructor(sym) => {
+                let name = self.interner.resolve(*sym).to_string();
+                self.emit_get_var(&name)?;
+            }
 
             ExprKind::Tuple(elems) => {
                 for e in elems {
@@ -1008,10 +1032,11 @@ impl Compiler {
 
             ExprKind::Ann(e, _) | ExprKind::Paren(e) => self.compile_expr_inner(e, tail)?,
 
-            ExprKind::Perform(name, arg) => {
+            ExprKind::Perform(sym, arg) => {
+                let name = self.interner.resolve(*sym).to_string();
                 let tag = *self
                     .effect_tags
-                    .get(name)
+                    .get(&name)
                     .ok_or_else(|| CompileError::codegen(format!("unknown effect: {name}")))?;
                 self.compile_expr_inner(arg, false)?;
                 self.emit(Op::Perform);
@@ -1032,8 +1057,9 @@ impl Compiler {
                 // Record positions of clause offset placeholders
                 let mut clause_offset_positions = Vec::new();
                 for handler in handlers {
-                    let tag = *self.effect_tags.get(&handler.effect_name).ok_or_else(|| {
-                        CompileError::codegen(format!("unknown effect: {}", handler.effect_name))
+                    let eff_name = self.interner.resolve(handler.effect_name).to_string();
+                    let tag = *self.effect_tags.get(&eff_name).ok_or_else(|| {
+                        CompileError::codegen(format!("unknown effect: {eff_name}"))
                     })?;
                     self.emit_u16(tag);
                     let pos = self.chunk().code.len();
@@ -1049,8 +1075,10 @@ impl Compiler {
                 for (i, handler) in handlers.iter().enumerate() {
                     self.patch_jump(clause_offset_positions[i])?;
                     self.begin_scope();
-                    self.add_local(handler.payload_var.clone());
-                    self.add_local(handler.cont_var.clone());
+                    let payload_name = self.interner.resolve(handler.payload_var).to_string();
+                    let cont_name = self.interner.resolve(handler.cont_var).to_string();
+                    self.add_local(payload_name);
+                    self.add_local(cont_name);
                     self.compile_expr_inner(&handler.body, false)?;
                     self.end_scope_keep_result();
                     clause_end_jumps.push(self.emit_jump(Op::Jump));
@@ -1067,7 +1095,8 @@ impl Compiler {
 
                 // Compile the return clause
                 self.begin_scope();
-                self.add_local(return_var.clone());
+                let return_var_name = self.interner.resolve(*return_var).to_string();
+                self.add_local(return_var_name);
                 self.compile_expr_inner(return_body, tail)?;
                 self.end_scope_keep_result();
 
@@ -1087,11 +1116,11 @@ impl Compiler {
     }
 }
 
-fn simple_pat_name(pat: &Pat) -> String {
+fn simple_pat_name(pat: &Pat, interner: &StringInterner) -> String {
     match &pat.kind {
-        PatKind::Var(name) => name.clone(),
+        PatKind::Var(sym) => interner.resolve(*sym).to_string(),
         PatKind::Wildcard => "_".to_string(),
-        PatKind::Paren(p) | PatKind::Ann(p, _) => simple_pat_name(p),
+        PatKind::Paren(p) | PatKind::Ann(p, _) => simple_pat_name(p, interner),
         _ => "_".to_string(),
     }
 }

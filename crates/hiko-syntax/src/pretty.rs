@@ -1,32 +1,34 @@
 use crate::ast::*;
+use crate::intern::StringInterner;
 use std::fmt::Write;
 
 pub fn pretty_program(prog: &Program) -> String {
+    let interner = &prog.interner;
     let mut buf = String::new();
     for (i, decl) in prog.decls.iter().enumerate() {
         if i > 0 {
             buf.push('\n');
         }
-        pretty_decl(&mut buf, decl, 0);
+        pretty_decl(&mut buf, decl, 0, interner);
     }
     buf
 }
 
 // ── Declarations ─────────────────────────────────────────────────────
 
-fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize) {
+fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringInterner) {
     match &decl.kind {
         DeclKind::Val(pat, expr) => {
             write_indent(buf, indent);
             buf.push_str("val ");
-            pretty_pat(buf, pat);
+            pretty_pat(buf, pat, interner);
             buf.push_str(" = ");
-            pretty_expr(buf, expr, indent);
+            pretty_expr(buf, expr, indent, interner);
         }
         DeclKind::ValRec(name, expr) => {
             write_indent(buf, indent);
-            write!(buf, "val rec {name} = ").unwrap();
-            pretty_expr(buf, expr, indent);
+            write!(buf, "val rec {} = ", interner.resolve(*name)).unwrap();
+            pretty_expr(buf, expr, indent, interner);
         }
         DeclKind::Fun(bindings) => {
             for (i, binding) in bindings.iter().enumerate() {
@@ -36,44 +38,44 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize) {
                 } else {
                     buf.push_str("and ");
                 }
-                pretty_fun_binding(buf, binding, indent);
+                pretty_fun_binding(buf, binding, indent, interner);
             }
         }
         DeclKind::Datatype(dt) => {
             write_indent(buf, indent);
             buf.push_str("datatype ");
-            pretty_tyvars(buf, &dt.tyvars);
-            buf.push_str(&dt.name);
+            pretty_tyvars(buf, &dt.tyvars, interner);
+            buf.push_str(interner.resolve(dt.name));
             buf.push_str(" =");
             for (i, con) in dt.constructors.iter().enumerate() {
                 if i > 0 {
                     buf.push_str(" |");
                 }
-                write!(buf, " {}", con.name).unwrap();
+                write!(buf, " {}", interner.resolve(con.name)).unwrap();
                 if let Some(ref ty) = con.payload {
                     buf.push_str(" of ");
-                    pretty_type(buf, ty);
+                    pretty_type(buf, ty, interner);
                 }
             }
         }
         DeclKind::TypeAlias(ta) => {
             write_indent(buf, indent);
             buf.push_str("type ");
-            pretty_tyvars(buf, &ta.tyvars);
-            write!(buf, "{} = ", ta.name).unwrap();
-            pretty_type(buf, &ta.ty);
+            pretty_tyvars(buf, &ta.tyvars, interner);
+            write!(buf, "{} = ", interner.resolve(ta.name)).unwrap();
+            pretty_type(buf, &ta.ty, interner);
         }
         DeclKind::Local(locals, body) => {
             write_indent(buf, indent);
             buf.push_str("local\n");
             for d in locals {
-                pretty_decl(buf, d, indent + 2);
+                pretty_decl(buf, d, indent + 2, interner);
                 buf.push('\n');
             }
             write_indent(buf, indent);
             buf.push_str("in\n");
             for d in body {
-                pretty_decl(buf, d, indent + 2);
+                pretty_decl(buf, d, indent + 2, interner);
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -86,43 +88,48 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize) {
         }
         DeclKind::Effect(name, payload) => {
             write_indent(buf, indent);
-            write!(buf, "effect {name}").unwrap();
+            write!(buf, "effect {}", interner.resolve(*name)).unwrap();
             if let Some(ty) = payload {
                 buf.push_str(" of ");
-                pretty_type(buf, ty);
+                pretty_type(buf, ty, interner);
             }
         }
     }
 }
 
-fn pretty_fun_binding(buf: &mut String, binding: &FunBinding, indent: usize) {
+fn pretty_fun_binding(
+    buf: &mut String,
+    binding: &FunBinding,
+    indent: usize,
+    interner: &StringInterner,
+) {
     for (i, clause) in binding.clauses.iter().enumerate() {
         if i > 0 {
             buf.push('\n');
             write_indent(buf, indent + 2);
             buf.push_str("| ");
         }
-        buf.push_str(&binding.name);
+        buf.push_str(interner.resolve(binding.name));
         for pat in &clause.pats {
             buf.push(' ');
-            pretty_atom_pat(buf, pat);
+            pretty_atom_pat(buf, pat, interner);
         }
         buf.push_str(" = ");
-        pretty_expr(buf, &clause.body, indent + 2);
+        pretty_expr(buf, &clause.body, indent + 2, interner);
     }
 }
 
-fn pretty_tyvars(buf: &mut String, tyvars: &[String]) {
+fn pretty_tyvars(buf: &mut String, tyvars: &[crate::intern::Symbol], interner: &StringInterner) {
     match tyvars.len() {
         0 => {}
-        1 => write!(buf, "{} ", tyvars[0]).unwrap(),
+        1 => write!(buf, "{} ", interner.resolve(tyvars[0])).unwrap(),
         _ => {
             buf.push('(');
             for (i, tv) in tyvars.iter().enumerate() {
                 if i > 0 {
                     buf.push_str(", ");
                 }
-                buf.push_str(tv);
+                buf.push_str(interner.resolve(*tv));
             }
             buf.push_str(") ");
         }
@@ -131,7 +138,7 @@ fn pretty_tyvars(buf: &mut String, tyvars: &[String]) {
 
 // ── Expressions ──────────────────────────────────────────────────────
 
-fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
+fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
     match &expr.kind {
         ExprKind::IntLit(n) => write!(buf, "{n}").unwrap(),
         ExprKind::FloatLit(f) => pretty_float(buf, *f),
@@ -140,8 +147,8 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
         ExprKind::BoolLit(true) => buf.push_str("true"),
         ExprKind::BoolLit(false) => buf.push_str("false"),
         ExprKind::Unit => buf.push_str("()"),
-        ExprKind::Var(name) => buf.push_str(name),
-        ExprKind::Constructor(name) => buf.push_str(name),
+        ExprKind::Var(sym) => buf.push_str(interner.resolve(*sym)),
+        ExprKind::Constructor(sym) => buf.push_str(interner.resolve(*sym)),
 
         ExprKind::Tuple(elems) => {
             buf.push('(');
@@ -149,7 +156,7 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
                 if i > 0 {
                     buf.push_str(", ");
                 }
-                pretty_expr(buf, e, indent);
+                pretty_expr(buf, e, indent, interner);
             }
             buf.push(')');
         }
@@ -159,14 +166,14 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
                 if i > 0 {
                     buf.push_str(", ");
                 }
-                pretty_expr(buf, e, indent);
+                pretty_expr(buf, e, indent, interner);
             }
             buf.push(']');
         }
         ExprKind::Cons(hd, tl) => {
-            pretty_cons_operand(buf, hd, indent);
+            pretty_cons_operand(buf, hd, indent, interner);
             buf.push_str(" :: ");
-            pretty_expr(buf, tl, indent);
+            pretty_expr(buf, tl, indent, interner);
         }
         ExprKind::BinOp(op, lhs, rhs) => {
             let needs_parens_lhs = binop_needs_parens_lhs(op, lhs);
@@ -174,7 +181,7 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
             if needs_parens_lhs {
                 buf.push('(');
             }
-            pretty_expr(buf, lhs, indent);
+            pretty_expr(buf, lhs, indent, interner);
             if needs_parens_lhs {
                 buf.push(')');
             }
@@ -182,55 +189,55 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
             if needs_parens_rhs {
                 buf.push('(');
             }
-            pretty_expr(buf, rhs, indent);
+            pretty_expr(buf, rhs, indent, interner);
             if needs_parens_rhs {
                 buf.push(')');
             }
         }
         ExprKind::UnaryNeg(e) => {
             buf.push('~');
-            pretty_atom_expr(buf, e, indent);
+            pretty_atom_expr(buf, e, indent, interner);
         }
         ExprKind::Not(e) => {
             buf.push_str("not ");
-            pretty_atom_expr(buf, e, indent);
+            pretty_atom_expr(buf, e, indent, interner);
         }
         ExprKind::App(func, arg) => {
-            pretty_app_func(buf, func, indent);
+            pretty_app_func(buf, func, indent, interner);
             buf.push(' ');
-            pretty_atom_expr(buf, arg, indent);
+            pretty_atom_expr(buf, arg, indent, interner);
         }
         ExprKind::Fn(pat, body) => {
             buf.push_str("fn ");
-            pretty_pat(buf, pat);
+            pretty_pat(buf, pat, interner);
             buf.push_str(" => ");
-            pretty_expr(buf, body, indent);
+            pretty_expr(buf, body, indent, interner);
         }
         ExprKind::If(cond, then_br, else_br) => {
             buf.push_str("if ");
-            pretty_expr(buf, cond, indent);
+            pretty_expr(buf, cond, indent, interner);
             buf.push_str(" then ");
-            pretty_expr(buf, then_br, indent);
+            pretty_expr(buf, then_br, indent, interner);
             buf.push_str(" else ");
-            pretty_expr(buf, else_br, indent);
+            pretty_expr(buf, else_br, indent, interner);
         }
         ExprKind::Let(decls, body) => {
             buf.push_str("let\n");
             for d in decls {
-                pretty_decl(buf, d, indent + 2);
+                pretty_decl(buf, d, indent + 2, interner);
                 buf.push('\n');
             }
             write_indent(buf, indent);
             buf.push_str("in\n");
             write_indent(buf, indent + 2);
-            pretty_expr(buf, body, indent + 2);
+            pretty_expr(buf, body, indent + 2, interner);
             buf.push('\n');
             write_indent(buf, indent);
             buf.push_str("end");
         }
         ExprKind::Case(scrutinee, branches) => {
             buf.push_str("case ");
-            pretty_expr(buf, scrutinee, indent);
+            pretty_expr(buf, scrutinee, indent, interner);
             buf.push_str(" of\n");
             for (i, (pat, body)) in branches.iter().enumerate() {
                 write_indent(buf, indent + 2);
@@ -239,27 +246,27 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
                 } else {
                     buf.push_str("  ");
                 }
-                pretty_pat(buf, pat);
+                pretty_pat(buf, pat, interner);
                 buf.push_str(" => ");
-                pretty_expr(buf, body, indent + 4);
+                pretty_expr(buf, body, indent + 4, interner);
                 if i + 1 < branches.len() {
                     buf.push('\n');
                 }
             }
         }
         ExprKind::Ann(e, ty) => {
-            pretty_expr(buf, e, indent);
+            pretty_expr(buf, e, indent, interner);
             buf.push_str(" : ");
-            pretty_type(buf, ty);
+            pretty_type(buf, ty, interner);
         }
         ExprKind::Paren(e) => {
             buf.push('(');
-            pretty_expr(buf, e, indent);
+            pretty_expr(buf, e, indent, interner);
             buf.push(')');
         }
-        ExprKind::Perform(name, arg) => {
-            write!(buf, "perform {name} ").unwrap();
-            pretty_atom_expr(buf, arg, indent);
+        ExprKind::Perform(sym, arg) => {
+            write!(buf, "perform {} ", interner.resolve(*sym)).unwrap();
+            pretty_atom_expr(buf, arg, indent, interner);
         }
         ExprKind::Handle {
             body,
@@ -269,65 +276,67 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
         } => {
             buf.push_str("handle\n");
             write_indent(buf, indent + 2);
-            pretty_expr(buf, body, indent + 2);
+            pretty_expr(buf, body, indent + 2, interner);
             buf.push('\n');
             write_indent(buf, indent);
             buf.push_str("with\n");
             write_indent(buf, indent + 2);
-            write!(buf, "return {return_var} => ").unwrap();
-            pretty_expr(buf, return_body, indent + 2);
+            write!(buf, "return {} => ", interner.resolve(*return_var)).unwrap();
+            pretty_expr(buf, return_body, indent + 2, interner);
             for handler in handlers {
                 buf.push('\n');
                 write_indent(buf, indent);
                 write!(
                     buf,
                     "| {} {} {} => ",
-                    handler.effect_name, handler.payload_var, handler.cont_var
+                    interner.resolve(handler.effect_name),
+                    interner.resolve(handler.payload_var),
+                    interner.resolve(handler.cont_var),
                 )
                 .unwrap();
-                pretty_expr(buf, &handler.body, indent + 2);
+                pretty_expr(buf, &handler.body, indent + 2, interner);
             }
         }
         ExprKind::Resume(cont, arg) => {
             buf.push_str("resume ");
-            pretty_atom_expr(buf, cont, indent);
+            pretty_atom_expr(buf, cont, indent, interner);
             buf.push(' ');
-            pretty_atom_expr(buf, arg, indent);
+            pretty_atom_expr(buf, arg, indent, interner);
         }
     }
 }
 
-fn pretty_atom_expr(buf: &mut String, expr: &Expr, indent: usize) {
+fn pretty_atom_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
     if needs_parens_as_atom(expr) {
         buf.push('(');
-        pretty_expr(buf, expr, indent);
+        pretty_expr(buf, expr, indent, interner);
         buf.push(')');
     } else {
-        pretty_expr(buf, expr, indent);
+        pretty_expr(buf, expr, indent, interner);
     }
 }
 
-fn pretty_app_func(buf: &mut String, expr: &Expr, indent: usize) {
+fn pretty_app_func(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
     match &expr.kind {
         ExprKind::App(_, _) | ExprKind::Var(_) | ExprKind::Constructor(_) | ExprKind::Paren(_) => {
-            pretty_expr(buf, expr, indent)
+            pretty_expr(buf, expr, indent, interner)
         }
         _ => {
             buf.push('(');
-            pretty_expr(buf, expr, indent);
+            pretty_expr(buf, expr, indent, interner);
             buf.push(')');
         }
     }
 }
 
-fn pretty_cons_operand(buf: &mut String, expr: &Expr, indent: usize) {
+fn pretty_cons_operand(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
     match &expr.kind {
         ExprKind::BinOp(BinOp::Orelse | BinOp::Andalso, _, _) | ExprKind::Ann(_, _) => {
             buf.push('(');
-            pretty_expr(buf, expr, indent);
+            pretty_expr(buf, expr, indent, interner);
             buf.push(')');
         }
-        _ => pretty_expr(buf, expr, indent),
+        _ => pretty_expr(buf, expr, indent, interner),
     }
 }
 
@@ -430,10 +439,10 @@ fn binop_str(op: &BinOp) -> &'static str {
 
 // ── Patterns ─────────────────────────────────────────────────────────
 
-fn pretty_pat(buf: &mut String, pat: &Pat) {
+fn pretty_pat(buf: &mut String, pat: &Pat, interner: &StringInterner) {
     match &pat.kind {
         PatKind::Wildcard => buf.push('_'),
-        PatKind::Var(name) => buf.push_str(name),
+        PatKind::Var(sym) => buf.push_str(interner.resolve(*sym)),
         PatKind::IntLit(n) => {
             if *n < 0 {
                 write!(buf, "~{}", -n).unwrap();
@@ -460,20 +469,20 @@ fn pretty_pat(buf: &mut String, pat: &Pat) {
                 if i > 0 {
                     buf.push_str(", ");
                 }
-                pretty_pat(buf, p);
+                pretty_pat(buf, p, interner);
             }
             buf.push(')');
         }
-        PatKind::Constructor(name, None) => buf.push_str(name),
-        PatKind::Constructor(name, Some(payload)) => {
-            buf.push_str(name);
+        PatKind::Constructor(sym, None) => buf.push_str(interner.resolve(*sym)),
+        PatKind::Constructor(sym, Some(payload)) => {
+            buf.push_str(interner.resolve(*sym));
             buf.push(' ');
-            pretty_atom_pat(buf, payload);
+            pretty_atom_pat(buf, payload, interner);
         }
         PatKind::Cons(hd, tl) => {
-            pretty_atom_pat(buf, hd);
+            pretty_atom_pat(buf, hd, interner);
             buf.push_str(" :: ");
-            pretty_pat(buf, tl);
+            pretty_pat(buf, tl, interner);
         }
         PatKind::List(elems) => {
             buf.push('[');
@@ -481,51 +490,52 @@ fn pretty_pat(buf: &mut String, pat: &Pat) {
                 if i > 0 {
                     buf.push_str(", ");
                 }
-                pretty_pat(buf, p);
+                pretty_pat(buf, p, interner);
             }
             buf.push(']');
         }
         PatKind::Ann(p, ty) => {
-            pretty_pat(buf, p);
+            pretty_pat(buf, p, interner);
             buf.push_str(" : ");
-            pretty_type(buf, ty);
+            pretty_type(buf, ty, interner);
         }
-        PatKind::As(name, p) => {
-            buf.push_str(name);
+        PatKind::As(sym, p) => {
+            buf.push_str(interner.resolve(*sym));
             buf.push_str(" as ");
-            pretty_pat(buf, p);
+            pretty_pat(buf, p, interner);
         }
         PatKind::Paren(p) => {
             buf.push('(');
-            pretty_pat(buf, p);
+            pretty_pat(buf, p, interner);
             buf.push(')');
         }
     }
 }
 
-fn pretty_atom_pat(buf: &mut String, pat: &Pat) {
+fn pretty_atom_pat(buf: &mut String, pat: &Pat, interner: &StringInterner) {
     match &pat.kind {
         PatKind::Constructor(_, Some(_))
         | PatKind::Cons(_, _)
         | PatKind::Ann(_, _)
         | PatKind::As(_, _) => {
             buf.push('(');
-            pretty_pat(buf, pat);
+            pretty_pat(buf, pat, interner);
             buf.push(')');
         }
-        _ => pretty_pat(buf, pat),
+        _ => pretty_pat(buf, pat, interner),
     }
 }
 
 // ── Type expressions ─────────────────────────────────────────────────
 
-fn pretty_type(buf: &mut String, ty: &TypeExpr) {
+fn pretty_type(buf: &mut String, ty: &TypeExpr, interner: &StringInterner) {
     match &ty.kind {
-        TypeExprKind::Named(name) => buf.push_str(name),
-        TypeExprKind::Var(name) => buf.push_str(name),
-        TypeExprKind::App(name, args) => {
+        TypeExprKind::Named(sym) => buf.push_str(interner.resolve(*sym)),
+        TypeExprKind::Var(sym) => buf.push_str(interner.resolve(*sym)),
+        TypeExprKind::App(sym, args) => {
+            let name = interner.resolve(*sym);
             if args.len() == 1 {
-                pretty_atom_type(buf, &args[0]);
+                pretty_atom_type(buf, &args[0], interner);
                 write!(buf, " {name}").unwrap();
             } else {
                 buf.push('(');
@@ -533,51 +543,51 @@ fn pretty_type(buf: &mut String, ty: &TypeExpr) {
                     if i > 0 {
                         buf.push_str(", ");
                     }
-                    pretty_type(buf, arg);
+                    pretty_type(buf, arg, interner);
                 }
                 write!(buf, ") {name}").unwrap();
             }
         }
         TypeExprKind::Arrow(lhs, rhs) => {
-            pretty_arrow_lhs(buf, lhs);
+            pretty_arrow_lhs(buf, lhs, interner);
             buf.push_str(" -> ");
-            pretty_type(buf, rhs);
+            pretty_type(buf, rhs, interner);
         }
         TypeExprKind::Tuple(elems) => {
             for (i, t) in elems.iter().enumerate() {
                 if i > 0 {
                     buf.push_str(" * ");
                 }
-                pretty_atom_type(buf, t);
+                pretty_atom_type(buf, t, interner);
             }
         }
         TypeExprKind::Paren(t) => {
             buf.push('(');
-            pretty_type(buf, t);
+            pretty_type(buf, t, interner);
             buf.push(')');
         }
     }
 }
 
-fn pretty_atom_type(buf: &mut String, ty: &TypeExpr) {
+fn pretty_atom_type(buf: &mut String, ty: &TypeExpr, interner: &StringInterner) {
     match &ty.kind {
         TypeExprKind::Arrow(_, _) | TypeExprKind::Tuple(_) => {
             buf.push('(');
-            pretty_type(buf, ty);
+            pretty_type(buf, ty, interner);
             buf.push(')');
         }
-        _ => pretty_type(buf, ty),
+        _ => pretty_type(buf, ty, interner),
     }
 }
 
-fn pretty_arrow_lhs(buf: &mut String, ty: &TypeExpr) {
+fn pretty_arrow_lhs(buf: &mut String, ty: &TypeExpr, interner: &StringInterner) {
     match &ty.kind {
         TypeExprKind::Arrow(_, _) => {
             buf.push('(');
-            pretty_type(buf, ty);
+            pretty_type(buf, ty, interner);
             buf.push(')');
         }
-        _ => pretty_type(buf, ty),
+        _ => pretty_type(buf, ty, interner),
     }
 }
 

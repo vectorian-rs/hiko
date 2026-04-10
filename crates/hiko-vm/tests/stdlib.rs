@@ -9,7 +9,7 @@ fn run_hiko_file(path: &str) {
         .parse_program()
         .expect("parse error");
     let (compiled, warnings) =
-        hiko_compile::compiler::Compiler::compile_file(&program, Path::new(path))
+        hiko_compile::compiler::Compiler::compile_file(program, Path::new(path))
             .expect("compile error");
     for w in &warnings {
         eprintln!("Warning: {}", w.message);
