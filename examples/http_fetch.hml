@@ -1,6 +1,6 @@
 (* Fetch a URL and print status, headers, and body *)
 
-val (status, headers, body) = http_get "https://httpbin.org/get"
+val (status, headers, body) = http_get "https://www.google.com/"
 
 val _ = println ("Status: " ^ int_to_string status)
 
@@ -12,5 +12,7 @@ fun print_headers hs = case hs of
 
 val _ = println "Headers:"
 val _ = print_headers headers
-val _ = println "Body:"
-val _ = println body
+(* 
+  val _ = println "Body:" 
+  val _ = println body 
+*)
