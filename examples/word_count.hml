@@ -1,0 +1,24 @@
+(* Count words in a string *)
+
+fun length xs = case xs of
+    [] => 0
+  | _ :: rest => 1 + length rest
+
+fun filter p xs = case xs of
+    [] => []
+  | x :: rest =>
+      if p x then x :: filter p rest
+      else filter p rest
+
+val text = "the quick brown fox jumps over the lazy dog"
+val words = split (text, " ")
+val count = length words
+
+val _ = println ("Text: " ^ text)
+val _ = println ("Word count: " ^ int_to_string count)
+
+(* Count words longer than 3 characters *)
+val long_words = filter (fn w => string_length w > 3) words
+val long_count = length long_words
+
+val _ = println ("Words longer than 3 chars: " ^ int_to_string long_count)

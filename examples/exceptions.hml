@@ -1,0 +1,33 @@
+(* Error handling via algebraic effect handlers *)
+
+datatype 'a result = Ok of 'a | Err of String
+
+effect Fail of String
+
+fun run_safe f =
+  handle f ()
+  with return x => Ok x
+     | Fail msg _ => Err msg
+
+fun divide a b =
+  if b = 0 then perform Fail "division by zero"
+  else a / b
+
+fun safe_compute () =
+  let val x = divide 100 5
+      val y = divide x 4
+  in x + y end
+
+val good = run_safe safe_compute
+val _ = case good of
+    Ok n => println ("Success: " ^ int_to_string n)
+  | Err msg => println ("Error: " ^ msg)
+
+fun bad_compute () =
+  let val x = divide 100 0
+  in x + 1 end
+
+val bad = run_safe bad_compute
+val _ = case bad of
+    Ok n => println ("Success: " ^ int_to_string n)
+  | Err msg => println ("Error: " ^ msg)

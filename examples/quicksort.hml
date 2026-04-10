@@ -1,0 +1,34 @@
+(* Quicksort using pattern matching and list operations *)
+
+fun filter p xs = case xs of
+    [] => []
+  | x :: rest =>
+      if p x then x :: filter p rest
+      else filter p rest
+
+fun append xs ys = case xs of
+    [] => ys
+  | x :: rest => x :: append rest ys
+
+fun sort xs = case xs of
+    [] => []
+  | pivot :: rest =>
+      let val lo = filter (fn n => n < pivot) rest
+          val hi = filter (fn n => n >= pivot) rest
+      in append (sort lo) (pivot :: sort hi) end
+
+fun print_list xs = case xs of
+    [] => ()
+  | x :: rest =>
+      let val _ = print (int_to_string x ^ " ")
+      in print_list rest end
+
+val unsorted = [38, 27, 43, 3, 9, 82, 10]
+val sorted = sort unsorted
+
+val _ = print "Unsorted: "
+val _ = print_list unsorted
+val _ = println ""
+val _ = print "Sorted:   "
+val _ = print_list sorted
+val _ = println ""

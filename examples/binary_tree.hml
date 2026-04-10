@@ -1,0 +1,45 @@
+(* Binary search tree with insert, search, and in-order traversal *)
+
+datatype tree = Leaf | Node of tree * Int * tree
+
+fun insert t v = case t of
+    Leaf => Node (Leaf, v, Leaf)
+  | Node (left, n, right) =>
+      if v < n then Node (insert left v, n, right)
+      else if v > n then Node (left, n, insert right v)
+      else t
+
+fun contains t v = case t of
+    Leaf => false
+  | Node (left, n, right) =>
+      if v = n then true
+      else if v < n then contains left v
+      else contains right v
+
+fun append xs ys = case xs of
+    [] => ys
+  | x :: rest => x :: append rest ys
+
+fun to_list t = case t of
+    Leaf => []
+  | Node (left, n, right) =>
+      append (to_list left) (n :: to_list right)
+
+fun print_list xs = case xs of
+    [] => ()
+  | x :: rest =>
+      let val _ = print (int_to_string x ^ " ")
+      in print_list rest end
+
+fun from_list xs = case xs of
+    [] => Leaf
+  | x :: rest => insert (from_list rest) x
+
+val tree = from_list [5, 3, 7, 1, 4, 6, 8, 2]
+
+val _ = print "In-order: "
+val _ = print_list (to_list tree)
+val _ = println ""
+
+val _ = println ("Contains 4: " ^ if contains tree 4 then "yes" else "no")
+val _ = println ("Contains 9: " ^ if contains tree 9 then "yes" else "no")

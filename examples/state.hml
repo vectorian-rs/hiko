@@ -1,0 +1,31 @@
+(* Mutable state via algebraic effect handlers *)
+
+effect Get of Unit
+effect Put of Int
+
+fun run_state init f =
+  handle f ()
+  with return x => x
+     | Get _ k => run_state init (fn _ => resume k init)
+     | Put n k => run_state n (fn _ => resume k ())
+
+(* A counter that increments 5 times *)
+fun count_up n =
+  if n = 0 then perform Get ()
+  else let val current = perform Get ()
+           val _ = perform Put (current + 1)
+       in count_up (n - 1) end
+
+val result = run_state 0 (fn _ => count_up 5)
+val _ = println ("Counter after 5 increments: " ^ int_to_string result)
+
+(* Accumulate a sum *)
+fun sum_list xs = case xs of
+    [] => perform Get ()
+  | x :: rest =>
+      let val current = perform Get ()
+          val _ = perform Put (current + x)
+      in sum_list rest end
+
+val total = run_state 0 (fn _ => sum_list [10, 20, 30, 40])
+val _ = println ("Sum of [10,20,30,40]: " ^ int_to_string total)
