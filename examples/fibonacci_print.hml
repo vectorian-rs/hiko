@@ -1,0 +1,7 @@
+fun fib_loop a b n max =
+  if n > max then ()
+  else let val _ = println (int_to_string a)
+       in fib_loop b (a + b) (n + 1) max end
+
+val _ = println "First 20 Fibonacci numbers:"
+val _ = fib_loop 0 1 1 20
