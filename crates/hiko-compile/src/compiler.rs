@@ -98,8 +98,9 @@ impl Compiler {
         base_dir: PathBuf,
         loading_files: HashSet<PathBuf>,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        // Desugar all declarations (moves interner through Program)
+        // Desugar and constant-fold
         let program = hiko_syntax::desugar::desugar_program(program);
+        let program = hiko_syntax::constfold::fold_program(program);
         let interner = program.interner;
         let desugared = program.decls;
 
@@ -476,6 +477,7 @@ impl Compiler {
             })?;
 
         let program = hiko_syntax::desugar::desugar_program(program);
+        let program = hiko_syntax::constfold::fold_program(program);
         self.interner = program.interner;
         self.infer_ctx.interner = self.interner.clone();
         let desugared = program.decls;

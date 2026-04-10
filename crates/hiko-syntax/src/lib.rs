@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod constfold;
 pub mod desugar;
 pub mod intern;
 pub mod lexer;
