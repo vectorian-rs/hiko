@@ -34,8 +34,6 @@ pub enum Op {
     LeInt = 25,
     GeInt = 26,
 
-    EqFloat = 27,
-    NeFloat = 28,
     LtFloat = 29,
     GtFloat = 30,
     LeFloat = 31,
@@ -100,8 +98,6 @@ impl TryFrom<u8> for Op {
             24 => Ok(Op::GtInt),
             25 => Ok(Op::LeInt),
             26 => Ok(Op::GeInt),
-            27 => Ok(Op::EqFloat),
-            28 => Ok(Op::NeFloat),
             29 => Ok(Op::LtFloat),
             30 => Ok(Op::GtFloat),
             31 => Ok(Op::LeFloat),

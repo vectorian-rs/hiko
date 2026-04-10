@@ -164,11 +164,35 @@ impl VM {
                     if *tag == TAG_NIL && fields.is_empty() {
                         "[]".to_string()
                     } else if *tag == TAG_CONS && fields.len() == 2 {
-                        format!(
-                            "{} :: {}",
-                            self.display_value(&fields[0]),
-                            self.display_value(&fields[1])
-                        )
+                        // Iterative list printing to avoid stack overflow
+                        let mut parts = vec![self.display_value(&fields[0])];
+                        let mut tail = fields[1];
+                        loop {
+                            match tail {
+                                Value::Heap(r2) => match self.heap.get(r2) {
+                                    Ok(HeapObject::Data { tag: t, fields: f })
+                                        if *t == TAG_NIL && f.is_empty() =>
+                                    {
+                                        break;
+                                    }
+                                    Ok(HeapObject::Data { tag: t, fields: f })
+                                        if *t == TAG_CONS && f.len() == 2 =>
+                                    {
+                                        parts.push(self.display_value(&f[0]));
+                                        tail = f[1];
+                                    }
+                                    _ => {
+                                        parts.push(self.display_value(&tail));
+                                        break;
+                                    }
+                                },
+                                _ => {
+                                    parts.push(self.display_value(&tail));
+                                    break;
+                                }
+                            }
+                        }
+                        format!("[{}]", parts.join(", "))
                     } else {
                         format!("Data({tag})")
                     }
@@ -843,8 +867,6 @@ impl VM {
                 Op::LeInt => self.int_cmp(|a, b| a <= b)?,
                 Op::GeInt => self.int_cmp(|a, b| a >= b)?,
 
-                Op::EqFloat => self.float_cmp(|a, b| a == b)?,
-                Op::NeFloat => self.float_cmp(|a, b| a != b)?,
                 Op::LtFloat => self.float_cmp(|a, b| a < b)?,
                 Op::GtFloat => self.float_cmp(|a, b| a > b)?,
                 Op::LeFloat => self.float_cmp(|a, b| a <= b)?,

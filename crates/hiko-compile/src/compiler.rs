@@ -327,14 +327,15 @@ impl Compiler {
         &mut self,
         slot: u16,
         tag: i64,
-        fail_jumps: &mut Vec<usize>,
+        fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
         self.emit(Op::GetLocal);
         self.emit_u16(slot);
         self.emit(Op::GetTag);
         self.emit_constant(Constant::Int(tag))?;
         self.emit(Op::Eq);
-        fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
+        let jmp = self.emit_jump(Op::JumpIfFalse);
+        fail_jumps.push((jmp, self.ctx().locals.len()));
         Ok(())
     }
 
@@ -344,13 +345,14 @@ impl Compiler {
         slot: u16,
         value: Constant,
         eq_op: Op,
-        fail_jumps: &mut Vec<usize>,
+        fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
         self.emit(Op::GetLocal);
         self.emit_u16(slot);
         self.emit_constant(value)?;
         self.emit(eq_op);
-        fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
+        let jmp = self.emit_jump(Op::JumpIfFalse);
+        fail_jumps.push((jmp, self.ctx().locals.len()));
         Ok(())
     }
 
@@ -732,7 +734,7 @@ impl Compiler {
             let depth_before = self.ctx().scope_depth;
             self.begin_scope();
 
-            let mut fail_jumps = Vec::new();
+            let mut fail_jumps: Vec<(usize, usize)> = Vec::new(); // (jump_pos, locals_at_fail)
             self.compile_pattern_test(scrut_slot, pat, &mut fail_jumps)?;
             self.compile_pattern_bind(scrut_slot, pat)?;
 
@@ -740,10 +742,24 @@ impl Compiler {
             self.end_scope_keep_result();
             end_jumps.push(self.emit_jump(Op::Jump));
 
-            // Fail: patch all fail jumps to here. No cleanup needed since
-            // no locals were pushed during the test phase.
-            for fj in fail_jumps {
-                self.chunk().patch_jump(fj).map_err(CompileError::codegen)?;
+            // Fail path: each fail point has a different number of
+            // temporaries on the stack. Emit a separate cleanup
+            // trampoline for each, jumping to a shared landing pad.
+            let mut cleanup_end_jumps = Vec::new();
+            for (fj, locals_at_fail) in &fail_jumps {
+                self.chunk()
+                    .patch_jump(*fj)
+                    .map_err(CompileError::codegen)?;
+                let n_pops = locals_at_fail - locals_before;
+                for _ in 0..n_pops {
+                    self.emit(Op::Pop);
+                }
+                if n_pops > 0 {
+                    cleanup_end_jumps.push(self.emit_jump(Op::Jump));
+                }
+            }
+            for j in cleanup_end_jumps {
+                self.patch_jump(j)?;
             }
 
             // Restore compiler state for next branch
@@ -770,7 +786,7 @@ impl Compiler {
         &mut self,
         slot: u16,
         pat: &Pat,
-        fail_jumps: &mut Vec<usize>,
+        fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
         match &pat.kind {
             PatKind::Wildcard | PatKind::Var(_) | PatKind::Unit => {} // always match
@@ -790,7 +806,8 @@ impl Compiler {
                     self.emit(Op::False);
                 }
                 self.emit(Op::Eq);
-                fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
+                let jmp = self.emit_jump(Op::JumpIfFalse);
+                fail_jumps.push((jmp, self.ctx().locals.len()));
             }
             PatKind::StringLit(s) => {
                 self.emit_scalar_check(slot, Constant::String(s.clone()), Op::Eq, fail_jumps)?;
@@ -849,7 +866,7 @@ impl Compiler {
         slot: u16,
         field_idx: u8,
         sub_pat: &Pat,
-        fail_jumps: &mut Vec<usize>,
+        fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
         if is_trivial_pat(sub_pat) {
             return Ok(()); // wildcard/var: nothing to test
