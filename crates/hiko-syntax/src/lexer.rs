@@ -7,6 +7,15 @@ pub struct LexError {
     pub span: Span,
 }
 
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub struct Lexer<'src> {
     source: &'src str,
     bytes: &'src [u8],
@@ -141,8 +150,23 @@ impl<'src> Lexer<'src> {
         let c = match self.bytes[self.pos] {
             b'n' => '\n',
             b't' => '\t',
+            b'r' => '\r',
+            b'0' => '\0',
             b'\\' => '\\',
             b'"' => '"',
+            b'x' => {
+                // \xHH — two hex digits
+                if self.pos + 2 >= self.bytes.len() {
+                    return Err(self.err("incomplete \\x escape", literal_start));
+                }
+                let hi = self.bytes[self.pos + 1];
+                let lo = self.bytes[self.pos + 2];
+                let val = hex_digit(hi)
+                    .and_then(|h| hex_digit(lo).map(|l| h * 16 + l))
+                    .ok_or_else(|| self.err("invalid hex digit in \\x escape", literal_start))?;
+                self.pos += 2; // skip the two hex digits (main +1 below)
+                val as char
+            }
             other => {
                 return Err(LexError {
                     message: format!("unknown escape sequence: \\{}", other as char),

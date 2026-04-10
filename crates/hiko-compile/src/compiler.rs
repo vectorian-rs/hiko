@@ -288,13 +288,13 @@ impl Compiler {
         (self.ctx().locals.len() - 1) as u16
     }
 
-    /// Emit tag check: GetLocal slot, GetTag, Const tag, EqInt, JumpIfFalse → fail.
+    /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
     fn emit_tag_check(&mut self, slot: u16, tag: i64, fail_jumps: &mut Vec<usize>) {
         self.emit(Op::GetLocal);
         self.emit_u16(slot);
         self.emit(Op::GetTag);
         self.emit_constant(Constant::Int(tag));
-        self.emit(Op::EqInt);
+        self.emit(Op::Eq);
         fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
     }
 
@@ -677,10 +677,10 @@ impl Compiler {
             PatKind::Wildcard | PatKind::Var(_) | PatKind::Unit => {} // always match
 
             PatKind::IntLit(n) => {
-                self.emit_scalar_check(slot, Constant::Int(*n), Op::EqInt, fail_jumps);
+                self.emit_scalar_check(slot, Constant::Int(*n), Op::Eq, fail_jumps);
             }
             PatKind::FloatLit(f) => {
-                self.emit_scalar_check(slot, Constant::Float(*f), Op::EqFloat, fail_jumps);
+                self.emit_scalar_check(slot, Constant::Float(*f), Op::Eq, fail_jumps);
             }
             PatKind::BoolLit(b) => {
                 self.emit(Op::GetLocal);
@@ -690,14 +690,14 @@ impl Compiler {
                 } else {
                     self.emit(Op::False);
                 }
-                self.emit(Op::EqBool);
+                self.emit(Op::Eq);
                 fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
             }
             PatKind::StringLit(s) => {
-                self.emit_scalar_check(slot, Constant::String(s.clone()), Op::EqString, fail_jumps);
+                self.emit_scalar_check(slot, Constant::String(s.clone()), Op::Eq, fail_jumps);
             }
             PatKind::CharLit(c) => {
-                self.emit_scalar_check(slot, Constant::Char(*c), Op::EqChar, fail_jumps);
+                self.emit_scalar_check(slot, Constant::Char(*c), Op::Eq, fail_jumps);
             }
 
             PatKind::Constructor(name, payload) => {
@@ -925,7 +925,7 @@ impl Compiler {
 
             ExprKind::UnaryNeg(e) => {
                 self.compile_expr(e)?;
-                self.emit(Op::NegInt);
+                self.emit(Op::Neg);
             }
             ExprKind::Not(e) => {
                 self.compile_expr(e)?;
@@ -1100,8 +1100,8 @@ fn binop_to_op(op: BinOp) -> Op {
         BinOp::GtFloat => Op::GtFloat,
         BinOp::LeFloat => Op::LeFloat,
         BinOp::GeFloat => Op::GeFloat,
-        BinOp::Eq => Op::EqInt,
-        BinOp::Ne => Op::NeInt,
+        BinOp::Eq => Op::Eq,
+        BinOp::Ne => Op::Ne,
         BinOp::Andalso | BinOp::Orelse => unreachable!("short-circuit ops handled separately"),
     }
 }

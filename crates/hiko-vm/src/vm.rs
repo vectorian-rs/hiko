@@ -46,6 +46,50 @@ pub struct VM {
     handlers: Vec<HandlerFrame>,
 }
 
+fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Char(x), Value::Char(y)) => x == y,
+        (Value::Unit, Value::Unit) => true,
+        (Value::Heap(ra), Value::Heap(rb)) => {
+            if ra == rb {
+                return true;
+            }
+            match (heap.get(ra), heap.get(rb)) {
+                (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
+                (HeapObject::Tuple(ta), HeapObject::Tuple(tb)) => {
+                    ta.len() == tb.len()
+                        && ta
+                            .iter()
+                            .zip(tb.iter())
+                            .all(|(x, y)| values_equal(*x, *y, heap))
+                }
+                (
+                    HeapObject::Data {
+                        tag: ta,
+                        fields: fa,
+                    },
+                    HeapObject::Data {
+                        tag: tb,
+                        fields: fb,
+                    },
+                ) => {
+                    ta == tb
+                        && fa.len() == fb.len()
+                        && fa
+                            .iter()
+                            .zip(fb.iter())
+                            .all(|(x, y)| values_equal(*x, *y, heap))
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 impl VM {
     pub fn new(program: CompiledProgram) -> Self {
         let mut vm = VM {
@@ -480,18 +524,7 @@ impl VM {
                 },
                 _ => return Err("assert_eq: expected (a, a, String)".into()),
             };
-            let eq = match (v0, v1) {
-                (Value::Int(a), Value::Int(b)) => a == b,
-                (Value::Float(a), Value::Float(b)) => a == b,
-                (Value::Bool(a), Value::Bool(b)) => a == b,
-                (Value::Char(a), Value::Char(b)) => a == b,
-                (Value::Heap(a), Value::Heap(b)) => match (heap.get(a), heap.get(b)) {
-                    (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
-                    _ => false,
-                },
-                (Value::Unit, Value::Unit) => true,
-                _ => false,
-            };
+            let eq = values_equal(v0, v1, heap);
             if eq {
                 Ok(Value::Unit)
             } else {
@@ -707,7 +740,7 @@ impl VM {
                     self.int_checked_binop(|a, b| a.checked_div(b), "division by zero")?
                 }
                 Op::ModInt => self.int_checked_binop(|a, b| a.checked_rem(b), "mod by zero")?,
-                Op::NegInt => {
+                Op::Neg => {
                     let val = self.pop();
                     match val {
                         Value::Int(n) => self.push(Value::Int(-n))?,
@@ -730,8 +763,8 @@ impl VM {
                 }
 
                 // ── Comparison ──────────────────────────────────
-                Op::EqInt => self.scalar_eq(true)?,
-                Op::NeInt => self.scalar_eq(false)?,
+                Op::Eq => self.scalar_eq(true)?,
+                Op::Ne => self.scalar_eq(false)?,
                 Op::LtInt => self.int_cmp(|a, b| a < b)?,
                 Op::GtInt => self.int_cmp(|a, b| a > b)?,
                 Op::LeInt => self.int_cmp(|a, b| a <= b)?,
@@ -744,28 +777,8 @@ impl VM {
                 Op::LeFloat => self.float_cmp(|a, b| a <= b)?,
                 Op::GeFloat => self.float_cmp(|a, b| a >= b)?,
 
-                Op::EqBool => {
-                    let b = self.pop_bool()?;
-                    let a = self.pop_bool()?;
-                    self.push(Value::Bool(a == b))?;
-                }
-                Op::NeBool => {
-                    let b = self.pop_bool()?;
-                    let a = self.pop_bool()?;
-                    self.push(Value::Bool(a != b))?;
-                }
-                Op::EqChar => {
-                    let b = self.pop_char()?;
-                    let a = self.pop_char()?;
-                    self.push(Value::Bool(a == b))?;
-                }
-                Op::NeChar => {
-                    let b = self.pop_char()?;
-                    let a = self.pop_char()?;
-                    self.push(Value::Bool(a != b))?;
-                }
-                Op::EqString => self.scalar_eq(true)?,
-                Op::NeString => self.scalar_eq(false)?,
+                Op::EqBool | Op::EqChar | Op::EqString => self.scalar_eq(true)?,
+                Op::NeBool | Op::NeChar | Op::NeString => self.scalar_eq(false)?,
 
                 Op::ConcatString => {
                     let b_ref = self.pop_string_ref()?;
@@ -1163,15 +1176,6 @@ impl VM {
         }
     }
 
-    fn pop_char(&mut self) -> Result<char, RuntimeError> {
-        match self.pop() {
-            Value::Char(c) => Ok(c),
-            v => Err(RuntimeError {
-                message: format!("expected Char, got {v:?}"),
-            }),
-        }
-    }
-
     fn pop_string_ref(&mut self) -> Result<GcRef, RuntimeError> {
         match self.pop() {
             Value::Heap(r) => Ok(r),
@@ -1184,21 +1188,7 @@ impl VM {
     fn scalar_eq(&mut self, eq: bool) -> Result<(), RuntimeError> {
         let b = self.pop();
         let a = self.pop();
-        let result = match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x == y,
-            (Value::Float(x), Value::Float(y)) => x == y,
-            (Value::Bool(x), Value::Bool(y)) => x == y,
-            (Value::Char(x), Value::Char(y)) => x == y,
-            (Value::Heap(ra), Value::Heap(rb)) => match (self.heap.get(*ra), self.heap.get(*rb)) {
-                (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
-                _ => false,
-            },
-            _ => {
-                return Err(RuntimeError {
-                    message: format!("cannot compare {a:?} and {b:?}"),
-                });
-            }
-        };
+        let result = values_equal(a, b, &self.heap);
         self.push(Value::Bool(if eq { result } else { !result }))
     }
 
