@@ -59,4 +59,41 @@ New examples: `fizzbuzz`, `fibonacci_print`, `generator` (yield/collect), `state
 
 ## 0.1.0
 
-Initial release. Core SML semantics with Hindley-Milner type inference, algebraic data types, exhaustive pattern matching (Maranget algorithm), tail-call optimization, mark-and-sweep garbage collector, bytecode VM with 57 opcodes, and import system with cycle detection.
+Initial release. A strict, statically typed, ML-family scripting language anchored in Core SML semantics.
+
+### Language
+
+- **Core SML expressions**: let/val bindings, if/then/else, case/of, fn lambdas, function application, tuples, lists (`[]`, `::`, `[a, b, c]`), type annotations.
+- **Declarations**: `val`, `val rec`, `fun` (including clausal definitions with `|` and mutual recursion with `and`), `datatype`, `type` aliases, `local ... in ... end`.
+- **Type system**: Hindley-Milner type inference (Algorithm W) with value restriction for let-polymorphism. Built-in types: `Int` (i64), `Float` (f64), `Bool`, `Char`, `String`, `Unit`. Type constructors: tuples, lists, arrows, user-defined datatypes.
+- **Pattern matching**: wildcards, variables, literals (int, float, string, char, bool), constructors, tuples, cons (`x :: xs`), list patterns, as-patterns, nested patterns. Left-to-right, first-match semantics.
+- **Exhaustiveness checking**: Maranget usefulness algorithm. Non-exhaustive matches are compile-time errors. Redundant clauses produce warnings.
+- **Monomorphic operators**: `+`, `-`, `*`, `/`, `mod` for Int; `+.`, `-.`, `*.`, `/.` for Float; `^` for String; `<`, `>`, `<=`, `>=` for Int; `<.`, `>.`, `<=.`, `>=.` for Float; `=`, `<>` for scalar equality.
+- **Imports**: `use "path/to/file.hk"` with relative path resolution, cycle detection, and single-evaluation semantics.
+
+### Compiler and VM
+
+- **Bytecode compiler**: direct AST walk producing 57 opcodes. Two-pass pattern compilation (test phase then bind phase).
+- **Stack-based VM**: `Vec<Value>` stack with `Vec<CallFrame>` frames. `Value` is `Copy` (16 bytes, no reference counting).
+- **Tail-call optimization**: `TailCall` opcode reuses the current call frame. Propagated through if/case/let branches.
+- **Mark-and-sweep GC**: index-based `GcRef(u32)` into a `Vec<Option<HeapObject>>` arena. Worklist-based marking avoids stack overflow. Free-list reuse with adaptive collection threshold.
+- **Rich diagnostics**: source-located error messages via `codespan-reporting`. Bytecode spans track back to source positions.
+
+### Builtins
+
+27 built-in functions: `print`, `println`, `read_line`, `int_to_string`, `float_to_string`, `string_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `string_length`, `substring`, `string_contains`, `trim`, `split`, `sqrt`, `abs_int`, `abs_float`, `floor`, `ceil`, `read_file`, `write_file`, `file_exists`, `list_dir`, `remove_file`, `create_dir`, `http_get`, `exit`, `panic`, `assert`, `assert_eq`.
+
+### Standard Library
+
+Written in Hiko: `stdlib/list.hk` (map, filter, foldl, foldr, length, reverse, append, nth, zip, take, drop, all, any, find), `stdlib/option.hk` (is_some, is_none, map_option, get_or, flat_map_option), `stdlib/either.hk` (map_right, map_left, is_left, is_right, from_left, from_right).
+
+### Correctness Fixes (included in 0.1.0)
+
+- Four type inference bugs (occurs check, let-polymorphism, constructor arity, recursive binding).
+- Five cross-phase correctness issues (type checker/compiler interaction).
+- Four exhaustiveness checker gaps (nested ADTs, fn patterns, distinct literals).
+- TCO for clausal functions and builtins.
+- Safe opcode decoding with explicit discriminants.
+- Circular import detection (separate loading vs loaded state).
+- Integer overflow detection with checked arithmetic.
+- Span tracking for source-located runtime errors.
