@@ -6,6 +6,7 @@ pub struct Heap {
     free_list: Vec<u32>,
     alloc_since_gc: usize,
     gc_threshold: usize,
+    max_objects: Option<usize>,
 }
 
 impl Default for Heap {
@@ -22,10 +23,21 @@ impl Heap {
             free_list: Vec::new(),
             alloc_since_gc: 0,
             gc_threshold: 1024,
+            max_objects: None,
         }
     }
 
+    pub fn set_max_objects(&mut self, max: usize) {
+        self.max_objects = Some(max);
+    }
+
     pub fn alloc(&mut self, obj: HeapObject) -> GcRef {
+        if let Some(max) = self.max_objects {
+            let live = self.objects.len() - self.free_list.len();
+            if live >= max {
+                panic!("heap limit exceeded: {live} objects (max {max})");
+            }
+        }
         self.alloc_since_gc += 1;
         let idx = if let Some(idx) = self.free_list.pop() {
             self.objects[idx as usize] = Some(obj);

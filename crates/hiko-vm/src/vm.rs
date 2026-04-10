@@ -5,7 +5,7 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
-use crate::value::{BuiltinEntry, GcRef, HeapObject, SavedFrame, Value};
+use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, SavedFrame, Value};
 
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
@@ -19,6 +19,16 @@ pub(crate) const TAG_CONS: u16 = 1;
 #[derive(Debug)]
 pub struct RuntimeError {
     pub message: String,
+}
+
+impl RuntimeError {
+    pub fn is_fuel_exhausted(&self) -> bool {
+        self.message.starts_with("fuel exhausted")
+    }
+
+    pub fn is_heap_limit(&self) -> bool {
+        self.message.starts_with("heap limit exceeded")
+    }
 }
 
 struct CallFrame {
@@ -48,6 +58,7 @@ pub struct VM {
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
+    fuel: Option<u64>,
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -98,8 +109,16 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
 }
 
 impl VM {
+    /// Create a VM with all builtins enabled (convenience for CLI use).
     pub fn new(program: CompiledProgram) -> Self {
-        let mut vm = VM {
+        let mut vm = Self::from_program(program);
+        vm.register_builtins();
+        vm
+    }
+
+    /// Create a VM with no builtins (for builder/embedding use).
+    pub fn from_program(program: CompiledProgram) -> Self {
+        VM {
             heap: Heap::new(),
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
@@ -111,9 +130,39 @@ impl VM {
             builtins: Vec::new(),
             handlers: Vec::new(),
             string_cache: HashMap::new(),
-        };
-        vm.register_builtins();
-        vm
+            fuel: None,
+        }
+    }
+
+    /// Register a single builtin function by name.
+    pub fn register_builtin(&mut self, name: &'static str, func: BuiltinFn) {
+        let idx = self.builtins.len() as u16;
+        self.builtins.push(BuiltinEntry { name, func });
+        let slot = self.global_slot(name.to_string());
+        self.globals[slot] = Value::Builtin(idx);
+    }
+
+    /// Register a builtin with an owned name string.
+    pub fn register_builtin_owned(&mut self, name: String, func: &BuiltinFn) {
+        let idx = self.builtins.len() as u16;
+        // Leak the string to get a 'static str (safe: builtins live for the VM's lifetime)
+        let name_static: &'static str = Box::leak(name.into_boxed_str());
+        self.builtins.push(BuiltinEntry {
+            name: name_static,
+            func: *func,
+        });
+        let slot = self.global_slot(name_static.to_string());
+        self.globals[slot] = Value::Builtin(idx);
+    }
+
+    /// Set the maximum heap size (in number of objects).
+    pub fn set_max_heap(&mut self, max: usize) {
+        self.heap.set_max_objects(max);
+    }
+
+    /// Set the fuel limit (max opcode executions).
+    pub fn set_fuel(&mut self, fuel: u64) {
+        self.fuel = Some(fuel);
     }
 
     // ── Heap helpers ─────────────────────────────────────────────────
@@ -300,6 +349,16 @@ impl VM {
 
     fn dispatch(&mut self) -> Result<(), RuntimeError> {
         loop {
+            // Fuel check: decrement and error if exhausted
+            if let Some(ref mut fuel) = self.fuel {
+                if *fuel == 0 {
+                    return Err(RuntimeError {
+                        message: "fuel exhausted (execution limit reached)".into(),
+                    });
+                }
+                *fuel -= 1;
+            }
+
             let fi = self.frames.len() - 1;
             let proto_idx = self.frames[fi].proto_idx;
             let chunk = self.chunk_for(proto_idx);
@@ -1208,5 +1267,43 @@ mod tests {
                let val _ = perform Put 42
                in perform Get () end)");
         assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    // ── Capability / builder tests ───────────────────────────────────
+
+    #[test]
+    fn test_fuel_exhaustion() {
+        let tokens = Lexer::new("fun loop n = loop (n + 1) val _ = loop 0", 0)
+            .tokenize()
+            .unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let (compiled, _) = Compiler::compile(program).unwrap();
+
+        let mut vm = crate::builder::VMBuilder::new(compiled)
+            .with_core()
+            .max_fuel(1000)
+            .build();
+
+        let result = vm.run();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_fuel_exhausted());
+    }
+
+    #[test]
+    fn test_sandboxed_no_filesystem() {
+        let tokens = Lexer::new("val x = 1 + 2", 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let (compiled, _) = Compiler::compile(program).unwrap();
+
+        let mut vm = crate::builder::VMBuilder::new(compiled).with_core().build();
+        vm.run().unwrap();
+        match vm.get_global("x") {
+            Some(Value::Int(3)) => {}
+            other => panic!("expected Int(3), got {other:?}"),
+        }
+        // Filesystem and HTTP builtins should not exist
+        assert!(vm.get_global("read_file").is_none());
+        assert!(vm.get_global("write_file").is_none());
+        assert!(vm.get_global("http_get").is_none());
     }
 }
