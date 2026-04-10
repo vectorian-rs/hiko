@@ -29,6 +29,7 @@ struct CallFrame {
 
 struct HandlerFrame {
     call_frame_idx: usize,
+    stack_base: usize,          // stack height when handler was installed
     clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
     proto_idx: usize,
     captures: Vec<Value>,
@@ -1021,6 +1022,7 @@ impl VM {
                     }
                     self.handlers.push(HandlerFrame {
                         call_frame_idx: fi,
+                        stack_base: self.stack.len(),
                         clauses,
                         proto_idx: self.frames[fi].proto_idx,
                         captures: self.frames[fi].captures.clone(),
@@ -1053,22 +1055,37 @@ impl VM {
                     let handler = self.handlers.remove(h_idx);
                     self.handlers.truncate(h_idx);
 
-                    // Save stack from handler frame's base so the handler
-                    // frame's locals are included in the continuation.
-                    let save_from = self.frames[handler.call_frame_idx].base;
+                    // Save stack from handler's stack_base (the point where
+                    // InstallHandler ran). The handler frame's pre-existing
+                    // locals below this point stay on the stack.
+                    let save_from = handler.stack_base;
                     let saved_stack = self.stack.split_off(save_from);
 
-                    let mut saved_frames = Vec::new();
-                    for frame in &self.frames[handler.call_frame_idx..] {
+                    // Save the handler frame's current IP/state so Resume
+                    // can re-create it. Its base stays on the real stack
+                    // (below save_from), but we record it with base_offset=0
+                    // and restore it specially in Resume.
+                    let hf = &self.frames[handler.call_frame_idx];
+                    let handler_frame = SavedFrame {
+                        proto_idx: hf.proto_idx,
+                        ip: hf.ip,
+                        base_offset: 0, // sentinel — handled specially in Resume
+                        captures: hf.captures.clone(),
+                    };
+
+                    let mut saved_frames = vec![handler_frame];
+                    for frame in &self.frames[handler.call_frame_idx + 1..] {
                         saved_frames.push(SavedFrame {
                             proto_idx: frame.proto_idx,
                             ip: frame.ip,
-                            base_offset: frame.base - save_from,
+                            base_offset: {
+                                debug_assert!(frame.base >= save_from);
+                                frame.base - save_from
+                            },
                             captures: frame.captures.clone(),
                         });
                     }
 
-                    // Allocate continuation on the heap
                     let cont = self.alloc(HeapObject::Continuation {
                         saved_frames,
                         saved_stack,
@@ -1111,17 +1128,24 @@ impl VM {
                         }
                     };
 
-                    // Restore saved stack and all saved frames.
-                    // The current (handler clause) frame stays — when the
-                    // resumed computation fully returns, it pops back here.
-                    let base = self.stack.len();
+                    // Restore saved stack and frames. The handler clause
+                    // frame stays — the resumed computation returns into it.
+                    let handler_base = self.frames.last().unwrap().base;
+                    let stack_base = self.stack.len();
                     self.stack.extend_from_slice(&saved_stack);
 
-                    for sf in saved_frames.iter() {
+                    for (i, sf) in saved_frames.iter().enumerate() {
+                        let frame_base = if i == 0 {
+                            // First saved frame is the handler frame — its
+                            // base is the same as the clause frame's base
+                            handler_base
+                        } else {
+                            stack_base + sf.base_offset
+                        };
                         self.frames.push(CallFrame {
                             proto_idx: sf.proto_idx,
                             ip: sf.ip,
-                            base: base + sf.base_offset,
+                            base: frame_base,
                             captures: sf.captures.clone(),
                         });
                     }
@@ -1433,8 +1457,20 @@ mod tests {
         assert_eq!(global_int(&vm, "result"), 42);
     }
 
-    // TODO: nested handlers and multiple resumes need frame base
-    // rebasing work — tracked for follow-up.
+    #[test]
+    fn test_effect_generator() {
+        let vm = run("effect Yield of Int
+             fun run_gen f = handle f ()
+               with return _ => 0
+                  | Yield n k => n + run_gen (fn _ => resume k ())
+             fun gen () =
+               let val _ = perform Yield 1
+                   val _ = perform Yield 2
+                   val _ = perform Yield 3
+               in () end
+             val result = run_gen gen");
+        assert_eq!(global_int(&vm, "result"), 6);
+    }
 
     #[test]
     fn test_effect_no_resume() {
@@ -1444,6 +1480,36 @@ mod tests {
              val result = handle f ()
                with return x => x
                   | Abort n _ => n");
+        assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    #[test]
+    fn test_effect_nested_handlers() {
+        // Nested handle blocks with different effects
+        let vm = run("effect A of Unit
+             effect B of Unit
+             val result = handle
+               handle 1 + perform A () + perform B ()
+               with return x => x
+                  | A _ k => resume k 10
+             with return x => x
+                | B _ k => resume k 100");
+        assert_eq!(global_int(&vm, "result"), 111);
+    }
+
+    #[test]
+    fn test_effect_state() {
+        // State effect: get/put pattern
+        let vm = run("effect Get of Unit
+             effect Put of Int
+             fun run_state init f =
+               handle f ()
+               with return x => x
+                  | Get _ k => run_state init (fn _ => resume k init)
+                  | Put n k => run_state n (fn _ => resume k ())
+             val result = run_state 0 (fn _ =>
+               let val _ = perform Put 42
+               in perform Get () end)");
         assert_eq!(global_int(&vm, "result"), 42);
     }
 }
