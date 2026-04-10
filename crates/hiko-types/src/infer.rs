@@ -621,12 +621,11 @@ impl InferCtx {
                 Ok(Type::Tuple(tys))
             }
             ExprKind::List(elems) => {
-                let elem_var = self.fresh();
-                for e in elems {
-                    let ty = self.infer_expr(e)?;
-                    self.unify(&ty, &elem_var, e.span)?;
-                }
-                Ok(Type::list(elem_var))
+                assert!(
+                    elems.is_empty(),
+                    "non-empty list should be desugared to Cons"
+                );
+                Ok(Type::list(self.fresh()))
             }
             ExprKind::Cons(hd, tl) => {
                 let hd_ty = self.infer_expr(hd)?;
@@ -652,10 +651,8 @@ impl InferCtx {
                     )),
                 }
             }
-            ExprKind::Not(e) => {
-                let ty = self.infer_expr(e)?;
-                self.unify(&ty, &Type::bool(), e.span)?;
-                Ok(Type::bool())
+            ExprKind::Not(_) => {
+                unreachable!("desugared to if-then-else")
             }
 
             ExprKind::App(func, arg) => {
@@ -795,7 +792,9 @@ impl InferCtx {
             BinOp::LtFloat | BinOp::GtFloat | BinOp::LeFloat | BinOp::GeFloat => {
                 (Type::float(), Type::float(), Type::bool())
             }
-            BinOp::Andalso | BinOp::Orelse => (Type::bool(), Type::bool(), Type::bool()),
+            BinOp::Andalso | BinOp::Orelse => {
+                unreachable!("desugared to if-then-else")
+            }
             BinOp::Eq | BinOp::Ne => {
                 self.unify(&lhs_ty, &rhs_ty, span)?;
                 let resolved = self.apply(&lhs_ty);
@@ -856,14 +855,11 @@ impl InferCtx {
                 Ok((Type::Tuple(tys), all_bindings))
             }
             PatKind::List(pats) => {
-                let elem = self.fresh();
-                let mut all_bindings = Vec::new();
-                for p in pats {
-                    let (ty, bindings) = self.infer_pat_inner(p)?;
-                    self.unify(&ty, &elem, p.span)?;
-                    all_bindings.extend(bindings);
-                }
-                Ok((Type::list(elem), all_bindings))
+                assert!(
+                    pats.is_empty(),
+                    "non-empty list pattern should be desugared to Cons"
+                );
+                Ok((Type::list(self.fresh()), vec![]))
             }
             PatKind::Cons(hd, tl) => {
                 let (hd_ty, mut bindings) = self.infer_pat_inner(hd)?;
@@ -1116,12 +1112,12 @@ fn is_syntactic_value(expr: &Expr) -> bool {
         | ExprKind::Var(_)
         | ExprKind::Constructor(_)
         | ExprKind::Fn(_, _) => true,
-        ExprKind::Tuple(elems) | ExprKind::List(elems) => elems.iter().all(is_syntactic_value),
+        ExprKind::Tuple(elems) => elems.iter().all(is_syntactic_value),
+        ExprKind::List(elems) => elems.is_empty(),
         ExprKind::Cons(hd, tl) => is_syntactic_value(hd) && is_syntactic_value(tl),
         ExprKind::App(func, arg) => {
             matches!(&func.kind, ExprKind::Constructor(_)) && is_syntactic_value(arg)
         }
-        ExprKind::Paren(e) => is_syntactic_value(e),
         ExprKind::Ann(e, _) => is_syntactic_value(e),
         _ => false,
     }
@@ -1136,6 +1132,7 @@ mod tests {
     fn infer(input: &str) -> InferCtx {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
+        let program = hiko_syntax::desugar::desugar_program(program);
         let mut ctx = InferCtx::new();
         ctx.infer_program(&program).expect("type error");
         ctx
@@ -1144,6 +1141,7 @@ mod tests {
     fn infer_err(input: &str) -> String {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
+        let program = hiko_syntax::desugar::desugar_program(program);
         let mut ctx = InferCtx::new();
         ctx.infer_program(&program).unwrap_err().message
     }

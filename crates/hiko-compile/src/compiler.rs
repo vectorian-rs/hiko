@@ -111,8 +111,9 @@ impl Compiler {
             infer_ctx: InferCtx::new(),
         };
         for decl in &program.decls {
-            c.infer_ctx.infer_decl(decl)?;
-            c.compile_decl(decl)?;
+            let decl = hiko_syntax::desugar::desugar_decl(decl.clone());
+            c.infer_ctx.infer_decl(&decl)?;
+            c.compile_decl(&decl)?;
         }
         c.emit(Op::Halt);
         let main = c.func_stack.pop().unwrap();
@@ -413,8 +414,9 @@ impl Compiler {
         let old_base = self.base_dir.clone();
         self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
         for decl in &program.decls {
-            self.infer_ctx.infer_decl(decl)?;
-            self.compile_decl(decl)?;
+            let decl = hiko_syntax::desugar::desugar_decl(decl.clone());
+            self.infer_ctx.infer_decl(&decl)?;
+            self.compile_decl(&decl)?;
         }
         self.base_dir = old_base;
         Ok(())
@@ -725,26 +727,12 @@ impl Compiler {
                 self.emit_field_extract_test(slot, 1, tl, fail_jumps)?;
             }
 
-            PatKind::List(pats) if pats.is_empty() => {
-                self.emit_tag_check(slot, 0, fail_jumps); // Nil = tag 0
-            }
             PatKind::List(pats) => {
-                // [p1, p2, ...] = p1 :: p2 :: ... :: []
-                let mut current_slot = slot;
-                for (i, p) in pats.iter().enumerate() {
-                    self.emit_tag_check(current_slot, 1, fail_jumps); // Cons
-                    self.emit_field_extract_test(current_slot, 0, p, fail_jumps)?;
-                    // Get tail for next iteration
-                    self.emit(Op::GetLocal);
-                    self.emit_u16(current_slot);
-                    self.emit(Op::GetField);
-                    self.emit_u8(1);
-                    self.add_local("_ltl".to_string());
-                    current_slot = (self.ctx().locals.len() - 1) as u16;
-                    if i == pats.len() - 1 {
-                        self.emit_tag_check(current_slot, 0, fail_jumps); // must be Nil
-                    }
-                }
+                assert!(
+                    pats.is_empty(),
+                    "non-empty list pattern should be desugared to Cons"
+                );
+                self.emit_tag_check(slot, 0, fail_jumps); // Nil = tag 0
             }
 
             PatKind::As(_, sub_pat) => {
@@ -812,15 +800,7 @@ impl Compiler {
                 self.compile_pattern_bind(tl_slot, tl)?;
             }
 
-            PatKind::List(pats) if pats.is_empty() => {}
-            PatKind::List(pats) => {
-                let mut current_slot = slot;
-                for p in pats {
-                    let hd_slot = self.emit_field_extract(current_slot, 0);
-                    self.compile_pattern_bind(hd_slot, p)?;
-                    current_slot = self.emit_field_extract(current_slot, 1);
-                }
-            }
+            PatKind::List(_) => {} // empty list — nothing to bind
 
             PatKind::As(name, sub_pat) => {
                 self.emit(Op::GetLocal);
@@ -864,32 +844,13 @@ impl Compiler {
                 self.emit_u8(elems.len() as u8);
             }
             ExprKind::List(elems) => {
-                if elems.is_empty() {
-                    self.emit(Op::MakeData);
-                    self.emit_u16(0);
-                    self.emit_u8(0);
-                } else {
-                    // Build as nested Cons: [1,2,3] = Cons(1, Cons(2, Cons(3, Nil)))
-                    // Use iterative approach to avoid stack overflow on long lists
-                    for e in elems {
-                        self.compile_expr(e)?;
-                    }
-                    // Now stack has: [e1, e2, ..., en]
-                    // Build from right: push Nil, then Cons each element
-                    self.emit(Op::MakeData);
-                    self.emit_u16(0); // Nil
-                    self.emit_u8(0);
-                    // Stack: [e1, e2, ..., en, Nil]
-                    // We need to Cons en with Nil, then Cons e(n-1) with that, etc.
-                    // But elements are in wrong order on stack for MakeData.
-                    // MakeData 1 2 pops: [head, tail] where head is deeper.
-                    // Stack after each MakeData: consumes top 2, pushes 1.
-                    for _ in 0..elems.len() {
-                        self.emit(Op::MakeData);
-                        self.emit_u16(1); // Cons
-                        self.emit_u8(2);
-                    }
-                }
+                assert!(
+                    elems.is_empty(),
+                    "non-empty list should be desugared to Cons"
+                );
+                self.emit(Op::MakeData);
+                self.emit_u16(0); // Nil
+                self.emit_u8(0);
             }
             ExprKind::Cons(head, tail) => {
                 self.compile_expr(head)?;
@@ -899,23 +860,8 @@ impl Compiler {
                 self.emit_u8(2);
             }
 
-            ExprKind::BinOp(BinOp::Andalso, lhs, rhs) => {
-                self.compile_expr(lhs)?;
-                let short = self.emit_jump(Op::JumpIfFalse);
-                self.compile_expr(rhs)?;
-                let end = self.emit_jump(Op::Jump);
-                self.patch_jump(short);
-                self.emit(Op::False);
-                self.patch_jump(end);
-            }
-            ExprKind::BinOp(BinOp::Orelse, lhs, rhs) => {
-                self.compile_expr(lhs)?;
-                let short = self.emit_jump(Op::JumpIfFalse);
-                self.emit(Op::True);
-                let end = self.emit_jump(Op::Jump);
-                self.patch_jump(short);
-                self.compile_expr(rhs)?;
-                self.patch_jump(end);
+            ExprKind::BinOp(BinOp::Andalso | BinOp::Orelse, _, _) => {
+                unreachable!("desugared to if-then-else")
             }
             ExprKind::BinOp(op, lhs, rhs) => {
                 self.compile_expr(lhs)?;
@@ -927,9 +873,8 @@ impl Compiler {
                 self.compile_expr(e)?;
                 self.emit(Op::Neg);
             }
-            ExprKind::Not(e) => {
-                self.compile_expr(e)?;
-                self.emit(Op::Not);
+            ExprKind::Not(_) => {
+                unreachable!("desugared to if-then-else")
             }
 
             ExprKind::App(func, arg) => {
