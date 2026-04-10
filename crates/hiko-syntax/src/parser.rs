@@ -1152,7 +1152,7 @@ impl Parser {
                 self.advance();
                 let first = self.parse_type_expr()?;
                 if self.eat(&TokenKind::Comma).is_some() {
-                    // Multi-arg: (ty1, ty2, ...) — stored as Tuple, converted to App in parse_app_type
+                    // Multi-arg: (ty1, ty2, ...) stored as Tuple, converted to App in parse_app_type
                     let mut elems = vec![first];
                     elems.push(self.parse_type_expr()?);
                     while self.eat(&TokenKind::Comma).is_some() {
@@ -1330,8 +1330,8 @@ mod tests {
 
     #[test]
     fn test_use_decl() {
-        let prog = parse(r#"use "foo.hk""#);
-        assert!(matches!(&prog.decls[0].kind, DeclKind::Use(path) if path == "foo.hk"));
+        let prog = parse(r#"use "foo.hml""#);
+        assert!(matches!(&prog.decls[0].kind, DeclKind::Use(path) if path == "foo.hml"));
     }
 
     #[test]

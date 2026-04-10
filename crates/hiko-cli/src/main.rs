@@ -19,29 +19,29 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: hiko <command> [args]");
         eprintln!("Commands:");
-        eprintln!("  run <file.hk>    Compile and execute a program");
-        eprintln!("  check <file.hk>  Type-check without executing");
+        eprintln!("  run <file.hml>    Compile and execute a program");
+        eprintln!("  check <file.hml>  Type-check without executing");
         process::exit(1);
     }
 
     match args[1].as_str() {
         "run" => {
             if args.len() < 3 {
-                eprintln!("Usage: hiko run <file.hk>");
+                eprintln!("Usage: hiko run <file.hml>");
                 process::exit(1);
             }
             run_file(&args[2]);
         }
         "check" => {
             if args.len() < 3 {
-                eprintln!("Usage: hiko check <file.hk>");
+                eprintln!("Usage: hiko check <file.hml>");
                 process::exit(1);
             }
             check_file(&args[2]);
         }
         other => {
             eprintln!("Unknown command: {other}");
-            eprintln!("Try: hiko run <file.hk>");
+            eprintln!("Try: hiko run <file.hml>");
             process::exit(1);
         }
     }

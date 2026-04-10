@@ -477,13 +477,36 @@ impl VM {
                 },
                 _ => return Err("http_get: expected String".into()),
             };
-            let body = ureq::get(&url)
+            let response = ureq::get(&url)
                 .call()
-                .map_err(|e| format!("http_get: {e}"))?
+                .map_err(|e| format!("http_get: {e}"))?;
+
+            let status = Value::Int(response.status().as_u16() as i64);
+
+            // Collect headers as a list of (name, value) tuples
+            let mut header_values: Vec<Value> = Vec::new();
+            for name in response.headers().keys() {
+                if let Some(val) = response.headers().get(name) {
+                    let k = Value::Heap(heap.alloc(HeapObject::String(name.to_string())));
+                    let v = Value::Heap(
+                        heap.alloc(HeapObject::String(val.to_str().unwrap_or("").to_string())),
+                    );
+                    let pair = Value::Heap(heap.alloc(HeapObject::Tuple(vec![k, v])));
+                    header_values.push(pair);
+                }
+            }
+            let headers = alloc_list(heap, header_values);
+
+            let body_str = response
                 .into_body()
                 .read_to_string()
                 .map_err(|e| format!("http_get: {e}"))?;
-            Ok(Value::Heap(heap.alloc(HeapObject::String(body))))
+            let body = Value::Heap(heap.alloc(HeapObject::String(body_str)));
+
+            // Return (status, headers, body)
+            Ok(Value::Heap(
+                heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
+            ))
         }
         fn bi_exit(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
@@ -1069,7 +1092,7 @@ impl VM {
                     let handler_frame = SavedFrame {
                         proto_idx: hf.proto_idx,
                         ip: hf.ip,
-                        base_offset: 0, // sentinel — handled specially in Resume
+                        base_offset: 0, // sentinel, handled specially in Resume
                         captures: hf.captures.clone(),
                     };
 
@@ -1129,14 +1152,14 @@ impl VM {
                     };
 
                     // Restore saved stack and frames. The handler clause
-                    // frame stays — the resumed computation returns into it.
+                    // frame stays; the resumed computation returns into it.
                     let handler_base = self.frames.last().unwrap().base;
                     let stack_base = self.stack.len();
                     self.stack.extend_from_slice(&saved_stack);
 
                     for (i, sf) in saved_frames.iter().enumerate() {
                         let frame_base = if i == 0 {
-                            // First saved frame is the handler frame — its
+                            // First saved frame is the handler frame, so its
                             // base is the same as the clause frame's base
                             handler_base
                         } else {
@@ -1474,7 +1497,7 @@ mod tests {
 
     #[test]
     fn test_effect_no_resume() {
-        // Handler does not resume — aborts the computation
+        // Handler does not resume, so it aborts the computation
         let vm = run("effect Abort of Int
              fun f () = let val _ = perform Abort 42 in 0 end
              val result = handle f ()

@@ -1,17 +1,17 @@
-# Hiko — Technical Bootstrap Document (v1.0)
+# Hiko: Technical Bootstrap Document (v1.0)
 
-**File extension:** `.hk`
+**File extension:** `.hml`
 **CLI command:** `hiko`
 
 ---
 
 ## 1. Project Summary
 
-Hiko implements **Core SML** — the core language of Standard ML as defined in the Definition of Standard ML (chapters 2, 4, 6) — **excluding the module language** (chapters 3, 5, 7: structures, signatures, functors, sharing constraints).
+Hiko implements **Core SML**, the core language of Standard ML as defined in the Definition of Standard ML (chapters 2, 4, 6), **excluding the module language** (chapters 3, 5, 7: structures, signatures, functors, sharing constraints).
 
 The implementation target is a bytecode VM written in Rust, designed for scripting use cases where startup time, simplicity, and embeddability matter.
 
-v0 implements the functional nucleus of Core SML first. Some Core SML features — records, `ref`, exceptions, equality types, and full derived forms — are staged into later phases, not because they are unimportant, but because the functional nucleus must be correct before they are layered on. A small number of non-SML conveniences are added for tooling, most notably monomorphic operator names and a simple file-loading mechanism.
+v0 implements the functional nucleus of Core SML first. Some Core SML features (records, `ref`, exceptions, equality types, and full derived forms) are staged into later phases, not because they are unimportant, but because the functional nucleus must be correct before they are layered on. A small number of non-SML conveniences are added for tooling, most notably monomorphic operator names and a simple file-loading mechanism.
 
 v0 prioritizes semantic correctness over Basis compatibility, optimization, and advanced abstraction mechanisms.
 
@@ -19,15 +19,15 @@ v0 prioritizes semantic correctness over Basis compatibility, optimization, and 
 
 ## 2. Core SML Feature Status
 
-### 2.1 Included in v0 — matches Core SML closely
+### 2.1 Included in v0 (matches Core SML closely)
 
 | Feature                                                                                               | SML core reference |
 | ----------------------------------------------------------------------------------------------------- | ------------------ |
 | Call-by-value evaluation, strict left-to-right                                                        | §6                 |
 | Hindley–Milner type inference (Algorithm W implementation strategy)                                   | §4.5–4.7           |
-| Value restriction — only syntactic values generalized                                                 | §4.7               |
+| Value restriction (only syntactic values generalized)                                                  | §4.7               |
 | Algebraic datatypes, single-datatype recursion                                                        | §2.4, §4.2         |
-| Pattern matching — left-to-right, first-match, exhaustiveness **error**, redundant clause **warning** | §2.6, §6.7         |
+| Pattern matching (left-to-right, first-match, exhaustiveness **error**, redundant clause **warning**)   | §2.6, §6.7         |
 | Let-polymorphism                                                                                      | §4.6               |
 | Lexical scoping and closures                                                                          | §6                 |
 | Recursive bindings (`fun`, `val rec`), mutual recursion via `and`                                     | §2.9               |
@@ -65,14 +65,14 @@ These are deliberate deviations from Core SML.
 | ------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------- |
 | **Operator names**        | `+`, `*`, etc. are overloaded across int/real/word      | Monomorphic: `+` (int), `+.` (float), `^` (string concat)            | Avoids ad-hoc overloading machinery                   |
 | **Exhaustiveness policy** | Non-exhaustive match is a warning in most SML compilers | Non-exhaustive match is a **compile-time error**                     | Stronger guarantee; avoids runtime `Match` failures   |
-| **Import mechanism**      | No import in Core SML (modules handle composition)      | `use "file.hk"` loads a file and imports its top-level bindings      | Practical replacement for deferred modules            |
+| **Import mechanism**      | No import in Core SML (modules handle composition)      | `use "file.hml"` loads a file and imports its top-level bindings      | Practical replacement for deferred modules            |
 | **Equality**              | Polymorphic `=` with equality type tracking             | `=` restricted to scalar types only in v0                            | Avoids a partial `eqtype` system                      |
 | **Comparison operators**  | `<`, `<=`, etc. are polymorphic across numeric types    | Monomorphic: `<`, `>`, `<=`, `>=` for Int; `<.`, `>.`, `<=.`, `>=.` for Float | Keeps operator design consistent with arithmetic      |
-| **Type shadowing**        | Allowed — later type bindings shadow earlier ones       | Disallowed in v0 — redefining a type name in the same scope is an error | Simplifies type environment handling               |
+| **Type shadowing**        | Allowed; later type bindings shadow earlier ones         | Disallowed in v0; redefining a type name in the same scope is an error   | Simplifies type environment handling               |
 | **Constructor shadowing** | Constructors can be shadowed by value bindings          | Constructors cannot be shadowed by value bindings                    | Prevents confusing pattern matching interactions      |
 | **Surface syntax**        | Standard SML syntax                                     | Minor syntax preferences and implementation-oriented simplifications | Semantics matter more than full source-level fidelity |
 
-### 2.4 Module language — excluded entirely
+### 2.4 Module language (excluded entirely)
 
 Everything from the Definition's module language (chapters 3, 5, 7):
 
@@ -101,18 +101,18 @@ This is the primary scope boundary. The module language is absent, not simplifie
 
 **Built-in types:**
 
-* `Int` — 64-bit signed integer
-* `Float` — 64-bit IEEE float (literals support decimal and exponent notation: `3.14`, `1.0e10`, `2.5E-3`)
-* `Bool` — `true`, `false`
-* `String` — UTF-8 immutable string
-* `Char` — Unicode scalar value
-* `Unit` — the type `()` with single value `()`
+* `Int`: 64-bit signed integer
+* `Float`: 64-bit IEEE float (literals support decimal and exponent notation: `3.14`, `1.0e10`, `2.5E-3`)
+* `Bool`: `true`, `false`
+* `String`: UTF-8 immutable string
+* `Char`: Unicode scalar value
+* `Unit`: the type `()` with single value `()`
 
 **Type constructors:**
 
-* `a * b * c` — tuple types (2+ elements)
-* `'a list` — homogeneous list
-* `a -> b` — function type
+* `a * b * c`: tuple types (2+ elements)
+* `'a list`: homogeneous list
+* `a -> b`: function type
 * User-defined datatypes (possibly parameterized)
 
 **Type variables:** `'a`, `'b`, etc. (SML-style)
@@ -124,7 +124,7 @@ e ::= int_lit | float_lit | "s" | #"c"  (* literals *)
     | true | false | ()                 (* constants *)
     | x                                 (* variable *)
     | (e1, e2, ..., en)                 (* tuple, n >= 2 *)
-    | [e1, e2, ..., en]                 (* list literal — sugar for cons/nil *)
+    | [e1, e2, ..., en]                 (* list literal, sugar for cons/nil *)
     | e1 :: e2                          (* cons *)
     | e1 op e2                          (* binary operator *)
     | ~e                                (* unary negation *)
@@ -172,7 +172,7 @@ fun f x = ... g ...
 and g y = ... f ...
 ```
 
-**Datatype syntax — type parameters are declared before the type name:**
+**Datatype syntax (type parameters are declared before the type name):**
 
 ```sml
 datatype 'a option = None | Some of 'a
@@ -204,12 +204,12 @@ p ::= _
 
 ### 3.5 Programs and Imports
 
-A `.hk` file is a sequence of top-level declarations, evaluated in order. No header or module declaration is required. Each declaration group is elaborated and evaluated before the next top-level declaration group — later declarations are not visible to earlier ones.
+A `.hml` file is a sequence of top-level declarations, evaluated in order. No header or module declaration is required. Each declaration group is elaborated and evaluated before the next top-level declaration group; later declarations are not visible to earlier ones.
 
 **Import:**
 
 ```sml
-use "path/to/file.hk"
+use "path/to/file.hml"
 ```
 
 Import semantics:
@@ -315,11 +315,11 @@ val _ = println (int_to_string (inc_then_double 3))  (* 8 *)
 ### File Import
 
 ```sml
-(* file: math.hk *)
+(* file: math.hml *)
 fun square x = x * x
 
-(* file: main.hk *)
-use "math.hk"
+(* file: main.hml *)
+use "math.hml"
 val _ = println (int_to_string (square 5))  (* 25 *)
 ```
 
@@ -337,7 +337,7 @@ fun clamp (lo : Float) (hi : Float) (x : Float) =
 ## 5. Architecture
 
 ```text
-Source (.hk)
+Source (.hml)
     │
     ▼
 Lexer
@@ -437,7 +437,7 @@ This is the rule used by the type checker, not an informal guideline.
 
 ## 8. Phased Implementation Roadmap
 
-### Phase 0 — Repository Setup and Crate Layout
+### Phase 0: Repository Setup and Crate Layout
 
 Success criteria:
 
@@ -446,7 +446,7 @@ Success criteria:
 * `cargo clippy`
 * CI on push
 
-### Phase 1 — Lexer + Parser + AST
+### Phase 1: Lexer + Parser + AST
 
 Success criteria:
 
@@ -457,9 +457,9 @@ Success criteria:
 
 Representative test: `fun map f xs = case xs of [] => [] | x :: xs => f x :: map f xs` parses and pretty-prints correctly.
 
-Main risk: operator precedence for `::` vs arithmetic — solved by a Pratt parser.
+Main risk: operator precedence for `::` vs arithmetic, solved by a precedence-climbing parser.
 
-### Phase 2 — Type Inference
+### Phase 2: Type Inference
 
 Success criteria:
 
@@ -473,7 +473,7 @@ Representative test: `let val id = fn x => x in (id 42, id true) end` infers `In
 
 Main risk: getting generalization/instantiation right at `let` boundaries.
 
-### Phase 3 — Bytecode Compiler + VM
+### Phase 3: Bytecode Compiler + VM
 
 Success criteria:
 
@@ -482,11 +482,11 @@ Success criteria:
 * Safe stack overflow handling
 * Tail-call optimization is optional in the first working VM; if implemented initially, self-tail-calls are sufficient
 
-Representative test: `fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)` — `fib 30` returns `832040`.
+Representative test: `fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)`. `fib 30` returns `832040`.
 
 Main risk: closure capture correctness when closures escape their defining scope.
 
-### Phase 4 — ADTs + Pattern Matching
+### Phase 4: ADTs + Pattern Matching
 
 Success criteria:
 
@@ -499,7 +499,7 @@ Representative test: `datatype expr = Num of Int | Add of expr * expr` with a re
 
 Main risk: Maranget's algorithm is well-documented but tricky to implement correctly with nested patterns.
 
-### Phase 5 — Imports, REPL, Stdlib Basics
+### Phase 5: Imports, REPL, Stdlib Basics
 
 Success criteria:
 
@@ -509,7 +509,7 @@ Success criteria:
 
 Runtime builtins (implemented in Rust, always available): `print`, `println`, `int_to_string`, `float_to_string`, `string_length`, `panic`. Stdlib functions (written in Hiko, loaded from `stdlib/`): `map`, `filter`, `foldl`, and other list utilities.
 
-Representative test: `use "math.hk"` followed by calling a function defined in that file.
+Representative test: `use "math.hml"` followed by calling a function defined in that file.
 
 Main risk: REPL state management across re-definitions.
 
@@ -690,10 +690,10 @@ pub struct Closure {
 
 The compiler pre-registers a built-in `list` datatype:
 
-* `Nil` — tag 0, arity 0
-* `Cons` — tag 1, arity 2
+* `Nil`: tag 0, arity 0
+* `Cons`: tag 1, arity 2
 
-List literals desugar to nested `Cons(..., Nil)` and compile through normal ADT machinery. `Nil` and `Cons` are internal runtime tags — surface syntax uses `[]` and `::` exclusively.
+List literals desugar to nested `Cons(..., Nil)` and compile through normal ADT machinery. `Nil` and `Cons` are internal runtime tags; surface syntax uses `[]` and `::` exclusively.
 
 ### 11.4 VM structure
 
@@ -712,7 +712,7 @@ pub struct CallFrame {
 }
 ```
 
-The VM uses a shared value stack. Each `CallFrame` records a `base` index — the frame's locals are `stack[base..base+n_locals]`. Arguments are passed on the stack; the callee's `base` is set so that argument slots become its first locals.
+The VM uses a shared value stack. Each `CallFrame` records a `base` index; the frame's locals are `stack[base..base+n_locals]`. Arguments are passed on the stack; the callee's `base` is set so that argument slots become its first locals.
 
 ### 11.5 GC strategy
 
@@ -785,8 +785,8 @@ Supported in v0:
 
 Literal exhaustiveness rules:
 
-* `Bool` and `Unit` are finite literal domains — the checker recognizes exhaustive coverage (e.g., `true | false` is complete).
-* `Int`, `Float`, `Char`, and `String` are open-ended — a wildcard or variable fallback is always required for exhaustive coverage.
+* `Bool` and `Unit` are finite literal domains. The checker recognizes exhaustive coverage (e.g., `true | false` is complete).
+* `Int`, `Float`, `Char`, and `String` are open-ended. A wildcard or variable fallback is always required for exhaustive coverage.
 
 **Non-exhaustive match:** compile-time error
 **Redundant clause:** warning
@@ -873,5 +873,5 @@ Key design bets:
 * scalar-only equality
 * non-exhaustive match as error
 
-**Start here:** create the workspace and implement the lexer and parser first. The first milestone is parsing a complete `.hk` file into an AST and pretty-printing it back without losing structure.
+**Start here:** create the workspace and implement the lexer and parser first. The first milestone is parsing a complete `.hml` file into an AST and pretty-printing it back without losing structure.
 

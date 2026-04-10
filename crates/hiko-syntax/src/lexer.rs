@@ -155,7 +155,7 @@ impl<'src> Lexer<'src> {
             b'\\' => '\\',
             b'"' => '"',
             b'x' => {
-                // \xHH — two hex digits
+                // \xHH: two hex digits
                 if self.pos + 2 >= self.bytes.len() {
                     return Err(self.err("incomplete \\x escape", literal_start));
                 }

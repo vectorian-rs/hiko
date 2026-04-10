@@ -339,12 +339,12 @@ fn rt_type_alias_multi_param() {
 
 #[test]
 fn rt_use() {
-    assert_roundtrip(r#"use "foo.hk""#);
+    assert_roundtrip(r#"use "foo.hml""#);
 }
 
 #[test]
 fn rt_use_escaped_path() {
-    assert_roundtrip(r#"use "dir\\file.hk""#);
+    assert_roundtrip(r#"use "dir\\file.hml""#);
 }
 
 // ── Application with unary operators ─────────────────────────────────

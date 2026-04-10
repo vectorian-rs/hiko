@@ -754,7 +754,7 @@ impl Compiler {
         fail_jumps: &mut Vec<usize>,
     ) -> Result<(), CompileError> {
         if is_trivial_pat(sub_pat) {
-            return Ok(()); // wildcard/var — nothing to test
+            return Ok(()); // wildcard/var: nothing to test
         }
         // Push field value as temp local for sub-pattern testing
         let field_slot = self.emit_field_extract(slot, field_idx);
@@ -800,7 +800,7 @@ impl Compiler {
                 self.compile_pattern_bind(tl_slot, tl)?;
             }
 
-            PatKind::List(_) => {} // empty list — nothing to bind
+            PatKind::List(_) => {} // empty list, nothing to bind
 
             PatKind::As(name, sub_pat) => {
                 self.emit(Op::GetLocal);
@@ -975,7 +975,7 @@ impl Compiler {
                 // Compile the body (runs under the handler)
                 self.compile_expr_inner(body, false)?;
 
-                // Body returned normally — remove handler
+                // Body returned normally; remove handler
                 self.emit(Op::RemoveHandler);
 
                 // Compile the return clause

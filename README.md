@@ -10,10 +10,10 @@ Hiko's semantics are anchored in Core SML (Standard ML of New Jersey), with Hind
 cargo build --release
 
 # Run a program
-cargo run -- run examples/factorial.hk
+cargo run -- run examples/factorial.hml
 
 # Type-check without executing
-cargo run -- check examples/closures.hk
+cargo run -- check examples/closures.hml
 ```
 
 ## Language Overview
@@ -101,7 +101,7 @@ fun run_gen f = handle f ()
 val result = run_gen gen   (* result = 6 *)
 ```
 
-**State effect** -- get/put pattern:
+**State effect** (get/put pattern):
 
 ```sml
 effect Get of Unit
@@ -130,7 +130,7 @@ fun compose f g = fn x => f (g x)
 (* Type annotations supported *)
 val x : Int = 42
 
-(* Monomorphic operators -- SML-97 style *)
+(* Monomorphic operators, SML-97 style *)
 val sum = 1 + 2          (* Int arithmetic: + - * / mod *)
 val avg = 1.0 +. 2.0     (* Float arithmetic: +. -. *. /. *)
 val msg = "a" ^ "b"      (* String concatenation: ^ *)
@@ -139,8 +139,8 @@ val msg = "a" ^ "b"      (* String concatenation: ^ *)
 ### Imports
 
 ```sml
-use "stdlib/list.hk"
-use "stdlib/option.hk"
+use "stdlib/list.hml"
+use "stdlib/option.hml"
 
 val xs = map (fn x => x * 2) [1, 2, 3]
 ```
@@ -164,7 +164,7 @@ val xs = map (fn x => x * 2) [1, 2, 3]
 ## Architecture
 
 ```
-Source (.hk)
+Source (.hml)
   |
   v
 Lexer ──> Tokens
@@ -200,33 +200,33 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 ### Key Implementation Details
 
-**Parser** -- Hand-written precedence-climbing recursive descent. Each precedence level is a separate function (`parse_orelse` > `parse_andalso` > `parse_comparison` > `parse_cons` > `parse_addition` > `parse_multiplication` > `parse_app` > `parse_atom`).
+**Parser.** Hand-written precedence-climbing recursive descent. Each precedence level is a separate function (`parse_orelse` > `parse_andalso` > `parse_comparison` > `parse_cons` > `parse_addition` > `parse_multiplication` > `parse_app` > `parse_atom`).
 
-**Desugaring** -- AST-to-AST pass that eliminates syntactic sugar before type-checking:
+**Desugaring.** AST-to-AST pass that eliminates syntactic sugar before type-checking:
 - `[1, 2, 3]` becomes nested `1 :: 2 :: 3 :: []`
 - `andalso`/`orelse` become `if-then-else`
 - `not e` becomes `if e then false else true`
 - `(e)` unwrapped
 
-**Type Inference** -- Algorithm W with the SML value restriction. Polymorphic types are generalized only at `val` bindings of syntactic values. Types are unified with occurs-check to prevent infinite types.
+**Type Inference.** Algorithm W with the SML value restriction. Polymorphic types are generalized only at `val` bindings of syntactic values. Types are unified with occurs-check to prevent infinite types.
 
-**Exhaustiveness Checking** -- Based on Maranget's "Warnings for pattern matching" (JFP 2007). Uses the usefulness algorithm: a match is exhaustive iff the wildcard pattern is not useful against the existing clauses. Reports both missing cases and redundant clauses.
+**Exhaustiveness Checking.** Based on Maranget's "Warnings for pattern matching" (JFP 2007). Uses the usefulness algorithm: a match is exhaustive iff the wildcard pattern is not useful against the existing clauses. Reports both missing cases and redundant clauses.
 
-**Bytecode Compiler** -- Direct walk of the typed AST producing 57 opcodes. Two-pass pattern compilation (test-then-bind) with tail-call optimization propagated through `if`/`let`/`case` branches.
+**Bytecode Compiler.** Direct walk of the typed AST producing 57 opcodes. Two-pass pattern compilation (test-then-bind) with tail-call optimization propagated through `if`/`let`/`case` branches.
 
-**VM** -- Stack-based with `Vec<Value>` stack and `Vec<CallFrame>` frames. `Value` is `Copy` (no Rc, no Drop) -- 16 bytes, passed by value. Heap objects referenced via `GcRef(u32)` indices into the GC arena.
+**VM.** Stack-based with `Vec<Value>` stack and `Vec<CallFrame>` frames. `Value` is `Copy` (no Rc, no Drop), 16 bytes, passed by value. Heap objects referenced via `GcRef(u32)` indices into the GC arena.
 
-**Garbage Collector** -- Mark-and-sweep with worklist-based marking (avoids stack overflow on deep object graphs), free-list reuse, and adaptive collection threshold.
+**Garbage Collector.** Mark-and-sweep with worklist-based marking (avoids stack overflow on deep object graphs), free-list reuse, and adaptive collection threshold.
 
-**Effect Handlers** -- Shallow, one-shot delimited continuations. `perform` captures the stack and frames between the perform site and the nearest matching handler. `resume` restores the captured continuation. Supports nested handlers, recursive handlers, and the generator/state patterns.
+**Effect Handlers.** Shallow, one-shot delimited continuations. `perform` captures the stack and frames between the perform site and the nearest matching handler. `resume` restores the captured continuation. Supports nested handlers, recursive handlers, and the generator/state patterns.
 
-**Tail-Call Optimization** -- The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
+**Tail-Call Optimization.** The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
 
 ## Standard Library
 
-- **`stdlib/list.hk`** -- `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`
-- **`stdlib/option.hk`** -- `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option`
-- **`stdlib/either.hk`** -- `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right`
+- **`stdlib/list.hml`**: `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`
+- **`stdlib/option.hml`**: `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option`
+- **`stdlib/either.hml`**: `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right`
 
 ## Examples
 
@@ -234,19 +234,19 @@ The `examples/` directory includes programs demonstrating:
 
 | File | Feature |
 |---|---|
-| `hello.hk` | Basic output |
-| `factorial.hk` | Clausal function definitions |
-| `fibonacci.hk` | Recursion |
-| `closures.hk` | Higher-order functions, composition |
-| `list_ops.hk` | Map, filter, fold over lists |
-| `option.hk` | Algebraic data types |
-| `either.hk` | Sum types for error handling |
-| `expr_eval.hk` | Recursive expression evaluator |
-| `math.hk` | Float arithmetic, sqrt |
-| `string_ops.hk` | String manipulation builtins |
-| `file_io.hk` | File read/write |
-| `http_fetch.hk` | HTTP GET request |
-| `import_test.hk` | Module imports |
+| `hello.hml` | Basic output |
+| `factorial.hml` | Clausal function definitions |
+| `fibonacci.hml` | Recursion |
+| `closures.hml` | Higher-order functions, composition |
+| `list_ops.hml` | Map, filter, fold over lists |
+| `option.hml` | Algebraic data types |
+| `either.hml` | Sum types for error handling |
+| `expr_eval.hml` | Recursive expression evaluator |
+| `math.hml` | Float arithmetic, sqrt |
+| `string_ops.hml` | String manipulation builtins |
+| `file_io.hml` | File read/write |
+| `http_fetch.hml` | HTTP GET request |
+| `import_test.hml` | Module imports |
 
 ## Testing
 

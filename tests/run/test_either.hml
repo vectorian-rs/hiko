@@ -1,6 +1,6 @@
 (* Tests for stdlib/either.hk *)
 
-use "../../stdlib/either.hk"
+use "../../stdlib/either.hml"
 
 val _ = assert (is_left (Left 1), "is_left Left")
 val _ = assert (is_right (Right 1), "is_right Right")

@@ -30,8 +30,8 @@ enum Constructor {
     Nil,
     Cons,
     Tuple(usize),
-    /// Distinct literal value — each unique value is a separate constructor.
-    /// Treated as an open (infinite) domain requiring a wildcard fallback.
+    /// Distinct literal value. Each unique value is a separate constructor,
+    /// treated as an open (infinite) domain requiring a wildcard fallback.
     IntLit(i64),
     FloatBits(u64), // use bits for Eq/Hash
     StringLit(String),
@@ -120,7 +120,7 @@ fn simplify_pat(pat: &Pat, con_tags: &std::collections::HashMap<String, u16>) ->
 
         PatKind::Constructor(name, payload) => {
             let tag = con_tags.get(name).copied().unwrap_or(0);
-            let type_name = name.clone(); // approximate — we don't track the parent type here
+            let type_name = name.clone(); // approximate; we don't track the parent type here
             let sub_pats = match payload {
                 Some(p) => vec![simplify_pat(p, con_tags)],
                 None => vec![],
@@ -342,7 +342,7 @@ fn specialize_matrix(matrix: &PatternMatrix, c: &Constructor, arity: usize) -> P
                 result.push(new_row);
             }
             SPat::Con(_, _) => {
-                // Different constructor — skip this row
+                // Different constructor, skip this row
             }
             SPat::Wild => {
                 let mut new_row: Vec<SPat> = (0..arity).map(|_| SPat::Wild.clone()).collect();

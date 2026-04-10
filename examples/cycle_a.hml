@@ -1,0 +1,2 @@
+use "cycle_b.hml"
+val a = 1

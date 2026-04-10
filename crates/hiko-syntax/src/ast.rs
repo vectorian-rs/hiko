@@ -99,7 +99,7 @@ pub enum DeclKind {
     TypeAlias(TypeAliasDecl),
     /// `local d1 in d2 end`
     Local(Vec<Decl>, Vec<Decl>),
-    /// `use "path/to/file.hk"`
+    /// `use "path/to/file.hml"`
     Use(String),
     /// `effect Yield of Int`
     Effect(String, Option<TypeExpr>),

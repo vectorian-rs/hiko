@@ -29,10 +29,10 @@ pub fn desugar_decl(decl: Decl) -> Decl {
 fn desugar_expr(expr: Expr) -> Expr {
     let span = expr.span;
     let kind = match expr.kind {
-        // Paren — unwrap
+        // Unwrap parentheses
         ExprKind::Paren(e) => return desugar_expr(*e),
 
-        // List literal — desugar [e1, e2, e3] to e1 :: e2 :: e3 :: []
+        // List literal: desugar [e1, e2, e3] to e1 :: e2 :: e3 :: []
         ExprKind::List(elems) if !elems.is_empty() => {
             let mut result = Expr {
                 kind: ExprKind::List(vec![]),
@@ -47,7 +47,7 @@ fn desugar_expr(expr: Expr) -> Expr {
             return result;
         }
 
-        // andalso/orelse — desugar to if-then-else
+        // andalso/orelse: desugar to if-then-else
         ExprKind::BinOp(BinOp::Andalso, lhs, rhs) => ExprKind::If(
             Box::new(desugar_expr(*lhs)),
             Box::new(desugar_expr(*rhs)),
@@ -65,7 +65,7 @@ fn desugar_expr(expr: Expr) -> Expr {
             Box::new(desugar_expr(*rhs)),
         ),
 
-        // not — desugar to if e then false else true
+        // not: desugar to if e then false else true
         ExprKind::Not(e) => ExprKind::If(
             Box::new(desugar_expr(*e)),
             Box::new(Expr {
@@ -131,7 +131,7 @@ fn desugar_expr(expr: Expr) -> Expr {
             ExprKind::Resume(Box::new(desugar_expr(*cont)), Box::new(desugar_expr(*arg)))
         }
 
-        // Leaves — pass through
+        // Leaves (pass through)
         ExprKind::IntLit(_)
         | ExprKind::FloatLit(_)
         | ExprKind::StringLit(_)
@@ -148,10 +148,10 @@ fn desugar_expr(expr: Expr) -> Expr {
 fn desugar_pat(pat: Pat) -> Pat {
     let span = pat.span;
     let kind = match pat.kind {
-        // Paren — unwrap
+        // Unwrap parentheses
         PatKind::Paren(p) => return desugar_pat(*p),
 
-        // List pattern — desugar [p1, p2] to p1 :: p2 :: []
+        // List pattern: desugar [p1, p2] to p1 :: p2 :: []
         PatKind::List(pats) if !pats.is_empty() => {
             let mut result = Pat {
                 kind: PatKind::List(vec![]),
@@ -205,12 +205,12 @@ fn desugar_fun_binding(mut binding: FunBinding) -> FunBinding {
         ));
     }
 
-    // Single clause — keep as is
+    // Single clause, keep as is
     if binding.clauses.len() == 1 {
         return binding;
     }
 
-    // Multi-clause — desugar to single clause with case
+    // Multi-clause: desugar to single clause with case
     let span = binding.span;
     let arity = binding.clauses[0].pats.len();
 

@@ -51,38 +51,38 @@ pub enum TokenKind {
     Resume,
     Return,
 
-    // Operators — Int arithmetic
+    // Operators (Int arithmetic)
     Plus,  // +
     Minus, // -
     Star,  // *
     Slash, // /
 
-    // Operators — Float arithmetic
+    // Operators (Float arithmetic)
     PlusDot,  // +.
     MinusDot, // -.
     StarDot,  // *.
     SlashDot, // /.
 
-    // Operators — String
+    // Operators (String)
     Caret, // ^
 
-    // Operators — Int comparison
+    // Operators (Int comparison)
     Lt, // <
     Gt, // >
     Le, // <=
     Ge, // >=
 
-    // Operators — Float comparison
+    // Operators (Float comparison)
     LtDot, // <.
     GtDot, // >.
     LeDot, // <=.
     GeDot, // >=.
 
-    // Operators — Equality (scalar only)
+    // Operators (equality, scalar only)
     Eq, // =
     Ne, // <>
 
-    // Operators — Other
+    // Other operators
     Tilde,      // ~ (unary negation)
     ColonColon, // ::
     Arrow,      // =>

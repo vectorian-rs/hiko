@@ -4,7 +4,7 @@ use std::fmt;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct GcRef(pub u32);
 
-/// Runtime value. Copy — no reference counting, no Drop.
+/// Runtime value. Copy, no reference counting, no Drop.
 /// Heap-allocated objects are referenced via GcRef indices.
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
@@ -71,7 +71,7 @@ impl HeapObject {
     }
 }
 
-/// Builtin function entry — stored in a VM-level table.
+/// Builtin function entry, stored in a VM-level table.
 pub struct BuiltinEntry {
     pub name: &'static str,
     pub func: BuiltinFn,

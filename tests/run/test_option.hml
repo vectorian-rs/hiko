@@ -1,6 +1,6 @@
 (* Tests for stdlib/option.hk *)
 
-use "../../stdlib/option.hk"
+use "../../stdlib/option.hml"
 
 val _ = assert (is_some (Some 1), "is_some Some")
 val _ = assert (is_none None, "is_none None")

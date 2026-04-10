@@ -1,4 +1,4 @@
-use "../stdlib/either.hk"
+use "../stdlib/either.hml"
 
 fun safe_div a b =
   if b = 0 then Left "division by zero"

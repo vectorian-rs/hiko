@@ -1,6 +1,6 @@
 (* Tests for stdlib/list.hk *)
 
-use "../../stdlib/list.hk"
+use "../../stdlib/list.hml"
 
 val _ = assert_eq (length [], 0, "length empty")
 val _ = assert_eq (length [1, 2, 3], 3, "length 3")

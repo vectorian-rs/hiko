@@ -20,15 +20,15 @@ fn run_hiko_file(path: &str) {
 
 #[test]
 fn test_stdlib_list() {
-    run_hiko_file("../../tests/run/test_list.hk");
+    run_hiko_file("../../tests/run/test_list.hml");
 }
 
 #[test]
 fn test_stdlib_option() {
-    run_hiko_file("../../tests/run/test_option.hk");
+    run_hiko_file("../../tests/run/test_option.hml");
 }
 
 #[test]
 fn test_stdlib_either() {
-    run_hiko_file("../../tests/run/test_either.hk");
+    run_hiko_file("../../tests/run/test_either.hml");
 }

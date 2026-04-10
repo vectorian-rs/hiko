@@ -127,7 +127,17 @@ impl InferCtx {
             ("remove_file", Type::arrow(Type::string(), Type::unit())),
             ("create_dir", Type::arrow(Type::string(), Type::unit())),
             // HTTP
-            ("http_get", Type::arrow(Type::string(), Type::string())),
+            (
+                "http_get",
+                Type::arrow(
+                    Type::string(),
+                    Type::Tuple(vec![
+                        Type::int(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::string(),
+                    ]),
+                ),
+            ),
             // System
             ("exit", Type::arrow(Type::int(), Type::unit())),
             ("panic", Type::arrow(Type::string(), a.clone())),
@@ -1055,7 +1065,7 @@ impl InferCtx {
                 }
             }
             Type::Tuple(elems) => TypeInfo::tuple_type(elems.len()),
-            Type::Var(_) => TypeInfo::infinite(), // unconstrained — assume infinite
+            Type::Var(_) => TypeInfo::infinite(), // unconstrained, assume infinite
             Type::Arrow(_, _) => TypeInfo::infinite(),
         }
     }
@@ -1401,7 +1411,7 @@ mod tests {
 
     #[test]
     fn test_constructor_pattern_type_mismatch() {
-        // `val Red = 42` — Red is a constructor pattern of type color, not Int
+        // `val Red = 42` where Red is a constructor pattern of type color, not Int
         let msg = infer_err("datatype color = Red | Blue val Red = 42");
         assert!(msg.contains("type mismatch"), "got: {msg}");
     }
