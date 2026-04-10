@@ -136,6 +136,15 @@ impl InferCtx {
             ),
             ("remove_file", Type::arrow(Type::string(), Type::unit())),
             ("create_dir", Type::arrow(Type::string(), Type::unit())),
+            ("is_dir", Type::arrow(Type::string(), Type::bool())),
+            ("is_file", Type::arrow(Type::string(), Type::bool())),
+            (
+                "path_join",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
             // HTTP
             (
                 "http_get",

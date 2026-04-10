@@ -1,0 +1,16 @@
+(* Recursively walk a directory and print all files *)
+
+fun walk dir =
+  let val entries = list_dir dir
+  in walk_entries dir entries end
+
+and walk_entries dir entries = case entries of
+    [] => ()
+  | name :: rest =>
+      let val full = path_join (dir, name)
+          val _ = if is_dir full
+                  then walk full
+                  else println full
+      in walk_entries dir rest end
+
+val _ = walk "/tmp"
