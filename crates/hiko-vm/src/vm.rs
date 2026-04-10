@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
@@ -24,7 +25,7 @@ struct CallFrame {
     proto_idx: usize,
     ip: usize,
     base: usize,
-    captures: Vec<Value>,
+    captures: Rc<[Value]>,
 }
 
 struct HandlerFrame {
@@ -32,7 +33,7 @@ struct HandlerFrame {
     stack_base: usize,          // stack height when handler was installed
     clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
     proto_idx: usize,
-    captures: Vec<Value>,
+    captures: Rc<[Value]>,
 }
 
 pub struct VM {
@@ -610,7 +611,7 @@ impl VM {
             proto_idx: usize::MAX,
             ip: 0,
             base: 0,
-            captures: Vec::new(),
+            captures: Rc::from([]),
         });
         self.dispatch()
     }
@@ -719,7 +720,7 @@ impl VM {
                 Op::SetLocal => {
                     let slot = self.read_u16()? as usize;
                     let base = self.frames[fi].base;
-                    let val = self.pop();
+                    let val = self.pop()?;
                     self.stack[base + slot] = val;
                 }
                 Op::GetUpvalue => {
@@ -742,12 +743,12 @@ impl VM {
                 Op::SetGlobal => {
                     let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx).to_string();
-                    let val = self.pop();
+                    let val = self.pop()?;
                     self.globals.insert(name, val);
                 }
 
                 Op::Pop => {
-                    self.pop();
+                    self.pop()?;
                 }
 
                 // ── Arithmetic ──────────────────────────────────
@@ -765,9 +766,14 @@ impl VM {
                 }
                 Op::ModInt => self.int_checked_binop(|a, b| a.checked_rem(b), "mod by zero")?,
                 Op::Neg => {
-                    let val = self.pop();
+                    let val = self.pop()?;
                     match val {
-                        Value::Int(n) => self.push(Value::Int(-n))?,
+                        Value::Int(n) => {
+                            let neg = n.checked_neg().ok_or_else(|| RuntimeError {
+                                message: "integer overflow (negation)".into(),
+                            })?;
+                            self.push(Value::Int(neg))?
+                        }
                         Value::Float(f) => self.push(Value::Float(-f))?,
                         _ => {
                             return Err(RuntimeError {
@@ -836,7 +842,7 @@ impl VM {
                 }
                 Op::GetField => {
                     let idx = self.read_u8()? as usize;
-                    let val = self.pop();
+                    let val = self.pop()?;
                     match val {
                         Value::Heap(r) => match self.heap.get(r) {
                             HeapObject::Tuple(t) => self.push(t[idx])?,
@@ -863,7 +869,7 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::GetTag => {
-                    let val = self.pop();
+                    let val = self.pop()?;
                     match val {
                         Value::Heap(r) => match self.heap.get(r) {
                             HeapObject::Data { tag, .. } => self.push(Value::Int(*tag as i64))?,
@@ -912,6 +918,7 @@ impl VM {
                         };
                         captures.push(val);
                     }
+                    let captures: Rc<[Value]> = Rc::from(captures);
                     let val = self.alloc(HeapObject::Closure {
                         proto_idx: func_proto_idx,
                         captures,
@@ -950,7 +957,10 @@ impl VM {
                                     message: "stack overflow".into(),
                                 });
                             }
-                            self.stack.remove(callee_pos);
+                            for i in 0..arity {
+                                self.stack[callee_pos + i] = self.stack[callee_pos + 1 + i];
+                            }
+                            self.stack.truncate(callee_pos + arity);
                             self.frames.push(CallFrame {
                                 proto_idx: closure_proto,
                                 ip: 0,
@@ -1018,7 +1028,7 @@ impl VM {
                 }
 
                 Op::Return => {
-                    let result = self.pop();
+                    let result = self.pop()?;
                     let frame = self.frames.pop().unwrap();
                     self.stack.truncate(frame.base);
                     self.push(result)?;
@@ -1058,7 +1068,7 @@ impl VM {
 
                 Op::Perform => {
                     let effect_tag = self.read_u16()?;
-                    let payload = self.pop();
+                    let payload = self.pop()?;
 
                     let (h_idx, clause_ip) = self
                         .handlers
@@ -1128,8 +1138,8 @@ impl VM {
                 }
 
                 Op::Resume => {
-                    let arg = self.pop();
-                    let cont_val = self.pop();
+                    let arg = self.pop()?;
+                    let cont_val = self.pop()?;
                     let cont_ref = match cont_val {
                         Value::Heap(r) => r,
                         _ => {
@@ -1192,12 +1202,14 @@ impl VM {
         Ok(())
     }
 
-    fn pop(&mut self) -> Value {
-        self.stack.pop().expect("stack underflow")
+    fn pop(&mut self) -> Result<Value, RuntimeError> {
+        self.stack.pop().ok_or_else(|| RuntimeError {
+            message: "stack underflow".into(),
+        })
     }
 
     fn pop_int(&mut self) -> Result<i64, RuntimeError> {
-        match self.pop() {
+        match self.pop()? {
             Value::Int(n) => Ok(n),
             v => Err(RuntimeError {
                 message: format!("expected Int, got {v:?}"),
@@ -1206,7 +1218,7 @@ impl VM {
     }
 
     fn pop_float(&mut self) -> Result<f64, RuntimeError> {
-        match self.pop() {
+        match self.pop()? {
             Value::Float(f) => Ok(f),
             v => Err(RuntimeError {
                 message: format!("expected Float, got {v:?}"),
@@ -1215,7 +1227,7 @@ impl VM {
     }
 
     fn pop_bool(&mut self) -> Result<bool, RuntimeError> {
-        match self.pop() {
+        match self.pop()? {
             Value::Bool(b) => Ok(b),
             v => Err(RuntimeError {
                 message: format!("expected Bool, got {v:?}"),
@@ -1224,7 +1236,7 @@ impl VM {
     }
 
     fn pop_string_ref(&mut self) -> Result<GcRef, RuntimeError> {
-        match self.pop() {
+        match self.pop()? {
             Value::Heap(r) => Ok(r),
             v => Err(RuntimeError {
                 message: format!("expected String, got {v:?}"),
@@ -1233,8 +1245,8 @@ impl VM {
     }
 
     fn scalar_eq(&mut self, eq: bool) -> Result<(), RuntimeError> {
-        let b = self.pop();
-        let a = self.pop();
+        let b = self.pop()?;
+        let a = self.pop()?;
         let result = values_equal(a, b, &self.heap);
         self.push(Value::Bool(if eq { result } else { !result }))
     }

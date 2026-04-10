@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 /// Index into the GC heap. Copy, 4 bytes, no Drop.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -27,7 +28,7 @@ pub enum HeapObject {
     },
     Closure {
         proto_idx: usize,
-        captures: Vec<Value>,
+        captures: Rc<[Value]>,
     },
     Continuation {
         saved_frames: Vec<SavedFrame>,
@@ -40,7 +41,7 @@ pub struct SavedFrame {
     pub proto_idx: usize,
     pub ip: usize,
     pub base_offset: usize,
-    pub captures: Vec<Value>,
+    pub captures: Rc<[Value]>,
 }
 
 impl HeapObject {

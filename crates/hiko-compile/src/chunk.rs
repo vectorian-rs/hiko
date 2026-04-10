@@ -69,10 +69,12 @@ impl Chunk {
         self.code.extend_from_slice(&val.to_le_bytes());
     }
 
-    pub fn add_constant(&mut self, c: Constant) -> u16 {
+    pub fn add_constant(&mut self, c: Constant) -> Result<u16, String> {
         let idx = self.constants.len();
+        let idx = u16::try_from(idx)
+            .map_err(|_| format!("constant pool overflow: {idx} exceeds u16::MAX"))?;
         self.constants.push(c);
-        idx as u16
+        Ok(idx)
     }
 
     /// Emit a jump instruction, return the offset to patch later.
@@ -84,13 +86,24 @@ impl Chunk {
     }
 
     /// Patch a previously emitted jump to point to the current position.
-    pub fn patch_jump(&mut self, pos: usize) {
-        let target = self.code.len() as i16;
-        let origin = (pos + 2) as i16;
+    pub fn patch_jump(&mut self, pos: usize) -> Result<(), String> {
+        let target = i16::try_from(self.code.len()).map_err(|_| {
+            format!(
+                "jump target overflow: bytecode offset {} exceeds i16::MAX",
+                self.code.len()
+            )
+        })?;
+        let origin = i16::try_from(pos + 2).map_err(|_| {
+            format!(
+                "jump origin overflow: bytecode offset {} exceeds i16::MAX",
+                pos + 2
+            )
+        })?;
         let offset = target - origin;
         let bytes = offset.to_le_bytes();
         self.code[pos] = bytes[0];
         self.code[pos + 1] = bytes[1];
+        Ok(())
     }
 
     pub fn read_u8(code: &[u8], ip: &mut usize) -> u8 {

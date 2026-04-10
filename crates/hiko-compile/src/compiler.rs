@@ -150,19 +150,25 @@ impl Compiler {
     fn emit_u16(&mut self, val: u16) {
         self.chunk().emit_u16(val);
     }
-    fn emit_constant(&mut self, c: Constant) {
-        let idx = self.chunk().add_constant(c);
+    fn emit_constant(&mut self, c: Constant) -> Result<(), CompileError> {
+        let idx = self
+            .chunk()
+            .add_constant(c)
+            .map_err(CompileError::codegen)?;
         self.emit(Op::Const);
         self.emit_u16(idx);
+        Ok(())
     }
     fn emit_jump(&mut self, op: Op) -> usize {
         self.chunk().emit_jump(op)
     }
-    fn patch_jump(&mut self, pos: usize) {
-        self.chunk().patch_jump(pos);
+    fn patch_jump(&mut self, pos: usize) -> Result<(), CompileError> {
+        self.chunk().patch_jump(pos).map_err(CompileError::codegen)
     }
-    fn add_string_constant(&mut self, s: &str) -> u16 {
-        self.chunk().add_constant(Constant::String(s.to_string()))
+    fn add_string_constant(&mut self, s: &str) -> Result<u16, CompileError> {
+        self.chunk()
+            .add_constant(Constant::String(s.to_string()))
+            .map_err(CompileError::codegen)
     }
 
     fn push_new_function(&mut self, name: Option<String>) {
@@ -224,7 +230,7 @@ impl Compiler {
         idx
     }
 
-    fn emit_get_var(&mut self, name: &str) {
+    fn emit_get_var(&mut self, name: &str) -> Result<(), CompileError> {
         if let Some(slot) = self.resolve_local(name) {
             self.emit(Op::GetLocal);
             self.emit_u16(slot);
@@ -232,16 +238,18 @@ impl Compiler {
             self.emit(Op::GetUpvalue);
             self.emit_u16(idx);
         } else {
-            let c = self.add_string_constant(name);
+            let c = self.add_string_constant(name)?;
             self.emit(Op::GetGlobal);
             self.emit_u16(c);
         }
+        Ok(())
     }
 
-    fn emit_set_global(&mut self, name: &str) {
-        let c = self.add_string_constant(name);
+    fn emit_set_global(&mut self, name: &str) -> Result<(), CompileError> {
+        let c = self.add_string_constant(name)?;
         self.emit(Op::SetGlobal);
         self.emit_u16(c);
+        Ok(())
     }
 
     fn add_local(&mut self, name: String) {
@@ -271,12 +279,13 @@ impl Compiler {
         }
     }
 
-    fn bind_name(&mut self, name: &str) {
+    fn bind_name(&mut self, name: &str) -> Result<(), CompileError> {
         if self.ctx().scope_depth == 0 {
-            self.emit_set_global(name);
+            self.emit_set_global(name)?;
         } else {
             self.add_local(name.to_string());
         }
+        Ok(())
     }
 
     /// Emit GetLocal slot + GetField idx, add as temp local, return new slot.
@@ -290,13 +299,19 @@ impl Compiler {
     }
 
     /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
-    fn emit_tag_check(&mut self, slot: u16, tag: i64, fail_jumps: &mut Vec<usize>) {
+    fn emit_tag_check(
+        &mut self,
+        slot: u16,
+        tag: i64,
+        fail_jumps: &mut Vec<usize>,
+    ) -> Result<(), CompileError> {
         self.emit(Op::GetLocal);
         self.emit_u16(slot);
         self.emit(Op::GetTag);
-        self.emit_constant(Constant::Int(tag));
+        self.emit_constant(Constant::Int(tag))?;
         self.emit(Op::Eq);
         fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
+        Ok(())
     }
 
     /// Emit scalar comparison: GetLocal slot, push value, eq_op, JumpIfFalse → fail.
@@ -306,12 +321,13 @@ impl Compiler {
         value: Constant,
         eq_op: Op,
         fail_jumps: &mut Vec<usize>,
-    ) {
+    ) -> Result<(), CompileError> {
         self.emit(Op::GetLocal);
         self.emit_u16(slot);
-        self.emit_constant(value);
+        self.emit_constant(value)?;
         self.emit(eq_op);
         fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
+        Ok(())
     }
 
     // ── Declarations ─────────────────────────────────────────────────
@@ -324,13 +340,13 @@ impl Compiler {
             }
             DeclKind::ValRec(name, expr) => {
                 self.compile_expr(expr)?;
-                self.bind_name(name);
+                self.bind_name(name)?;
                 Ok(())
             }
             DeclKind::Fun(bindings) => {
                 for binding in bindings {
                     self.compile_fun_binding(binding)?;
-                    self.bind_name(&binding.name);
+                    self.bind_name(&binding.name)?;
                 }
                 Ok(())
             }
@@ -425,7 +441,7 @@ impl Compiler {
     fn compile_binding_pattern(&mut self, pat: &Pat) -> Result<(), CompileError> {
         match &pat.kind {
             PatKind::Var(name) => {
-                self.bind_name(name);
+                self.bind_name(name)?;
                 Ok(())
             }
             PatKind::Wildcard => {
@@ -475,7 +491,7 @@ impl Compiler {
                 self.emit_u16(tag);
                 self.emit_u8(0);
             }
-            self.bind_name(&con.name);
+            self.bind_name(&con.name)?;
         }
         Ok(())
     }
@@ -520,14 +536,14 @@ impl Compiler {
         } else {
             self.begin_scope();
             if arity == 1 {
-                self.emit_get_var("_arg0");
+                self.emit_get_var("_arg0")?;
                 self.add_local("_scrut".to_string());
                 let scrut_slot = (self.ctx().locals.len() - 1) as u16;
                 let branches: Vec<_> = clauses.iter().map(|c| (&c.pats[0], &c.body)).collect();
                 self.compile_case_branches_inner(scrut_slot, &branches, true)?;
             } else {
                 for i in 0..arity {
-                    self.emit_get_var(&format!("_arg{i}"));
+                    self.emit_get_var(&format!("_arg{i}"))?;
                 }
                 self.emit(Op::MakeTuple);
                 self.emit_u8(arity as u8);
@@ -646,7 +662,7 @@ impl Compiler {
             // Fail: patch all fail jumps to here. No cleanup needed since
             // no locals were pushed during the test phase.
             for fj in fail_jumps {
-                self.chunk().patch_jump(fj);
+                self.chunk().patch_jump(fj).map_err(CompileError::codegen)?;
             }
 
             // Restore compiler state for next branch
@@ -657,12 +673,12 @@ impl Compiler {
         }
 
         // Non-exhaustive match: emit runtime panic
-        let msg_idx = self.add_string_constant("non-exhaustive match");
+        let msg_idx = self.add_string_constant("non-exhaustive match")?;
         self.emit(Op::Panic);
         self.emit_u16(msg_idx);
 
         for j in end_jumps {
-            self.patch_jump(j);
+            self.patch_jump(j)?;
         }
         Ok(())
     }
@@ -679,10 +695,10 @@ impl Compiler {
             PatKind::Wildcard | PatKind::Var(_) | PatKind::Unit => {} // always match
 
             PatKind::IntLit(n) => {
-                self.emit_scalar_check(slot, Constant::Int(*n), Op::Eq, fail_jumps);
+                self.emit_scalar_check(slot, Constant::Int(*n), Op::Eq, fail_jumps)?;
             }
             PatKind::FloatLit(f) => {
-                self.emit_scalar_check(slot, Constant::Float(*f), Op::Eq, fail_jumps);
+                self.emit_scalar_check(slot, Constant::Float(*f), Op::Eq, fail_jumps)?;
             }
             PatKind::BoolLit(b) => {
                 self.emit(Op::GetLocal);
@@ -696,10 +712,10 @@ impl Compiler {
                 fail_jumps.push(self.emit_jump(Op::JumpIfFalse));
             }
             PatKind::StringLit(s) => {
-                self.emit_scalar_check(slot, Constant::String(s.clone()), Op::Eq, fail_jumps);
+                self.emit_scalar_check(slot, Constant::String(s.clone()), Op::Eq, fail_jumps)?;
             }
             PatKind::CharLit(c) => {
-                self.emit_scalar_check(slot, Constant::Char(*c), Op::Eq, fail_jumps);
+                self.emit_scalar_check(slot, Constant::Char(*c), Op::Eq, fail_jumps)?;
             }
 
             PatKind::Constructor(name, payload) => {
@@ -707,7 +723,7 @@ impl Compiler {
                     .constructor_tags
                     .get(name)
                     .ok_or_else(|| CompileError::codegen(format!("unknown constructor: {name}")))?;
-                self.emit_tag_check(slot, tag as i64, fail_jumps);
+                self.emit_tag_check(slot, tag as i64, fail_jumps)?;
                 if let Some(sub_pat) = payload {
                     // Need to test sub-pattern against field 0
                     // Push temp to get a slot, then pop after testing
@@ -722,7 +738,7 @@ impl Compiler {
             }
 
             PatKind::Cons(hd, tl) => {
-                self.emit_tag_check(slot, 1, fail_jumps); // Cons = tag 1
+                self.emit_tag_check(slot, 1, fail_jumps)?; // Cons = tag 1
                 self.emit_field_extract_test(slot, 0, hd, fail_jumps)?;
                 self.emit_field_extract_test(slot, 1, tl, fail_jumps)?;
             }
@@ -732,7 +748,7 @@ impl Compiler {
                     pats.is_empty(),
                     "non-empty list pattern should be desugared to Cons"
                 );
-                self.emit_tag_check(slot, 0, fail_jumps); // Nil = tag 0
+                self.emit_tag_check(slot, 0, fail_jumps)?; // Nil = tag 0
             }
 
             PatKind::As(_, sub_pat) => {
@@ -826,15 +842,15 @@ impl Compiler {
     fn compile_expr_inner(&mut self, expr: &Expr, tail: bool) -> Result<(), CompileError> {
         self.emit_span(expr.span);
         match &expr.kind {
-            ExprKind::IntLit(n) => self.emit_constant(Constant::Int(*n)),
-            ExprKind::FloatLit(f) => self.emit_constant(Constant::Float(*f)),
-            ExprKind::StringLit(s) => self.emit_constant(Constant::String(s.clone())),
-            ExprKind::CharLit(c) => self.emit_constant(Constant::Char(*c)),
+            ExprKind::IntLit(n) => self.emit_constant(Constant::Int(*n))?,
+            ExprKind::FloatLit(f) => self.emit_constant(Constant::Float(*f))?,
+            ExprKind::StringLit(s) => self.emit_constant(Constant::String(s.clone()))?,
+            ExprKind::CharLit(c) => self.emit_constant(Constant::Char(*c))?,
             ExprKind::BoolLit(true) => self.emit(Op::True),
             ExprKind::BoolLit(false) => self.emit(Op::False),
             ExprKind::Unit => self.emit(Op::Unit),
-            ExprKind::Var(name) => self.emit_get_var(name),
-            ExprKind::Constructor(name) => self.emit_get_var(name),
+            ExprKind::Var(name) => self.emit_get_var(name)?,
+            ExprKind::Constructor(name) => self.emit_get_var(name)?,
 
             ExprKind::Tuple(elems) => {
                 for e in elems {
@@ -895,9 +911,9 @@ impl Compiler {
                 let else_jump = self.emit_jump(Op::JumpIfFalse);
                 self.compile_expr_inner(then_br, tail)?;
                 let end_jump = self.emit_jump(Op::Jump);
-                self.patch_jump(else_jump);
+                self.patch_jump(else_jump)?;
                 self.compile_expr_inner(else_br, tail)?;
-                self.patch_jump(end_jump);
+                self.patch_jump(end_jump)?;
             }
 
             ExprKind::Let(decls, body) => {
@@ -960,7 +976,7 @@ impl Compiler {
                 // Compile each effect clause
                 let mut clause_end_jumps = Vec::new();
                 for (i, handler) in handlers.iter().enumerate() {
-                    self.patch_jump(clause_offset_positions[i]);
+                    self.patch_jump(clause_offset_positions[i])?;
                     self.begin_scope();
                     self.add_local(handler.payload_var.clone());
                     self.add_local(handler.cont_var.clone());
@@ -970,7 +986,7 @@ impl Compiler {
                 }
 
                 // Patch skip_jump to land here (after clause code)
-                self.patch_jump(skip_jump);
+                self.patch_jump(skip_jump)?;
 
                 // Compile the body (runs under the handler)
                 self.compile_expr_inner(body, false)?;
@@ -986,7 +1002,7 @@ impl Compiler {
 
                 // Patch all clause end jumps to here
                 for j in clause_end_jumps {
-                    self.patch_jump(j);
+                    self.patch_jump(j)?;
                 }
             }
 
