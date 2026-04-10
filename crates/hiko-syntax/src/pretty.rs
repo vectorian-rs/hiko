@@ -84,6 +84,14 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize) {
             buf.push_str("use ");
             write_escaped_string(buf, path);
         }
+        DeclKind::Effect(name, payload) => {
+            write_indent(buf, indent);
+            write!(buf, "effect {name}").unwrap();
+            if let Some(ty) = payload {
+                buf.push_str(" of ");
+                pretty_type(buf, ty);
+            }
+        }
     }
 }
 
@@ -248,6 +256,43 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize) {
             buf.push('(');
             pretty_expr(buf, e, indent);
             buf.push(')');
+        }
+        ExprKind::Perform(name, arg) => {
+            write!(buf, "perform {name} ").unwrap();
+            pretty_atom_expr(buf, arg, indent);
+        }
+        ExprKind::Handle {
+            body,
+            return_var,
+            return_body,
+            handlers,
+        } => {
+            buf.push_str("handle\n");
+            write_indent(buf, indent + 2);
+            pretty_expr(buf, body, indent + 2);
+            buf.push('\n');
+            write_indent(buf, indent);
+            buf.push_str("with\n");
+            write_indent(buf, indent + 2);
+            write!(buf, "return {return_var} => ").unwrap();
+            pretty_expr(buf, return_body, indent + 2);
+            for handler in handlers {
+                buf.push('\n');
+                write_indent(buf, indent);
+                write!(
+                    buf,
+                    "| {} {} {} => ",
+                    handler.effect_name, handler.payload_var, handler.cont_var
+                )
+                .unwrap();
+                pretty_expr(buf, &handler.body, indent + 2);
+            }
+        }
+        ExprKind::Resume(cont, arg) => {
+            buf.push_str("resume ");
+            pretty_atom_expr(buf, cont, indent);
+            buf.push(' ');
+            pretty_atom_expr(buf, arg, indent);
         }
     }
 }

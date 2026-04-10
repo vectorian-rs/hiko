@@ -44,6 +44,12 @@ pub enum TokenKind {
     Orelse,
     Mod,
     As,
+    Effect,
+    Handle,
+    With,
+    Perform,
+    Resume,
+    Return,
 
     // Operators — Int arithmetic
     Plus,  // +
@@ -125,6 +131,12 @@ impl TokenKind {
             "orelse" => Some(TokenKind::Orelse),
             "mod" => Some(TokenKind::Mod),
             "as" => Some(TokenKind::As),
+            "effect" => Some(TokenKind::Effect),
+            "handle" => Some(TokenKind::Handle),
+            "with" => Some(TokenKind::With),
+            "perform" => Some(TokenKind::Perform),
+            "resume" => Some(TokenKind::Resume),
+            "return" => Some(TokenKind::Return),
             _ => None,
         }
     }

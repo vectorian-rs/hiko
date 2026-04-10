@@ -71,6 +71,19 @@ impl Parser {
         }
     }
 
+    fn expect_ident_or_wildcard(&mut self) -> Result<(String, Span), ParseError> {
+        if matches!(self.peek(), TokenKind::Ident(_)) {
+            let span = self.span();
+            Ok((self.take_string(), span))
+        } else if matches!(self.peek(), TokenKind::Underscore) {
+            let span = self.span();
+            self.advance();
+            Ok(("_".to_string(), span))
+        } else {
+            Err(self.err("expected identifier or _"))
+        }
+    }
+
     fn expect_upper_ident(&mut self) -> Result<(String, Span), ParseError> {
         if matches!(self.peek(), TokenKind::UpperIdent(_)) {
             let span = self.span();
@@ -160,7 +173,11 @@ impl Parser {
             TokenKind::Type => self.parse_type_alias_decl(),
             TokenKind::Local => self.parse_local_decl(),
             TokenKind::Use => self.parse_use_decl(),
-            _ => Err(self.err("expected declaration (val, fun, datatype, type, local, or use)")),
+            TokenKind::Effect => self.parse_effect_decl(),
+            _ => {
+                Err(self
+                    .err("expected declaration (val, fun, datatype, type, local, use, or effect)"))
+            }
         }
     }
 
@@ -353,6 +370,22 @@ impl Parser {
         } else {
             Err(self.err("expected string literal after 'use'"))
         }
+    }
+
+    fn parse_effect_decl(&mut self) -> Result<Decl, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `effect`
+        let (name, end) = self.expect_upper_ident()?;
+        let payload = if self.eat(&TokenKind::Of).is_some() {
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        let span = start.merge(payload.as_ref().map_or(end, |t| t.span));
+        Ok(Decl {
+            kind: DeclKind::Effect(name, payload),
+            span,
+        })
     }
 
     fn parse_tyvar_params(&mut self) -> Result<Vec<String>, ParseError> {
@@ -684,8 +717,74 @@ impl Parser {
             TokenKind::Let => self.parse_let_expr(),
             TokenKind::Case => self.parse_case_expr(),
             TokenKind::Fn => self.parse_fn_expr(),
+            TokenKind::Handle => self.parse_handle_expr(),
+            TokenKind::Perform => self.parse_perform_expr(),
+            TokenKind::Resume => self.parse_resume_expr(),
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    fn parse_handle_expr(&mut self) -> Result<Expr, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `handle`
+        let body = self.parse_expr()?;
+        self.expect(&TokenKind::With, "with")?;
+        self.expect(&TokenKind::Return, "return")?;
+        let (return_var, _) = self.expect_ident_or_wildcard()?;
+        self.expect(&TokenKind::Arrow, "=>")?;
+        let return_body = self.parse_expr()?;
+        let mut handlers = Vec::new();
+        while self.eat(&TokenKind::Bar).is_some() {
+            let hstart = self.span();
+            let (effect_name, _) = self.expect_upper_ident()?;
+            let (payload_var, _) = self.expect_ident_or_wildcard()?;
+            let (cont_var, _) = self.expect_ident_or_wildcard()?;
+            self.expect(&TokenKind::Arrow, "=>")?;
+            let hbody = self.parse_expr()?;
+            let hspan = hstart.merge(hbody.span);
+            handlers.push(EffectHandler {
+                effect_name,
+                payload_var,
+                cont_var,
+                body: hbody,
+                span: hspan,
+            });
+        }
+        let end_span = handlers.last().map(|h| h.span).unwrap_or(return_body.span);
+        let span = start.merge(end_span);
+        Ok(Expr {
+            kind: ExprKind::Handle {
+                body: Box::new(body),
+                return_var,
+                return_body: Box::new(return_body),
+                handlers,
+            },
+            span,
+        })
+    }
+
+    fn parse_perform_expr(&mut self) -> Result<Expr, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `perform`
+        let (name, _) = self.expect_upper_ident()?;
+        let arg = self.parse_atom_expr()?;
+        let span = start.merge(arg.span);
+        Ok(Expr {
+            kind: ExprKind::Perform(name, Box::new(arg)),
+            span,
+        })
+    }
+
+    fn parse_resume_expr(&mut self) -> Result<Expr, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `resume`
+        let cont = self.parse_atom_expr()?;
+        let arg = self.parse_atom_expr()?;
+        let span = start.merge(arg.span);
+        Ok(Expr {
+            kind: ExprKind::Resume(Box::new(cont), Box::new(arg)),
+            span,
+        })
     }
 
     fn parse_if_expr(&mut self) -> Result<Expr, ParseError> {

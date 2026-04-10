@@ -75,7 +75,10 @@ impl Heap {
 
         while let Some(r) = worklist.pop() {
             children.clear();
-            children.extend(self.objects[r.0 as usize].as_ref().unwrap().gc_refs());
+            self.objects[r.0 as usize]
+                .as_ref()
+                .unwrap()
+                .for_each_gc_ref(|c| children.push(c));
             for &child in &children {
                 if self.mark(child) {
                     worklist.push(child);

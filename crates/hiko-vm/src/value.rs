@@ -29,21 +29,45 @@ pub enum HeapObject {
         proto_idx: usize,
         captures: Vec<Value>,
     },
+    Continuation {
+        saved_frames: Vec<SavedFrame>,
+        saved_stack: Vec<Value>,
+    },
+}
+
+#[derive(Clone)]
+pub struct SavedFrame {
+    pub proto_idx: usize,
+    pub ip: usize,
+    pub base_offset: usize,
+    pub captures: Vec<Value>,
 }
 
 impl HeapObject {
-    /// Iterate over all GcRefs directly contained in this object.
-    pub fn gc_refs(&self) -> impl Iterator<Item = GcRef> + '_ {
-        let values: &[Value] = match self {
-            HeapObject::String(_) => &[],
-            HeapObject::Tuple(elems) => elems,
-            HeapObject::Data { fields, .. } => fields,
-            HeapObject::Closure { captures, .. } => captures,
+    /// Visit all GcRefs directly contained in this object.
+    pub fn for_each_gc_ref(&self, mut f: impl FnMut(GcRef)) {
+        let visit = |values: &[Value], f: &mut dyn FnMut(GcRef)| {
+            for v in values {
+                if let Value::Heap(r) = v {
+                    f(*r);
+                }
+            }
         };
-        values.iter().filter_map(|v| match v {
-            Value::Heap(r) => Some(*r),
-            _ => None,
-        })
+        match self {
+            HeapObject::String(_) => {}
+            HeapObject::Tuple(elems) => visit(elems, &mut f),
+            HeapObject::Data { fields, .. } => visit(fields, &mut f),
+            HeapObject::Closure { captures, .. } => visit(captures, &mut f),
+            HeapObject::Continuation {
+                saved_stack,
+                saved_frames,
+            } => {
+                visit(saved_stack, &mut f);
+                for frame in saved_frames {
+                    visit(&frame.captures, &mut f);
+                }
+            }
+        }
     }
 }
 

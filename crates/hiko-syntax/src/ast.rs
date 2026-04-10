@@ -31,6 +31,17 @@ pub enum ExprKind {
     Case(Box<Expr>, Vec<(Pat, Expr)>),
     Ann(Box<Expr>, TypeExpr),
     Paren(Box<Expr>),
+    /// `perform EffectName arg`
+    Perform(String, Box<Expr>),
+    /// `handle body with return x => e | Effect x k => e`
+    Handle {
+        body: Box<Expr>,
+        return_var: String,
+        return_body: Box<Expr>,
+        handlers: Vec<EffectHandler>,
+    },
+    /// `resume k value`
+    Resume(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +101,8 @@ pub enum DeclKind {
     Local(Vec<Decl>, Vec<Decl>),
     /// `use "path/to/file.hk"`
     Use(String),
+    /// `effect Yield of Int`
+    Effect(String, Option<TypeExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,6 +139,15 @@ pub struct TypeAliasDecl {
     pub tyvars: Vec<String>,
     pub name: String,
     pub ty: TypeExpr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectHandler {
+    pub effect_name: String,
+    pub payload_var: String,
+    pub cont_var: String,
+    pub body: Expr,
     pub span: Span,
 }
 

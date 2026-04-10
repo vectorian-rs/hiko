@@ -410,6 +410,7 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::Use(_) => Ok(()),
+            DeclKind::Effect(_, _) => Ok(()),
         }
     }
 
@@ -731,6 +732,42 @@ impl InferCtx {
             }
 
             ExprKind::Paren(e) => self.infer_expr(e),
+
+            ExprKind::Perform(_name, arg) => {
+                let _arg_ty = self.infer_expr(arg)?;
+                Ok(self.fresh())
+            }
+
+            ExprKind::Handle {
+                body,
+                return_var,
+                return_body,
+                handlers,
+            } => {
+                let _body_ty = self.infer_expr(body)?;
+                self.push_scope();
+                let ret_var = self.fresh();
+                self.bind(return_var.clone(), Scheme::mono(ret_var));
+                let return_ty = self.infer_expr(return_body)?;
+                self.pop_scope();
+                for handler in handlers {
+                    self.push_scope();
+                    let payload_var = self.fresh();
+                    self.bind(handler.payload_var.clone(), Scheme::mono(payload_var));
+                    let cont_var = self.fresh();
+                    self.bind(handler.cont_var.clone(), Scheme::mono(cont_var));
+                    let handler_ty = self.infer_expr(&handler.body)?;
+                    self.unify(&handler_ty, &return_ty, handler.body.span)?;
+                    self.pop_scope();
+                }
+                Ok(return_ty)
+            }
+
+            ExprKind::Resume(cont, arg) => {
+                let _cont_ty = self.infer_expr(cont)?;
+                let _arg_ty = self.infer_expr(arg)?;
+                Ok(self.fresh())
+            }
         }
     }
 

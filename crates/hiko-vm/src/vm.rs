@@ -4,7 +4,7 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
-use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, Value};
+use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, SavedFrame, Value};
 
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
@@ -27,6 +27,13 @@ struct CallFrame {
     captures: Vec<Value>,
 }
 
+struct HandlerFrame {
+    call_frame_idx: usize,
+    clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
+    proto_idx: usize,
+    captures: Vec<Value>,
+}
+
 pub struct VM {
     pub heap: Heap,
     stack: Vec<Value>,
@@ -36,6 +43,7 @@ pub struct VM {
     main_chunk: Chunk,
     output: Vec<String>,
     builtins: Vec<BuiltinEntry>,
+    handlers: Vec<HandlerFrame>,
 }
 
 impl VM {
@@ -49,6 +57,7 @@ impl VM {
             main_chunk: program.main,
             output: Vec::new(),
             builtins: Vec::new(),
+            handlers: Vec::new(),
         };
         vm.register_builtins();
         vm
@@ -73,6 +82,7 @@ impl VM {
             .iter()
             .chain(self.frames.iter().flat_map(|f| f.captures.iter()))
             .chain(self.globals.values())
+            .chain(self.handlers.iter().flat_map(|h| h.captures.iter()))
             .filter_map(|v| match v {
                 Value::Heap(r) => Some(*r),
                 _ => None,
@@ -104,6 +114,7 @@ impl VM {
                     }
                 }
                 HeapObject::Closure { .. } => "<fn>".to_string(),
+                HeapObject::Continuation { .. } => "<continuation>".to_string(),
             },
             other => other.to_string(),
         }
@@ -984,6 +995,127 @@ impl VM {
                     let msg = self.read_const_string(proto_idx, idx).to_string();
                     return Err(RuntimeError { message: msg });
                 }
+
+                // ── Effect handlers ───────────────────────────
+                Op::InstallHandler => {
+                    let n_clauses = self.read_u16()? as usize;
+                    let mut clauses = Vec::with_capacity(n_clauses);
+                    for _ in 0..n_clauses {
+                        let effect_tag = self.read_u16()?;
+                        let offset = self.read_i16()? as i64;
+                        let abs_ip = (self.frames[fi].ip as i64 + offset) as usize;
+                        clauses.push((effect_tag, abs_ip));
+                    }
+                    self.handlers.push(HandlerFrame {
+                        call_frame_idx: fi,
+                        clauses,
+                        proto_idx: self.frames[fi].proto_idx,
+                        captures: self.frames[fi].captures.clone(),
+                    });
+                }
+
+                Op::RemoveHandler => {
+                    self.handlers.pop();
+                }
+
+                Op::Perform => {
+                    let effect_tag = self.read_u16()?;
+                    let payload = self.pop();
+
+                    let (h_idx, clause_ip) = self
+                        .handlers
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(hi, h)| {
+                            h.clauses
+                                .iter()
+                                .find(|(t, _)| *t == effect_tag)
+                                .map(|(_, ip)| (hi, *ip))
+                        })
+                        .ok_or_else(|| RuntimeError {
+                            message: format!("unhandled effect (tag {effect_tag})"),
+                        })?;
+
+                    let handler = self.handlers.remove(h_idx);
+                    self.handlers.truncate(h_idx);
+
+                    // Save stack from handler frame's base so the handler
+                    // frame's locals are included in the continuation.
+                    let save_from = self.frames[handler.call_frame_idx].base;
+                    let saved_stack = self.stack.split_off(save_from);
+
+                    let mut saved_frames = Vec::new();
+                    for frame in &self.frames[handler.call_frame_idx..] {
+                        saved_frames.push(SavedFrame {
+                            proto_idx: frame.proto_idx,
+                            ip: frame.ip,
+                            base_offset: frame.base - save_from,
+                            captures: frame.captures.clone(),
+                        });
+                    }
+
+                    // Allocate continuation on the heap
+                    let cont = self.alloc(HeapObject::Continuation {
+                        saved_frames,
+                        saved_stack,
+                    });
+
+                    self.frames.truncate(handler.call_frame_idx + 1);
+
+                    // Restore handler frame context and jump to clause
+                    let hfi = self.frames.len() - 1;
+                    self.frames[hfi].proto_idx = handler.proto_idx;
+                    self.frames[hfi].captures = handler.captures;
+                    self.frames[hfi].ip = clause_ip;
+
+                    // Push payload and continuation for the clause to bind
+                    self.push(payload)?;
+                    self.push(cont)?;
+                }
+
+                Op::Resume => {
+                    let arg = self.pop();
+                    let cont_val = self.pop();
+                    let cont_ref = match cont_val {
+                        Value::Heap(r) => r,
+                        _ => {
+                            return Err(RuntimeError {
+                                message: "resume: expected continuation".into(),
+                            });
+                        }
+                    };
+                    let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
+                        HeapObject::Continuation {
+                            saved_frames,
+                            saved_stack,
+                            ..
+                        } => (saved_frames.clone(), saved_stack.clone()),
+                        _ => {
+                            return Err(RuntimeError {
+                                message: "resume: expected continuation".into(),
+                            });
+                        }
+                    };
+
+                    // Restore saved stack and all saved frames.
+                    // The current (handler clause) frame stays — when the
+                    // resumed computation fully returns, it pops back here.
+                    let base = self.stack.len();
+                    self.stack.extend_from_slice(&saved_stack);
+
+                    for sf in saved_frames.iter() {
+                        self.frames.push(CallFrame {
+                            proto_idx: sf.proto_idx,
+                            ip: sf.ip,
+                            base: base + sf.base_offset,
+                            captures: sf.captures.clone(),
+                        });
+                    }
+
+                    // Push the argument as the "return value" of perform
+                    self.push(arg)?;
+                }
             }
         }
     }
@@ -1269,5 +1401,59 @@ mod tests {
         );
         assert_eq!(global_int(&vm, "result"), 5000);
         assert!(vm.heap.live_count() < 15000); // GC should have collected intermediate values
+    }
+
+    // ── Effect handler tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_effect_handle_no_perform() {
+        // Body returns normally, goes through return clause
+        let vm = run("effect Ask of Unit
+             val result = handle 42 with return x => x + 1");
+        assert_eq!(global_int(&vm, "result"), 43);
+    }
+
+    #[test]
+    fn test_effect_perform_simple() {
+        // Perform an effect, handler returns a value without resuming
+        let vm = run("effect Ask of Unit
+             val result = handle perform Ask ()
+               with return x => x
+                  | Ask _ k => 99");
+        assert_eq!(global_int(&vm, "result"), 99);
+    }
+
+    #[test]
+    fn test_effect_perform_with_resume() {
+        // Perform + resume: the continuation returns the resumed value
+        let vm = run("effect Ask of Unit
+             val result = handle 1 + perform Ask ()
+               with return x => x
+                  | Ask _ k => resume k 41");
+        assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    #[test]
+    fn test_effect_perform_payload() {
+        // Effect carries a payload
+        let vm = run("effect Double of Int
+             val result = handle perform Double 21
+               with return x => x
+                  | Double n k => resume k (n * 2)");
+        assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    // TODO: nested handlers and multiple resumes need frame base
+    // rebasing work — tracked for follow-up.
+
+    #[test]
+    fn test_effect_no_resume() {
+        // Handler does not resume — aborts the computation
+        let vm = run("effect Abort of Int
+             fun f () = let val _ = perform Abort 42 in 0 end
+             val result = handle f ()
+               with return x => x
+                  | Abort n _ => n");
+        assert_eq!(global_int(&vm, "result"), 42);
     }
 }

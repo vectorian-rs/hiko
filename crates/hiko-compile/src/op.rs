@@ -68,6 +68,11 @@ pub enum Op {
     Panic = 51,
 
     Halt = 52,
+
+    InstallHandler = 53,
+    Perform = 54,
+    Resume = 55,
+    RemoveHandler = 56,
 }
 
 impl TryFrom<u8> for Op {
@@ -128,6 +133,10 @@ impl TryFrom<u8> for Op {
             50 => Ok(Op::Return),
             51 => Ok(Op::Panic),
             52 => Ok(Op::Halt),
+            53 => Ok(Op::InstallHandler),
+            54 => Ok(Op::Perform),
+            55 => Ok(Op::Resume),
+            56 => Ok(Op::RemoveHandler),
             _ => Err(b),
         }
     }

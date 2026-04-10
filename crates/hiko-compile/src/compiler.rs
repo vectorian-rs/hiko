@@ -51,6 +51,9 @@ pub struct Compiler {
     func_stack: Vec<FuncCtx>,
     constructor_tags: HashMap<String, u16>,
     constructor_arities: HashMap<String, u8>,
+    /// Effect name → tag for effect handler dispatch.
+    effect_tags: HashMap<String, u16>,
+    next_effect_tag: u16,
     /// Base directory for resolving relative imports.
     base_dir: PathBuf,
     /// Files currently being loaded (for cycle detection).
@@ -100,6 +103,8 @@ impl Compiler {
             }],
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
+            effect_tags: HashMap::new(),
+            next_effect_tag: 0,
             base_dir,
             loading_files,
             loaded_files: HashSet::new(),
@@ -330,6 +335,12 @@ impl Compiler {
             }
             DeclKind::Datatype(dt) => self.compile_datatype(dt),
             DeclKind::TypeAlias(_) => Ok(()),
+            DeclKind::Effect(name, _) => {
+                let tag = self.next_effect_tag;
+                self.next_effect_tag += 1;
+                self.effect_tags.insert(name.clone(), tag);
+                Ok(())
+            }
             DeclKind::Use(path) => self.compile_use(path),
             DeclKind::Local(locals, body) => {
                 self.begin_scope();
@@ -964,6 +975,81 @@ impl Compiler {
             }
 
             ExprKind::Ann(e, _) | ExprKind::Paren(e) => self.compile_expr_inner(e, tail)?,
+
+            ExprKind::Perform(name, arg) => {
+                let tag = *self
+                    .effect_tags
+                    .get(name)
+                    .ok_or_else(|| CompileError::codegen(format!("unknown effect: {name}")))?;
+                self.compile_expr_inner(arg, false)?;
+                self.emit(Op::Perform);
+                self.emit_u16(tag);
+            }
+
+            ExprKind::Handle {
+                body,
+                return_var,
+                return_body,
+                handlers,
+            } => {
+                // Emit InstallHandler: u16 n_clauses, then per clause:
+                //   u16 effect_tag, i16 offset (placeholder)
+                self.emit(Op::InstallHandler);
+                let n_clauses = handlers.len() as u16;
+                self.emit_u16(n_clauses);
+                // Record positions of clause offset placeholders
+                let mut clause_offset_positions = Vec::new();
+                for handler in handlers {
+                    let tag = *self.effect_tags.get(&handler.effect_name).ok_or_else(|| {
+                        CompileError::codegen(format!("unknown effect: {}", handler.effect_name))
+                    })?;
+                    self.emit_u16(tag);
+                    let pos = self.chunk().code.len();
+                    self.emit_u16(0); // placeholder offset
+                    clause_offset_positions.push(pos);
+                }
+
+                // Jump over clause code
+                let skip_jump = self.emit_jump(Op::Jump);
+
+                // Compile each effect clause
+                let mut clause_end_jumps = Vec::new();
+                for (i, handler) in handlers.iter().enumerate() {
+                    self.patch_jump(clause_offset_positions[i]);
+                    self.begin_scope();
+                    self.add_local(handler.payload_var.clone());
+                    self.add_local(handler.cont_var.clone());
+                    self.compile_expr_inner(&handler.body, false)?;
+                    self.end_scope_keep_result();
+                    clause_end_jumps.push(self.emit_jump(Op::Jump));
+                }
+
+                // Patch skip_jump to land here (after clause code)
+                self.patch_jump(skip_jump);
+
+                // Compile the body (runs under the handler)
+                self.compile_expr_inner(body, false)?;
+
+                // Body returned normally — remove handler
+                self.emit(Op::RemoveHandler);
+
+                // Compile the return clause
+                self.begin_scope();
+                self.add_local(return_var.clone());
+                self.compile_expr_inner(return_body, tail)?;
+                self.end_scope_keep_result();
+
+                // Patch all clause end jumps to here
+                for j in clause_end_jumps {
+                    self.patch_jump(j);
+                }
+            }
+
+            ExprKind::Resume(cont, arg) => {
+                self.compile_expr_inner(cont, false)?;
+                self.compile_expr_inner(arg, false)?;
+                self.emit(Op::Resume);
+            }
         }
         Ok(())
     }
