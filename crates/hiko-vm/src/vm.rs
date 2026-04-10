@@ -59,7 +59,10 @@ fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
             if ra == rb {
                 return true;
             }
-            match (heap.get(ra), heap.get(rb)) {
+            let (Ok(obj_a), Ok(obj_b)) = (heap.get(ra), heap.get(rb)) else {
+                return false;
+            };
+            match (obj_a, obj_b) {
                 (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
                 (HeapObject::Tuple(ta), HeapObject::Tuple(tb)) => {
                     ta.len() == tb.len()
@@ -111,6 +114,12 @@ impl VM {
 
     // ── Heap helpers ─────────────────────────────────────────────────
 
+    fn heap_get(&self, r: GcRef) -> Result<&HeapObject, RuntimeError> {
+        self.heap
+            .get(r)
+            .map_err(|e| RuntimeError { message: e.into() })
+    }
+
     fn alloc(&mut self, obj: HeapObject) -> Value {
         if self.heap.should_collect() {
             self.gc_collect();
@@ -141,12 +150,12 @@ impl VM {
         match v {
             Value::Builtin(id) => format!("<builtin:{}>", self.builtins[*id as usize].name),
             Value::Heap(r) => match self.heap.get(*r) {
-                HeapObject::String(s) => s.clone(),
-                HeapObject::Tuple(elems) => {
+                Ok(HeapObject::String(s)) => s.clone(),
+                Ok(HeapObject::Tuple(elems)) => {
                     let parts: Vec<String> = elems.iter().map(|e| self.display_value(e)).collect();
                     format!("({})", parts.join(", "))
                 }
-                HeapObject::Data { tag, fields } => {
+                Ok(HeapObject::Data { tag, fields }) => {
                     if *tag == TAG_NIL && fields.is_empty() {
                         "[]".to_string()
                     } else if *tag == TAG_CONS && fields.len() == 2 {
@@ -159,8 +168,9 @@ impl VM {
                         format!("Data({tag})")
                     }
                 }
-                HeapObject::Closure { .. } => "<fn>".to_string(),
-                HeapObject::Continuation { .. } => "<continuation>".to_string(),
+                Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),
+                Ok(HeapObject::Continuation { .. }) => "<continuation>".to_string(),
+                Err(_) => "<dangling ref>".to_string(),
             },
             other => other.to_string(),
         }
@@ -213,7 +223,7 @@ impl VM {
         }
         fn bi_string_to_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s
                         .trim()
                         .parse::<i64>()
@@ -246,7 +256,7 @@ impl VM {
         }
         fn bi_string_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => Ok(Value::Int(s.chars().count() as i64)),
                     _ => Err("string_length: expected String".into()),
                 },
@@ -255,14 +265,14 @@ impl VM {
         }
         fn bi_substring(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let (v0, v1, v2) = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::Tuple(t) => (t[0], t[1], t[2]),
                     _ => return Err("substring: expected (String, Int, Int)".into()),
                 },
                 _ => return Err("substring: expected (String, Int, Int)".into()),
             };
             let s = match v0 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s,
                     _ => return Err("substring: expected String".into()),
                 },
@@ -270,8 +280,10 @@ impl VM {
             };
             match (v1, v2) {
                 (Value::Int(start), Value::Int(len)) => {
-                    let start = start as usize;
-                    let len = len as usize;
+                    let start = usize::try_from(start)
+                        .map_err(|_| "substring: negative start index".to_string())?;
+                    let len = usize::try_from(len)
+                        .map_err(|_| "substring: negative length".to_string())?;
                     let result: String = s.chars().skip(start).take(len).collect();
                     if result.chars().count() < len {
                         Err("substring: out of bounds".to_string())
@@ -284,21 +296,21 @@ impl VM {
         }
         fn bi_string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let (v0, v1) = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::Tuple(t) => (t[0], t[1]),
                     _ => return Err("string_contains: expected (String, String)".into()),
                 },
                 _ => return Err("string_contains: expected (String, String)".into()),
             };
             let a = match v0 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.as_str(),
                     _ => return Err("string_contains: expected String".into()),
                 },
                 _ => return Err("string_contains: expected String".into()),
             };
             let b = match v1 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.as_str(),
                     _ => return Err("string_contains: expected String".into()),
                 },
@@ -308,7 +320,7 @@ impl VM {
         }
         fn bi_trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => Ok(Value::Heap(
                         heap.alloc(HeapObject::String(s.trim().to_string())),
                     )),
@@ -319,21 +331,21 @@ impl VM {
         }
         fn bi_split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let (v0, v1) = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::Tuple(t) => (t[0], t[1]),
                     _ => return Err("split: expected (String, String)".into()),
                 },
                 _ => return Err("split: expected (String, String)".into()),
             };
             let s = match v0 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("split: expected String".into()),
                 },
                 _ => return Err("split: expected String".into()),
             };
             let sep = match v1 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("split: expected String".into()),
                 },
@@ -378,7 +390,7 @@ impl VM {
         }
         fn bi_read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let path = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("read_file: expected String".into()),
                 },
@@ -389,21 +401,21 @@ impl VM {
         }
         fn bi_write_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let (v0, v1) = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::Tuple(t) => (t[0], t[1]),
                     _ => return Err("write_file: expected (String, String)".into()),
                 },
                 _ => return Err("write_file: expected (String, String)".into()),
             };
             let path = match v0 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("write_file: expected String".into()),
                 },
                 _ => return Err("write_file: expected String".into()),
             };
             let contents = match v1 {
-                Value::Heap(r) => match heap.get(r) {
+                Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("write_file: expected String".into()),
                 },
@@ -414,7 +426,7 @@ impl VM {
         }
         fn bi_file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => {
                         Ok(Value::Bool(std::path::Path::new(s.as_str()).exists()))
                     }
@@ -425,7 +437,7 @@ impl VM {
         }
         fn bi_list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let path = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("list_dir: expected String".into()),
                 },
@@ -446,7 +458,7 @@ impl VM {
         }
         fn bi_remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => {
                         std::fs::remove_file(s.as_str())
                             .map_err(|e| format!("remove_file: {e}"))?;
@@ -459,7 +471,7 @@ impl VM {
         }
         fn bi_create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => {
                         std::fs::create_dir_all(s.as_str())
                             .map_err(|e| format!("create_dir: {e}"))?;
@@ -472,7 +484,7 @@ impl VM {
         }
         fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let url = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => s.clone(),
                     _ => return Err("http_get: expected String".into()),
                 },
@@ -517,7 +529,7 @@ impl VM {
         }
         fn bi_panic(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::String(s) => Err(s.clone()),
                     _ => Err("panic: expected String".into()),
                 },
@@ -526,7 +538,7 @@ impl VM {
         }
         fn bi_assert(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let (v0, v1) = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::Tuple(t) => (t[0], t[1]),
                     _ => return Err("assert: expected (Bool, String)".into()),
                 },
@@ -534,16 +546,18 @@ impl VM {
             };
             match (v0, v1) {
                 (Value::Bool(true), _) => Ok(Value::Unit),
-                (Value::Bool(false), Value::Heap(r)) => match heap.get(r) {
-                    HeapObject::String(msg) => Err(format!("assertion failed: {msg}")),
-                    _ => Err("assertion failed".into()),
-                },
+                (Value::Bool(false), Value::Heap(r)) => {
+                    match heap.get(r).map_err(|e| e.to_string())? {
+                        HeapObject::String(msg) => Err(format!("assertion failed: {msg}")),
+                        _ => Err("assertion failed".into()),
+                    }
+                }
                 _ => Err("assert: expected (Bool, String)".into()),
             }
         }
         fn bi_assert_eq(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let (v0, v1, v2) = match &args[0] {
-                Value::Heap(r) => match heap.get(*r) {
+                Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
                     HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
                     _ => return Err("assert_eq: expected (a, a, String)".into()),
                 },
@@ -555,7 +569,7 @@ impl VM {
             } else {
                 let msg = match v2 {
                     Value::Heap(r) => match heap.get(r) {
-                        HeapObject::String(s) => s.clone(),
+                        Ok(HeapObject::String(s)) => s.clone(),
                         _ => String::new(),
                     },
                     _ => String::new(),
@@ -807,17 +821,14 @@ impl VM {
                 Op::LeFloat => self.float_cmp(|a, b| a <= b)?,
                 Op::GeFloat => self.float_cmp(|a, b| a >= b)?,
 
-                Op::EqBool | Op::EqChar | Op::EqString => self.scalar_eq(true)?,
-                Op::NeBool | Op::NeChar | Op::NeString => self.scalar_eq(false)?,
-
                 Op::ConcatString => {
                     let b_ref = self.pop_string_ref()?;
                     let a_ref = self.pop_string_ref()?;
-                    let a_s = match self.heap.get(a_ref) {
+                    let a_s = match self.heap_get(a_ref)? {
                         HeapObject::String(s) => s.as_str(),
                         _ => "",
                     };
-                    let b_s = match self.heap.get(b_ref) {
+                    let b_s = match self.heap_get(b_ref)? {
                         HeapObject::String(s) => s.as_str(),
                         _ => "",
                     };
@@ -844,7 +855,7 @@ impl VM {
                     let idx = self.read_u8()? as usize;
                     let val = self.pop()?;
                     match val {
-                        Value::Heap(r) => match self.heap.get(r) {
+                        Value::Heap(r) => match self.heap_get(r)? {
                             HeapObject::Tuple(t) => self.push(t[idx])?,
                             HeapObject::Data { fields, .. } => self.push(fields[idx])?,
                             _ => {
@@ -871,7 +882,7 @@ impl VM {
                 Op::GetTag => {
                     let val = self.pop()?;
                     match val {
-                        Value::Heap(r) => match self.heap.get(r) {
+                        Value::Heap(r) => match self.heap_get(r)? {
                             HeapObject::Data { tag, .. } => self.push(Value::Int(*tag as i64))?,
                             _ => {
                                 return Err(RuntimeError {
@@ -932,7 +943,7 @@ impl VM {
                     let callee = self.stack[callee_pos];
                     match callee {
                         Value::Heap(r) => {
-                            let (closure_proto, closure_captures) = match self.heap.get(r) {
+                            let (closure_proto, closure_captures) = match self.heap_get(r)? {
                                 HeapObject::Closure {
                                     proto_idx,
                                     captures,
@@ -985,7 +996,7 @@ impl VM {
                     let callee = self.stack[callee_pos];
                     match callee {
                         Value::Heap(r) => {
-                            let (closure_proto, closure_captures) = match self.heap.get(r) {
+                            let (closure_proto, closure_captures) = match self.heap_get(r)? {
                                 HeapObject::Closure {
                                     proto_idx,
                                     captures,
@@ -1148,7 +1159,7 @@ impl VM {
                             });
                         }
                     };
-                    let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
+                    let (saved_frames, saved_stack) = match self.heap_get(cont_ref)? {
                         HeapObject::Continuation {
                             saved_frames,
                             saved_stack,

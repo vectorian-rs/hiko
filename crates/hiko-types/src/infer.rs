@@ -37,6 +37,8 @@ pub struct InferCtx {
     datatype_constructors: HashMap<String, Vec<(String, usize)>>,
     /// Accumulated warnings (redundant clauses, etc.)
     pub warnings: Vec<Warning>,
+    /// Effect name -> (argument_type, result_type)
+    effect_sigs: HashMap<String, (Type, Type)>,
 }
 
 impl Default for InferCtx {
@@ -57,6 +59,7 @@ impl InferCtx {
             constructor_tags: HashMap::new(),
             datatype_constructors: HashMap::new(),
             warnings: Vec::new(),
+            effect_sigs: HashMap::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
         // Register runtime builtins
@@ -420,7 +423,18 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::Use(_) => Ok(()),
-            DeclKind::Effect(_, _) => Ok(()),
+            DeclKind::Effect(name, payload) => {
+                let arg_type = if let Some(ty_expr) = payload {
+                    let mut tyvar_map = HashMap::new();
+                    self.resolve_type_expr(ty_expr, &mut tyvar_map)?
+                } else {
+                    Type::unit()
+                };
+                let result_type = self.fresh();
+                self.effect_sigs
+                    .insert(name.clone(), (arg_type, result_type));
+                Ok(())
+            }
         }
     }
 
@@ -740,9 +754,14 @@ impl InferCtx {
 
             ExprKind::Paren(e) => self.infer_expr(e),
 
-            ExprKind::Perform(_name, arg) => {
-                let _arg_ty = self.infer_expr(arg)?;
-                Ok(self.fresh())
+            ExprKind::Perform(name, arg) => {
+                let arg_ty = self.infer_expr(arg)?;
+                if let Some((declared_arg, _declared_res)) = self.effect_sigs.get(name).cloned() {
+                    self.unify(&arg_ty, &declared_arg, expr.span)?;
+                    Ok(self.fresh())
+                } else {
+                    Err(self.err(&format!("undeclared effect: {name}"), expr.span))
+                }
             }
 
             ExprKind::Handle {
@@ -759,10 +778,17 @@ impl InferCtx {
                 self.pop_scope();
                 for handler in handlers {
                     self.push_scope();
-                    let payload_var = self.fresh();
-                    self.bind(handler.payload_var.clone(), Scheme::mono(payload_var));
-                    let cont_var = self.fresh();
-                    self.bind(handler.cont_var.clone(), Scheme::mono(cont_var));
+                    let payload_ty = if let Some((declared_arg, _)) =
+                        self.effect_sigs.get(&handler.effect_name).cloned()
+                    {
+                        declared_arg
+                    } else {
+                        self.fresh()
+                    };
+                    self.bind(handler.payload_var.clone(), Scheme::mono(payload_ty));
+                    let resume_arg = self.fresh();
+                    let cont_ty = Type::arrow(resume_arg, return_ty.clone());
+                    self.bind(handler.cont_var.clone(), Scheme::mono(cont_ty));
                     let handler_ty = self.infer_expr(&handler.body)?;
                     self.unify(&handler_ty, &return_ty, handler.body.span)?;
                     self.pop_scope();

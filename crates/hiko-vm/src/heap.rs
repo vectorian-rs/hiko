@@ -39,8 +39,11 @@ impl Heap {
         GcRef(idx)
     }
 
-    pub fn get(&self, r: GcRef) -> &HeapObject {
-        self.objects[r.0 as usize].as_ref().expect("dangling GcRef")
+    pub fn get(&self, r: GcRef) -> Result<&HeapObject, &'static str> {
+        self.objects
+            .get(r.0 as usize)
+            .and_then(|slot| slot.as_ref())
+            .ok_or("dangling GcRef")
     }
 
     pub fn should_collect(&self) -> bool {
@@ -75,10 +78,9 @@ impl Heap {
 
         while let Some(r) = worklist.pop() {
             children.clear();
-            self.objects[r.0 as usize]
-                .as_ref()
-                .unwrap()
-                .for_each_gc_ref(|c| children.push(c));
+            if let Some(obj) = self.objects[r.0 as usize].as_ref() {
+                obj.for_each_gc_ref(|c| children.push(c));
+            }
             for &child in &children {
                 if self.mark(child) {
                     worklist.push(child);

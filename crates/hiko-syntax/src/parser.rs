@@ -11,11 +11,16 @@ pub struct ParseError {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    depth: u32,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     // ── Utility ──────────────────────────────────────────────────────
@@ -115,6 +120,19 @@ impl Parser {
             message: message.to_string(),
             span: self.span(),
         }
+    }
+
+    fn guard_depth(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > 256 {
+            Err(self.err("expression nesting limit exceeded"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn unguard_depth(&mut self) {
+        self.depth -= 1;
     }
 
     fn can_start_app_arg(&self) -> bool {
@@ -406,6 +424,13 @@ impl Parser {
     // ── Expressions (lowest to highest precedence) ───────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.guard_depth()?;
+        let result = self.parse_expr_inner();
+        self.unguard_depth();
+        result
+    }
+
+    fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
         let expr = self.parse_orelse()?;
         if self.eat(&TokenKind::Colon).is_some() {
             let ty = self.parse_type_expr()?;
@@ -859,6 +884,13 @@ impl Parser {
     // ── Patterns ─────────────────────────────────────────────────────
 
     fn parse_pat(&mut self) -> Result<Pat, ParseError> {
+        self.guard_depth()?;
+        let result = self.parse_pat_inner_dispatch();
+        self.unguard_depth();
+        result
+    }
+
+    fn parse_pat_inner_dispatch(&mut self) -> Result<Pat, ParseError> {
         let pat = self.parse_as_pat()?;
         if self.eat(&TokenKind::Colon).is_some() {
             let ty = self.parse_type_expr()?;
@@ -1076,7 +1108,10 @@ impl Parser {
     // ── Type expressions ─────────────────────────────────────────────
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
-        self.parse_arrow_type()
+        self.guard_depth()?;
+        let result = self.parse_arrow_type();
+        self.unguard_depth();
+        result
     }
 
     fn parse_arrow_type(&mut self) -> Result<TypeExpr, ParseError> {

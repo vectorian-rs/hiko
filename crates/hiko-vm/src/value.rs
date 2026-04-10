@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 /// Index into the GC heap. Copy, 4 bytes, no Drop.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct GcRef(pub u32);
+pub struct GcRef(pub(crate) u32);
 
 /// Runtime value. Copy, no reference counting, no Drop.
 /// Heap-allocated objects are referenced via GcRef indices.

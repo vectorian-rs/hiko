@@ -41,13 +41,6 @@ pub enum Op {
     LeFloat = 31,
     GeFloat = 32,
 
-    EqBool = 33,
-    NeBool = 34,
-    EqChar = 35,
-    NeChar = 36,
-    EqString = 37,
-    NeString = 38,
-
     ConcatString = 39,
     Not = 40,
 
@@ -113,12 +106,6 @@ impl TryFrom<u8> for Op {
             30 => Ok(Op::GtFloat),
             31 => Ok(Op::LeFloat),
             32 => Ok(Op::GeFloat),
-            33 => Ok(Op::EqBool),
-            34 => Ok(Op::NeBool),
-            35 => Ok(Op::EqChar),
-            36 => Ok(Op::NeChar),
-            37 => Ok(Op::EqString),
-            38 => Ok(Op::NeString),
             39 => Ok(Op::ConcatString),
             40 => Ok(Op::Not),
             41 => Ok(Op::MakeTuple),
