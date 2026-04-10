@@ -491,8 +491,7 @@ impl Compiler {
 
         let desugared = self
             .imported_programs
-            .get(&canonical)
-            .cloned()
+            .remove(&canonical)
             .unwrap_or_default();
 
         let old_base = self.base_dir.clone();

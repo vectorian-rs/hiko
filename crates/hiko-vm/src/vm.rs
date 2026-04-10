@@ -37,7 +37,7 @@ struct HandlerFrame {
 }
 
 pub struct VM {
-    pub heap: Heap,
+    heap: Heap,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
@@ -636,6 +636,10 @@ impl VM {
 
     pub fn get_output(&self) -> &[String] {
         &self.output
+    }
+
+    pub fn heap_live_count(&self) -> usize {
+        self.heap.live_count()
     }
 
     pub fn error_span(&self) -> Option<hiko_syntax::span::Span> {
@@ -1460,7 +1464,7 @@ mod tests {
              val result = length_acc (make_list_acc 5000 []) 0",
         );
         assert_eq!(global_int(&vm, "result"), 5000);
-        assert!(vm.heap.live_count() < 15000); // GC should have collected intermediate values
+        assert!(vm.heap_live_count() < 15000); // GC should have collected intermediate values
     }
 
     // ── Effect handler tests ─────────────────────────────────────────

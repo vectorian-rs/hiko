@@ -99,7 +99,9 @@ impl Chunk {
                 pos + 2
             )
         })?;
-        let offset = target - origin;
+        let offset = target.checked_sub(origin).ok_or_else(|| {
+            format!("jump offset overflow: {target} - {origin} exceeds i16 range")
+        })?;
         let bytes = offset.to_le_bytes();
         self.code[pos] = bytes[0];
         self.code[pos + 1] = bytes[1];
