@@ -1,0 +1,102 @@
+use crate::value::{GcRef, HeapObject};
+
+pub struct Heap {
+    objects: Vec<Option<HeapObject>>,
+    marks: Vec<bool>,
+    free_list: Vec<u32>,
+    alloc_since_gc: usize,
+    gc_threshold: usize,
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Heap {
+    pub fn new() -> Self {
+        Heap {
+            objects: Vec::with_capacity(4096),
+            marks: Vec::with_capacity(4096),
+            free_list: Vec::new(),
+            alloc_since_gc: 0,
+            gc_threshold: 1024,
+        }
+    }
+
+    pub fn alloc(&mut self, obj: HeapObject) -> GcRef {
+        self.alloc_since_gc += 1;
+        let idx = if let Some(idx) = self.free_list.pop() {
+            self.objects[idx as usize] = Some(obj);
+            idx
+        } else {
+            let idx = self.objects.len() as u32;
+            self.objects.push(Some(obj));
+            self.marks.push(false);
+            idx
+        };
+        GcRef(idx)
+    }
+
+    pub fn get(&self, r: GcRef) -> &HeapObject {
+        self.objects[r.0 as usize].as_ref().expect("dangling GcRef")
+    }
+
+    pub fn should_collect(&self) -> bool {
+        self.alloc_since_gc >= self.gc_threshold && self.free_list.is_empty()
+    }
+
+    /// Mark a single ref. Returns true if it was newly marked.
+    fn mark(&mut self, r: GcRef) -> bool {
+        let idx = r.0 as usize;
+        if self.marks[idx] {
+            return false;
+        }
+        self.marks[idx] = true;
+        true
+    }
+
+    /// Run mark-and-sweep. `roots` is an iterator of all root GcRefs.
+    pub fn collect(&mut self, roots: impl Iterator<Item = GcRef>) {
+        for m in self.marks.iter_mut() {
+            *m = false;
+        }
+
+        // Worklist avoids stack overflow on deep object graphs
+        let mut worklist: Vec<GcRef> = Vec::new();
+        let mut children: Vec<GcRef> = Vec::new();
+
+        for r in roots {
+            if self.mark(r) {
+                worklist.push(r);
+            }
+        }
+
+        while let Some(r) = worklist.pop() {
+            children.clear();
+            children.extend(self.objects[r.0 as usize].as_ref().unwrap().gc_refs());
+            for &child in &children {
+                if self.mark(child) {
+                    worklist.push(child);
+                }
+            }
+        }
+
+        self.free_list.clear();
+        for i in 0..self.objects.len() {
+            if self.objects[i].is_some() && !self.marks[i] {
+                self.objects[i] = None;
+                self.free_list.push(i as u32);
+            }
+        }
+
+        self.alloc_since_gc = 0;
+        let live_count = self.objects.len() - self.free_list.len();
+        self.gc_threshold = (live_count * 2).max(1024);
+    }
+
+    pub fn live_count(&self) -> usize {
+        self.objects.iter().filter(|o| o.is_some()).count()
+    }
+}

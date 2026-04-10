@@ -1,57 +1,63 @@
 use std::fmt;
-use std::rc::Rc;
 
-pub type BuiltinFn = fn(&[Value]) -> Result<Value, String>;
+/// Index into the GC heap. Copy, 4 bytes, no Drop.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct GcRef(pub u32);
 
-#[derive(Clone)]
+/// Runtime value. Copy — no reference counting, no Drop.
+/// Heap-allocated objects are referenced via GcRef indices.
+#[derive(Clone, Copy, Debug)]
 pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
     Char(char),
     Unit,
-    String(Rc<String>),
-    Tuple(Rc<Vec<Value>>),
-    Data(Rc<DataValue>),
-    Closure(Rc<ClosureValue>),
-    Builtin { name: &'static str, func: BuiltinFn },
+    Heap(GcRef),
+    Builtin(u16),
 }
 
-#[derive(Debug, Clone)]
-pub struct DataValue {
-    pub tag: u16,
-    pub fields: Vec<Value>,
+/// Heap-allocated objects managed by the GC.
+pub enum HeapObject {
+    String(String),
+    Tuple(Vec<Value>),
+    Data {
+        tag: u16,
+        fields: Vec<Value>,
+    },
+    Closure {
+        proto_idx: usize,
+        captures: Vec<Value>,
+    },
 }
 
-#[derive(Debug, Clone)]
-pub struct ClosureValue {
-    pub proto_idx: usize,
-    pub captures: Vec<Value>,
+impl HeapObject {
+    /// Iterate over all GcRefs directly contained in this object.
+    pub fn gc_refs(&self) -> impl Iterator<Item = GcRef> + '_ {
+        let values: &[Value] = match self {
+            HeapObject::String(_) => &[],
+            HeapObject::Tuple(elems) => elems,
+            HeapObject::Data { fields, .. } => fields,
+            HeapObject::Closure { captures, .. } => captures,
+        };
+        values.iter().filter_map(|v| match v {
+            Value::Heap(r) => Some(*r),
+            _ => None,
+        })
+    }
 }
 
-impl fmt::Debug for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
-            Value::Bool(b) => write!(f, "{b}"),
-            Value::Char(c) => write!(f, "#\"{c}\""),
-            Value::Unit => write!(f, "()"),
-            Value::String(s) => write!(f, "\"{s}\""),
-            Value::Tuple(elems) => {
-                write!(f, "(")?;
-                for (i, e) in elems.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{e:?}")?;
-                }
-                write!(f, ")")
-            }
-            Value::Data(d) => write!(f, "Data({}, {:?})", d.tag, d.fields),
-            Value::Closure(c) => write!(f, "<fn:{}>", c.proto_idx),
-            Value::Builtin { name, .. } => write!(f, "<builtin:{name}>"),
-        }
+/// Builtin function entry — stored in a VM-level table.
+pub struct BuiltinEntry {
+    pub name: &'static str,
+    pub func: BuiltinFn,
+}
+
+pub type BuiltinFn = fn(&[Value], &mut crate::heap::Heap) -> Result<Value, String>;
+
+impl Value {
+    pub fn is_heap(&self) -> bool {
+        matches!(self, Value::Heap(_))
     }
 }
 
@@ -63,28 +69,8 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             Value::Char(c) => write!(f, "{c}"),
             Value::Unit => write!(f, "()"),
-            Value::String(s) => write!(f, "{s}"),
-            Value::Tuple(elems) => {
-                write!(f, "(")?;
-                for (i, e) in elems.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{e}")?;
-                }
-                write!(f, ")")
-            }
-            Value::Data(d) => {
-                if d.tag == 0 && d.fields.is_empty() {
-                    write!(f, "[]")
-                } else if d.tag == 1 && d.fields.len() == 2 {
-                    write!(f, "{} :: {}", d.fields[0], d.fields[1])
-                } else {
-                    write!(f, "Data({}, {:?})", d.tag, d.fields)
-                }
-            }
-            Value::Closure(_) => write!(f, "<fn>"),
-            Value::Builtin { name, .. } => write!(f, "<builtin:{name}>"),
+            Value::Heap(_) => write!(f, "<heap>"),
+            Value::Builtin(id) => write!(f, "<builtin:{id}>"),
         }
     }
 }

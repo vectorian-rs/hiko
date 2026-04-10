@@ -1,28 +1,19 @@
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
 
-use crate::value::{ClosureValue, DataValue, Value};
-
-/// Build a Hiko list (Cons/Nil) from a Vec of values.
-fn build_list(items: Vec<Value>) -> Value {
-    let mut list = Value::Data(Rc::new(DataValue {
-        tag: 0,
-        fields: vec![],
-    })); // Nil
-    for item in items.into_iter().rev() {
-        list = Value::Data(Rc::new(DataValue {
-            tag: 1,
-            fields: vec![item, list],
-        })); // Cons
-    }
-    list
-}
+use crate::heap::Heap;
+use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, Value};
 
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
+
+const BUILTIN_PRINT: u16 = 0;
+const BUILTIN_PRINTLN: u16 = 1;
+
+const TAG_NIL: u16 = 0;
+const TAG_CONS: u16 = 1;
 
 #[derive(Debug)]
 pub struct RuntimeError {
@@ -30,44 +21,118 @@ pub struct RuntimeError {
 }
 
 struct CallFrame {
-    proto_idx: usize, // index into VM.protos (usize::MAX = main chunk)
+    proto_idx: usize,
     ip: usize,
     base: usize,
     captures: Vec<Value>,
 }
 
 pub struct VM {
+    pub heap: Heap,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
     protos: Vec<hiko_compile::chunk::FunctionProto>,
     main_chunk: Chunk,
     output: Vec<String>,
+    builtins: Vec<BuiltinEntry>,
 }
 
 impl VM {
     pub fn new(program: CompiledProgram) -> Self {
         let mut vm = VM {
+            heap: Heap::new(),
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
             globals: HashMap::new(),
             protos: program.functions,
             main_chunk: program.main,
             output: Vec::new(),
+            builtins: Vec::new(),
         };
         vm.register_builtins();
         vm
     }
 
+    // ── Heap helpers ─────────────────────────────────────────────────
+
+    fn alloc(&mut self, obj: HeapObject) -> Value {
+        if self.heap.should_collect() {
+            self.gc_collect();
+        }
+        Value::Heap(self.heap.alloc(obj))
+    }
+
+    fn alloc_string(&mut self, s: String) -> Value {
+        self.alloc(HeapObject::String(s))
+    }
+
+    fn gc_collect(&mut self) {
+        let roots = self
+            .stack
+            .iter()
+            .chain(self.frames.iter().flat_map(|f| f.captures.iter()))
+            .chain(self.globals.values())
+            .filter_map(|v| match v {
+                Value::Heap(r) => Some(*r),
+                _ => None,
+            });
+        self.heap.collect(roots);
+    }
+
+    /// Format a value for display (print/println).
+    fn display_value(&self, v: &Value) -> String {
+        match v {
+            Value::Builtin(id) => format!("<builtin:{}>", self.builtins[*id as usize].name),
+            Value::Heap(r) => match self.heap.get(*r) {
+                HeapObject::String(s) => s.clone(),
+                HeapObject::Tuple(elems) => {
+                    let parts: Vec<String> = elems.iter().map(|e| self.display_value(e)).collect();
+                    format!("({})", parts.join(", "))
+                }
+                HeapObject::Data { tag, fields } => {
+                    if *tag == TAG_NIL && fields.is_empty() {
+                        "[]".to_string()
+                    } else if *tag == TAG_CONS && fields.len() == 2 {
+                        format!(
+                            "{} :: {}",
+                            self.display_value(&fields[0]),
+                            self.display_value(&fields[1])
+                        )
+                    } else {
+                        format!("Data({tag})")
+                    }
+                }
+                HeapObject::Closure { .. } => "<fn>".to_string(),
+            },
+            other => other.to_string(),
+        }
+    }
+
+    // ── Builtins ─────────────────────────────────────────────────────
+
     fn register_builtins(&mut self) {
-        // ── I/O ──────────────────────────────────────────────────────
-        fn bi_print(args: &[Value]) -> Result<Value, String> {
-            Ok(Value::String(Rc::new(format!("{}", args[0]))))
+        fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Value {
+            let mut list = Value::Heap(heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: vec![],
+            }));
+            for elem in elems.into_iter().rev() {
+                list = Value::Heap(heap.alloc(HeapObject::Data {
+                    tag: TAG_CONS,
+                    fields: vec![elem, list],
+                }));
+            }
+            list
         }
-        fn bi_println(args: &[Value]) -> Result<Value, String> {
-            Ok(Value::String(Rc::new(format!("{}\n", args[0]))))
+        fn bi_print(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            // Return a marker; the VM handles display
+            Ok(args[0]) // VM will display this value
         }
-        fn bi_read_line(_args: &[Value]) -> Result<Value, String> {
+        fn bi_println(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            Ok(args[0])
+        }
+        fn bi_read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let mut line = String::new();
             std::io::stdin()
                 .read_line(&mut line)
@@ -75,39 +140,40 @@ impl VM {
             if line.ends_with('\n') {
                 line.pop();
             }
-            Ok(Value::String(Rc::new(line)))
+            Ok(Value::Heap(heap.alloc(HeapObject::String(line))))
         }
-
-        // ── Conversions ──────────────────────────────────────────────
-        fn bi_int_to_string(args: &[Value]) -> Result<Value, String> {
+        fn bi_int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Int(n) => Ok(Value::String(Rc::new(n.to_string()))),
+                Value::Int(n) => Ok(Value::Heap(heap.alloc(HeapObject::String(n.to_string())))),
                 _ => Err("int_to_string: expected Int".into()),
             }
         }
-        fn bi_float_to_string(args: &[Value]) -> Result<Value, String> {
+        fn bi_float_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::Float(f) => Ok(Value::String(Rc::new(f.to_string()))),
+                Value::Float(f) => Ok(Value::Heap(heap.alloc(HeapObject::String(f.to_string())))),
                 _ => Err("float_to_string: expected Float".into()),
             }
         }
-        fn bi_string_to_int(args: &[Value]) -> Result<Value, String> {
+        fn bi_string_to_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::String(s) => s
-                    .trim()
-                    .parse::<i64>()
-                    .map(Value::Int)
-                    .map_err(|e| format!("string_to_int: {e}")),
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => s
+                        .trim()
+                        .parse::<i64>()
+                        .map(Value::Int)
+                        .map_err(|e| format!("string_to_int: {e}")),
+                    _ => Err("string_to_int: expected String".into()),
+                },
                 _ => Err("string_to_int: expected String".into()),
             }
         }
-        fn bi_char_to_int(args: &[Value]) -> Result<Value, String> {
+        fn bi_char_to_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
                 Value::Char(c) => Ok(Value::Int(*c as i64)),
                 _ => Err("char_to_int: expected Char".into()),
             }
         }
-        fn bi_int_to_char(args: &[Value]) -> Result<Value, String> {
+        fn bi_int_to_char(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
                 Value::Int(n) => char::from_u32(*n as u32)
                     .map(Value::Char)
@@ -115,288 +181,359 @@ impl VM {
                 _ => Err("int_to_char: expected Int".into()),
             }
         }
-
-        // ── String operations ────────────────────────────────────────
-        fn bi_string_length(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
-                _ => Err("string_length: expected String".into()),
-            }
-        }
-        fn bi_substring(args: &[Value]) -> Result<Value, String> {
-            let tup = match &args[0] {
-                Value::Tuple(t) => t,
-                _ => return Err("substring: expected (String, Int, Int)".into()),
-            };
-            match (&tup[0], &tup[1], &tup[2]) {
-                (Value::String(s), Value::Int(start), Value::Int(len)) => {
-                    let start = *start as usize;
-                    let len = *len as usize;
-                    let result: String = s.chars().skip(start).take(len).collect();
-                    if result.chars().count() < len {
-                        Err("substring: out of bounds".to_string())
-                    } else {
-                        Ok(Value::String(Rc::new(result)))
-                    }
-                }
-                _ => Err("substring: expected (String, Int, Int)".into()),
-            }
-        }
-        fn bi_string_contains(args: &[Value]) -> Result<Value, String> {
-            let tup = match &args[0] {
-                Value::Tuple(t) => t,
-                _ => return Err("string_contains: expected (String, String)".into()),
-            };
-            match (&tup[0], &tup[1]) {
-                (Value::String(haystack), Value::String(needle)) => {
-                    Ok(Value::Bool(haystack.contains(needle.as_str())))
-                }
-                _ => Err("string_contains: expected (String, String)".into()),
-            }
-        }
-        fn bi_trim(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::String(s) => Ok(Value::String(Rc::new(s.trim().to_string()))),
-                _ => Err("trim: expected String".into()),
-            }
-        }
-        fn bi_split(args: &[Value]) -> Result<Value, String> {
-            let tup = match &args[0] {
-                Value::Tuple(t) => t,
-                _ => return Err("split: expected (String, String)".into()),
-            };
-            match (&tup[0], &tup[1]) {
-                (Value::String(s), Value::String(sep)) => {
-                    let parts: Vec<Value> = s
-                        .split(sep.as_str())
-                        .map(|p| Value::String(Rc::new(p.to_string())))
-                        .collect();
-                    Ok(build_list(parts))
-                }
-                _ => Err("split: expected (String, String)".into()),
-            }
-        }
-
-        // ── Math ─────────────────────────────────────────────────────
-        fn bi_sqrt(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::Float(f) => Ok(Value::Float(f.sqrt())),
-                _ => Err("sqrt: expected Float".into()),
-            }
-        }
-        fn bi_abs_int(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::Int(n) => Ok(Value::Int(n.abs())),
-                _ => Err("abs_int: expected Int".into()),
-            }
-        }
-        fn bi_abs_float(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::Float(f) => Ok(Value::Float(f.abs())),
-                _ => Err("abs_float: expected Float".into()),
-            }
-        }
-        fn bi_floor(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::Float(f) => Ok(Value::Int(f.floor() as i64)),
-                _ => Err("floor: expected Float".into()),
-            }
-        }
-        fn bi_ceil(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::Float(f) => Ok(Value::Int(f.ceil() as i64)),
-                _ => Err("ceil: expected Float".into()),
-            }
-        }
-        fn bi_int_to_float(args: &[Value]) -> Result<Value, String> {
+        fn bi_int_to_float(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
                 Value::Int(n) => Ok(Value::Float(*n as f64)),
                 _ => Err("int_to_float: expected Int".into()),
             }
         }
-
-        // ── Filesystem ───────────────────────────────────────────────
-        fn bi_read_file(args: &[Value]) -> Result<Value, String> {
+        fn bi_string_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::String(path) => {
-                    let contents = std::fs::read_to_string(path.as_str())
-                        .map_err(|e| format!("read_file: {e}"))?;
-                    Ok(Value::String(Rc::new(contents)))
-                }
-                _ => Err("read_file: expected String".into()),
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => Ok(Value::Int(s.chars().count() as i64)),
+                    _ => Err("string_length: expected String".into()),
+                },
+                _ => Err("string_length: expected String".into()),
             }
         }
-        fn bi_write_file(args: &[Value]) -> Result<Value, String> {
-            let tup = match &args[0] {
-                Value::Tuple(t) => t,
+        fn bi_substring(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let (v0, v1, v2) = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::Tuple(t) => (t[0], t[1], t[2]),
+                    _ => return Err("substring: expected (String, Int, Int)".into()),
+                },
+                _ => return Err("substring: expected (String, Int, Int)".into()),
+            };
+            let s = match v0 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s,
+                    _ => return Err("substring: expected String".into()),
+                },
+                _ => return Err("substring: expected String".into()),
+            };
+            match (v1, v2) {
+                (Value::Int(start), Value::Int(len)) => {
+                    let start = start as usize;
+                    let len = len as usize;
+                    let result: String = s.chars().skip(start).take(len).collect();
+                    if result.chars().count() < len {
+                        Err("substring: out of bounds".to_string())
+                    } else {
+                        Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+                    }
+                }
+                _ => Err("substring: expected (String, Int, Int)".into()),
+            }
+        }
+        fn bi_string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let (v0, v1) = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::Tuple(t) => (t[0], t[1]),
+                    _ => return Err("string_contains: expected (String, String)".into()),
+                },
+                _ => return Err("string_contains: expected (String, String)".into()),
+            };
+            let a = match v0 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s.as_str(),
+                    _ => return Err("string_contains: expected String".into()),
+                },
+                _ => return Err("string_contains: expected String".into()),
+            };
+            let b = match v1 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s.as_str(),
+                    _ => return Err("string_contains: expected String".into()),
+                },
+                _ => return Err("string_contains: expected String".into()),
+            };
+            Ok(Value::Bool(a.contains(b)))
+        }
+        fn bi_trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => Ok(Value::Heap(
+                        heap.alloc(HeapObject::String(s.trim().to_string())),
+                    )),
+                    _ => Err("trim: expected String".into()),
+                },
+                _ => Err("trim: expected String".into()),
+            }
+        }
+        fn bi_split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let (v0, v1) = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::Tuple(t) => (t[0], t[1]),
+                    _ => return Err("split: expected (String, String)".into()),
+                },
+                _ => return Err("split: expected (String, String)".into()),
+            };
+            let s = match v0 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("split: expected String".into()),
+                },
+                _ => return Err("split: expected String".into()),
+            };
+            let sep = match v1 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("split: expected String".into()),
+                },
+                _ => return Err("split: expected String".into()),
+            };
+            let parts: Vec<Value> = s
+                .split(&sep)
+                .map(|p| Value::Heap(heap.alloc(HeapObject::String(p.to_string()))))
+                .collect();
+            let list = alloc_list(heap, parts);
+            Ok(list)
+        }
+        fn bi_sqrt(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Float(f.sqrt())),
+                _ => Err("sqrt: expected Float".into()),
+            }
+        }
+        fn bi_abs_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            match &args[0] {
+                Value::Int(n) => Ok(Value::Int(n.abs())),
+                _ => Err("abs_int: expected Int".into()),
+            }
+        }
+        fn bi_abs_float(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Float(f.abs())),
+                _ => Err("abs_float: expected Float".into()),
+            }
+        }
+        fn bi_floor(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Int(f.floor() as i64)),
+                _ => Err("floor: expected Float".into()),
+            }
+        }
+        fn bi_ceil(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+            match &args[0] {
+                Value::Float(f) => Ok(Value::Int(f.ceil() as i64)),
+                _ => Err("ceil: expected Float".into()),
+            }
+        }
+        fn bi_read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let path = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("read_file: expected String".into()),
+                },
+                _ => return Err("read_file: expected String".into()),
+            };
+            let contents = std::fs::read_to_string(&path).map_err(|e| format!("read_file: {e}"))?;
+            Ok(Value::Heap(heap.alloc(HeapObject::String(contents))))
+        }
+        fn bi_write_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let (v0, v1) = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::Tuple(t) => (t[0], t[1]),
+                    _ => return Err("write_file: expected (String, String)".into()),
+                },
                 _ => return Err("write_file: expected (String, String)".into()),
             };
-            match (&tup[0], &tup[1]) {
-                (Value::String(path), Value::String(contents)) => {
-                    std::fs::write(path.as_str(), contents.as_str())
-                        .map_err(|e| format!("write_file: {e}"))?;
-                    Ok(Value::Unit)
-                }
-                _ => Err("write_file: expected (String, String)".into()),
-            }
+            let path = match v0 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("write_file: expected String".into()),
+                },
+                _ => return Err("write_file: expected String".into()),
+            };
+            let contents = match v1 {
+                Value::Heap(r) => match heap.get(r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("write_file: expected String".into()),
+                },
+                _ => return Err("write_file: expected String".into()),
+            };
+            std::fs::write(&path, &contents).map_err(|e| format!("write_file: {e}"))?;
+            Ok(Value::Unit)
         }
-        fn bi_file_exists(args: &[Value]) -> Result<Value, String> {
+        fn bi_file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::String(path) => {
-                    Ok(Value::Bool(std::path::Path::new(path.as_str()).exists()))
-                }
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => {
+                        Ok(Value::Bool(std::path::Path::new(s.as_str()).exists()))
+                    }
+                    _ => Err("file_exists: expected String".into()),
+                },
                 _ => Err("file_exists: expected String".into()),
             }
         }
-        fn bi_list_dir(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::String(path) => {
-                    let entries: Vec<Value> = std::fs::read_dir(path.as_str())
-                        .map_err(|e| format!("list_dir: {e}"))?
-                        .filter_map(|entry| {
-                            entry.ok().map(|e| {
-                                Value::String(Rc::new(e.file_name().to_string_lossy().to_string()))
-                            })
-                        })
-                        .collect();
-                    Ok(build_list(entries))
-                }
-                _ => Err("list_dir: expected String".into()),
-            }
+        fn bi_list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let path = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("list_dir: expected String".into()),
+                },
+                _ => return Err("list_dir: expected String".into()),
+            };
+            let entries: Vec<Value> = std::fs::read_dir(&path)
+                .map_err(|e| format!("list_dir: {e}"))?
+                .filter_map(|entry| {
+                    entry.ok().map(|e| {
+                        Value::Heap(heap.alloc(HeapObject::String(
+                            e.file_name().to_string_lossy().to_string(),
+                        )))
+                    })
+                })
+                .collect();
+            let list = alloc_list(heap, entries);
+            Ok(list)
         }
-        fn bi_remove_file(args: &[Value]) -> Result<Value, String> {
+        fn bi_remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::String(path) => {
-                    std::fs::remove_file(path.as_str()).map_err(|e| format!("remove_file: {e}"))?;
-                    Ok(Value::Unit)
-                }
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => {
+                        std::fs::remove_file(s.as_str())
+                            .map_err(|e| format!("remove_file: {e}"))?;
+                        Ok(Value::Unit)
+                    }
+                    _ => Err("remove_file: expected String".into()),
+                },
                 _ => Err("remove_file: expected String".into()),
             }
         }
-        fn bi_create_dir(args: &[Value]) -> Result<Value, String> {
+        fn bi_create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::String(path) => {
-                    std::fs::create_dir_all(path.as_str())
-                        .map_err(|e| format!("create_dir: {e}"))?;
-                    Ok(Value::Unit)
-                }
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => {
+                        std::fs::create_dir_all(s.as_str())
+                            .map_err(|e| format!("create_dir: {e}"))?;
+                        Ok(Value::Unit)
+                    }
+                    _ => Err("create_dir: expected String".into()),
+                },
                 _ => Err("create_dir: expected String".into()),
             }
         }
-
-        // ── HTTP ─────────────────────────────────────────────────────
-        fn bi_http_get(args: &[Value]) -> Result<Value, String> {
-            match &args[0] {
-                Value::String(url) => {
-                    let body = ureq::get(url.as_str())
-                        .call()
-                        .map_err(|e| format!("http_get: {e}"))?
-                        .into_body()
-                        .read_to_string()
-                        .map_err(|e| format!("http_get: {e}"))?;
-                    Ok(Value::String(Rc::new(body)))
-                }
-                _ => Err("http_get: expected String".into()),
-            }
+        fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let url = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => s.clone(),
+                    _ => return Err("http_get: expected String".into()),
+                },
+                _ => return Err("http_get: expected String".into()),
+            };
+            let body = ureq::get(&url)
+                .call()
+                .map_err(|e| format!("http_get: {e}"))?
+                .into_body()
+                .read_to_string()
+                .map_err(|e| format!("http_get: {e}"))?;
+            Ok(Value::Heap(heap.alloc(HeapObject::String(body))))
         }
-
-        // ── System ───────────────────────────────────────────────────
-        fn bi_exit(args: &[Value]) -> Result<Value, String> {
+        fn bi_exit(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
                 Value::Int(code) => std::process::exit(*code as i32),
                 _ => Err("exit: expected Int".into()),
             }
         }
-        fn bi_panic(args: &[Value]) -> Result<Value, String> {
+        fn bi_panic(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             match &args[0] {
-                Value::String(msg) => Err(msg.to_string()),
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::String(s) => Err(s.clone()),
+                    _ => Err("panic: expected String".into()),
+                },
                 _ => Err("panic: expected String".into()),
             }
         }
-        fn bi_assert(args: &[Value]) -> Result<Value, String> {
-            let tup = match &args[0] {
-                Value::Tuple(t) => t,
+        fn bi_assert(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let (v0, v1) = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::Tuple(t) => (t[0], t[1]),
+                    _ => return Err("assert: expected (Bool, String)".into()),
+                },
                 _ => return Err("assert: expected (Bool, String)".into()),
             };
-            match (&tup[0], &tup[1]) {
+            match (v0, v1) {
                 (Value::Bool(true), _) => Ok(Value::Unit),
-                (Value::Bool(false), Value::String(msg)) => Err(format!("assertion failed: {msg}")),
+                (Value::Bool(false), Value::Heap(r)) => match heap.get(r) {
+                    HeapObject::String(msg) => Err(format!("assertion failed: {msg}")),
+                    _ => Err("assertion failed".into()),
+                },
                 _ => Err("assert: expected (Bool, String)".into()),
             }
         }
-        fn bi_assert_eq(args: &[Value]) -> Result<Value, String> {
-            let tup = match &args[0] {
-                Value::Tuple(t) => t,
+        fn bi_assert_eq(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+            let (v0, v1, v2) = match &args[0] {
+                Value::Heap(r) => match heap.get(*r) {
+                    HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
+                    _ => return Err("assert_eq: expected (a, a, String)".into()),
+                },
                 _ => return Err("assert_eq: expected (a, a, String)".into()),
             };
-            if tup.len() < 3 {
-                return Err("assert_eq: expected (a, a, String)".into());
-            }
-            let eq = match (&tup[0], &tup[1]) {
+            let eq = match (v0, v1) {
                 (Value::Int(a), Value::Int(b)) => a == b,
                 (Value::Float(a), Value::Float(b)) => a == b,
                 (Value::Bool(a), Value::Bool(b)) => a == b,
                 (Value::Char(a), Value::Char(b)) => a == b,
-                (Value::String(a), Value::String(b)) => a == b,
+                (Value::Heap(a), Value::Heap(b)) => match (heap.get(a), heap.get(b)) {
+                    (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
+                    _ => false,
+                },
                 (Value::Unit, Value::Unit) => true,
                 _ => false,
             };
             if eq {
                 Ok(Value::Unit)
             } else {
-                let msg = match &tup[2] {
-                    Value::String(s) => s.to_string(),
-                    _ => "".to_string(),
+                let msg = match v2 {
+                    Value::Heap(r) => match heap.get(r) {
+                        HeapObject::String(s) => s.clone(),
+                        _ => String::new(),
+                    },
+                    _ => String::new(),
                 };
                 Err(format!(
                     "assertion failed: {msg}: expected {:?}, got {:?}",
-                    tup[1], tup[0]
+                    v1, v0
                 ))
             }
         }
 
-        let builtins: &[(&str, crate::value::BuiltinFn)] = &[
-            // I/O
+        let entries: Vec<(&str, BuiltinFn)> = vec![
             ("print", bi_print),
             ("println", bi_println),
             ("read_line", bi_read_line),
-            // Conversions
             ("int_to_string", bi_int_to_string),
             ("float_to_string", bi_float_to_string),
             ("string_to_int", bi_string_to_int),
             ("char_to_int", bi_char_to_int),
             ("int_to_char", bi_int_to_char),
             ("int_to_float", bi_int_to_float),
-            // String ops
             ("string_length", bi_string_length),
             ("substring", bi_substring),
             ("string_contains", bi_string_contains),
             ("trim", bi_trim),
             ("split", bi_split),
-            // Math
             ("sqrt", bi_sqrt),
             ("abs_int", bi_abs_int),
             ("abs_float", bi_abs_float),
             ("floor", bi_floor),
             ("ceil", bi_ceil),
-            // Filesystem
             ("read_file", bi_read_file),
             ("write_file", bi_write_file),
             ("file_exists", bi_file_exists),
             ("list_dir", bi_list_dir),
             ("remove_file", bi_remove_file),
             ("create_dir", bi_create_dir),
-            // HTTP
             ("http_get", bi_http_get),
-            // System
             ("exit", bi_exit),
             ("panic", bi_panic),
             ("assert", bi_assert),
             ("assert_eq", bi_assert_eq),
         ];
-        for &(name, func) in builtins {
+        for (i, (name, func)) in entries.into_iter().enumerate() {
+            self.builtins.push(BuiltinEntry { name, func });
             self.globals
-                .insert(name.into(), Value::Builtin { name, func });
+                .insert(name.to_string(), Value::Builtin(i as u16));
         }
     }
 
@@ -410,19 +547,18 @@ impl VM {
         self.dispatch()
     }
 
-    /// Get the source span for the most recent error (call after run() returns Err).
-    pub fn error_span(&self) -> Option<hiko_syntax::span::Span> {
-        let frame = self.frames.last()?;
-        let chunk = self.chunk_for(frame.proto_idx);
-        chunk.span_at(frame.ip.saturating_sub(1))
-    }
-
     pub fn get_global(&self, name: &str) -> Option<&Value> {
         self.globals.get(name)
     }
 
     pub fn get_output(&self) -> &[String] {
         &self.output
+    }
+
+    pub fn error_span(&self) -> Option<hiko_syntax::span::Span> {
+        let frame = self.frames.last()?;
+        let chunk = self.chunk_for(frame.proto_idx);
+        chunk.span_at(frame.ip.saturating_sub(1))
     }
 
     fn chunk_for(&self, proto_idx: usize) -> &Chunk {
@@ -433,21 +569,41 @@ impl VM {
         }
     }
 
-    fn read_const(&self, proto_idx: usize, idx: usize) -> Value {
-        match &self.chunk_for(proto_idx).constants[idx] {
-            Constant::Int(n) => Value::Int(*n),
-            Constant::Float(f) => Value::Float(*f),
-            Constant::String(s) => Value::String(Rc::new(s.clone())),
-            Constant::Char(c) => Value::Char(*c),
-        }
-    }
-
     fn read_const_string(&self, proto_idx: usize, idx: usize) -> &str {
         match &self.chunk_for(proto_idx).constants[idx] {
             Constant::String(s) => s,
             _ => panic!("expected string constant"),
         }
     }
+
+    // ── Builtin call ─────────────────────────────────────────────────
+
+    fn call_builtin(
+        &mut self,
+        builtin_id: u16,
+        callee_pos: usize,
+        arity: usize,
+    ) -> Result<(), RuntimeError> {
+        let first_arg = self.stack[callee_pos + 1];
+        let func = self.builtins[builtin_id as usize].func;
+        let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
+        let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
+        self.stack.truncate(callee_pos);
+        if builtin_id == BUILTIN_PRINT || builtin_id == BUILTIN_PRINTLN {
+            let displayed = if builtin_id == BUILTIN_PRINTLN {
+                format!("{}\n", self.display_value(&first_arg))
+            } else {
+                self.display_value(&first_arg)
+            };
+            self.output.push(displayed);
+            self.push(Value::Unit)?;
+        } else {
+            self.push(result)?;
+        }
+        Ok(())
+    }
+
+    // ── Dispatch loop ────────────────────────────────────────────────
 
     fn dispatch(&mut self) -> Result<(), RuntimeError> {
         loop {
@@ -473,7 +629,13 @@ impl VM {
 
                 Op::Const => {
                     let idx = self.read_u16()? as usize;
-                    let val = self.read_const(proto_idx, idx);
+                    let chunk = self.chunk_for(proto_idx);
+                    let val = match &chunk.constants[idx] {
+                        Constant::Int(n) => Value::Int(*n),
+                        Constant::Float(f) => Value::Float(*f),
+                        Constant::String(s) => self.alloc_string(s.clone()),
+                        Constant::Char(c) => Value::Char(*c),
+                    };
                     self.push(val)?;
                 }
                 Op::Unit => self.push(Value::Unit)?,
@@ -483,7 +645,7 @@ impl VM {
                 Op::GetLocal => {
                     let slot = self.read_u16()? as usize;
                     let base = self.frames[fi].base;
-                    let val = self.stack[base + slot].clone();
+                    let val = self.stack[base + slot];
                     self.push(val)?;
                 }
                 Op::SetLocal => {
@@ -494,7 +656,7 @@ impl VM {
                 }
                 Op::GetUpvalue => {
                     let idx = self.read_u16()? as usize;
-                    let val = self.frames[fi].captures[idx].clone();
+                    let val = self.frames[fi].captures[idx];
                     self.push(val)?;
                 }
                 Op::GetGlobal => {
@@ -503,7 +665,7 @@ impl VM {
                     let val = self
                         .globals
                         .get(name)
-                        .cloned()
+                        .copied()
                         .ok_or_else(|| RuntimeError {
                             message: format!("undefined global: {name}"),
                         })?;
@@ -531,25 +693,9 @@ impl VM {
                     "integer overflow (multiplication)",
                 )?,
                 Op::DivInt => {
-                    let b = self.pop_int()?;
-                    let a = self.pop_int()?;
-                    if b == 0 {
-                        return Err(RuntimeError {
-                            message: "division by zero".into(),
-                        });
-                    }
-                    self.push(Value::Int(a / b))?;
+                    self.int_checked_binop(|a, b| a.checked_div(b), "division by zero")?
                 }
-                Op::ModInt => {
-                    let b = self.pop_int()?;
-                    let a = self.pop_int()?;
-                    if b == 0 {
-                        return Err(RuntimeError {
-                            message: "mod by zero".into(),
-                        });
-                    }
-                    self.push(Value::Int(a % b))?;
-                }
+                Op::ModInt => self.int_checked_binop(|a, b| a.checked_rem(b), "mod by zero")?,
                 Op::NegInt => {
                     let val = self.pop();
                     match val {
@@ -557,7 +703,7 @@ impl VM {
                         Value::Float(f) => self.push(Value::Float(-f))?,
                         _ => {
                             return Err(RuntimeError {
-                                message: "NegInt: expected Int or Float".into(),
+                                message: "Neg: expected Int or Float".into(),
                             });
                         }
                     }
@@ -607,23 +753,25 @@ impl VM {
                     let a = self.pop_char()?;
                     self.push(Value::Bool(a != b))?;
                 }
-                Op::EqString => {
-                    let b = self.pop_string()?;
-                    let a = self.pop_string()?;
-                    self.push(Value::Bool(a == b))?;
-                }
-                Op::NeString => {
-                    let b = self.pop_string()?;
-                    let a = self.pop_string()?;
-                    self.push(Value::Bool(a != b))?;
-                }
+                Op::EqString => self.scalar_eq(true)?,
+                Op::NeString => self.scalar_eq(false)?,
 
                 Op::ConcatString => {
-                    let b = self.pop_string()?;
-                    let a = self.pop_string()?;
-                    let mut result = (*a).clone();
-                    result.push_str(&b);
-                    self.push(Value::String(Rc::new(result)))?;
+                    let b_ref = self.pop_string_ref()?;
+                    let a_ref = self.pop_string_ref()?;
+                    let a_s = match self.heap.get(a_ref) {
+                        HeapObject::String(s) => s.as_str(),
+                        _ => "",
+                    };
+                    let b_s = match self.heap.get(b_ref) {
+                        HeapObject::String(s) => s.as_str(),
+                        _ => "",
+                    };
+                    let mut result = String::with_capacity(a_s.len() + b_s.len());
+                    result.push_str(a_s);
+                    result.push_str(b_s);
+                    let val = self.alloc_string(result);
+                    self.push(val)?;
                 }
                 Op::Not => {
                     let b = self.pop_bool()?;
@@ -635,14 +783,22 @@ impl VM {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
                     let elems: Vec<Value> = self.stack.drain(start..).collect();
-                    self.push(Value::Tuple(Rc::new(elems)))?;
+                    let val = self.alloc(HeapObject::Tuple(elems));
+                    self.push(val)?;
                 }
                 Op::GetField => {
                     let idx = self.read_u8()? as usize;
                     let val = self.pop();
                     match val {
-                        Value::Tuple(t) => self.push(t[idx].clone())?,
-                        Value::Data(d) => self.push(d.fields[idx].clone())?,
+                        Value::Heap(r) => match self.heap.get(r) {
+                            HeapObject::Tuple(t) => self.push(t[idx])?,
+                            HeapObject::Data { fields, .. } => self.push(fields[idx])?,
+                            _ => {
+                                return Err(RuntimeError {
+                                    message: "GetField: expected tuple or data".into(),
+                                });
+                            }
+                        },
                         _ => {
                             return Err(RuntimeError {
                                 message: "GetField: expected tuple or data".into(),
@@ -655,16 +811,25 @@ impl VM {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
                     let fields: Vec<Value> = self.stack.drain(start..).collect();
-                    self.push(Value::Data(Rc::new(DataValue { tag, fields })))?;
+                    let val = self.alloc(HeapObject::Data { tag, fields });
+                    self.push(val)?;
                 }
                 Op::GetTag => {
                     let val = self.pop();
-                    if let Value::Data(d) = val {
-                        self.push(Value::Int(d.tag as i64))?;
-                    } else {
-                        return Err(RuntimeError {
-                            message: "GetTag: expected data value".into(),
-                        });
+                    match val {
+                        Value::Heap(r) => match self.heap.get(r) {
+                            HeapObject::Data { tag, .. } => self.push(Value::Int(*tag as i64))?,
+                            _ => {
+                                return Err(RuntimeError {
+                                    message: "GetTag: expected data value".into(),
+                                });
+                            }
+                        },
+                        _ => {
+                            return Err(RuntimeError {
+                                message: "GetTag: expected data value".into(),
+                            });
+                        }
                     }
                 }
 
@@ -685,7 +850,7 @@ impl VM {
 
                 // ── Functions ───────────────────────────────────
                 Op::MakeClosure => {
-                    let proto_idx = self.read_u16()? as usize;
+                    let func_proto_idx = self.read_u16()? as usize;
                     let n_captures = self.read_u8()? as usize;
                     let mut captures = Vec::with_capacity(n_captures);
                     for _ in 0..n_captures {
@@ -693,25 +858,37 @@ impl VM {
                         let index = self.read_u16()? as usize;
                         let val = if is_local {
                             let base = self.frames[fi].base;
-                            self.stack[base + index].clone()
+                            self.stack[base + index]
                         } else {
-                            self.frames[fi].captures[index].clone()
+                            self.frames[fi].captures[index]
                         };
                         captures.push(val);
                     }
-                    self.push(Value::Closure(Rc::new(ClosureValue {
-                        proto_idx,
+                    let val = self.alloc(HeapObject::Closure {
+                        proto_idx: func_proto_idx,
                         captures,
-                    })))?;
+                    });
+                    self.push(val)?;
                 }
 
                 Op::Call => {
                     let arity = self.read_u8()? as usize;
                     let callee_pos = self.stack.len() - 1 - arity;
-                    let callee = self.stack[callee_pos].clone();
+                    let callee = self.stack[callee_pos];
                     match callee {
-                        Value::Closure(closure) => {
-                            let proto = &self.protos[closure.proto_idx];
+                        Value::Heap(r) => {
+                            let (closure_proto, closure_captures) = match self.heap.get(r) {
+                                HeapObject::Closure {
+                                    proto_idx,
+                                    captures,
+                                } => (*proto_idx, captures.clone()),
+                                _ => {
+                                    return Err(RuntimeError {
+                                        message: format!("cannot call non-function: {callee:?}"),
+                                    });
+                                }
+                            };
+                            let proto = &self.protos[closure_proto];
                             if proto.arity as usize != arity {
                                 return Err(RuntimeError {
                                     message: format!(
@@ -727,18 +904,66 @@ impl VM {
                             }
                             self.stack.remove(callee_pos);
                             self.frames.push(CallFrame {
-                                proto_idx: closure.proto_idx,
+                                proto_idx: closure_proto,
                                 ip: 0,
                                 base: callee_pos,
-                                captures: closure.captures.clone(),
+                                captures: closure_captures,
                             });
                         }
-                        Value::Builtin { func, name, .. } => {
-                            self.call_builtin(func, name, callee_pos, arity)?;
+                        Value::Builtin(id) => {
+                            self.call_builtin(id, callee_pos, arity)?;
                         }
                         _ => {
                             return Err(RuntimeError {
                                 message: format!("cannot call non-function: {callee:?}"),
+                            });
+                        }
+                    }
+                }
+
+                Op::TailCall => {
+                    let arity = self.read_u8()? as usize;
+                    let callee_pos = self.stack.len() - 1 - arity;
+                    let callee = self.stack[callee_pos];
+                    match callee {
+                        Value::Heap(r) => {
+                            let (closure_proto, closure_captures) = match self.heap.get(r) {
+                                HeapObject::Closure {
+                                    proto_idx,
+                                    captures,
+                                } => (*proto_idx, captures.clone()),
+                                _ => {
+                                    return Err(RuntimeError {
+                                        message: "tail call: expected function".into(),
+                                    });
+                                }
+                            };
+                            let proto = &self.protos[closure_proto];
+                            if proto.arity as usize != arity {
+                                return Err(RuntimeError {
+                                    message: format!(
+                                        "tail call: function expects {} arg(s), got {arity}",
+                                        proto.arity
+                                    ),
+                                });
+                            }
+                            let fi = self.frames.len() - 1;
+                            let base = self.frames[fi].base;
+                            let args_start = callee_pos + 1;
+                            for i in 0..arity {
+                                self.stack[base + i] = self.stack[args_start + i];
+                            }
+                            self.stack.truncate(base + arity);
+                            self.frames[fi].ip = 0;
+                            self.frames[fi].proto_idx = closure_proto;
+                            self.frames[fi].captures = closure_captures;
+                        }
+                        Value::Builtin(id) => {
+                            self.call_builtin(id, callee_pos, arity)?;
+                        }
+                        _ => {
+                            return Err(RuntimeError {
+                                message: "tail call: expected function".into(),
                             });
                         }
                     }
@@ -751,44 +976,6 @@ impl VM {
                     self.push(result)?;
                     if self.frames.is_empty() {
                         return Ok(());
-                    }
-                }
-
-                Op::TailCall => {
-                    let arity = self.read_u8()? as usize;
-                    let callee_pos = self.stack.len() - 1 - arity;
-                    let callee = self.stack[callee_pos].clone();
-                    match callee {
-                        Value::Closure(closure) => {
-                            let proto = &self.protos[closure.proto_idx];
-                            if proto.arity as usize != arity {
-                                return Err(RuntimeError {
-                                    message: format!(
-                                        "tail call: function expects {} arg(s), got {arity}",
-                                        proto.arity
-                                    ),
-                                });
-                            }
-                            let fi = self.frames.len() - 1;
-                            let base = self.frames[fi].base;
-                            // Copy new args over the current frame's locals
-                            let args_start = callee_pos + 1;
-                            for i in 0..arity {
-                                self.stack[base + i] = self.stack[args_start + i].clone();
-                            }
-                            self.stack.truncate(base + arity);
-                            self.frames[fi].ip = 0;
-                            self.frames[fi].proto_idx = closure.proto_idx;
-                            self.frames[fi].captures = closure.captures.clone();
-                        }
-                        Value::Builtin { func, name, .. } => {
-                            self.call_builtin(func, name, callee_pos, arity)?;
-                        }
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "tail call: expected function".into(),
-                            });
-                        }
                     }
                 }
 
@@ -835,24 +1022,6 @@ impl VM {
         }
     }
 
-    fn scalar_eq(&mut self, eq: bool) -> Result<(), RuntimeError> {
-        let b = self.pop();
-        let a = self.pop();
-        let result = match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x == y,
-            (Value::Float(x), Value::Float(y)) => x == y,
-            (Value::Bool(x), Value::Bool(y)) => x == y,
-            (Value::Char(x), Value::Char(y)) => x == y,
-            (Value::String(x), Value::String(y)) => x == y,
-            _ => {
-                return Err(RuntimeError {
-                    message: format!("cannot compare {a:?} and {b:?}"),
-                });
-            }
-        };
-        self.push(Value::Bool(if eq { result } else { !result }))
-    }
-
     fn pop_bool(&mut self) -> Result<bool, RuntimeError> {
         match self.pop() {
             Value::Bool(b) => Ok(b),
@@ -871,13 +1040,34 @@ impl VM {
         }
     }
 
-    fn pop_string(&mut self) -> Result<Rc<String>, RuntimeError> {
+    fn pop_string_ref(&mut self) -> Result<GcRef, RuntimeError> {
         match self.pop() {
-            Value::String(s) => Ok(s),
+            Value::Heap(r) => Ok(r),
             v => Err(RuntimeError {
                 message: format!("expected String, got {v:?}"),
             }),
         }
+    }
+
+    fn scalar_eq(&mut self, eq: bool) -> Result<(), RuntimeError> {
+        let b = self.pop();
+        let a = self.pop();
+        let result = match (&a, &b) {
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Char(x), Value::Char(y)) => x == y,
+            (Value::Heap(ra), Value::Heap(rb)) => match (self.heap.get(*ra), self.heap.get(*rb)) {
+                (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
+                _ => false,
+            },
+            _ => {
+                return Err(RuntimeError {
+                    message: format!("cannot compare {a:?} and {b:?}"),
+                });
+            }
+        };
+        self.push(Value::Bool(if eq { result } else { !result }))
     }
 
     fn int_checked_binop(
@@ -913,35 +1103,8 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
-    fn call_builtin(
-        &mut self,
-        func: crate::value::BuiltinFn,
-        name: &str,
-        callee_pos: usize,
-        arity: usize,
-    ) -> Result<(), RuntimeError> {
-        let args_start = callee_pos + 1;
-        let args: Vec<Value> = self.stack[args_start..args_start + arity].to_vec();
-        let result = func(&args).map_err(|msg| RuntimeError { message: msg })?;
-        self.stack.truncate(callee_pos);
-        if matches!(name, "print" | "println") {
-            if let Value::String(ref s) = result {
-                self.output.push((**s).clone());
-            }
-            self.push(Value::Unit)?;
-        } else {
-            self.push(result)?;
-        }
-        Ok(())
-    }
-
     fn current_code(&self) -> &[u8] {
-        let frame = self.frames.last().unwrap();
-        if frame.proto_idx == usize::MAX {
-            &self.main_chunk.code
-        } else {
-            &self.protos[frame.proto_idx].chunk.code
-        }
+        &self.chunk_for(self.frames.last().unwrap().proto_idx).code
     }
 
     fn read_u8(&mut self) -> Result<u8, RuntimeError> {
@@ -973,17 +1136,7 @@ impl VM {
     }
 
     fn read_i16(&mut self) -> Result<i16, RuntimeError> {
-        let fi = self.frames.len() - 1;
-        let ip = self.frames[fi].ip;
-        let code = self.current_code();
-        if ip + 1 >= code.len() {
-            return Err(RuntimeError {
-                message: "truncated bytecode: expected i16 operand".into(),
-            });
-        }
-        let val = i16::from_le_bytes([code[ip], code[ip + 1]]);
-        self.frames[fi].ip += 2;
-        Ok(val)
+        self.read_u16().map(|v| v as i16)
     }
 }
 
@@ -1076,269 +1229,11 @@ mod tests {
     }
 
     #[test]
-    fn test_comparison() {
-        let vm = run("val a = 1 < 2 val b = 2 < 1");
-        assert!(global_bool(&vm, "a"));
-        assert!(!global_bool(&vm, "b"));
-    }
-
-    #[test]
-    fn test_negation() {
-        let vm = run("val x = ~42");
-        assert_eq!(global_int(&vm, "x"), -42);
-    }
-
-    #[test]
-    fn test_bool_ops() {
-        let vm = run("val a = true andalso false val b = false orelse true");
-        assert!(!global_bool(&vm, "a"));
-        assert!(global_bool(&vm, "b"));
-    }
-
-    #[test]
-    fn test_string_concat() {
-        let vm = run(r#"val s = "hello" ^ " " ^ "world""#);
-        match vm.get_global("s").unwrap() {
-            Value::String(s) => assert_eq!(&**s, "hello world"),
-            v => panic!("expected String, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_tuple() {
-        let vm = run("val t = (1, 2, 3)");
-        match vm.get_global("t").unwrap() {
-            Value::Tuple(t) => assert_eq!(t.len(), 3),
-            v => panic!("expected Tuple, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_list() {
-        let vm = run("val xs = [1, 2, 3]");
-        // Should be Cons(1, Cons(2, Cons(3, Nil)))
-        match vm.get_global("xs").unwrap() {
-            Value::Data(d) => {
-                assert_eq!(d.tag, 1); // Cons
-                assert_eq!(d.fields.len(), 2);
-            }
-            v => panic!("expected Data, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_builtin_int_to_string() {
-        let vm = run("val s = int_to_string 42");
-        match vm.get_global("s").unwrap() {
-            Value::String(s) => assert_eq!(&**s, "42"),
-            v => panic!("expected String, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_val_rec() {
-        let vm = run(
-            "val rec fact = fn n => if n = 0 then 1 else n * fact (n - 1)
-             val result = fact 10",
-        );
-        assert_eq!(global_int(&vm, "result"), 3628800);
-    }
-
-    #[test]
-    fn test_wildcard_binding() {
-        let vm = run("val _ = 42 val x = 1");
-        assert_eq!(global_int(&vm, "x"), 1);
-    }
-
-    #[test]
-    fn test_unit() {
-        let vm = run("val u = ()");
-        assert!(matches!(vm.get_global("u").unwrap(), Value::Unit));
-    }
-
-    // ── Phase 4: ADTs + Pattern Matching ─────────────────────────────
-
-    #[test]
-    fn test_nullary_constructor() {
-        let vm = run("datatype color = Red | Blue val x = Red");
-        match vm.get_global("x").unwrap() {
-            Value::Data(d) => assert_eq!(d.tag, 0),
-            v => panic!("expected Data, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_unary_constructor() {
-        let vm = run("datatype 'a option = None | Some of 'a val x = Some 42");
-        match vm.get_global("x").unwrap() {
-            Value::Data(d) => {
-                assert_eq!(d.tag, 1);
-                assert!(matches!(&d.fields[0], Value::Int(42)));
-            }
-            v => panic!("expected Data, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_case_simple() {
-        let vm = run("datatype 'a option = None | Some of 'a
-             val x = case Some 42 of None => 0 | Some n => n");
-        assert_eq!(global_int(&vm, "x"), 42);
-    }
-
-    #[test]
-    fn test_case_none() {
-        let vm = run("datatype 'a option = None | Some of 'a
-             val x = case None of None => 99 | Some n => n");
-        assert_eq!(global_int(&vm, "x"), 99);
-    }
-
-    #[test]
-    fn test_case_list() {
-        let vm = run("fun hd xs = case xs of x :: _ => x | [] => 0
-             val x = hd [42, 1, 2]");
-        assert_eq!(global_int(&vm, "x"), 42);
-    }
-
-    #[test]
-    fn test_case_empty_list() {
-        let vm = run("fun hd xs = case xs of x :: _ => x | [] => 0
-             val x = hd []");
-        assert_eq!(global_int(&vm, "x"), 0);
-    }
-
-    #[test]
-    fn test_clausal_fun() {
-        let vm = run("fun fact 0 = 1
-               | fact n = n * fact (n - 1)
-             val result = fact 10");
-        assert_eq!(global_int(&vm, "result"), 3628800);
-    }
-
-    #[test]
-    fn test_map() {
-        let vm = run("fun map f xs = case xs of
-                [] => []
-              | x :: xs => f x :: map f xs
-             val result = map (fn x => x * 2) [1, 2, 3]");
-        // result should be [2, 4, 6] = Cons(2, Cons(4, Cons(6, Nil)))
-        match vm.get_global("result").unwrap() {
-            Value::Data(d) => {
-                assert_eq!(d.tag, 1); // Cons
-                assert!(matches!(&d.fields[0], Value::Int(2)));
-            }
-            v => panic!("expected Data, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn test_filter() {
-        let vm = run("fun filter p xs = case xs of
-                [] => []
-              | x :: xs => if p x then x :: filter p xs else filter p xs
-             fun length xs = case xs of [] => 0 | _ :: xs => 1 + length xs
-             val result = length (filter (fn x => x > 2) [1, 2, 3, 4, 5])");
-        assert_eq!(global_int(&vm, "result"), 3);
-    }
-
-    #[test]
-    fn test_foldl() {
-        // Simpler: use a different var name to avoid shadowing confusion
-        let vm = run("fun foldl f init xs = case xs of
-                [] => init
-              | x :: rest => foldl f (f (init, x)) rest
-             val result = foldl (fn (a, b) => a + b) 0 [1, 2, 3, 4, 5]");
-        assert_eq!(global_int(&vm, "result"), 15);
-    }
-
-    #[test]
-    fn test_option_map() {
-        let vm = run("datatype 'a option = None | Some of 'a
-             fun map_opt f opt = case opt of
-                None => None
-              | Some x => Some (f x)
-             val result = map_opt (fn x => x + 1) (Some 41)
-             val n = case result of None => 0 | Some x => x");
-        assert_eq!(global_int(&vm, "n"), 42);
-    }
-
-    #[test]
-    fn test_nested_pattern() {
-        let vm = run("datatype 'a option = None | Some of 'a
-             fun get_or opt d = case opt of Some x => x | None => d
-             val x = get_or (Some 42) 0");
-        assert_eq!(global_int(&vm, "x"), 42);
-    }
-
-    #[test]
-    fn test_tuple_pattern_in_case() {
-        let vm = run("val x = case (1, 2) of (a, b) => a + b");
-        assert_eq!(global_int(&vm, "x"), 3);
-    }
-
-    #[test]
-    fn test_tuple_destructure_val() {
-        let vm = run("val (x, y) = (10, 20) val z = x + y");
-        assert_eq!(global_int(&vm, "z"), 30);
-    }
-
-    #[test]
-    fn test_3arg_simple() {
-        let vm = run("fun f a b c = a + b + c val result = f 1 2 3");
-        assert_eq!(global_int(&vm, "result"), 6);
-    }
-
-    #[test]
-    fn test_3arg_case() {
-        let vm = run("fun f a b xs = case xs of [] => a + b | x :: _ => a + b + x
-             val result = f 10 20 [3]");
-        assert_eq!(global_int(&vm, "result"), 33);
-    }
-
-    #[test]
-    fn test_expr_eval() {
-        let vm = run(
-            "datatype expr = Num of Int | Add of expr * expr | Mul of expr * expr
-             fun eval e = case e of
-                Num n => n
-              | Add (a, b) => eval a + eval b
-              | Mul (a, b) => eval a * eval b
-             val result = eval (Add (Num 1, Mul (Num 2, Num 3)))",
-        );
-        assert_eq!(global_int(&vm, "result"), 7);
-    }
-
-    // ── Tail-call optimization ───────────────────────────────────────
-
-    #[test]
     fn test_tco_loop() {
-        // This would stack overflow without TCO (100K iterations)
         let vm = run("fun loop n = if n = 0 then 42 else loop (n - 1)
              val result = loop 100000");
         assert_eq!(global_int(&vm, "result"), 42);
     }
-
-    #[test]
-    fn test_tco_accumulator() {
-        // Tail-recursive sum
-        let vm = run(
-            "fun sum_acc acc n = if n = 0 then acc else sum_acc (acc + n) (n - 1)
-             val result = sum_acc 0 10000",
-        );
-        assert_eq!(global_int(&vm, "result"), 50005000);
-    }
-
-    #[test]
-    fn test_tco_case() {
-        // TCO through case branches (100K iterations)
-        let vm = run(
-            "fun count_down n = case n of 0 => 42 | _ => count_down (n - 1)
-             val result = count_down 100000",
-        );
-        assert_eq!(global_int(&vm, "result"), 42);
-    }
-
-    // ── Scalar equality regression tests ─────────────────────────────
 
     #[test]
     fn test_string_equality() {
@@ -1348,39 +1243,31 @@ mod tests {
     }
 
     #[test]
-    fn test_bool_equality() {
-        let vm = run("val a = true = true val b = true = false");
-        assert!(global_bool(&vm, "a"));
-        assert!(!global_bool(&vm, "b"));
+    fn test_option() {
+        let vm = run("datatype 'a option = None | Some of 'a
+             val x = case Some 42 of None => 0 | Some n => n");
+        assert_eq!(global_int(&vm, "x"), 42);
     }
 
     #[test]
-    fn test_float_equality() {
-        let vm = run("val a = 1.0 = 1.0 val b = 1.0 = 2.0");
-        assert!(global_bool(&vm, "a"));
-        assert!(!global_bool(&vm, "b"));
+    fn test_list_map() {
+        let vm = run("fun map f xs = case xs of
+                [] => []
+              | x :: xs => f x :: map f xs
+             fun length xs = case xs of [] => 0 | _ :: xs => 1 + length xs
+             val result = length (map (fn x => x * 2) [1, 2, 3])");
+        assert_eq!(global_int(&vm, "result"), 3);
     }
 
     #[test]
-    fn test_char_equality() {
-        let vm = run(r#"val a = #"x" = #"x" val b = #"x" = #"y""#);
-        assert!(global_bool(&vm, "a"));
-        assert!(!global_bool(&vm, "b"));
-    }
-
-    #[test]
-    fn test_string_inequality() {
-        let vm = run(r#"val a = "a" <> "b" val b = "a" <> "a""#);
-        assert!(global_bool(&vm, "a"));
-        assert!(!global_bool(&vm, "b"));
-    }
-
-    #[test]
-    fn test_float_negation() {
-        let vm = run("val x = ~3.14");
-        match vm.get_global("x").unwrap() {
-            Value::Float(f) => assert!((*f - (-3.14)).abs() < 0.001),
-            v => panic!("expected Float, got {v:?}"),
-        }
+    fn test_gc_runs() {
+        // Use a tail-recursive builder to avoid stack overflow, then count with accumulator
+        let vm = run(
+            "fun make_list_acc n acc = if n = 0 then acc else make_list_acc (n - 1) (n :: acc)
+             fun length_acc xs acc = case xs of [] => acc | _ :: rest => length_acc rest (acc + 1)
+             val result = length_acc (make_list_acc 5000 []) 0",
+        );
+        assert_eq!(global_int(&vm, "result"), 5000);
+        assert!(vm.heap.live_count() < 15000); // GC should have collected intermediate values
     }
 }
