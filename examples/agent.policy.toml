@@ -1,0 +1,16 @@
+# Policy for a read-only filesystem agent.
+# This agent can read files and do string processing,
+# but CANNOT write, delete, or make HTTP requests.
+
+[limits]
+max_fuel = 10_000_000
+max_heap = 100_000
+
+[core]
+enabled = true
+
+[filesystem]
+root = "."
+read = true
+write = false
+delete = false

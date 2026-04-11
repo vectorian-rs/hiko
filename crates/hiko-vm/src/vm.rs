@@ -10,8 +10,6 @@ use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, SavedFrame, Value
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
 
-const BUILTIN_PRINT: u16 = 0;
-const BUILTIN_PRINTLN: u16 = 1;
 
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
@@ -59,6 +57,11 @@ pub struct VM {
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
     fuel: Option<u64>,
+    exec_allowed: Vec<String>,
+    exec_timeout: u64,
+    exec_builtin_id: Option<u16>,
+    print_builtin_id: Option<u16>,
+    println_builtin_id: Option<u16>,
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -131,7 +134,22 @@ impl VM {
             handlers: Vec::new(),
             string_cache: HashMap::new(),
             fuel: None,
+            exec_allowed: Vec::new(),
+            exec_timeout: 30,
+            exec_builtin_id: None,
+            print_builtin_id: None,
+            println_builtin_id: None,
         }
+    }
+
+    /// Set the allowed commands for the exec builtin.
+    pub fn set_exec_allowed(&mut self, allowed: Vec<String>) {
+        self.exec_allowed = allowed;
+    }
+
+    /// Set the timeout for exec calls (in seconds).
+    pub fn set_exec_timeout(&mut self, timeout: u64) {
+        self.exec_timeout = timeout;
     }
 
     /// Register a single builtin function by name.
@@ -140,6 +158,12 @@ impl VM {
         self.builtins.push(BuiltinEntry { name, func });
         let slot = self.global_slot(name.to_string());
         self.globals[slot] = Value::Builtin(idx);
+        match name {
+            "print" => self.print_builtin_id = Some(idx),
+            "println" => self.println_builtin_id = Some(idx),
+            "exec" => self.exec_builtin_id = Some(idx),
+            _ => {}
+        }
     }
 
     /// Register a builtin with an owned name string.
@@ -257,10 +281,8 @@ impl VM {
     // ── Builtins ─────────────────────────────────────────────────────
 
     fn register_builtins(&mut self) {
-        for (i, (name, func)) in crate::builtins::builtin_entries().into_iter().enumerate() {
-            self.builtins.push(BuiltinEntry { name, func });
-            let slot = self.global_slot(name.to_string());
-            self.globals[slot] = Value::Builtin(i as u16);
+        for (name, func) in crate::builtins::builtin_entries() {
+            self.register_builtin(name, func);
         }
     }
 
@@ -327,12 +349,27 @@ impl VM {
         arity: usize,
     ) -> Result<(), RuntimeError> {
         let first_arg = self.stack[callee_pos + 1];
+
+        // Exec is fully intercepted: whitelist check + timeout
+        if self.exec_builtin_id == Some(builtin_id) {
+            self.check_exec_allowed(first_arg)?;
+            let exec_arg = self.stack[callee_pos + 1];
+            let result = self
+                .run_exec(exec_arg)
+                .map_err(|msg| RuntimeError { message: msg })?;
+            self.stack.truncate(callee_pos);
+            self.push(result)?;
+            return Ok(());
+        }
+
         let func = self.builtins[builtin_id as usize].func;
         let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
         let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
         self.stack.truncate(callee_pos);
-        if builtin_id == BUILTIN_PRINT || builtin_id == BUILTIN_PRINTLN {
-            let displayed = if builtin_id == BUILTIN_PRINTLN {
+        let is_print = self.print_builtin_id == Some(builtin_id);
+        let is_println = self.println_builtin_id == Some(builtin_id);
+        if is_print || is_println {
+            let displayed = if is_println {
                 format!("{}\n", self.display_value(&first_arg))
             } else {
                 self.display_value(&first_arg)
@@ -343,6 +380,147 @@ impl VM {
             self.push(result)?;
         }
         Ok(())
+    }
+
+    /// Check that the command in an exec call is in the allowed list.
+    /// Fails closed: if the command cannot be extracted, the call is denied.
+    fn check_exec_allowed(&self, arg: Value) -> Result<(), RuntimeError> {
+        let command = match arg {
+            Value::Heap(r) => match self.heap.get(r) {
+                Ok(HeapObject::Tuple(t)) if t.len() >= 2 => match t[0] {
+                    Value::Heap(sr) => match self.heap.get(sr) {
+                        Ok(HeapObject::String(s)) => s.as_str(),
+                        _ => {
+                            return Err(RuntimeError {
+                                message: "exec: cannot determine command to check against allowed list".into(),
+                            })
+                        }
+                    },
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "exec: cannot determine command to check against allowed list".into(),
+                        })
+                    }
+                },
+                _ => {
+                    return Err(RuntimeError {
+                        message: "exec: cannot determine command to check against allowed list".into(),
+                    })
+                }
+            },
+            _ => {
+                return Err(RuntimeError {
+                    message: "exec: cannot determine command to check against allowed list".into(),
+                })
+            }
+        };
+        if self.exec_allowed.iter().any(|a| a == command) {
+            Ok(())
+        } else {
+            Err(RuntimeError {
+                message: format!(
+                    "exec: command '{}' is not in the allowed list: {:?}",
+                    command, self.exec_allowed
+                ),
+            })
+        }
+    }
+
+    /// Execute a command with timeout. Extracts args from the hiko value,
+    /// spawns the child, drains stdout/stderr in threads, and kills on timeout.
+    fn run_exec(&mut self, arg: Value) -> Result<Value, String> {
+        use std::io::Read as _;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        // Extract (command, args_list)
+        let (v0, v1) = match arg {
+            Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+                _ => return Err("exec: expected (String, String list)".into()),
+            },
+            _ => return Err("exec: expected (String, String list)".into()),
+        };
+        let command = match v0 {
+            Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::String(s) => s.clone(),
+                _ => return Err("exec: expected String for command".into()),
+            },
+            _ => return Err("exec: expected String for command".into()),
+        };
+        let mut cmd_args: Vec<String> = Vec::new();
+        let mut cur = v1;
+        loop {
+            match cur {
+                Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
+                    HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
+                    HeapObject::Data { tag, fields }
+                        if *tag == TAG_CONS && fields.len() == 2 =>
+                    {
+                        match fields[0] {
+                            Value::Heap(sr) => {
+                                match self.heap.get(sr).map_err(|e| e.to_string())? {
+                                    HeapObject::String(s) => cmd_args.push(s.clone()),
+                                    _ => return Err("exec: args must be strings".into()),
+                                }
+                            }
+                            _ => return Err("exec: args must be strings".into()),
+                        }
+                        cur = fields[1];
+                    }
+                    _ => return Err("exec: expected String list for args".into()),
+                },
+                _ => return Err("exec: expected String list for args".into()),
+            }
+        }
+
+        let mut child = Command::new(&command)
+            .args(&cmd_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("exec: {e}"))?;
+
+        let mut child_stdout = child.stdout.take().unwrap();
+        let mut child_stderr = child.stderr.take().unwrap();
+
+        let stdout_handle = std::thread::spawn(move || {
+            let mut buf = String::new();
+            child_stdout.read_to_string(&mut buf).ok();
+            buf
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            let mut buf = String::new();
+            child_stderr.read_to_string(&mut buf).ok();
+            buf
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(self.exec_timeout);
+        let status = loop {
+            match child.try_wait().map_err(|e| format!("exec: {e}"))? {
+                Some(status) => break status,
+                None if Instant::now() >= deadline => {
+                    child.kill().ok();
+                    child.wait().ok();
+                    return Err(format!(
+                        "exec: '{}' timed out after {}s",
+                        command, self.exec_timeout
+                    ));
+                }
+                None => std::thread::sleep(Duration::from_millis(50)),
+            }
+        };
+
+        let stdout_str = stdout_handle.join().unwrap_or_default();
+        let stderr_str = stderr_handle.join().unwrap_or_default();
+
+        let exit_code = Value::Int(status.code().unwrap_or(-1) as i64);
+        let stdout = Value::Heap(self.heap.alloc(HeapObject::String(stdout_str)));
+        let stderr = Value::Heap(self.heap.alloc(HeapObject::String(stderr_str)));
+
+        Ok(Value::Heap(
+            self.heap.alloc(HeapObject::Tuple(vec![exit_code, stdout, stderr])),
+        ))
     }
 
     // ── Dispatch loop ────────────────────────────────────────────────

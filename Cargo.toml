@@ -6,4 +6,5 @@ members = [
     "crates/hiko-vm",
     "crates/hiko-cli",
 ]
+exclude = ["hiko-vm-*"]
 resolver = "2"

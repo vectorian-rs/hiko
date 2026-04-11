@@ -1,0 +1,30 @@
+(* search.hml -- Demonstrates glob, walk_dir, regex_match, regex_replace *)
+
+use "../stdlib/list.hml"
+
+(* Glob: find all .hml files in examples/ *)
+val hml_files = glob "examples/*.hml"
+val _ = println "=== .hml files in examples/ ==="
+val _ = map println hml_files
+
+(* Walk: recursively find all files under stdlib/ *)
+val all_files = walk_dir "stdlib"
+val _ = println "\n=== All files under stdlib/ ==="
+val _ = map println all_files
+
+(* Regex match: filter lines containing a pattern *)
+val lines = ["fun foo x = x + 1", "val bar = 42", "fun baz y = y * 2"]
+val fun_lines = filter (fn l => regex_match (l, "^fun ")) lines
+val _ = println "\n=== Lines matching ^fun ==="
+val _ = map println fun_lines
+
+(* Regex replace: transform text *)
+val input = "hello-world-foo-bar"
+val result = regex_replace (input, "-", "_")
+val _ = println ("\n=== regex_replace ==="  )
+val _ = println (input ^ " -> " ^ result)
+
+(* Regex replace with capture groups *)
+val dates = "2024-01-15 and 2024-12-31"
+val swapped = regex_replace (dates, "(\\d{4})-(\\d{2})-(\\d{2})", "$2/$3/$1")
+val _ = println (dates ^ " -> " ^ swapped)

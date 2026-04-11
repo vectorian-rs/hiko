@@ -114,6 +114,13 @@ impl InferCtx {
                     Type::list(Type::string()),
                 ),
             ),
+            (
+                "string_replace",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
             // Math
             ("sqrt", Type::arrow(Type::float(), Type::float())),
             ("abs_int", Type::arrow(Type::int(), Type::int())),
@@ -155,6 +162,59 @@ impl InferCtx {
                         Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
                         Type::string(),
                     ]),
+                ),
+            ),
+            // Hashline read
+            (
+                "read_file_tagged",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::int(), Type::int()]),
+                    Type::string(),
+                ),
+            ),
+            // Glob & walk
+            ("glob", Type::arrow(Type::string(), Type::list(Type::string()))),
+            ("walk_dir", Type::arrow(Type::string(), Type::list(Type::string()))),
+            // Regex
+            (
+                "regex_match",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::bool(),
+                ),
+            ),
+            (
+                "regex_replace",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
+            // Environment & string utils
+            ("getenv", Type::arrow(Type::string(), Type::string())),
+            (
+                "starts_with",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::bool(),
+                ),
+            ),
+            (
+                "ends_with",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::bool(),
+                ),
+            ),
+            ("to_upper", Type::arrow(Type::string(), Type::string())),
+            ("to_lower", Type::arrow(Type::string(), Type::string())),
+            ("epoch", Type::arrow(Type::unit(), Type::int())),
+            // Exec
+            (
+                "exec",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::list(Type::string())]),
+                    Type::Tuple(vec![Type::int(), Type::string(), Type::string()]),
                 ),
             ),
             // System

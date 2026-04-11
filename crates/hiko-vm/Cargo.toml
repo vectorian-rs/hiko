@@ -6,6 +6,10 @@ edition = "2024"
 [dependencies]
 hiko-compile = { path = "../hiko-compile" }
 hiko-syntax = { path = "../hiko-syntax" }
+glob = "0.3"
+regex = "1"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
 ureq = "3"
 
 [dev-dependencies]

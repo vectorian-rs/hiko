@@ -195,6 +195,39 @@ pub(crate) fn bi_split(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     Ok(list)
 }
 
+pub(crate) fn bi_string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1, v2) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
+            _ => return Err("string_replace: expected (String, String, String)".into()),
+        },
+        _ => return Err("string_replace: expected (String, String, String)".into()),
+    };
+    let s = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("string_replace: expected String".into()),
+        },
+        _ => return Err("string_replace: expected String".into()),
+    };
+    let from = match v1 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("string_replace: expected String".into()),
+        },
+        _ => return Err("string_replace: expected String".into()),
+    };
+    let to = match v2 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("string_replace: expected String".into()),
+        },
+        _ => return Err("string_replace: expected String".into()),
+    };
+    let result = s.replace(&from, &to);
+    Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+}
+
 pub(crate) fn bi_sqrt(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Float(f.sqrt())),
@@ -374,6 +407,184 @@ pub(crate) fn bi_path_join(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     ))))
 }
 
+/// FNV-1a hash of a line, returned as 2-char base62.
+fn fnv1a_tag(line: &str) -> [u8; 2] {
+    const BASIS: u32 = 2166136261;
+    const PRIME: u32 = 16777619;
+    const BASE62: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut h = BASIS;
+    for &b in line.as_bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(PRIME);
+    }
+    let n = (h % 3844) as usize; // 62*62
+    [BASE62[n / 62], BASE62[n % 62]]
+}
+
+/// Read a file with hashline tags. Takes (String, Int, Int) -> String.
+/// (path, offset, limit) — offset 0 and limit 0 means read all.
+/// Returns lines formatted as "lineno:hash\tcontent\n".
+pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v_path, v_offset, v_limit) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
+            _ => return Err("read_file_tagged: expected (String, Int, Int)".into()),
+        },
+        _ => return Err("read_file_tagged: expected (String, Int, Int)".into()),
+    };
+    let path = match v_path {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("read_file_tagged: expected String for path".into()),
+        },
+        _ => return Err("read_file_tagged: expected String for path".into()),
+    };
+    let offset = match v_offset {
+        Value::Int(n) => n as usize,
+        _ => return Err("read_file_tagged: expected Int for offset".into()),
+    };
+    let limit = match v_limit {
+        Value::Int(n) => n as usize,
+        _ => return Err("read_file_tagged: expected Int for limit".into()),
+    };
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("read_file_tagged: {e}"))?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    let start = if offset > 0 { offset.min(lines.len()) } else { 0 };
+    let end = if limit > 0 {
+        (start + limit).min(lines.len())
+    } else {
+        lines.len()
+    };
+
+    let mut out = String::new();
+    for i in start..end {
+        let line = lines[i];
+        let tag = fnv1a_tag(line);
+        let tag_str = std::str::from_utf8(&tag).unwrap();
+        out.push_str(&format!("{}:{}\t{}\n", i + 1, tag_str, line));
+    }
+
+    Ok(Value::Heap(heap.alloc(HeapObject::String(out))))
+}
+
+/// Glob file search. Takes a pattern string, returns a list of matching paths.
+pub(crate) fn bi_glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let pattern = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("glob: expected String".into()),
+        },
+        _ => return Err("glob: expected String".into()),
+    };
+    let paths: Vec<Value> = glob::glob(&pattern)
+        .map_err(|e| format!("glob: {e}"))?
+        .filter_map(|entry| {
+            entry.ok().map(|p| {
+                Value::Heap(heap.alloc(HeapObject::String(
+                    p.to_string_lossy().to_string(),
+                )))
+            })
+        })
+        .collect();
+    Ok(alloc_list(heap, paths))
+}
+
+/// Recursive directory walk. Takes a directory path, returns all file paths recursively.
+pub(crate) fn bi_walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let dir = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("walk_dir: expected String".into()),
+        },
+        _ => return Err("walk_dir: expected String".into()),
+    };
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("walk_dir: {e}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("walk_dir: {e}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else {
+                out.push(path.to_string_lossy().to_string());
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(std::path::Path::new(&dir), &mut files)?;
+    let values: Vec<Value> = files
+        .into_iter()
+        .map(|f| Value::Heap(heap.alloc(HeapObject::String(f))))
+        .collect();
+    Ok(alloc_list(heap, values))
+}
+
+/// Regex match. Takes (string, pattern), returns Bool.
+pub(crate) fn bi_regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("regex_match: expected (String, String)".into()),
+        },
+        _ => return Err("regex_match: expected (String, String)".into()),
+    };
+    let s = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("regex_match: expected String".into()),
+        },
+        _ => return Err("regex_match: expected String".into()),
+    };
+    let pattern = match v1 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("regex_match: expected String".into()),
+        },
+        _ => return Err("regex_match: expected String".into()),
+    };
+    let re = regex::Regex::new(pattern).map_err(|e| format!("regex_match: {e}"))?;
+    Ok(Value::Bool(re.is_match(s)))
+}
+
+/// Regex replace. Takes (string, pattern, replacement), returns String.
+pub(crate) fn bi_regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1, v2) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
+            _ => return Err("regex_replace: expected (String, String, String)".into()),
+        },
+        _ => return Err("regex_replace: expected (String, String, String)".into()),
+    };
+    let s = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("regex_replace: expected String".into()),
+        },
+        _ => return Err("regex_replace: expected String".into()),
+    };
+    let pattern = match v1 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("regex_replace: expected String".into()),
+        },
+        _ => return Err("regex_replace: expected String".into()),
+    };
+    let replacement = match v2 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("regex_replace: expected String".into()),
+        },
+        _ => return Err("regex_replace: expected String".into()),
+    };
+    let re = regex::Regex::new(pattern).map_err(|e| format!("regex_replace: {e}"))?;
+    let result = re.replace_all(s, replacement).into_owned();
+    Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+}
+
 pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let url = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
@@ -411,6 +622,162 @@ pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     Ok(Value::Heap(
         heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
     ))
+}
+
+/// Execute a command directly (no shell). Takes (String, String list) -> (Int, String, String).
+/// The allowed-commands check is done by the VM before calling this.
+pub(crate) fn bi_exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("exec: expected (String, String list)".into()),
+        },
+        _ => return Err("exec: expected (String, String list)".into()),
+    };
+
+    let command = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("exec: expected String for command".into()),
+        },
+        _ => return Err("exec: expected String for command".into()),
+    };
+
+    // Walk the linked list of args
+    let mut cmd_args: Vec<String> = Vec::new();
+    let mut cur = v1;
+    loop {
+        match cur {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
+                HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
+                    match fields[0] {
+                        Value::Heap(sr) => match heap.get(sr).map_err(|e| e.to_string())? {
+                            HeapObject::String(s) => cmd_args.push(s.clone()),
+                            _ => return Err("exec: args must be strings".into()),
+                        },
+                        _ => return Err("exec: args must be strings".into()),
+                    }
+                    cur = fields[1];
+                }
+                _ => return Err("exec: expected String list for args".into()),
+            },
+            _ => return Err("exec: expected String list for args".into()),
+        }
+    }
+
+    let output = std::process::Command::new(&command)
+        .args(&cmd_args)
+        .output()
+        .map_err(|e| format!("exec: {e}"))?;
+
+    let exit_code = Value::Int(output.status.code().unwrap_or(-1) as i64);
+    let stdout = Value::Heap(heap.alloc(HeapObject::String(
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )));
+    let stderr = Value::Heap(heap.alloc(HeapObject::String(
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )));
+
+    Ok(Value::Heap(
+        heap.alloc(HeapObject::Tuple(vec![exit_code, stdout, stderr])),
+    ))
+}
+
+pub(crate) fn bi_getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let name = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("getenv: expected String".into()),
+        },
+        _ => return Err("getenv: expected String".into()),
+    };
+    match std::env::var(&name) {
+        Ok(val) => Ok(Value::Heap(heap.alloc(HeapObject::String(val)))),
+        Err(_) => Ok(Value::Heap(heap.alloc(HeapObject::String(String::new())))),
+    }
+}
+
+pub(crate) fn bi_starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("starts_with: expected (String, String)".into()),
+        },
+        _ => return Err("starts_with: expected (String, String)".into()),
+    };
+    let s = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("starts_with: expected String".into()),
+        },
+        _ => return Err("starts_with: expected String".into()),
+    };
+    let prefix = match v1 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("starts_with: expected String".into()),
+        },
+        _ => return Err("starts_with: expected String".into()),
+    };
+    Ok(Value::Bool(s.starts_with(prefix)))
+}
+
+pub(crate) fn bi_ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("ends_with: expected (String, String)".into()),
+        },
+        _ => return Err("ends_with: expected (String, String)".into()),
+    };
+    let s = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("ends_with: expected String".into()),
+        },
+        _ => return Err("ends_with: expected String".into()),
+    };
+    let suffix = match v1 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.as_str(),
+            _ => return Err("ends_with: expected String".into()),
+        },
+        _ => return Err("ends_with: expected String".into()),
+    };
+    Ok(Value::Bool(s.ends_with(suffix)))
+}
+
+pub(crate) fn bi_to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => Ok(Value::Heap(
+                heap.alloc(HeapObject::String(s.to_uppercase())),
+            )),
+            _ => Err("to_upper: expected String".into()),
+        },
+        _ => Err("to_upper: expected String".into()),
+    }
+}
+
+pub(crate) fn bi_to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => Ok(Value::Heap(
+                heap.alloc(HeapObject::String(s.to_lowercase())),
+            )),
+            _ => Err("to_lower: expected String".into()),
+        },
+        _ => Err("to_lower: expected String".into()),
+    }
+}
+
+pub(crate) fn bi_epoch(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("epoch: {e}"))?
+        .as_secs();
+    Ok(Value::Int(secs as i64))
 }
 
 pub(crate) fn bi_exit(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
@@ -490,6 +857,7 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("string_contains", bi_string_contains),
         ("trim", bi_trim),
         ("split", bi_split),
+        ("string_replace", bi_string_replace),
         ("sqrt", bi_sqrt),
         ("abs_int", bi_abs_int),
         ("abs_float", bi_abs_float),
@@ -504,7 +872,19 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("is_dir", bi_is_dir),
         ("is_file", bi_is_file),
         ("path_join", bi_path_join),
+        ("read_file_tagged", bi_read_file_tagged),
+        ("glob", bi_glob),
+        ("walk_dir", bi_walk_dir),
+        ("regex_match", bi_regex_match),
+        ("regex_replace", bi_regex_replace),
         ("http_get", bi_http_get),
+        ("getenv", bi_getenv),
+        ("starts_with", bi_starts_with),
+        ("ends_with", bi_ends_with),
+        ("to_upper", bi_to_upper),
+        ("to_lower", bi_to_lower),
+        ("epoch", bi_epoch),
+        ("exec", bi_exec),
         ("exit", bi_exit),
         ("panic", bi_panic),
         ("assert", bi_assert),

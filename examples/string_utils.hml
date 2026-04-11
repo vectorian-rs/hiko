@@ -1,0 +1,20 @@
+(* string_utils.hml -- Demonstrates string utility builtins *)
+
+(* Case conversion *)
+val _ = println (to_upper "hello world")   (* HELLO WORLD *)
+val _ = println (to_lower "HELLO WORLD")   (* hello world *)
+
+(* Prefix and suffix checks *)
+val _ = println (int_to_string (if starts_with ("hello.hml", "hello") then 1 else 0))
+val _ = println (int_to_string (if ends_with ("hello.hml", ".hml") then 1 else 0))
+val _ = println (int_to_string (if starts_with ("hello.hml", "world") then 1 else 0))
+
+(* String replace *)
+val original = "the quick brown fox"
+val replaced = string_replace (original, "quick", "slow")
+val _ = println replaced   (* the slow brown fox *)
+
+(* Replace all occurrences *)
+val csv = "a,b,c,d"
+val tsv = string_replace (csv, ",", "\t")
+val _ = println tsv

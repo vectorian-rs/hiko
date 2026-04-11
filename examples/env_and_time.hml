@@ -1,0 +1,18 @@
+(* env_and_time.hml -- Demonstrates getenv and epoch builtins *)
+
+(* Read environment variables *)
+val home = getenv "HOME"
+val path = getenv "PATH"
+val user = getenv "USER"
+
+val _ = println ("HOME = " ^ home)
+val _ = println ("USER = " ^ user)
+val _ = println ("PATH = " ^ path)
+
+(* Missing env var returns empty string *)
+val missing = getenv "THIS_VAR_DOES_NOT_EXIST"
+val _ = println ("missing var: \"" ^ missing ^ "\"")
+
+(* Unix epoch timestamp *)
+val now = epoch ()
+val _ = println ("epoch seconds: " ^ int_to_string now)

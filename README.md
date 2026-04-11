@@ -241,12 +241,132 @@ The `examples/` directory includes programs demonstrating:
 | `list_ops.hml` | Map, filter, fold over lists |
 | `option.hml` | Algebraic data types |
 | `either.hml` | Sum types for error handling |
+| `error_handling.hml` | Error handling via algebraic effects |
 | `expr_eval.hml` | Recursive expression evaluator |
 | `math.hml` | Float arithmetic, sqrt |
 | `string_ops.hml` | String manipulation builtins |
 | `file_io.hml` | File read/write |
 | `http_fetch.hml` | HTTP GET request |
 | `import_test.hml` | Module imports |
+
+## Agent Workflow
+
+Hiko is designed for building sandboxed agent scripts with least-privilege policies. The typical setup uses an AI agent as the orchestrator, [mise](https://mise.jdx.dev/) as the task runner, and hiko as the execution engine.
+
+```
+Agent (Claude, etc.)
+  └── mise run analyze        → ./dist/data-reader analyze.hml
+  └── mise run deploy         → ./dist/infra-prod-deploy deploy.hml
+  └── mise run notify         → ./dist/slack-notifier notify.hml
+```
+
+### Setup
+
+```bash
+# Install hiko
+cargo install hiko-cli
+
+# Write a policy — defines what the VM can do
+cat > reader.policy.toml << 'EOF'
+[limits]
+max_fuel = 10_000_000
+max_heap = 500_000
+
+[core]
+enabled = true
+
+[filesystem]
+root = "."
+read = true
+write = false
+delete = false
+EOF
+
+# Generate a policy-locked VM binary
+hiko build-vm reader.policy.toml
+cd hiko-vm-reader && cargo build --release
+
+# Run scripts with it
+./target/release/hiko-vm-reader my_script.hml
+```
+
+### Policy Files
+
+Each policy defines a capability boundary enforced at compile time. Builtins that the policy doesn't allow are not compiled into the binary — there are no runtime checks to bypass.
+
+```toml
+# infra-prod-deploy.policy.toml
+[limits]
+max_fuel = 50_000_000
+max_heap = 1_000_000
+
+[core]
+enabled = true
+
+[filesystem]
+root = "/deploy"
+read = true
+write = true
+delete = false
+
+[http]
+allowed_hosts = ["deploy.internal.example.com"]
+
+[system]
+allow_exit = true
+```
+
+`hiko build-vm` generates a standalone Rust crate (`hiko-vm-{policy-name}/`) with the policy baked into `src/main.rs`. The generated `Cargo.toml` pulls hiko crates from crates.io — no need to clone the hiko repo.
+
+### Orchestration with mise
+
+[mise](https://mise.jdx.dev/) provides a self-documenting task layer so anyone on the team can see what the project can do with `mise tasks`.
+
+```toml
+# mise.toml
+[tasks.build]
+description = "Build a policy-locked VM binary"
+run = """
+set -e
+policy="policies/${1}.policy.toml"
+hiko build-vm "$policy"
+cargo build --release --manifest-path "hiko-vm-${1}/Cargo.toml"
+mkdir -p dist
+cp "hiko-vm-${1}/target/release/hiko-vm-${1}" "dist/${1}"
+"""
+
+[tasks.run]
+description = "Run an agent script with its policy-locked VM"
+run = """
+agent="$1"; shift; script="$1"; shift
+"dist/${agent}" "$script" "$@"
+"""
+
+[tasks.dev]
+description = "Run a script with the full CLI (no policy)"
+run = "hiko run \"$@\""
+
+[tasks.check]
+description = "Type-check a script without running it"
+run = "hiko check \"$@\""
+
+[tasks.build-all]
+description = "Build all policy VMs"
+run = """
+for policy in policies/*.policy.toml; do
+  name=$(basename "$policy" .policy.toml)
+  mise run build "$name"
+done
+"""
+```
+
+```bash
+mise run build reader          # Build the reader VM
+mise run run reader analyze.hml # Run a script sandboxed
+mise run dev analyze.hml        # Quick iteration, no sandbox
+mise run check analyze.hml      # Type-check only
+mise run build-all              # Build all policy VMs
+```
 
 ## Testing
 

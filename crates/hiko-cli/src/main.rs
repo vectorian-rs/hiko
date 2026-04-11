@@ -19,8 +19,9 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: hiko <command> [args]");
         eprintln!("Commands:");
-        eprintln!("  run <file.hml>    Compile and execute a program");
-        eprintln!("  check <file.hml>  Type-check without executing");
+        eprintln!("  run <file.hml>         Compile and execute a program");
+        eprintln!("  check <file.hml>       Type-check without executing");
+        eprintln!("  build-vm <policy.toml>  Generate a custom VM from a policy file");
         process::exit(1);
     }
 
@@ -38,6 +39,13 @@ fn main() {
                 process::exit(1);
             }
             check_file(&args[2]);
+        }
+        "build-vm" => {
+            if args.len() < 3 {
+                eprintln!("Usage: hiko build-vm <policy.toml>");
+                process::exit(1);
+            }
+            build_vm(&args[2]);
         }
         other => {
             eprintln!("Unknown command: {other}");
@@ -173,4 +181,60 @@ fn check_file(path: &str) {
         compiled.ctx.warning(&w.message, Some(w.span));
     }
     println!("OK");
+}
+
+fn build_vm(policy_path: &str) {
+    let toml = match fs::read_to_string(policy_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Cannot read policy file '{policy_path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let policy = match hiko_vm::policy::Policy::from_toml(&toml) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Invalid policy: {e}");
+            process::exit(1);
+        }
+    };
+
+    let rust_src = policy.to_rust_source();
+
+    let stem = std::path::Path::new(policy_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("custom")
+        .replace('.', "-");
+    let out_dir = format!("hiko-vm-{stem}");
+
+    fs::create_dir_all(format!("{out_dir}/src")).expect("cannot create output directory");
+
+    fs::write(format!("{out_dir}/src/main.rs"), &rust_src).expect("cannot write main.rs");
+
+    let version = env!("CARGO_PKG_VERSION");
+    let cargo_toml = format!(
+        r#"[package]
+name = "{out_dir}"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hiko-syntax = "{version}"
+hiko-compile = "{version}"
+hiko-vm = "{version}"
+"#
+    );
+
+    fs::write(format!("{out_dir}/Cargo.toml"), &cargo_toml).expect("cannot write Cargo.toml");
+
+    println!("Generated custom VM project: {out_dir}/");
+    println!("Policy: {policy:?}");
+    println!();
+    println!("To build:");
+    println!("  cd {out_dir} && cargo build --release");
+    println!();
+    println!("To run a script:");
+    println!("  ./{out_dir}/target/release/{out_dir} script.hml");
 }

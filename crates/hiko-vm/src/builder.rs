@@ -16,10 +16,19 @@ pub struct HttpPolicy {
     pub allowed_hosts: Vec<String>,
 }
 
+/// Policy for direct command execution.
+pub struct ExecPolicy {
+    pub allowed: Vec<String>,
+    /// Timeout in seconds for each exec call (default 30).
+    pub timeout: u64,
+}
+
 /// Builder for creating VMs with specific capabilities.
 pub struct VMBuilder {
     program: CompiledProgram,
     builtins: Vec<(&'static str, BuiltinFn)>,
+    exec_allowed: Vec<String>,
+    exec_timeout: u64,
     max_heap: Option<usize>,
     max_fuel: Option<u64>,
 }
@@ -36,6 +45,8 @@ impl VMBuilder {
         Self {
             program,
             builtins: Vec::new(),
+            exec_allowed: Vec::new(),
+            exec_timeout: 30,
             max_heap: None,
             max_fuel: None,
         }
@@ -47,7 +58,7 @@ impl VMBuilder {
         self
     }
 
-    /// Include only pure/safe builtins (no I/O).
+    /// Include core builtins (I/O, string ops, math, env, time).
     pub fn with_core(mut self) -> Self {
         let core_names = [
             "print",
@@ -64,11 +75,20 @@ impl VMBuilder {
             "string_contains",
             "trim",
             "split",
+            "string_replace",
+            "regex_match",
+            "regex_replace",
             "sqrt",
             "abs_int",
             "abs_float",
             "floor",
             "ceil",
+            "getenv",
+            "starts_with",
+            "ends_with",
+            "to_upper",
+            "to_lower",
+            "epoch",
             "panic",
             "assert",
             "assert_eq",
@@ -90,6 +110,9 @@ impl VMBuilder {
             "is_file",
             "list_dir",
             "path_join",
+            "read_file_tagged",
+            "glob",
+            "walk_dir",
         ];
         let fs_write = ["write_file", "create_dir"];
         let fs_delete = ["remove_file"];
@@ -109,6 +132,24 @@ impl VMBuilder {
     pub fn with_http(mut self, _policy: HttpPolicy) -> Self {
         if let Some(f) = find_builtin("http_get") {
             self.builtins.push(("http_get", f));
+        }
+        self
+    }
+
+    /// Include the exit builtin.
+    pub fn with_exit(mut self) -> Self {
+        if let Some(f) = find_builtin("exit") {
+            self.builtins.push(("exit", f));
+        }
+        self
+    }
+
+    /// Include exec builtin with whitelisted commands and timeout.
+    pub fn with_exec(mut self, policy: ExecPolicy) -> Self {
+        self.exec_allowed = policy.allowed;
+        self.exec_timeout = policy.timeout;
+        if let Some(f) = find_builtin("exec") {
+            self.builtins.push(("exec", f));
         }
         self
     }
@@ -138,6 +179,9 @@ impl VMBuilder {
         for (name, func) in &self.builtins {
             vm.register_builtin(name, *func);
         }
+
+        vm.set_exec_allowed(self.exec_allowed);
+        vm.set_exec_timeout(self.exec_timeout);
 
         if let Some(max) = self.max_heap {
             vm.set_max_heap(max);

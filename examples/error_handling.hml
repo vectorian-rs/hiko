@@ -1,4 +1,7 @@
-(* Error handling via algebraic effect handlers *)
+(* Error handling via algebraic effects.
+ * Hiko has no exceptions -- errors are values,
+ * modeled with a Fail effect and a result type.
+ *)
 
 datatype 'a result = Ok of 'a | Err of String
 
