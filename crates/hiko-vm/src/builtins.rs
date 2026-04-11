@@ -463,8 +463,7 @@ pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
     };
 
     let mut out = String::new();
-    for i in start..end {
-        let line = lines[i];
+    for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
         let tag = fnv1a_tag(line);
         let tag_str = std::str::from_utf8(&tag).unwrap();
         out.push_str(&format!("{}:{}\t{}\n", i + 1, tag_str, line));
@@ -803,6 +802,46 @@ fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Value {
 }
 
 /// Convert a hiko json datatype value back into a JSON string.
+/// Escape a string for JSON output (RFC 8259 section 7).
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if c < '\u{20}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Collect elements from a hiko cons-list into a Vec<Value>.
+fn collect_list(heap: &Heap, list_val: Value) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    let mut cur = list_val;
+    while let Value::Heap(lr) = cur {
+        match heap.get(lr).map_err(|e| e.to_string())? {
+            HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
+            HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
+                out.push(fields[0]);
+                cur = fields[1];
+            }
+            _ => break,
+        }
+    }
+    Ok(out)
+}
+
 fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, String> {
     match val {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
@@ -822,100 +861,43 @@ fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, String> {
                 },
                 TAG_JSTR => match fields.first() {
                     Some(Value::Heap(sr)) => match heap.get(*sr).map_err(|e| e.to_string())? {
-                        HeapObject::String(s) => Ok(format!(
-                            "\"{}\"",
-                            s.replace('\\', "\\\\").replace('"', "\\\"")
-                        )),
+                        HeapObject::String(s) => Ok(json_escape(s)),
                         _ => Err("json_to_string: malformed JStr".into()),
                     },
                     _ => Err("json_to_string: malformed JStr".into()),
                 },
                 TAG_JARRAY => {
                     let list_val = fields.first().copied().unwrap_or(Value::Unit);
-                    let mut items = Vec::new();
-                    let mut cur = list_val;
-                    loop {
-                        match cur {
-                            Value::Heap(lr) => match heap.get(lr).map_err(|e| e.to_string())? {
-                                HeapObject::Data { tag: t, .. } if *t == TAG_NIL => break,
-                                HeapObject::Data { tag: t, fields: f }
-                                    if *t == TAG_CONS && f.len() == 2 =>
-                                {
-                                    items.push(hiko_to_json_string(f[0], heap)?);
-                                    cur = f[1];
-                                }
-                                _ => break,
-                            },
-                            _ => break,
-                        }
-                    }
-                    Ok(format!("[{}]", items.join(",")))
+                    let elems = collect_list(heap, list_val)?;
+                    let items: Result<Vec<String>, String> = elems
+                        .into_iter()
+                        .map(|v| hiko_to_json_string(v, heap))
+                        .collect();
+                    Ok(format!("[{}]", items?.join(",")))
                 }
                 TAG_JOBJECT => {
                     let list_val = fields.first().copied().unwrap_or(Value::Unit);
+                    let pairs = collect_list(heap, list_val)?;
                     let mut entries = Vec::new();
-                    let mut cur = list_val;
-                    loop {
-                        match cur {
-                            Value::Heap(lr) => {
-                                match heap.get(lr).map_err(|e| e.to_string())? {
-                                    HeapObject::Data { tag: t, .. } if *t == TAG_NIL => break,
-                                    HeapObject::Data { tag: t, fields: f }
-                                        if *t == TAG_CONS && f.len() == 2 =>
-                                    {
-                                        // f[0] is a (String, json) tuple
-                                        match f[0] {
-                                            Value::Heap(tr) => match heap
-                                                .get(tr)
-                                                .map_err(|e| e.to_string())?
-                                            {
-                                                HeapObject::Tuple(pair) if pair.len() == 2 => {
-                                                    let key = match pair[0] {
-                                                        Value::Heap(kr) => match heap
-                                                            .get(kr)
-                                                            .map_err(|e| e.to_string())?
-                                                        {
-                                                            HeapObject::String(s) => s.clone(),
-                                                            _ => {
-                                                                return Err(
-                                                                    "json_to_string: bad key"
-                                                                        .into(),
-                                                                );
-                                                            }
-                                                        },
-                                                        _ => {
-                                                            return Err(
-                                                                "json_to_string: bad key".into()
-                                                            );
-                                                        }
-                                                    };
-                                                    let val_str =
-                                                        hiko_to_json_string(pair[1], heap)?;
-                                                    entries.push(format!(
-                                                        "\"{}\":{}",
-                                                        key.replace('\\', "\\\\")
-                                                            .replace('"', "\\\""),
-                                                        val_str
-                                                    ));
-                                                }
-                                                _ => {
-                                                    return Err(
-                                                        "json_to_string: bad object entry".into()
-                                                    );
-                                                }
-                                            },
-                                            _ => {
-                                                return Err(
-                                                    "json_to_string: bad object entry".into()
-                                                );
+                    for pair_val in pairs {
+                        match pair_val {
+                            Value::Heap(tr) => match heap.get(tr).map_err(|e| e.to_string())? {
+                                HeapObject::Tuple(pair) if pair.len() == 2 => {
+                                    let key = match pair[0] {
+                                        Value::Heap(kr) => {
+                                            match heap.get(kr).map_err(|e| e.to_string())? {
+                                                HeapObject::String(s) => json_escape(s),
+                                                _ => return Err("json_to_string: bad key".into()),
                                             }
                                         }
-                                        cur = f[1];
-                                    }
-                                    _ => break,
+                                        _ => return Err("json_to_string: bad key".into()),
+                                    };
+                                    let val_str = hiko_to_json_string(pair[1], heap)?;
+                                    entries.push(format!("{key}:{val_str}"));
                                 }
-                            }
-                            _ => break,
+                                _ => return Err("json_to_string: bad object entry".into()),
+                            },
+                            _ => return Err("json_to_string: bad object entry".into()),
                         }
                     }
                     Ok(format!("{{{}}}", entries.join(",")))

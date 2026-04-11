@@ -5,12 +5,12 @@
  * param limit: number - Max lines, 0 for all
  *)
 
-val path = getenv "PATH"
-val offset = case getenv "OFFSET" of
+val path = getenv "HIKO_ARG_PATH"
+val offset = case getenv "HIKO_ARG_OFFSET" of
     "" => 0
   | s => case string_to_int s of n => n
 
-val limit = case getenv "LIMIT" of
+val limit = case getenv "HIKO_ARG_LIMIT" of
     "" => 0
   | s => case string_to_int s of n => n
 

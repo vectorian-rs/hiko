@@ -4,8 +4,8 @@
  * param args: string - Space-separated arguments
  *)
 
-val command = getenv "COMMAND"
-val args_str = getenv "ARGS"
+val command = getenv "HIKO_ARG_COMMAND"
+val args_str = getenv "HIKO_ARG_ARGS"
 val args = split (args_str, " ")
 val (code, stdout, stderr) = exec (command, args)
 val _ = if stdout <> "" then print stdout else ()

@@ -4,7 +4,7 @@
  * param content: string - Content to write
  *)
 
-val path = getenv "PATH"
-val content = getenv "CONTENT"
+val path = getenv "HIKO_ARG_PATH"
+val content = getenv "HIKO_ARG_CONTENT"
 val _ = write_file (path, content)
 val _ = println ("Wrote " ^ path)

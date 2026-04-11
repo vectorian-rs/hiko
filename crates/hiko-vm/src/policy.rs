@@ -87,6 +87,7 @@ fn default_dot() -> String {
 }
 
 impl Default for Policy {
+    #[allow(clippy::derivable_impls)]
     fn default() -> Self {
         Self {
             limits: Limits::default(),

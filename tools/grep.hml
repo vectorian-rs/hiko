@@ -6,8 +6,8 @@
 
 use "../stdlib/list.hml"
 
-val pattern = getenv "PATTERN"
-val path = getenv "PATH"
+val pattern = getenv "HIKO_ARG_PATTERN"
+val path = getenv "HIKO_ARG_PATH"
 
 fun search_file file_path =
   let

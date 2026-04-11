@@ -156,6 +156,10 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        s.char_indices()
+            .take_while(|(i, _)| *i < max)
+            .map(|(_, c)| c)
+            .collect::<String>()
+            + "..."
     }
 }

@@ -98,10 +98,11 @@ impl ToolRegistry {
         let args: serde_json::Value =
             serde_json::from_str(args_json).map_err(|e| format!("invalid tool args: {e}"))?;
 
+        // Prefix all args with HIKO_ARG_ to avoid clobbering real env vars (e.g. PATH)
         let mut env_keys = Vec::new();
         if let Some(obj) = args.as_object() {
             for (key, value) in obj {
-                let upper_key = key.to_uppercase();
+                let env_key = format!("HIKO_ARG_{}", key.to_uppercase());
                 let val_str = match value {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
@@ -109,8 +110,8 @@ impl ToolRegistry {
                     other => other.to_string(),
                 };
                 // SAFETY: hiko-harness is single-threaded; no concurrent env access.
-                unsafe { std::env::set_var(&upper_key, &val_str) };
-                env_keys.push(upper_key);
+                unsafe { std::env::set_var(&env_key, &val_str) };
+                env_keys.push(env_key);
             }
         }
 
@@ -166,6 +167,7 @@ fn parse_tool_metadata(source: &str, default_name: &str) -> (String, serde_json:
     let mut required = Vec::new();
 
     // Find the first (* ... *) comment block
+    #[allow(clippy::collapsible_if)]
     if let Some(start) = source.find("(*") {
         if let Some(end) = source[start..].find("*)") {
             let comment = &source[start + 2..start + end];

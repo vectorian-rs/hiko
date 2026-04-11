@@ -5,6 +5,6 @@
 
 use "../stdlib/list.hml"
 
-val pattern = getenv "PATTERN"
+val pattern = getenv "HIKO_ARG_PATTERN"
 val files = glob pattern
 val _ = map println files

@@ -143,7 +143,9 @@ impl StreamAccumulator {
     }
 
     pub fn has_tool_calls(&self) -> bool {
-        !self.tool_calls.is_empty()
+        self.tool_calls
+            .iter()
+            .any(|tc| !tc.id.is_empty() && !tc.function.name.is_empty())
     }
 }
 
@@ -174,6 +176,12 @@ impl LlmClient {
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
             .map_err(|e| format!("LLM request failed: {e}"))?;
+
+        let status = response.status().as_u16();
+        if status >= 400 {
+            let body = response.into_body().read_to_string().unwrap_or_default();
+            return Err(format!("LLM API error ({}): {}", status, body));
+        }
 
         let reader =
             std::io::BufRead::lines(std::io::BufReader::new(response.into_body().into_reader()));

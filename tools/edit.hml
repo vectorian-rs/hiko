@@ -4,6 +4,6 @@
  * param edits: string - Newline-separated edit operations
  *)
 
-val path = getenv "PATH"
-val edits_raw = getenv "EDITS"
+val path = getenv "HIKO_ARG_PATH"
+val edits_raw = getenv "HIKO_ARG_EDITS"
 val _ = print (edit_file_tagged (path, edits_raw))
