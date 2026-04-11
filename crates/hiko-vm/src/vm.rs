@@ -10,7 +10,6 @@ use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, SavedFrame, Value
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
 
-
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
 
@@ -388,30 +387,34 @@ impl VM {
         let command = match arg {
             Value::Heap(r) => match self.heap.get(r) {
                 Ok(HeapObject::Tuple(t)) if t.len() >= 2 => match t[0] {
-                    Value::Heap(sr) => match self.heap.get(sr) {
-                        Ok(HeapObject::String(s)) => s.as_str(),
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "exec: cannot determine command to check against allowed list".into(),
-                            })
+                    Value::Heap(sr) => {
+                        match self.heap.get(sr) {
+                            Ok(HeapObject::String(s)) => s.as_str(),
+                            _ => return Err(RuntimeError {
+                                message:
+                                    "exec: cannot determine command to check against allowed list"
+                                        .into(),
+                            }),
                         }
-                    },
+                    }
                     _ => {
                         return Err(RuntimeError {
-                            message: "exec: cannot determine command to check against allowed list".into(),
-                        })
+                            message: "exec: cannot determine command to check against allowed list"
+                                .into(),
+                        });
                     }
                 },
                 _ => {
                     return Err(RuntimeError {
-                        message: "exec: cannot determine command to check against allowed list".into(),
-                    })
+                        message: "exec: cannot determine command to check against allowed list"
+                            .into(),
+                    });
                 }
             },
             _ => {
                 return Err(RuntimeError {
                     message: "exec: cannot determine command to check against allowed list".into(),
-                })
+                });
             }
         };
         if self.exec_allowed.iter().any(|a| a == command) {
@@ -454,9 +457,7 @@ impl VM {
             match cur {
                 Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
                     HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
-                    HeapObject::Data { tag, fields }
-                        if *tag == TAG_CONS && fields.len() == 2 =>
-                    {
+                    HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
                         match fields[0] {
                             Value::Heap(sr) => {
                                 match self.heap.get(sr).map_err(|e| e.to_string())? {
@@ -519,7 +520,8 @@ impl VM {
         let stderr = Value::Heap(self.heap.alloc(HeapObject::String(stderr_str)));
 
         Ok(Value::Heap(
-            self.heap.alloc(HeapObject::Tuple(vec![exit_code, stdout, stderr])),
+            self.heap
+                .alloc(HeapObject::Tuple(vec![exit_code, stdout, stderr])),
         ))
     }
 

@@ -1,0 +1,26 @@
+(* json.hml -- Demonstrates JSON builtins *)
+
+use "../stdlib/list.hml"
+
+val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com/vectorian-rs/hiko\", \"stars\": 42}}"
+
+(* Get a top-level field *)
+val name = json_get (data, "name")
+val _ = println ("name: " ^ name)
+
+(* Get a nested field with dot notation *)
+val url = json_get (data, "repo.url")
+val _ = println ("repo url: " ^ url)
+
+(* Get array element by index *)
+val feat = json_get (data, "features.1")
+val _ = println ("feature[1]: " ^ feat)
+
+(* Get all keys *)
+val keys = json_keys data
+val _ = println ("keys: " ^ int_to_string (length keys))
+val _ = map (fn k => println ("  " ^ k)) keys
+
+(* Get array length *)
+val n = json_length "[1,2,3,4,5]"
+val _ = println ("array length: " ^ int_to_string n)

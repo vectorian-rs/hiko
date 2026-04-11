@@ -12,6 +12,12 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(default = "default_true_val")]
+    pub stream: bool,
+}
+
+fn default_true_val() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,17 +168,15 @@ impl LlmClient {
     ) -> Result<StreamAccumulator, String> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        let mut body = serde_json::to_value(request).map_err(|e| e.to_string())?;
-        body["stream"] = serde_json::Value::Bool(true);
-
-        let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
+        let body_str = serde_json::to_string(request).map_err(|e| e.to_string())?;
         let response = ureq::post(&url)
             .header("Authorization", &format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
             .map_err(|e| format!("LLM request failed: {e}"))?;
 
-        let reader = std::io::BufRead::lines(std::io::BufReader::new(response.into_body().into_reader()));
+        let reader =
+            std::io::BufRead::lines(std::io::BufReader::new(response.into_body().into_reader()));
         let mut acc = StreamAccumulator::default();
 
         for line in reader {

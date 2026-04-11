@@ -71,6 +71,7 @@ impl Agent {
                     Some(tool_defs.clone())
                 },
                 max_tokens: Some(self.config.max_tokens),
+                stream: true,
             };
 
             // Stream text to stdout as it arrives
@@ -112,18 +113,15 @@ impl Agent {
                         truncate(&tc.function.arguments, 100)
                     );
 
-                    let tool_result = match self.tools.execute(
-                        &tc.function.name,
-                        &tc.function.arguments,
-                    ) {
+                    let tool_result = match self
+                        .tools
+                        .execute(&tc.function.name, &tc.function.arguments)
+                    {
                         Ok(output) => output,
                         Err(e) => format!("Error: {e}"),
                     };
 
-                    eprintln!(
-                        "[result: {}]",
-                        truncate(&tool_result, 200)
-                    );
+                    eprintln!("[result: {}]", truncate(&tool_result, 200));
 
                     self.messages.push(Message {
                         role: "tool".into(),

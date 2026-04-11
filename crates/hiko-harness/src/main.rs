@@ -76,9 +76,7 @@ fn main() {
     };
 
     // Resolve model
-    let model_name = model_override
-        .as_deref()
-        .unwrap_or(&cfg.default.model);
+    let model_name = model_override.as_deref().unwrap_or(&cfg.default.model);
 
     let resolved = cfg.resolve_model(model_name).unwrap_or_else(|e| {
         eprintln!("Model error: {e}");
@@ -87,17 +85,14 @@ fn main() {
 
     eprintln!(
         "Model: {} (provider: {}, style: {})",
-        resolved.model_id,
-        model_name,
-        resolved.api_style
+        resolved.model_id, model_name, resolved.api_style
     );
 
     // Get prompt
     let prompt = if prompt_parts.is_empty() {
         eprintln!("Enter your prompt (Ctrl+D to send):");
         let mut buf = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
-            .expect("cannot read stdin");
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).expect("cannot read stdin");
         buf
     } else {
         prompt_parts.join(" ")

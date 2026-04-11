@@ -52,8 +52,8 @@ impl ToolRegistry {
                 .unwrap_or("unknown")
                 .to_string();
 
-            let source =
-                std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
 
             let (description, parameters) = parse_tool_metadata(&source, &name);
 
@@ -89,14 +89,19 @@ impl ToolRegistry {
     /// Execute a tool by name with the given JSON arguments.
     /// Sets arguments as environment variables for the script.
     pub fn execute(&self, name: &str, args_json: &str) -> Result<String, String> {
-        let tool = self.tools.get(name).ok_or_else(|| format!("unknown tool: {name}"))?;
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| format!("unknown tool: {name}"))?;
 
         // Parse arguments and set as env vars so the script can read them via getenv
         let args: serde_json::Value =
             serde_json::from_str(args_json).map_err(|e| format!("invalid tool args: {e}"))?;
 
+        let mut env_keys = Vec::new();
         if let Some(obj) = args.as_object() {
             for (key, value) in obj {
+                let upper_key = key.to_uppercase();
                 let val_str = match value {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
@@ -104,7 +109,8 @@ impl ToolRegistry {
                     other => other.to_string(),
                 };
                 // SAFETY: hiko-harness is single-threaded; no concurrent env access.
-                unsafe { std::env::set_var(key.to_uppercase(), &val_str) };
+                unsafe { std::env::set_var(&upper_key, &val_str) };
+                env_keys.push(upper_key);
             }
         }
 
@@ -124,10 +130,18 @@ impl ToolRegistry {
             .map_err(|e| format!("tool compile error: {e:?}"))?;
 
         let mut vm = VM::new(compiled);
-        vm.run().map_err(|e| format!("tool runtime error: {}", e.message))?;
+        vm.run()
+            .map_err(|e| format!("tool runtime error: {}", e.message))?;
 
         // Collect output
         let output = vm.get_output().join("");
+
+        // Clean up env vars set for this tool invocation
+        for key in &env_keys {
+            // SAFETY: single-threaded, cleanup after tool execution.
+            unsafe { std::env::remove_var(key) };
+        }
+
         Ok(output)
     }
 

@@ -180,8 +180,14 @@ impl InferCtx {
                 ),
             ),
             // Glob & walk
-            ("glob", Type::arrow(Type::string(), Type::list(Type::string()))),
-            ("walk_dir", Type::arrow(Type::string(), Type::list(Type::string()))),
+            (
+                "glob",
+                Type::arrow(Type::string(), Type::list(Type::string())),
+            ),
+            (
+                "walk_dir",
+                Type::arrow(Type::string(), Type::list(Type::string())),
+            ),
             // Regex
             (
                 "regex_match",
@@ -197,6 +203,22 @@ impl InferCtx {
                     Type::string(),
                 ),
             ),
+            // JSON (typed — requires use "stdlib/json.hml")
+            ("json_parse", Type::arrow(Type::string(), a.clone())),
+            ("json_to_string", Type::arrow(a.clone(), Type::string())),
+            // JSON (string-based convenience)
+            (
+                "json_get",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
+            (
+                "json_keys",
+                Type::arrow(Type::string(), Type::list(Type::string())),
+            ),
+            ("json_length", Type::arrow(Type::string(), Type::int())),
             // Environment & string utils
             ("getenv", Type::arrow(Type::string(), Type::string())),
             (

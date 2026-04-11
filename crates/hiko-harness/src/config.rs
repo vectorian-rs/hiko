@@ -84,37 +84,28 @@ impl Config {
 
         // Check if it's a model alias
         if let Some(alias) = self.models.get(model_name) {
-            let provider = self.providers.get(&alias.provider)
+            let provider = self
+                .providers
+                .get(&alias.provider)
                 .ok_or_else(|| format!("provider '{}' not found in config", alias.provider))?;
-            return Ok(ResolvedModel {
-                api_url: provider.api_url.clone(),
-                api_key: resolve_api_key(&provider.api_key_env)?,
-                model_id: alias.id.clone(),
-                api_style: provider.api_style.clone(),
-            });
+            return ResolvedModel::from_provider(provider, alias.id.clone());
         }
 
         // Check if it's provider/model format
         if let Some((provider_name, model_id)) = name.split_once('/') {
-            let provider = self.providers.get(provider_name)
+            let provider = self
+                .providers
+                .get(provider_name)
                 .ok_or_else(|| format!("provider '{provider_name}' not found in config"))?;
-            return Ok(ResolvedModel {
-                api_url: provider.api_url.clone(),
-                api_key: resolve_api_key(&provider.api_key_env)?,
-                model_id: model_id.to_string(),
-                api_style: provider.api_style.clone(),
-            });
+            return ResolvedModel::from_provider(provider, model_id.to_string());
         }
 
         // Fall back to default provider with the name as model ID
-        let provider = self.providers.get(&self.default.provider)
+        let provider = self
+            .providers
+            .get(&self.default.provider)
             .ok_or_else(|| format!("default provider '{}' not found", self.default.provider))?;
-        Ok(ResolvedModel {
-            api_url: provider.api_url.clone(),
-            api_key: resolve_api_key(&provider.api_key_env)?,
-            model_id: name.to_string(),
-            api_style: provider.api_style.clone(),
-        })
+        ResolvedModel::from_provider(provider, name.to_string())
     }
 }
 
@@ -124,6 +115,17 @@ pub struct ResolvedModel {
     pub api_key: String,
     pub model_id: String,
     pub api_style: String,
+}
+
+impl ResolvedModel {
+    fn from_provider(provider: &Provider, model_id: String) -> Result<Self, String> {
+        Ok(Self {
+            api_url: provider.api_url.clone(),
+            api_key: resolve_api_key(&provider.api_key_env)?,
+            model_id,
+            api_style: provider.api_style.clone(),
+        })
+    }
 }
 
 fn resolve_api_key(env_var: &str) -> Result<String, String> {

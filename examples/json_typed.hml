@@ -1,0 +1,103 @@
+(* json_typed.hml -- JSON as a proper algebraic data type *)
+
+use "../stdlib/json.hml"
+use "../stdlib/list.hml"
+
+(* ── Functional test ────────────────────────────────────────────────── *)
+
+val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"stars\": 42, \"pi\": 3.14, \"active\": true, \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com\", \"private\": false}, \"legacy\": null}"
+
+val parsed = json_parse data
+
+(* Pattern match on the top level *)
+val _ = case parsed of
+    JObject fields =>
+      let
+        fun show_field (key, value) =
+          let val display = case value of
+              JNull => "null"
+            | JBool b => if b then "true" else "false"
+            | JInt n => int_to_string n
+            | JFloat f => float_to_string f
+            | JStr s => "\"" ^ s ^ "\""
+            | JArray _ => "[...]"
+            | JObject _ => "{...}"
+          in println ("  " ^ key ^ " = " ^ display) end
+      in
+        let val _ = println "Parsed object fields:"
+        in map show_field fields end
+      end
+  | _ => let val _ = println "ERROR: expected JObject" in [] end
+
+(* Extract nested values via pattern matching *)
+fun lookup key fields = case fields of
+    [] => JNull
+  | (k, v) :: rest =>
+      if string_length k = string_length key andalso string_contains (k, key)
+      then v else lookup key rest
+
+val _ = case parsed of
+    JObject fields =>
+      let
+        val name = case lookup "name" fields of
+            JStr s => s
+          | _ => "?"
+        val stars = case lookup "stars" fields of
+            JInt n => int_to_string n
+          | _ => "?"
+        val _ = println ("\nname: " ^ name ^ ", stars: " ^ stars)
+
+        (* Nested object *)
+        val repo_url = case lookup "repo" fields of
+            JObject rf => (case lookup "url" rf of
+                JStr s => s
+              | _ => "?")
+          | _ => "?"
+        val _ = println ("repo url: " ^ repo_url)
+
+        (* Array *)
+        val features = case lookup "features" fields of
+            JArray fs => fs
+          | _ => []
+        val _ = println ("features: " ^ int_to_string (length features))
+        val _ = map (fn f => case f of
+            JStr s => println ("  - " ^ s)
+          | _ => ()
+        ) features
+      in () end
+  | _ => ()
+
+(* ── Round-trip test ────────────────────────────────────────────────── *)
+
+val serialized = json_to_string parsed
+val _ = println ("\nRound-trip: " ^ serialized)
+
+(* Parse it again and verify *)
+val reparsed = json_parse serialized
+val reserialized = json_to_string reparsed
+val _ = println ("Re-serialized: " ^ reserialized)
+
+(* ── Performance benchmark ──────────────────────────────────────────── *)
+
+val big_json = "[" ^ int_to_string 1 ^ "," ^ int_to_string 2 ^ "," ^ int_to_string 3 ^ "]"
+
+(* Build a moderately large JSON string *)
+fun repeat_json (n, acc) =
+  if n = 0 then acc
+  else repeat_json (n - 1, acc ^ ",{\"id\":" ^ int_to_string n ^ ",\"name\":\"item" ^ int_to_string n ^ "\",\"values\":[1,2,3],\"nested\":{\"a\":true,\"b\":null}}")
+
+val large = "[{\"id\":0,\"name\":\"item0\",\"values\":[1,2,3],\"nested\":{\"a\":true,\"b\":null}}" ^ repeat_json (99, "") ^ "]"
+
+val t0 = epoch ()
+val parsed_large = json_parse large
+val t1 = epoch ()
+
+val _ = case parsed_large of
+    JArray items => println ("\nParsed " ^ int_to_string (length items) ^ " items")
+  | _ => println "ERROR"
+
+val serialized_large = json_to_string parsed_large
+val t2 = epoch ()
+
+val _ = println ("JSON length: " ^ int_to_string (string_length serialized_large) ^ " chars")
+val _ = println ("Parse + serialize completed (epoch resolution is 1s, so <1s means fast)")
