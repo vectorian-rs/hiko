@@ -1,0 +1,10 @@
+(* tool: find
+ * description: Find files matching a glob pattern
+ * param pattern: string - Glob pattern (e.g. src/**/*.rs)
+ *)
+
+use "../stdlib/list.hml"
+
+val pattern = getenv "PATTERN"
+val files = glob pattern
+val _ = map println files

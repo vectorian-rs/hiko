@@ -172,6 +172,13 @@ impl InferCtx {
                     Type::string(),
                 ),
             ),
+            (
+                "edit_file_tagged",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
             // Glob & walk
             ("glob", Type::arrow(Type::string(), Type::list(Type::string()))),
             ("walk_dir", Type::arrow(Type::string(), Type::list(Type::string()))),

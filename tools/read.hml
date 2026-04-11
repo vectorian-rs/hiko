@@ -1,0 +1,17 @@
+(* tool: read
+ * description: Read a file with hashline content-hash anchors per line
+ * param path: string - File path to read
+ * param offset: number - Start line, 0 for beginning
+ * param limit: number - Max lines, 0 for all
+ *)
+
+val path = getenv "PATH"
+val offset = case getenv "OFFSET" of
+    "" => 0
+  | s => case string_to_int s of n => n
+
+val limit = case getenv "LIMIT" of
+    "" => 0
+  | s => case string_to_int s of n => n
+
+val _ = print (read_file_tagged (path, offset, limit))

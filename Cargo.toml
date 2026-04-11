@@ -5,6 +5,7 @@ members = [
     "crates/hiko-compile",
     "crates/hiko-vm",
     "crates/hiko-cli",
+    "crates/hiko-harness",
 ]
 exclude = ["hiko-vm-*"]
 resolver = "2"

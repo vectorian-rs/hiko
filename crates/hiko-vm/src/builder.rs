@@ -111,6 +111,7 @@ impl VMBuilder {
             "list_dir",
             "path_join",
             "read_file_tagged",
+            "edit_file_tagged",
             "glob",
             "walk_dir",
         ];

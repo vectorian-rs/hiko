@@ -1,0 +1,10 @@
+(* tool: write
+ * description: Write content to a file (creates or overwrites)
+ * param path: string - File path to write
+ * param content: string - Content to write
+ *)
+
+val path = getenv "PATH"
+val content = getenv "CONTENT"
+val _ = write_file (path, content)
+val _ = println ("Wrote " ^ path)

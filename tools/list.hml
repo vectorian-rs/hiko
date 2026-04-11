@@ -1,0 +1,14 @@
+(* tool: list
+ * description: List directory contents
+ * param path: string - Directory path to list
+ *)
+
+use "../stdlib/list.hml"
+
+val path = getenv "PATH"
+val entries = list_dir path
+val _ = map (fn entry =>
+  let val full = path_join (path, entry)
+      val suffix = if is_dir full then "/" else ""
+  in println (entry ^ suffix) end
+) entries

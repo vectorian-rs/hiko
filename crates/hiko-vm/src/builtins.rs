@@ -470,6 +470,152 @@ pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
     Ok(Value::Heap(heap.alloc(HeapObject::String(out))))
 }
 
+/// Edit a file using hashline anchors. Takes (path, edits_string) -> String.
+/// Each edit line: ACTION LINE:HASH CONTENT
+/// Actions: R (replace), I (insert after), D (delete)
+/// Verifies hashes before applying. Returns status message.
+pub(crate) fn bi_edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v_path, v_edits) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("edit_file_tagged: expected (String, String)".into()),
+        },
+        _ => return Err("edit_file_tagged: expected (String, String)".into()),
+    };
+    let path = match v_path {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("edit_file_tagged: expected String for path".into()),
+        },
+        _ => return Err("edit_file_tagged: expected String for path".into()),
+    };
+    let edits_raw = match v_edits {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("edit_file_tagged: expected String for edits".into()),
+        },
+        _ => return Err("edit_file_tagged: expected String for edits".into()),
+    };
+
+    // Read the file
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("edit_file_tagged: {e}"))?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Compute hashes for all lines
+    let hashes: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            let tag = fnv1a_tag(line);
+            std::str::from_utf8(&tag).unwrap().to_string()
+        })
+        .collect();
+
+    // Parse edit operations
+    struct Edit {
+        action: char,
+        line_num: usize,
+        hash: String,
+        content: String,
+    }
+
+    let mut edits = Vec::new();
+    for edit_line in edits_raw.lines() {
+        let edit_line = edit_line.trim();
+        if edit_line.is_empty() {
+            continue;
+        }
+        let action = edit_line.chars().next().unwrap_or(' ');
+        if !matches!(action, 'R' | 'I' | 'D') {
+            return Err(format!(
+                "edit_file_tagged: unknown action '{}' (expected R, I, or D)",
+                action
+            ));
+        }
+
+        let rest = edit_line[1..].trim_start();
+        let (anchor, edit_content) = rest
+            .split_once(' ')
+            .unwrap_or((rest, ""));
+
+        let (num_str, hash) = anchor
+            .split_once(':')
+            .ok_or_else(|| format!("edit_file_tagged: invalid anchor '{}' (expected LINE:HASH)", anchor))?;
+
+        let line_num: usize = num_str
+            .parse()
+            .map_err(|_| format!("edit_file_tagged: invalid line number '{}'", num_str))?;
+
+        edits.push(Edit {
+            action,
+            line_num,
+            hash: hash.to_string(),
+            content: edit_content.to_string(),
+        });
+    }
+
+    // Verify all hashes before applying any changes
+    let mut errors = Vec::new();
+    for edit in &edits {
+        if edit.line_num == 0 || edit.line_num > lines.len() {
+            errors.push(format!(
+                "line {} out of range (file has {} lines)",
+                edit.line_num,
+                lines.len()
+            ));
+            continue;
+        }
+        let idx = edit.line_num - 1;
+        let actual_hash = &hashes[idx];
+        if actual_hash != &edit.hash {
+            errors.push(format!(
+                "hash mismatch at line {}: expected {}, got {} (file changed since last read)",
+                edit.line_num, edit.hash, actual_hash
+            ));
+        }
+    }
+
+    if !errors.is_empty() {
+        let msg = format!("REJECTED: {}", errors.join("; "));
+        return Ok(Value::Heap(heap.alloc(HeapObject::String(msg))));
+    }
+
+    // Apply edits in reverse order to preserve line numbers
+    let mut result: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let mut sorted_edits: Vec<&Edit> = edits.iter().collect();
+    sorted_edits.sort_by(|a, b| b.line_num.cmp(&a.line_num));
+
+    for edit in &sorted_edits {
+        let idx = edit.line_num - 1;
+        match edit.action {
+            'R' => {
+                result[idx] = edit.content.clone();
+            }
+            'I' => {
+                result.insert(idx + 1, edit.content.clone());
+            }
+            'D' => {
+                result.remove(idx);
+            }
+            _ => {}
+        }
+    }
+
+    // Write back
+    let output = result.join("\n");
+    // Preserve trailing newline if original had one
+    let final_output = if content.ends_with('\n') {
+        format!("{output}\n")
+    } else {
+        output
+    };
+    std::fs::write(&path, &final_output)
+        .map_err(|e| format!("edit_file_tagged: {e}"))?;
+
+    let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
+    Ok(Value::Heap(heap.alloc(HeapObject::String(msg))))
+}
+
 /// Glob file search. Takes a pattern string, returns a list of matching paths.
 pub(crate) fn bi_glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let pattern = match &args[0] {
@@ -873,6 +1019,7 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("is_file", bi_is_file),
         ("path_join", bi_path_join),
         ("read_file_tagged", bi_read_file_tagged),
+        ("edit_file_tagged", bi_edit_file_tagged),
         ("glob", bi_glob),
         ("walk_dir", bi_walk_dir),
         ("regex_match", bi_regex_match),

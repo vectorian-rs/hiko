@@ -1,0 +1,33 @@
+(* tool: grep
+ * description: Search file contents for a regex pattern
+ * param pattern: string - Regex pattern to search for
+ * param path: string - File or directory to search in
+ *)
+
+use "../stdlib/list.hml"
+
+val pattern = getenv "PATTERN"
+val path = getenv "PATH"
+
+fun search_file file_path =
+  let
+    val content = read_file file_path
+    val lines = split (content, "\n")
+    fun check_line (n, line) =
+      if regex_match (line, pattern)
+      then println (file_path ^ ":" ^ int_to_string (n + 1) ^ ": " ^ line)
+      else ()
+    val _ = foldl (fn (line, n) =>
+      let val _ = check_line (n, line)
+      in n + 1 end
+    ) 0 lines
+  in () end
+
+val _ = if is_file path
+  then search_file path
+  else let
+    val files = walk_dir path
+    val _ = map (fn f =>
+      if is_file f then search_file f else ()
+    ) files
+  in () end
