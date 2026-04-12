@@ -1,3 +1,4 @@
+use smallvec::smallvec;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -5,7 +6,7 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
-use crate::value::{BuiltinEntry, BuiltinFn, GcRef, HeapObject, SavedFrame, Value};
+use crate::value::{BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, Value};
 
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 1024;
@@ -519,10 +520,9 @@ impl VM {
         let stdout = Value::Heap(self.heap.alloc(HeapObject::String(stdout_str)));
         let stderr = Value::Heap(self.heap.alloc(HeapObject::String(stderr_str)));
 
-        Ok(Value::Heap(
-            self.heap
-                .alloc(HeapObject::Tuple(vec![exit_code, stdout, stderr])),
-        ))
+        Ok(Value::Heap(self.heap.alloc(HeapObject::Tuple(smallvec![
+            exit_code, stdout, stderr
+        ]))))
     }
 
     // ── Dispatch loop ────────────────────────────────────────────────
@@ -703,7 +703,7 @@ impl VM {
                 Op::MakeTuple => {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
-                    let elems: Vec<Value> = self.stack.drain(start..).collect();
+                    let elems: Fields = self.stack.drain(start..).collect();
                     let val = self.alloc(HeapObject::Tuple(elems));
                     self.push(val)?;
                 }
@@ -731,7 +731,7 @@ impl VM {
                     let tag = self.read_u16()?;
                     let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
-                    let fields: Vec<Value> = self.stack.drain(start..).collect();
+                    let fields: Fields = self.stack.drain(start..).collect();
                     let val = self.alloc(HeapObject::Data { tag, fields });
                     self.push(val)?;
                 }

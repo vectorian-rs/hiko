@@ -1,16 +1,17 @@
 use crate::heap::Heap;
 use crate::value::{BuiltinFn, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL, values_equal};
+use smallvec::smallvec;
 
 fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Value {
     let mut list = Value::Heap(heap.alloc(HeapObject::Data {
         tag: TAG_NIL,
-        fields: vec![],
+        fields: smallvec![],
     }));
     for elem in elems.into_iter().rev() {
         list = Value::Heap(heap.alloc(HeapObject::Data {
             tag: TAG_CONS,
-            fields: vec![elem, list],
+            fields: smallvec![elem, list],
         }));
     }
     list
@@ -744,27 +745,27 @@ fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Value {
     match val {
         serde_json::Value::Null => Value::Heap(heap.alloc(HeapObject::Data {
             tag: TAG_JNULL,
-            fields: vec![],
+            fields: smallvec![],
         })),
         serde_json::Value::Bool(b) => Value::Heap(heap.alloc(HeapObject::Data {
             tag: TAG_JBOOL,
-            fields: vec![Value::Bool(*b)],
+            fields: smallvec![Value::Bool(*b)],
         })),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Value::Heap(heap.alloc(HeapObject::Data {
                     tag: TAG_JINT,
-                    fields: vec![Value::Int(i)],
+                    fields: smallvec![Value::Int(i)],
                 }))
             } else if let Some(f) = n.as_f64() {
                 Value::Heap(heap.alloc(HeapObject::Data {
                     tag: TAG_JFLOAT,
-                    fields: vec![Value::Float(f)],
+                    fields: smallvec![Value::Float(f)],
                 }))
             } else {
                 Value::Heap(heap.alloc(HeapObject::Data {
                     tag: TAG_JNULL,
-                    fields: vec![],
+                    fields: smallvec![],
                 }))
             }
         }
@@ -772,7 +773,7 @@ fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Value {
             let sv = Value::Heap(heap.alloc(HeapObject::String(s.clone())));
             Value::Heap(heap.alloc(HeapObject::Data {
                 tag: TAG_JSTR,
-                fields: vec![sv],
+                fields: smallvec![sv],
             }))
         }
         serde_json::Value::Array(arr) => {
@@ -780,7 +781,7 @@ fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Value {
             let list = alloc_list(heap, elems);
             Value::Heap(heap.alloc(HeapObject::Data {
                 tag: TAG_JARRAY,
-                fields: vec![list],
+                fields: smallvec![list],
             }))
         }
         serde_json::Value::Object(map) => {
@@ -789,13 +790,13 @@ fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Value {
                 .map(|(k, v)| {
                     let key = Value::Heap(heap.alloc(HeapObject::String(k.clone())));
                     let val = json_to_hiko(v, heap);
-                    Value::Heap(heap.alloc(HeapObject::Tuple(vec![key, val])))
+                    Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![key, val])))
                 })
                 .collect();
             let list = alloc_list(heap, pairs);
             Value::Heap(heap.alloc(HeapObject::Data {
                 tag: TAG_JOBJECT,
-                fields: vec![list],
+                fields: smallvec![list],
             }))
         }
     }
@@ -1030,7 +1031,7 @@ fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value
     for (name, val) in header_map.iter() {
         let k = Value::Heap(heap.alloc(HeapObject::String(name.to_string())));
         let v = Value::Heap(heap.alloc(HeapObject::String(val.to_str().unwrap_or("").to_string())));
-        let pair = Value::Heap(heap.alloc(HeapObject::Tuple(vec![k, v])));
+        let pair = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![k, v])));
         header_values.push(pair);
     }
     alloc_list(heap, header_values)
@@ -1058,9 +1059,9 @@ pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     let body = Value::Heap(heap.alloc(HeapObject::String(body_str)));
 
     // Return (status, headers, body)
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
-    ))
+    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
+        status, headers, body
+    ]))))
 }
 
 /// HTTP GET returning parsed JSON body. Takes String -> (Int, (String * String) list, json).
@@ -1087,9 +1088,9 @@ pub(crate) fn bi_http_get_json(args: &[Value], heap: &mut Heap) -> Result<Value,
         serde_json::from_str(&body_str).map_err(|e| format!("http_get_json: {e}"))?;
     let body = json_to_hiko(&parsed, heap);
 
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
-    ))
+    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
+        status, headers, body
+    ]))))
 }
 
 /// HTTP GET returning msgpack-decoded body as json. Takes String -> (Int, (String * String) list, json).
@@ -1115,9 +1116,9 @@ pub(crate) fn bi_http_get_msgpack(args: &[Value], heap: &mut Heap) -> Result<Val
         rmp_serde::from_slice(&body_bytes).map_err(|e| format!("http_get_msgpack: {e}"))?;
     let body = json_to_hiko(&parsed, heap);
 
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
-    ))
+    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
+        status, headers, body
+    ]))))
 }
 
 /// Execute a command directly (no shell). Takes (String, String list) -> (Int, String, String).
@@ -1175,9 +1176,9 @@ pub(crate) fn bi_exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )));
 
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::Tuple(vec![exit_code, stdout, stderr])),
-    ))
+    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
+        exit_code, stdout, stderr
+    ]))))
 }
 
 pub(crate) fn bi_getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {

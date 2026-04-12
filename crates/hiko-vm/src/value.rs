@@ -1,5 +1,10 @@
+use smallvec::SmallVec;
 use std::fmt;
 use std::rc::Rc;
+
+/// Inline storage for up to 4 Values (64 bytes) without heap allocation.
+/// Covers tuples, data constructor fields, and cons cells.
+pub type Fields = SmallVec<[Value; 4]>;
 
 /// Index into the GC heap. Copy, 4 bytes, no Drop.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -21,10 +26,10 @@ pub enum Value {
 /// Heap-allocated objects managed by the GC.
 pub enum HeapObject {
     String(String),
-    Tuple(Vec<Value>),
+    Tuple(Fields),
     Data {
         tag: u16,
-        fields: Vec<Value>,
+        fields: Fields,
     },
     Closure {
         proto_idx: usize,
