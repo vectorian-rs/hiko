@@ -9,7 +9,7 @@ use crate::heap::Heap;
 use crate::value::{BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, Value};
 
 const MAX_STACK: usize = 64 * 1024;
-const MAX_FRAMES: usize = 1024;
+const MAX_FRAMES: usize = 65536;
 
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;

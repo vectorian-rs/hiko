@@ -19,7 +19,7 @@ fun sieve xs = case xs of
     [] => []
   | x :: rest => x :: sieve (remove_multiples x rest)
 
-val primes = sieve (interval 2 50)
+val primes = sieve (interval 2 200)
 val count = length primes
-val _ = assert_eq (count, 15, "primes below 50")
-val _ = println ("primes below 50: " ^ int_to_string count)
+val _ = assert_eq (count, 46, "primes below 200")
+val _ = println ("primes below 200: " ^ int_to_string count)

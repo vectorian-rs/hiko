@@ -19,6 +19,6 @@ fun fib n =
     callec (fn _ => fib (n - 2))
   )
 
-val result = callec (fn _ => fib 25)
-val _ = assert_eq (result, 75025, "ec_fib(25)")
-val _ = println ("ec_fib(25) = " ^ int_to_string result)
+val result = callec (fn _ => fib 30)
+val _ = assert_eq (result, 832040, "ec_fib(30)")
+val _ = println ("ec_fib(30) = " ^ int_to_string result)
