@@ -1,0 +1,61 @@
+(* json_api.hml -- Typed JSON with pattern matching *)
+
+use "../stdlib/json.hml"
+use "../stdlib/list.hml"
+
+(* Build JSON programmatically *)
+val config = JObject [
+  ("name", JStr "hiko"),
+  ("version", JStr "0.2.0"),
+  ("features", JArray [JStr "effects", JStr "types", JStr "vm"]),
+  ("limits", JObject [
+    ("max_fuel", JInt 10000000),
+    ("max_heap", JInt 500000)
+  ]),
+  ("active", JBool true),
+  ("pi", JFloat 3.14159)
+]
+
+(* Serialize to string *)
+val json_str = json_to_string config
+val _ = println "=== Serialized ==="
+val _ = println json_str
+
+(* Parse it back *)
+val parsed = json_parse json_str
+
+(* Helper to look up a key in a JSON object *)
+fun get key obj = case obj of
+    JObject fields => (case filter (fn (k, _) => k = key) fields of
+        (_, v) :: _ => v
+      | [] => JNull)
+  | _ => JNull
+
+(* Extract values with pattern matching *)
+val _ = println "\n=== Extracted ==="
+val _ = case get "name" parsed of
+    JStr s => println ("name: " ^ s)
+  | _ => println "name: ?"
+
+val _ = case get "limits" parsed of
+    JObject _ =>
+      let val fuel = case get "max_fuel" (get "limits" parsed) of
+              JInt n => int_to_string n
+            | _ => "?"
+      in println ("max_fuel: " ^ fuel) end
+  | _ => println "limits: ?"
+
+val _ = case get "features" parsed of
+    JArray items =>
+      let
+        val _ = println ("features (" ^ int_to_string (length items) ^ "):")
+        val _ = map (fn f => case f of JStr s => println ("  - " ^ s) | _ => ()) items
+      in () end
+  | _ => println "features: ?"
+
+(* Transform JSON: add a field *)
+val updated = case parsed of
+    JObject fields => JObject (("timestamp", JInt (epoch ())) :: fields)
+  | other => other
+val _ = println "\n=== With timestamp ==="
+val _ = println (json_to_string updated)

@@ -1,0 +1,34 @@
+(* effects_state.hml -- Mutable state via algebraic effects
+ *
+ * Demonstrates the get/put pattern for managing state
+ * without mutable variables — pure functional state machine.
+ *)
+
+effect Get of Unit
+effect Put of Int
+
+(* Simple state runner — returns final result, discards state *)
+fun run_state init f =
+  handle f ()
+  with return x => x
+     | Get _ k => run_state init (fn _ => resume k init)
+     | Put n k => run_state n (fn _ => resume k ())
+
+(* A counter that increments and returns the old value *)
+fun increment () =
+  let val current = perform Get ()
+      val _ = perform Put (current + 1)
+  in current end
+
+(* Use the counter *)
+fun program () =
+  let val a = increment ()
+      val b = increment ()
+      val c = increment ()
+  in a + b + c end
+
+val sum = run_state 0 program
+
+val _ = println ("Sum of 0+1+2 = " ^ int_to_string sum)
+val _ = assert_eq (sum, 3, "state effect counter")
+val _ = println "State effect test passed!"
