@@ -1,0 +1,25 @@
+(* N-Queens — counting solutions
+ * Simplified from Manticore seq-nqueens benchmark
+ * Input: 8 => 92 solutions
+ *)
+
+fun safe (x, d, qs) = case qs of
+    [] => true
+  | q :: rest =>
+      x <> q andalso x <> q + d andalso x <> q - d
+      andalso safe (x, d + 1, rest)
+
+fun count_queens (n, row, placed) =
+  if row > n then 1
+  else count_cols (n, row, placed, 1, 0)
+and count_cols (n, row, placed, col, acc) =
+  if col > n then acc
+  else let
+    val next = if safe (col, 1, placed)
+               then count_queens (n, row + 1, col :: placed)
+               else 0
+  in count_cols (n, row, placed, col + 1, acc + next) end
+
+val result = count_queens (8, 1, [])
+val _ = assert_eq (result, 92, "nqueens(8)")
+val _ = println ("nqueens(8) = " ^ int_to_string result)

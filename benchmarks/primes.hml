@@ -1,0 +1,25 @@
+(* Sieve of Eratosthenes — from Manticore seq-primes benchmark
+ * Compute primes less than 1000
+ *)
+
+use "../stdlib/list.hml"
+
+fun interval m n =
+  if m > n then []
+  else m :: interval (m + 1) n
+
+fun remove_multiples n xs = case xs of
+    [] => []
+  | x :: rest =>
+      if x mod n = 0
+      then remove_multiples n rest
+      else x :: remove_multiples n rest
+
+fun sieve xs = case xs of
+    [] => []
+  | x :: rest => x :: sieve (remove_multiples x rest)
+
+val primes = sieve (interval 2 50)
+val count = length primes
+val _ = assert_eq (count, 15, "primes below 50")
+val _ = println ("primes below 50: " ^ int_to_string count)

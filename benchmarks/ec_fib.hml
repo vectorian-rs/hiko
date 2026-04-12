@@ -1,0 +1,24 @@
+(* Fibonacci with explicit continuations via algebraic effects
+ * — from Manticore ec-fib benchmark
+ * Cont.callec / Cont.throw mapped to perform/handle
+ * Input: 25 => 75025
+ *)
+
+effect Ret of Int
+
+fun callec f =
+  handle f ()
+  with return x => x
+     | Ret v _ => v
+
+fun fib n =
+  if n = 0 then perform Ret 0
+  else if n = 1 then perform Ret 1
+  else perform Ret (
+    callec (fn _ => fib (n - 1)) +
+    callec (fn _ => fib (n - 2))
+  )
+
+val result = callec (fn _ => fib 25)
+val _ = assert_eq (result, 75025, "ec_fib(25)")
+val _ = println ("ec_fib(25) = " ^ int_to_string result)
