@@ -215,7 +215,9 @@ fn build_vm(policy_path: &str) {
 
     let version = env!("CARGO_PKG_VERSION");
     let cargo_toml = format!(
-        r#"[package]
+        r#"[workspace]
+
+[package]
 name = "{out_dir}"
 version = "0.1.0"
 edition = "2024"

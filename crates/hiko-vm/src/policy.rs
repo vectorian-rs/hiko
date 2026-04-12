@@ -123,7 +123,7 @@ impl Policy {
             "    let program = Parser::new(tokens).parse_program().expect(\"parse error\");\n",
         );
         s.push_str(
-            "    let (compiled, _) = Compiler::compile(program).expect(\"compile error\");\n",
+            "    let (compiled, _) = Compiler::compile_file(program, std::path::Path::new(&path)).expect(\"compile error\");\n",
         );
         s.push_str("    let mut vm = VMBuilder::new(compiled)\n");
 
@@ -185,9 +185,19 @@ impl Policy {
         }
 
         s.push_str("        .build();\n");
-        s.push_str("    if let Err(e) = vm.run() {\n");
-        s.push_str("        eprintln!(\"error: {}\", e.message);\n");
-        s.push_str("        std::process::exit(1);\n");
+        s.push_str("    match vm.run() {\n");
+        s.push_str("        Ok(()) => {\n");
+        s.push_str("            for line in vm.get_output() {\n");
+        s.push_str("                print!(\"{line}\");\n");
+        s.push_str("            }\n");
+        s.push_str("        }\n");
+        s.push_str("        Err(e) => {\n");
+        s.push_str("            for line in vm.get_output() {\n");
+        s.push_str("                print!(\"{line}\");\n");
+        s.push_str("            }\n");
+        s.push_str("            eprintln!(\"error: {}\", e.message);\n");
+        s.push_str("            std::process::exit(1);\n");
+        s.push_str("        }\n");
         s.push_str("    }\n");
         s.push_str("}\n");
         s

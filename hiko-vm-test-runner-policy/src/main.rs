@@ -8,7 +8,7 @@ fn main() {
     let source = std::fs::read_to_string(&path).expect("cannot read file");
     let tokens = Lexer::new(&source, 0).tokenize().expect("lex error");
     let program = Parser::new(tokens).parse_program().expect("parse error");
-    let (compiled, _) = Compiler::compile(program).expect("compile error");
+    let (compiled, _) = Compiler::compile_file(program, std::path::Path::new(&path)).expect("compile error");
     let mut vm = VMBuilder::new(compiled)
         .with_core()
         .with_filesystem(hiko_vm::builder::FilesystemPolicy {
@@ -24,8 +24,18 @@ fn main() {
         .max_fuel(100000000)
         .max_heap(1000000)
         .build();
-    if let Err(e) = vm.run() {
-        eprintln!("error: {}", e.message);
-        std::process::exit(1);
+    match vm.run() {
+        Ok(()) => {
+            for line in vm.get_output() {
+                print!("{line}");
+            }
+        }
+        Err(e) => {
+            for line in vm.get_output() {
+                print!("{line}");
+            }
+            eprintln!("error: {}", e.message);
+            std::process::exit(1);
+        }
     }
 }
