@@ -99,6 +99,7 @@ impl VMBuilder {
             "string_to_bytes",
             "bytes_get",
             "bytes_slice",
+            "random_bytes",
             "rng_seed",
             "rng_bytes",
             "rng_int",

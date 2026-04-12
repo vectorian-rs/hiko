@@ -1,0 +1,10 @@
+(* random_demo.hml -- OS entropy + deterministic PCG *)
+
+(* Cryptographically secure random bytes from OS *)
+val b = random_bytes 16
+val _ = println ("OS random bytes: " ^ int_to_string (bytes_length b) ^ " bytes")
+
+(* Seed PCG from OS entropy for non-deterministic but fast RNG *)
+val r = rng_seed (random_bytes 8)
+val (n, _) = rng_int (r, 1000)
+val _ = println ("PCG seeded from OS entropy: " ^ int_to_string n)

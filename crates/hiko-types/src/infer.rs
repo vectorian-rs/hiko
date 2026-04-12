@@ -251,7 +251,9 @@ impl InferCtx {
                     Type::bytes(),
                 ),
             ),
-            // RNG
+            // Crypto RNG
+            ("random_bytes", Type::arrow(Type::int(), Type::bytes())),
+            // Deterministic RNG
             ("rng_seed", Type::arrow(Type::bytes(), Type::rng())),
             (
                 "rng_bytes",

@@ -1232,6 +1232,20 @@ pub(crate) fn bi_http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, 
     ]))))
 }
 
+// ── Cryptographic RNG (OS entropy via dryoc) ────────────────────────
+
+/// random_bytes : Int -> Bytes — cryptographically secure random bytes from OS entropy.
+pub(crate) fn bi_random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Int(n) if *n >= 0 => {
+            let buf = dryoc::rng::randombytes_buf(*n as usize);
+            Ok(Value::Heap(heap.alloc(HeapObject::Bytes(buf))))
+        }
+        Value::Int(_) => Err("random_bytes: length must be non-negative".into()),
+        _ => Err("random_bytes: expected Int".into()),
+    }
+}
+
 // ── RNG builtins (PCG-XSH-RR-64/32) ─────────────────────────────────
 
 fn pcg_next(state: u64, inc: u64) -> (u32, u64) {
@@ -1717,6 +1731,7 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("string_to_bytes", bi_string_to_bytes),
         ("bytes_get", bi_bytes_get),
         ("bytes_slice", bi_bytes_slice),
+        ("random_bytes", bi_random_bytes),
         ("rng_seed", bi_rng_seed),
         ("rng_bytes", bi_rng_bytes),
         ("rng_int", bi_rng_int),
