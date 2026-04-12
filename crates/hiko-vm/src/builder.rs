@@ -103,6 +103,8 @@ impl VMBuilder {
             "rng_seed",
             "rng_bytes",
             "rng_int",
+            "sleep",
+            "string_join",
             "panic",
             "assert",
             "assert_eq",

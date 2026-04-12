@@ -1618,6 +1618,48 @@ pub(crate) fn bi_epoch(_args: &[Value], _heap: &mut Heap) -> Result<Value, Strin
     Ok(Value::Int(secs as i64))
 }
 
+/// sleep : Int -> Unit — pause execution for N milliseconds.
+pub(crate) fn bi_sleep(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Int(ms) if *ms >= 0 => {
+            std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+            Ok(Value::Unit)
+        }
+        _ => Err("sleep: expected non-negative Int (milliseconds)".into()),
+    }
+}
+
+/// string_join : (String list, String) -> String — join list with separator.
+pub(crate) fn bi_string_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("string_join: expected (String list, String)".into()),
+        },
+        _ => return Err("string_join: expected (String list, String)".into()),
+    };
+    let sep = match v1 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("string_join: expected String for separator".into()),
+        },
+        _ => return Err("string_join: expected String for separator".into()),
+    };
+    let elems = collect_list(heap, v0)?;
+    let mut parts = Vec::new();
+    for elem in elems {
+        match elem {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::String(s) => parts.push(s.clone()),
+                _ => return Err("string_join: list elements must be strings".into()),
+            },
+            _ => return Err("string_join: list elements must be strings".into()),
+        }
+    }
+    let result = parts.join(&sep);
+    Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+}
+
 pub(crate) fn bi_exit(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(code) => std::process::exit(*code as i32),
@@ -1742,6 +1784,8 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("to_lower", bi_to_lower),
         ("epoch", bi_epoch),
         ("exec", bi_exec),
+        ("sleep", bi_sleep),
+        ("string_join", bi_string_join),
         ("exit", bi_exit),
         ("panic", bi_panic),
         ("assert", bi_assert),

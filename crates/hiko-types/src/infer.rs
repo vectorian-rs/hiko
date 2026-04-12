@@ -343,6 +343,14 @@ impl InferCtx {
             ("to_upper", Type::arrow(Type::string(), Type::string())),
             ("to_lower", Type::arrow(Type::string(), Type::string())),
             ("epoch", Type::arrow(Type::unit(), Type::int())),
+            ("sleep", Type::arrow(Type::int(), Type::unit())),
+            (
+                "string_join",
+                Type::arrow(
+                    Type::Tuple(vec![Type::list(Type::string()), Type::string()]),
+                    Type::string(),
+                ),
+            ),
             // Exec
             (
                 "exec",
