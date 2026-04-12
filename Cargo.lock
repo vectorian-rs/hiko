@@ -196,7 +196,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hiko-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "codespan-reporting",
  "hiko-compile",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-compile"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hiko-syntax",
  "hiko-types",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-harness"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "hiko-compile",
  "hiko-syntax",
@@ -228,21 +228,21 @@ dependencies = [
 
 [[package]]
 name = "hiko-syntax"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "insta",
 ]
 
 [[package]]
 name = "hiko-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hiko-syntax",
 ]
 
 [[package]]
 name = "hiko-vm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "glob",
  "hiko-compile",

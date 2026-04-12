@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "hiko-vm-test-runner-policy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hiko-syntax = { path = "../crates/hiko-syntax" }
+hiko-compile = { path = "../crates/hiko-compile" }
+hiko-vm = { path = "../crates/hiko-vm" }
