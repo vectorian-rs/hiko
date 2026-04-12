@@ -8,8 +8,7 @@ val body = read_file "/tmp/repo_contents.json"
 fun lookup key fs = case fs of
     [] => JNull
   | (k, v) :: rest =>
-      if string_length k = string_length key andalso string_contains (k, key)
-      then v else lookup key rest
+      if k = key then v else lookup key rest
 
 val _ = case json_parse body of
     JArray items =>

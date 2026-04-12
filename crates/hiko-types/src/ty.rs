@@ -42,8 +42,16 @@ impl Type {
         Type::Arrow(Box::new(from), Box::new(to))
     }
 
-    pub fn is_scalar(&self) -> bool {
-        matches!(self, Type::Con(n) if matches!(n.as_str(), "Int" | "Float" | "Bool" | "String" | "Char"))
+    pub fn is_equality(&self) -> bool {
+        match self {
+            Type::Con(n) => matches!(
+                n.as_str(),
+                "Int" | "Float" | "Bool" | "String" | "Char" | "Unit"
+            ),
+            Type::Var(_) => true, // allow equality on polymorphic variables
+            Type::Tuple(elems) => elems.iter().all(|e| e.is_equality()),
+            _ => false,
+        }
     }
 
     pub fn free_vars(&self) -> Vec<u32> {

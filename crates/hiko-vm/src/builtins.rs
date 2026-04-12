@@ -1024,6 +1024,18 @@ pub(crate) fn bi_json_length(args: &[Value], heap: &mut Heap) -> Result<Value, S
     Ok(Value::Int(len as i64))
 }
 
+/// Collect headers from an http::HeaderMap into a hiko list of (String, String) tuples.
+fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value {
+    let mut header_values: Vec<Value> = Vec::new();
+    for (name, val) in header_map.iter() {
+        let k = Value::Heap(heap.alloc(HeapObject::String(name.to_string())));
+        let v = Value::Heap(heap.alloc(HeapObject::String(val.to_str().unwrap_or("").to_string())));
+        let pair = Value::Heap(heap.alloc(HeapObject::Tuple(vec![k, v])));
+        header_values.push(pair);
+    }
+    alloc_list(heap, header_values)
+}
+
 pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let url = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
@@ -1037,19 +1049,7 @@ pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         .map_err(|e| format!("http_get: {e}"))?;
 
     let status = Value::Int(response.status().as_u16() as i64);
-
-    // Collect headers as a list of (name, value) tuples
-    let mut header_values: Vec<Value> = Vec::new();
-    for name in response.headers().keys() {
-        if let Some(val) = response.headers().get(name) {
-            let k = Value::Heap(heap.alloc(HeapObject::String(name.to_string())));
-            let v =
-                Value::Heap(heap.alloc(HeapObject::String(val.to_str().unwrap_or("").to_string())));
-            let pair = Value::Heap(heap.alloc(HeapObject::Tuple(vec![k, v])));
-            header_values.push(pair);
-        }
-    }
-    let headers = alloc_list(heap, header_values);
+    let headers = collect_headers(response.headers(), heap);
 
     let body_str = response
         .into_body()
@@ -1058,6 +1058,63 @@ pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     let body = Value::Heap(heap.alloc(HeapObject::String(body_str)));
 
     // Return (status, headers, body)
+    Ok(Value::Heap(
+        heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
+    ))
+}
+
+/// HTTP GET returning parsed JSON body. Takes String -> (Int, (String * String) list, json).
+pub(crate) fn bi_http_get_json(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let url = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("http_get_json: expected String".into()),
+        },
+        _ => return Err("http_get_json: expected String".into()),
+    };
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| format!("http_get_json: {e}"))?;
+
+    let status = Value::Int(response.status().as_u16() as i64);
+    let headers = collect_headers(response.headers(), heap);
+
+    let body_str = response
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("http_get_json: {e}"))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body_str).map_err(|e| format!("http_get_json: {e}"))?;
+    let body = json_to_hiko(&parsed, heap);
+
+    Ok(Value::Heap(
+        heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
+    ))
+}
+
+/// HTTP GET returning msgpack-decoded body as json. Takes String -> (Int, (String * String) list, json).
+pub(crate) fn bi_http_get_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let url = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("http_get_msgpack: expected String".into()),
+        },
+        _ => return Err("http_get_msgpack: expected String".into()),
+    };
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| format!("http_get_msgpack: {e}"))?;
+
+    let status = Value::Int(response.status().as_u16() as i64);
+    let headers = collect_headers(response.headers(), heap);
+
+    let mut body_bytes = Vec::new();
+    std::io::Read::read_to_end(&mut response.into_body().into_reader(), &mut body_bytes)
+        .map_err(|e| format!("http_get_msgpack: {e}"))?;
+    let parsed: serde_json::Value =
+        rmp_serde::from_slice(&body_bytes).map_err(|e| format!("http_get_msgpack: {e}"))?;
+    let body = json_to_hiko(&parsed, heap);
+
     Ok(Value::Heap(
         heap.alloc(HeapObject::Tuple(vec![status, headers, body])),
     ))
@@ -1323,6 +1380,8 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("json_keys", bi_json_keys),
         ("json_length", bi_json_length),
         ("http_get", bi_http_get),
+        ("http_get_json", bi_http_get_json),
+        ("http_get_msgpack", bi_http_get_msgpack),
         ("getenv", bi_getenv),
         ("starts_with", bi_starts_with),
         ("ends_with", bi_ends_with),

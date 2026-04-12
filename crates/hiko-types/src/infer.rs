@@ -164,6 +164,30 @@ impl InferCtx {
                     ]),
                 ),
             ),
+            // http_get_json and http_get_msgpack return (Int, headers, json)
+            // json is 'a since it's a stdlib type
+            (
+                "http_get_json",
+                Type::arrow(
+                    Type::string(),
+                    Type::Tuple(vec![
+                        Type::int(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        a.clone(),
+                    ]),
+                ),
+            ),
+            (
+                "http_get_msgpack",
+                Type::arrow(
+                    Type::string(),
+                    Type::Tuple(vec![
+                        Type::int(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        a.clone(),
+                    ]),
+                ),
+            ),
             // Hashline read
             (
                 "read_file_tagged",
@@ -955,10 +979,10 @@ impl InferCtx {
             BinOp::Eq | BinOp::Ne => {
                 self.unify(&lhs_ty, &rhs_ty, span)?;
                 let resolved = self.apply(&lhs_ty);
-                if !resolved.is_scalar() {
+                if !resolved.is_equality() {
                     return Err(self.err(
                         &format!(
-                            "= and <> require scalar types, found {}",
+                            "= and <> require equality types, found {}",
                             self.display(&resolved)
                         ),
                         span,
@@ -1492,7 +1516,7 @@ mod tests {
     #[test]
     fn test_equality_on_list() {
         let msg = infer_err("val b = [1] = [1]");
-        assert!(msg.contains("scalar"), "got: {msg}");
+        assert!(msg.contains("equality"), "got: {msg}");
     }
 
     // ── If/then/else ─────────────────────────────────────────────────
@@ -1575,9 +1599,11 @@ mod tests {
     // ── Equality on polymorphic vars ─────────────────────────────────
 
     #[test]
-    fn test_equality_polymorphic_rejected() {
-        let msg = infer_err("fun f x y = x = y");
-        assert!(msg.contains("scalar"), "got: {msg}");
+    fn test_equality_polymorphic_allowed() {
+        let ctx = infer("fun f x y = x = y");
+        let ty = type_of(&ctx, "f");
+        // Type variable names vary; check the shape: 'X -> 'X -> Bool
+        assert!(ty.ends_with("-> Bool"), "got: {ty}");
     }
 
     #[test]
@@ -1586,7 +1612,7 @@ mod tests {
             "datatype 'a option = None | Some of 'a
              val b = Some 1 = Some 2",
         );
-        assert!(msg.contains("scalar"), "got: {msg}");
+        assert!(msg.contains("equality"), "got: {msg}");
     }
 
     // ── Type alias with parameters ───────────────────────────────────

@@ -33,8 +33,7 @@ val _ = case parsed of
 fun lookup key fields = case fields of
     [] => JNull
   | (k, v) :: rest =>
-      if string_length k = string_length key andalso string_contains (k, key)
-      then v else lookup key rest
+      if k = key then v else lookup key rest
 
 val _ = case parsed of
     JObject fields =>
