@@ -316,7 +316,21 @@ allowed_hosts = ["deploy.internal.example.com"]
 allow_exit = true
 ```
 
-`hiko build-vm` generates a standalone Rust crate (`hiko-vm-{policy-name}/`) with the policy baked into `src/main.rs`. The generated `Cargo.toml` pulls hiko crates from crates.io — no need to clone the hiko repo.
+`hiko build-vm` reads the policy TOML once and generates a standalone Rust crate (`hiko-vm-{policy-name}/`) with the policy compiled into `src/main.rs` as hardcoded VMBuilder calls. The generated binary has no config files — the policy is the code.
+
+```
+policies/reader.policy.toml     ← human writes this
+    │
+    ▼  hiko build-vm
+hiko-vm-reader/
+├── Cargo.toml                  ← pulls hiko crates from crates.io
+└── src/main.rs                 ← policy baked in as Rust code
+    │
+    ▼  cargo build --release
+hiko-vm-reader/target/release/  ← single binary, policy-locked
+```
+
+The generated `src/main.rs` is the auditable source of truth for what the VM can do. Commit it alongside your policy TOML — reviewers can see exactly which builtins are registered, which commands are whitelisted, and what limits are enforced, without running any tools. The `target/` directory is gitignored.
 
 ### Orchestration with mise
 
