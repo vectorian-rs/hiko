@@ -164,12 +164,32 @@ impl InferCtx {
                     ]),
                 ),
             ),
-            // http_get_json and http_get_msgpack return (Int, headers, json)
-            // json is 'a since it's a stdlib type
+            // General HTTP: (method, url, headers, body) -> (status, response_headers, body)
             (
-                "http_get_json",
+                "http",
                 Type::arrow(
-                    Type::string(),
+                    Type::Tuple(vec![
+                        Type::string(),
+                        Type::string(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::string(),
+                    ]),
+                    Type::Tuple(vec![
+                        Type::int(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::string(),
+                    ]),
+                ),
+            ),
+            (
+                "http_json",
+                Type::arrow(
+                    Type::Tuple(vec![
+                        Type::string(),
+                        Type::string(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::string(),
+                    ]),
                     Type::Tuple(vec![
                         Type::int(),
                         Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
@@ -178,9 +198,14 @@ impl InferCtx {
                 ),
             ),
             (
-                "http_get_msgpack",
+                "http_msgpack",
                 Type::arrow(
-                    Type::string(),
+                    Type::Tuple(vec![
+                        Type::string(),
+                        Type::string(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::string(),
+                    ]),
                     Type::Tuple(vec![
                         Type::int(),
                         Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
