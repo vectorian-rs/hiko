@@ -94,6 +94,11 @@ impl VMBuilder {
             "to_upper",
             "to_lower",
             "epoch",
+            "bytes_length",
+            "bytes_to_string",
+            "string_to_bytes",
+            "bytes_get",
+            "bytes_slice",
             "panic",
             "assert",
             "assert_eq",
@@ -136,8 +141,17 @@ impl VMBuilder {
 
     /// Include HTTP builtins.
     pub fn with_http(mut self, _policy: HttpPolicy) -> Self {
-        if let Some(f) = find_builtin("http_get") {
-            self.builtins.push(("http_get", f));
+        let http_names = [
+            "http_get",
+            "http",
+            "http_json",
+            "http_msgpack",
+            "http_bytes",
+        ];
+        for entry in builtins::builtin_entries() {
+            if http_names.contains(&entry.0) {
+                self.builtins.push(entry);
+            }
         }
         self
     }

@@ -36,6 +36,7 @@ pub enum HeapObject {
         proto_idx: usize,
         captures: Rc<[Value]>,
     },
+    Bytes(Vec<u8>),
     Continuation {
         saved_frames: Vec<SavedFrame>,
         saved_stack: Vec<Value>,
@@ -61,7 +62,7 @@ impl HeapObject {
             }
         };
         match self {
-            HeapObject::String(_) => {}
+            HeapObject::String(_) | HeapObject::Bytes(_) => {}
             HeapObject::Tuple(elems) => visit(elems, &mut f),
             HeapObject::Data { fields, .. } => visit(fields, &mut f),
             HeapObject::Closure { captures, .. } => visit(captures, &mut f),

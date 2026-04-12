@@ -213,6 +213,44 @@ impl InferCtx {
                     ]),
                 ),
             ),
+            // HTTP bytes
+            (
+                "http_bytes",
+                Type::arrow(
+                    Type::Tuple(vec![
+                        Type::string(),
+                        Type::string(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::string(),
+                    ]),
+                    Type::Tuple(vec![
+                        Type::int(),
+                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                        Type::bytes(),
+                    ]),
+                ),
+            ),
+            // Bytes
+            ("bytes_length", Type::arrow(Type::bytes(), Type::int())),
+            (
+                "bytes_to_string",
+                Type::arrow(Type::bytes(), Type::string()),
+            ),
+            (
+                "string_to_bytes",
+                Type::arrow(Type::string(), Type::bytes()),
+            ),
+            (
+                "bytes_get",
+                Type::arrow(Type::Tuple(vec![Type::bytes(), Type::int()]), Type::int()),
+            ),
+            (
+                "bytes_slice",
+                Type::arrow(
+                    Type::Tuple(vec![Type::bytes(), Type::int(), Type::int()]),
+                    Type::bytes(),
+                ),
+            ),
             // Hashline read
             (
                 "read_file_tagged",

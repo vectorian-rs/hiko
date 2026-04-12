@@ -270,6 +270,7 @@ impl VM {
                         format!("Data({tag})")
                     }
                 }
+                Ok(HeapObject::Bytes(b)) => format!("<bytes:{}>", b.len()),
                 Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),
                 Ok(HeapObject::Continuation { .. }) => "<continuation>".to_string(),
                 Err(_) => "<dangling ref>".to_string(),

@@ -31,6 +31,9 @@ impl Type {
     pub fn char() -> Type {
         Type::Con("Char".into())
     }
+    pub fn bytes() -> Type {
+        Type::Con("Bytes".into())
+    }
     pub fn unit() -> Type {
         Type::Con("Unit".into())
     }
@@ -46,7 +49,7 @@ impl Type {
         match self {
             Type::Con(n) => matches!(
                 n.as_str(),
-                "Int" | "Float" | "Bool" | "String" | "Char" | "Unit"
+                "Int" | "Float" | "Bool" | "String" | "Char" | "Unit" | "Bytes"
             ),
             Type::Var(_) => true, // allow equality on polymorphic variables
             Type::Tuple(elems) => elems.iter().all(|e| e.is_equality()),

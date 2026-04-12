@@ -1232,6 +1232,116 @@ pub(crate) fn bi_http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, 
     ]))))
 }
 
+// ── Bytes builtins ───────────────────────────────────────────────────
+
+pub(crate) fn bi_bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => Ok(Value::Int(b.len() as i64)),
+            _ => Err("bytes_length: expected Bytes".into()),
+        },
+        _ => Err("bytes_length: expected Bytes".into()),
+    }
+}
+
+pub(crate) fn bi_bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => Ok(Value::Heap(
+                heap.alloc(HeapObject::String(String::from_utf8_lossy(b).into_owned())),
+            )),
+            _ => Err("bytes_to_string: expected Bytes".into()),
+        },
+        _ => Err("bytes_to_string: expected Bytes".into()),
+    }
+}
+
+pub(crate) fn bi_string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => Ok(Value::Heap(
+                heap.alloc(HeapObject::Bytes(s.as_bytes().to_vec())),
+            )),
+            _ => Err("string_to_bytes: expected String".into()),
+        },
+        _ => Err("string_to_bytes: expected String".into()),
+    }
+}
+
+pub(crate) fn bi_bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("bytes_get: expected (Bytes, Int)".into()),
+        },
+        _ => return Err("bytes_get: expected (Bytes, Int)".into()),
+    };
+    let bytes = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => b,
+            _ => return Err("bytes_get: expected Bytes".into()),
+        },
+        _ => return Err("bytes_get: expected Bytes".into()),
+    };
+    let idx = match v1 {
+        Value::Int(n) => n as usize,
+        _ => return Err("bytes_get: expected Int for index".into()),
+    };
+    if idx >= bytes.len() {
+        return Err(format!(
+            "bytes_get: index {} out of bounds (length {})",
+            idx,
+            bytes.len()
+        ));
+    }
+    Ok(Value::Int(bytes[idx] as i64))
+}
+
+pub(crate) fn bi_bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1, v2) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
+            _ => return Err("bytes_slice: expected (Bytes, Int, Int)".into()),
+        },
+        _ => return Err("bytes_slice: expected (Bytes, Int, Int)".into()),
+    };
+    let bytes = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => b,
+            _ => return Err("bytes_slice: expected Bytes".into()),
+        },
+        _ => return Err("bytes_slice: expected Bytes".into()),
+    };
+    let start = match v1 {
+        Value::Int(n) => n as usize,
+        _ => return Err("bytes_slice: expected Int for start".into()),
+    };
+    let len = match v2 {
+        Value::Int(n) => n as usize,
+        _ => return Err("bytes_slice: expected Int for length".into()),
+    };
+    let end = (start + len).min(bytes.len());
+    let start = start.min(bytes.len());
+    Ok(Value::Heap(
+        heap.alloc(HeapObject::Bytes(bytes[start..end].to_vec())),
+    ))
+}
+
+/// HTTP request returning raw bytes body.
+pub(crate) fn bi_http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (method, url, req_headers, body) = extract_http_args(args, heap, "http_bytes")?;
+    let (status, resp_headers, mut reader) =
+        do_http_request(&method, &url, &req_headers, &body, "http_bytes", heap)?;
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut buf).map_err(|e| format!("http_bytes: {e}"))?;
+    let resp_body = Value::Heap(heap.alloc(HeapObject::Bytes(buf)));
+    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
+        status,
+        resp_headers,
+        resp_body
+    ]))))
+}
+
 /// Execute a command directly (no shell). Takes (String, String list) -> (Int, String, String).
 /// The allowed-commands check is done by the VM before calling this.
 pub(crate) fn bi_exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -1495,6 +1605,12 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("http", bi_http),
         ("http_json", bi_http_json),
         ("http_msgpack", bi_http_msgpack),
+        ("http_bytes", bi_http_bytes),
+        ("bytes_length", bi_bytes_length),
+        ("bytes_to_string", bi_bytes_to_string),
+        ("string_to_bytes", bi_string_to_bytes),
+        ("bytes_get", bi_bytes_get),
+        ("bytes_slice", bi_bytes_slice),
         ("getenv", bi_getenv),
         ("starts_with", bi_starts_with),
         ("ends_with", bi_ends_with),
