@@ -1,0 +1,36 @@
+(* run_all.hml -- Run all example scripts and report pass/fail
+ *
+ * Replaces:
+ *   for f in ...; do cargo run -- run "examples/${f}.hml" && echo OK; done
+ *)
+
+use "../stdlib/list.hml"
+
+val examples = glob "examples/*.hml"
+
+(* Skip ourselves and files that need special setup *)
+val skip = ["examples/run_all.hml", "examples/http_fetch.hml", "examples/github_api.hml",
+            "examples/file_io.hml", "examples/cycle_a.hml", "examples/cycle_b.hml",
+            "examples/double_import.hml"]
+
+fun should_skip file =
+  case filter (fn s => s = file) skip of
+      [] => false
+    | _ => true
+
+fun run_example file =
+  if should_skip file then ()
+  else let
+    val (code, stdout, stderr) = exec ("./target/release/hiko-cli", ["run", file])
+  in
+    if code = 0
+    then println ("  PASS  " ^ file)
+    else println ("  FAIL  " ^ file ^ ": " ^ trim stderr)
+  end
+
+val _ = println "Running examples..."
+val _ = map run_example examples
+
+val total = length examples
+val skipped = length (filter should_skip examples)
+val _ = println ("\n" ^ int_to_string (total - skipped) ^ " run, " ^ int_to_string skipped ^ " skipped")
