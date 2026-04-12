@@ -145,10 +145,6 @@ impl ToolRegistry {
 
         Ok(output)
     }
-
-    pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
-    }
 }
 
 /// Parse tool metadata from the first comment block in a .hml file.

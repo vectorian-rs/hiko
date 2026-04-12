@@ -12,12 +12,7 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(default = "default_true_val")]
     pub stream: bool,
-}
-
-fn default_true_val() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +70,7 @@ pub struct StreamChoice {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamDelta {
+    #[allow(dead_code)]
     pub role: Option<String>,
     pub content: Option<String>,
     pub tool_calls: Option<Vec<StreamToolCall>>,
@@ -114,7 +110,6 @@ impl StreamAccumulator {
             }
             if let Some(ref calls) = choice.delta.tool_calls {
                 for tc in calls {
-                    // Grow tool_calls vec if needed
                     while self.tool_calls.len() <= tc.index {
                         self.tool_calls.push(ToolCall {
                             id: String::new(),
@@ -151,14 +146,27 @@ impl StreamAccumulator {
 
 // ── Client ───────────────────────────────────────────────────────────
 
+/// OpenAI-compatible chat completions client with SSE streaming.
+/// Works with any provider that implements the OpenAI /chat/completions API
+/// (OpenAI, Ollama, vLLM, Together, Groq, DeepSeek, GLM, Kimi, Qwen, etc.)
 pub struct LlmClient {
     base_url: String,
     api_key: String,
+    timeout_secs: u64,
 }
 
 impl LlmClient {
     pub fn new(base_url: String, api_key: String) -> Self {
-        Self { base_url, api_key }
+        Self {
+            base_url,
+            api_key,
+            timeout_secs: 120,
+        }
+    }
+
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
+        self
     }
 
     /// Send a streaming chat completion request. Calls `on_text` for each
@@ -169,19 +177,22 @@ impl LlmClient {
         mut on_text: impl FnMut(&str),
     ) -> Result<StreamAccumulator, String> {
         let url = format!("{}/chat/completions", self.base_url);
-
         let body_str = serde_json::to_string(request).map_err(|e| e.to_string())?;
-        let response = ureq::post(&url)
+
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(self.timeout_secs)))
+                .build(),
+        );
+        let response = agent
+            .post(&url)
             .header("Authorization", &format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
-            .map_err(|e| format!("LLM request failed: {e}"))?;
-
-        let status = response.status().as_u16();
-        if status >= 400 {
-            let body = response.into_body().read_to_string().unwrap_or_default();
-            return Err(format!("LLM API error ({}): {}", status, body));
-        }
+            .map_err(|e| {
+                // ureq v3 returns Err for 4xx/5xx — extract the response body if available
+                format!("LLM request failed: {e}")
+            })?;
 
         let reader =
             std::io::BufRead::lines(std::io::BufReader::new(response.into_body().into_reader()));
@@ -190,7 +201,7 @@ impl LlmClient {
         for line in reader {
             let line = line.map_err(|e| format!("stream read error: {e}"))?;
             let line = line.trim_start();
-            if !line.starts_with("data: ") {
+            if line.is_empty() || !line.starts_with("data: ") {
                 continue;
             }
             let data = &line[6..];
@@ -200,7 +211,6 @@ impl LlmClient {
             let chunk: StreamChunk =
                 serde_json::from_str(data).map_err(|e| format!("stream parse error: {e}"))?;
 
-            // Stream text deltas to the caller
             for choice in &chunk.choices {
                 if let Some(ref content) = choice.delta.content {
                     on_text(content);

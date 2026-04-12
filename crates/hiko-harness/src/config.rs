@@ -33,8 +33,6 @@ pub struct Provider {
     pub api_url: String,
     #[serde(default)]
     pub api_key_env: String,
-    #[serde(default = "default_api_style")]
-    pub api_style: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,10 +48,6 @@ fn default_max_tokens() -> u32 {
 fn default_max_turns() -> usize {
     50
 }
-fn default_api_style() -> String {
-    "openai".into()
-}
-
 impl Config {
     /// Load config from a TOML file.
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -77,7 +71,7 @@ impl Config {
         None
     }
 
-    /// Resolve a model name (alias or direct ID) to (api_url, api_key, model_id, api_style).
+    /// Resolve a model name (alias or direct ID) to (api_url, api_key, model_id).
     pub fn resolve_model(&self, name: &str) -> Result<ResolvedModel, String> {
         // Check if it's a role name first
         let model_name = self.roles.get(name).map(|s| s.as_str()).unwrap_or(name);
@@ -114,7 +108,6 @@ pub struct ResolvedModel {
     pub api_url: String,
     pub api_key: String,
     pub model_id: String,
-    pub api_style: String,
 }
 
 impl ResolvedModel {
@@ -123,7 +116,6 @@ impl ResolvedModel {
             api_url: provider.api_url.clone(),
             api_key: resolve_api_key(&provider.api_key_env)?,
             model_id,
-            api_style: provider.api_style.clone(),
         })
     }
 }

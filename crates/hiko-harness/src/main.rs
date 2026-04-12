@@ -26,19 +26,19 @@ fn main() {
         match args[i].as_str() {
             "--model" | "-m" => {
                 i += 1;
-                model_override = args.get(i).cloned();
+                model_override = Some(require_arg(&args, i, "--model"));
             }
             "--config" | "-c" => {
                 i += 1;
-                config_path_override = args.get(i).cloned();
+                config_path_override = Some(require_arg(&args, i, "--config"));
             }
             "--tools" | "-t" => {
                 i += 1;
-                tools_dir = args.get(i).cloned().unwrap_or_default();
+                tools_dir = require_arg(&args, i, "--tools");
             }
             "--system" | "-s" => {
                 i += 1;
-                system_prompt_path = args.get(i).cloned();
+                system_prompt_path = Some(require_arg(&args, i, "--system"));
             }
             "--help" | "-h" => {
                 print_usage();
@@ -83,10 +83,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    eprintln!(
-        "Model: {} (provider: {}, style: {})",
-        resolved.model_id, model_name, resolved.api_style
-    );
+    eprintln!("Model: {} (via {})", resolved.model_id, model_name);
 
     // Get prompt
     let prompt = if prompt_parts.is_empty() {
@@ -145,6 +142,13 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn require_arg(args: &[String], i: usize, flag: &str) -> String {
+    args.get(i).cloned().unwrap_or_else(|| {
+        eprintln!("Error: {flag} requires a value");
+        std::process::exit(1);
+    })
 }
 
 fn load_default_system_prompt() -> String {

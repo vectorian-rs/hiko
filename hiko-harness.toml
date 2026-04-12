@@ -1,55 +1,43 @@
 # hiko-harness configuration
+# All providers must be OpenAI-compatible (/chat/completions API).
 
 [default]
-model = "claude-sonnet-4-20250514"
-provider = "anthropic"
+model = "gpt-4o"
+provider = "openai"
 max_tokens = 8192
 max_turns = 50
 
 # ── Providers ─────────────────────────────────────────────────────────
-
-[providers.anthropic]
-api_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-api_style = "anthropic"
+# All providers use the OpenAI chat completions API format.
+# For Anthropic Claude, use an OpenAI-compatible proxy or gateway.
 
 [providers.openai]
 api_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
-api_style = "openai"
 
 [providers.glm]
 api_url = "https://open.bigmodel.cn/api/paas/v4"
 api_key_env = "GLM_API_KEY"
-api_style = "openai"
 
 [providers.kimi]
 api_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
-api_style = "openai"
 
 [providers.qwen]
 api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "QWEN_API_KEY"
-api_style = "openai"
 
 [providers.deepseek]
 api_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
-api_style = "openai"
 
 [providers.ollama]
 api_url = "http://localhost:11434/v1"
 api_key_env = "OLLAMA_API_KEY"
-api_style = "openai"
 
 # ── Model aliases ─────────────────────────────────────────────────────
-# Map short names to provider + model ID
 
 [models]
-claude-sonnet = { provider = "anthropic", id = "claude-sonnet-4-20250514" }
-claude-opus = { provider = "anthropic", id = "claude-opus-4-20250514" }
-claude-haiku = { provider = "anthropic", id = "claude-haiku-4-5-20251001" }
 gpt-4o = { provider = "openai", id = "gpt-4o" }
 gpt-4o-mini = { provider = "openai", id = "gpt-4o-mini" }
 o3 = { provider = "openai", id = "o3" }
@@ -65,10 +53,9 @@ llama3 = { provider = "ollama", id = "llama3.1:70b" }
 qwen3-32b = { provider = "ollama", id = "qwen3:32b" }
 
 # ── Roles ─────────────────────────────────────────────────────────────
-# Assign models to roles for different tasks
 
 [roles]
-default = "claude-sonnet"
+default = "gpt-4o"
 fast = "gpt-4o-mini"
 reasoning = "o3"
 cheap = "qwen-turbo"
