@@ -152,21 +152,21 @@ impl StreamAccumulator {
 pub struct LlmClient {
     base_url: String,
     api_key: String,
-    timeout_secs: u64,
+    agent: ureq::Agent,
 }
 
 impl LlmClient {
     pub fn new(base_url: String, api_key: String) -> Self {
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(120)))
+                .build(),
+        );
         Self {
             base_url,
             api_key,
-            timeout_secs: 120,
+            agent,
         }
-    }
-
-    pub fn with_timeout(mut self, secs: u64) -> Self {
-        self.timeout_secs = secs;
-        self
     }
 
     /// Send a streaming chat completion request. Calls `on_text` for each
@@ -179,12 +179,8 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.base_url);
         let body_str = serde_json::to_string(request).map_err(|e| e.to_string())?;
 
-        let agent = ureq::Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_global(Some(std::time::Duration::from_secs(self.timeout_secs)))
-                .build(),
-        );
-        let response = agent
+        let response = self
+            .agent
             .post(&url)
             .header("Authorization", &format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
