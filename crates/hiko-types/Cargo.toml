@@ -7,4 +7,4 @@ description = "hiko-types: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
-hiko-syntax = { path = "../hiko-syntax" }
+hiko-syntax = { version = "0.3.0", path = "../hiko-syntax" }
