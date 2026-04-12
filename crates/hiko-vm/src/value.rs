@@ -2,9 +2,10 @@ use smallvec::SmallVec;
 use std::fmt;
 use std::rc::Rc;
 
-/// Inline storage for up to 4 Values (64 bytes) without heap allocation.
-/// Covers tuples, data constructor fields, and cons cells.
-pub type Fields = SmallVec<[Value; 4]>;
+/// Inline storage for up to 2 Values (32 bytes) without heap allocation.
+/// Covers cons cells (2 fields), pairs, and nullary/unary constructors.
+/// Larger tuples spill to heap transparently.
+pub type Fields = SmallVec<[Value; 2]>;
 
 /// Index into the GC heap. Copy, 4 bytes, no Drop.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

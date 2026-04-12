@@ -1025,6 +1025,17 @@ pub(crate) fn bi_json_length(args: &[Value], heap: &mut Heap) -> Result<Value, S
     Ok(Value::Int(len as i64))
 }
 
+/// Extract a string argument from args[0].
+fn extract_string_arg(args: &[Value], heap: &Heap, name: &str) -> Result<String, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => Ok(s.clone()),
+            _ => Err(format!("{name}: expected String")),
+        },
+        _ => Err(format!("{name}: expected String")),
+    }
+}
+
 /// Collect headers from an http::HeaderMap into a hiko list of (String, String) tuples.
 fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value {
     let mut header_values: Vec<Value> = Vec::new();
@@ -1038,13 +1049,7 @@ fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value
 }
 
 pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let url = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("http_get: expected String".into()),
-        },
-        _ => return Err("http_get: expected String".into()),
-    };
+    let url = extract_string_arg(args, heap, "http_get")?;
     let response = ureq::get(&url)
         .call()
         .map_err(|e| format!("http_get: {e}"))?;
@@ -1066,13 +1071,7 @@ pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
 
 /// HTTP GET returning parsed JSON body. Takes String -> (Int, (String * String) list, json).
 pub(crate) fn bi_http_get_json(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let url = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("http_get_json: expected String".into()),
-        },
-        _ => return Err("http_get_json: expected String".into()),
-    };
+    let url = extract_string_arg(args, heap, "http_get_json")?;
     let response = ureq::get(&url)
         .call()
         .map_err(|e| format!("http_get_json: {e}"))?;
@@ -1095,13 +1094,7 @@ pub(crate) fn bi_http_get_json(args: &[Value], heap: &mut Heap) -> Result<Value,
 
 /// HTTP GET returning msgpack-decoded body as json. Takes String -> (Int, (String * String) list, json).
 pub(crate) fn bi_http_get_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let url = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("http_get_msgpack: expected String".into()),
-        },
-        _ => return Err("http_get_msgpack: expected String".into()),
-    };
+    let url = extract_string_arg(args, heap, "http_get_msgpack")?;
     let response = ureq::get(&url)
         .call()
         .map_err(|e| format!("http_get_msgpack: {e}"))?;
@@ -1109,11 +1102,8 @@ pub(crate) fn bi_http_get_msgpack(args: &[Value], heap: &mut Heap) -> Result<Val
     let status = Value::Int(response.status().as_u16() as i64);
     let headers = collect_headers(response.headers(), heap);
 
-    let mut body_bytes = Vec::new();
-    std::io::Read::read_to_end(&mut response.into_body().into_reader(), &mut body_bytes)
+    let parsed: serde_json::Value = rmp_serde::from_read(response.into_body().into_reader())
         .map_err(|e| format!("http_get_msgpack: {e}"))?;
-    let parsed: serde_json::Value =
-        rmp_serde::from_slice(&body_bytes).map_err(|e| format!("http_get_msgpack: {e}"))?;
     let body = json_to_hiko(&parsed, heap);
 
     Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
