@@ -34,6 +34,9 @@ impl Type {
     pub fn bytes() -> Type {
         Type::Con("Bytes".into())
     }
+    pub fn rng() -> Type {
+        Type::Con("Rng".into())
+    }
     pub fn unit() -> Type {
         Type::Con("Unit".into())
     }

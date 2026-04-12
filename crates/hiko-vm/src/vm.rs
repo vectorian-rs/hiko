@@ -271,6 +271,7 @@ impl VM {
                     }
                 }
                 Ok(HeapObject::Bytes(b)) => format!("<bytes:{}>", b.len()),
+                Ok(HeapObject::Rng { .. }) => "<rng>".to_string(),
                 Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),
                 Ok(HeapObject::Continuation { .. }) => "<continuation>".to_string(),
                 Err(_) => "<dangling ref>".to_string(),

@@ -1,0 +1,26 @@
+(* rng_demo.hml -- Deterministic random number generation *)
+
+(* Seed from bytes *)
+val r0 = rng_seed (string_to_bytes "hello world")
+
+(* Generate random integers 0-99 *)
+val (a, r1) = rng_int (r0, 100)
+val (b, r2) = rng_int (r1, 100)
+val (c, r3) = rng_int (r2, 100)
+
+val _ = println ("Random ints: " ^ int_to_string a ^ ", " ^ int_to_string b ^ ", " ^ int_to_string c)
+
+(* Same seed => same sequence *)
+val r0b = rng_seed (string_to_bytes "hello world")
+val (a2, _) = rng_int (r0b, 100)
+val _ = assert (a = a2, "same seed produces same value")
+val _ = println "Determinism check passed"
+
+(* Generate random bytes *)
+val (random_bytes, r4) = rng_bytes (r3, 8)
+val _ = println ("Random bytes length: " ^ int_to_string (bytes_length random_bytes))
+
+(* Different seed => different sequence *)
+val r_other = rng_seed (string_to_bytes "different seed")
+val (d, _) = rng_int (r_other, 100)
+val _ = println ("Different seed: " ^ int_to_string d)

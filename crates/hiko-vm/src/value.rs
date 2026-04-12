@@ -37,6 +37,11 @@ pub enum HeapObject {
         captures: Rc<[Value]>,
     },
     Bytes(Vec<u8>),
+    /// Opaque RNG state (PCG-XSH-RR-64/32).
+    Rng {
+        state: u64,
+        inc: u64,
+    },
     Continuation {
         saved_frames: Vec<SavedFrame>,
         saved_stack: Vec<Value>,
@@ -62,7 +67,7 @@ impl HeapObject {
             }
         };
         match self {
-            HeapObject::String(_) | HeapObject::Bytes(_) => {}
+            HeapObject::String(_) | HeapObject::Bytes(_) | HeapObject::Rng { .. } => {}
             HeapObject::Tuple(elems) => visit(elems, &mut f),
             HeapObject::Data { fields, .. } => visit(fields, &mut f),
             HeapObject::Closure { captures, .. } => visit(captures, &mut f),

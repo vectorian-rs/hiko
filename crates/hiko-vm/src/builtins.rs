@@ -1232,6 +1232,112 @@ pub(crate) fn bi_http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, 
     ]))))
 }
 
+// ── RNG builtins (PCG-XSH-RR-64/32) ─────────────────────────────────
+
+fn pcg_next(state: u64, inc: u64) -> (u32, u64) {
+    let old_state = state;
+    let new_state = old_state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(inc);
+    let xorshifted = (((old_state >> 18) ^ old_state) >> 27) as u32;
+    let rot = (old_state >> 59) as u32;
+    (xorshifted.rotate_right(rot), new_state)
+}
+
+/// rng_seed : Bytes -> rng
+pub(crate) fn bi_rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let seed_bytes = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => b.clone(),
+            _ => return Err("rng_seed: expected Bytes".into()),
+        },
+        _ => return Err("rng_seed: expected Bytes".into()),
+    };
+    let mut state: u64 = 0;
+    let mut inc: u64 = 1;
+    for (i, &b) in seed_bytes.iter().enumerate() {
+        if i % 2 == 0 {
+            state = state.wrapping_mul(31).wrapping_add(b as u64);
+        } else {
+            inc = inc.wrapping_mul(37).wrapping_add(b as u64);
+        }
+    }
+    inc |= 1; // PCG requires odd increment
+    let (_, state) = pcg_next(state, inc);
+    let (_, state) = pcg_next(state, inc);
+    Ok(Value::Heap(heap.alloc(HeapObject::Rng { state, inc })))
+}
+
+/// rng_bytes : (rng, Int) -> (Bytes, rng)
+pub(crate) fn bi_rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("rng_bytes: expected (rng, Int)".into()),
+        },
+        _ => return Err("rng_bytes: expected (rng, Int)".into()),
+    };
+    let (mut state, inc) = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::Rng { state, inc } => (*state, *inc),
+            _ => return Err("rng_bytes: expected rng".into()),
+        },
+        _ => return Err("rng_bytes: expected rng".into()),
+    };
+    let n = match v1 {
+        Value::Int(n) if n >= 0 => n as usize,
+        _ => return Err("rng_bytes: expected non-negative Int".into()),
+    };
+    let mut output = Vec::with_capacity(n);
+    while output.len() < n {
+        let (word, new_state) = pcg_next(state, inc);
+        state = new_state;
+        for &b in &word.to_le_bytes() {
+            if output.len() >= n {
+                break;
+            }
+            output.push(b);
+        }
+    }
+    let bytes_val = Value::Heap(heap.alloc(HeapObject::Bytes(output)));
+    let rng_val = Value::Heap(heap.alloc(HeapObject::Rng { state, inc }));
+    Ok(Value::Heap(
+        heap.alloc(HeapObject::Tuple(smallvec![bytes_val, rng_val])),
+    ))
+}
+
+/// rng_int : (rng, Int) -> (Int, rng)
+pub(crate) fn bi_rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("rng_int: expected (rng, Int)".into()),
+        },
+        _ => return Err("rng_int: expected (rng, Int)".into()),
+    };
+    let (state, inc) = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::Rng { state, inc } => (*state, *inc),
+            _ => return Err("rng_int: expected rng".into()),
+        },
+        _ => return Err("rng_int: expected rng".into()),
+    };
+    let bound = match v1 {
+        Value::Int(n) if n > 0 => n,
+        _ => return Err("rng_int: bound must be positive".into()),
+    };
+    let (word, new_state) = pcg_next(state, inc);
+    let value = (word as i64).abs() % bound;
+    let rng_val = Value::Heap(heap.alloc(HeapObject::Rng {
+        state: new_state,
+        inc,
+    }));
+    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
+        Value::Int(value),
+        rng_val
+    ]))))
+}
+
 // ── Bytes builtins ───────────────────────────────────────────────────
 
 pub(crate) fn bi_bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -1611,6 +1717,9 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("string_to_bytes", bi_string_to_bytes),
         ("bytes_get", bi_bytes_get),
         ("bytes_slice", bi_bytes_slice),
+        ("rng_seed", bi_rng_seed),
+        ("rng_bytes", bi_rng_bytes),
+        ("rng_int", bi_rng_int),
         ("getenv", bi_getenv),
         ("starts_with", bi_starts_with),
         ("ends_with", bi_ends_with),

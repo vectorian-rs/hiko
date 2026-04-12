@@ -251,6 +251,22 @@ impl InferCtx {
                     Type::bytes(),
                 ),
             ),
+            // RNG
+            ("rng_seed", Type::arrow(Type::bytes(), Type::rng())),
+            (
+                "rng_bytes",
+                Type::arrow(
+                    Type::Tuple(vec![Type::rng(), Type::int()]),
+                    Type::Tuple(vec![Type::bytes(), Type::rng()]),
+                ),
+            ),
+            (
+                "rng_int",
+                Type::arrow(
+                    Type::Tuple(vec![Type::rng(), Type::int()]),
+                    Type::Tuple(vec![Type::int(), Type::rng()]),
+                ),
+            ),
             // Hashline read
             (
                 "read_file_tagged",
