@@ -6,23 +6,24 @@ use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 
+use crate::io_backend::{IoBackend, IoToken, MockIoBackend};
 use crate::process::{BlockReason, Pid, Process, ProcessStatus};
 use crate::runtime_ops::{
-    self, ChildState, check_child_state, create_child_vm, deliver_message,
-    deliver_result_to_parent, prepare_delivery,
+    ChildState, check_child_state, create_child_vm, deliver_message, deliver_result_to_parent,
+    prepare_delivery,
 };
 use crate::scheduler::{FifoScheduler, Scheduler};
-use crate::sendable::SendableValue;
+use crate::sendable::{SendableValue, deserialize};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
 
 /// Thread-safe process table using DashMap for fine-grained locking.
-/// Each entry is independently lockable — workers accessing different
-/// processes don't block each other.
 struct ProcessTable {
     processes: DashMap<Pid, Process>,
     waiters: Mutex<HashMap<Pid, Vec<Pid>>>,
+    /// Map from IoToken to the process waiting for that I/O.
+    io_waiters: Mutex<HashMap<IoToken, Pid>>,
 }
 
 impl ProcessTable {
@@ -30,6 +31,7 @@ impl ProcessTable {
         Self {
             processes: DashMap::new(),
             waiters: Mutex::new(HashMap::new()),
+            io_waiters: Mutex::new(HashMap::new()),
         }
     }
 
@@ -70,8 +72,10 @@ impl ProcessTable {
 /// Multi-threaded hiko runtime.
 pub struct ThreadedRuntime {
     next_pid: Arc<AtomicU64>,
+    next_io_token: Arc<AtomicU64>,
     table: Arc<ProcessTable>,
     scheduler: Arc<dyn Scheduler>,
+    io_backend: Arc<dyn IoBackend>,
     num_workers: usize,
 }
 
@@ -79,10 +83,17 @@ impl ThreadedRuntime {
     pub fn new(num_workers: usize) -> Self {
         Self {
             next_pid: Arc::new(AtomicU64::new(1)),
+            next_io_token: Arc::new(AtomicU64::new(1)),
             table: Arc::new(ProcessTable::new()),
             scheduler: Arc::new(FifoScheduler::new(1000)),
+            io_backend: Arc::new(MockIoBackend::new()),
             num_workers,
         }
+    }
+
+    pub fn with_io_backend(mut self, backend: Arc<dyn IoBackend>) -> Self {
+        self.io_backend = backend;
+        self
     }
 
     fn new_pid(&self) -> Pid {
@@ -105,19 +116,54 @@ impl ThreadedRuntime {
                 let table = Arc::clone(&self.table);
                 let scheduler = Arc::clone(&self.scheduler);
                 let next_pid = Arc::clone(&self.next_pid);
+                let next_io_token = Arc::clone(&self.next_io_token);
+                let io_backend = Arc::clone(&self.io_backend);
 
                 std::thread::spawn(move || {
-                    worker_loop(&table, &*scheduler, &next_pid);
+                    worker_loop(&table, &*scheduler, &next_pid, &next_io_token, &*io_backend);
                 })
             })
             .collect();
 
-        // Monitor: wait for all processes to complete, then signal shutdown
+        // Monitor: poll I/O completions and check for termination
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1));
+
+            // Poll I/O backend for completed operations
+            let completions = self.io_backend.poll();
+            for (token, result) in completions {
+                let io_waiters = self.table.io_waiters.lock().unwrap();
+                if let Some(&pid) = io_waiters.get(&token) {
+                    drop(io_waiters);
+                    // Deliver I/O result to the blocked process
+                    if let Some(mut process) = self.table.processes.get_mut(&pid) {
+                        let val = match result {
+                            crate::io_backend::IoResult::Ok(sv) => {
+                                deliver_message(&mut process.vm, sv);
+                                true
+                            }
+                            crate::io_backend::IoResult::Err(msg) => {
+                                process.status = ProcessStatus::Failed(format!("I/O error: {msg}"));
+                                false
+                            }
+                        };
+                        if val {
+                            process.status = ProcessStatus::Runnable;
+                            drop(process);
+                            self.scheduler.enqueue(pid);
+                        }
+                    }
+                    self.table.io_waiters.lock().unwrap().remove(&token);
+                }
+            }
+
             if self.table.is_all_done_or_blocked() {
-                self.scheduler.shutdown();
-                break;
+                // Check if any are blocked on I/O — if so, keep polling
+                let has_io_waiters = !self.table.io_waiters.lock().unwrap().is_empty();
+                if !has_io_waiters {
+                    self.scheduler.shutdown();
+                    break;
+                }
             }
         }
 
@@ -129,7 +175,13 @@ impl ThreadedRuntime {
     }
 }
 
-fn worker_loop(table: &ProcessTable, scheduler: &dyn Scheduler, next_pid: &AtomicU64) {
+fn worker_loop(
+    table: &ProcessTable,
+    scheduler: &dyn Scheduler,
+    next_pid: &AtomicU64,
+    next_io_token: &AtomicU64,
+    io_backend: &dyn IoBackend,
+) {
     loop {
         let pid = match scheduler.dequeue() {
             Some(pid) => pid,
@@ -186,6 +238,14 @@ fn worker_loop(table: &ProcessTable, scheduler: &dyn Scheduler, next_pid: &Atomi
             }
             RunResult::Receive => {
                 handle_receive(table, scheduler, process);
+            }
+            RunResult::Io(request) => {
+                // Register I/O with backend, block process
+                let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
+                process.status = ProcessStatus::Blocked(BlockReason::Io(token));
+                table.return_process(process);
+                table.io_waiters.lock().unwrap().insert(token, pid);
+                io_backend.register(token, request);
             }
         }
     }
