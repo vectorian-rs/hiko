@@ -14,6 +14,14 @@ const MAX_FRAMES: usize = 65536;
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
 
+/// Outcome of a run_slice call.
+#[derive(Debug, PartialEq)]
+pub enum RunResult {
+    Done,
+    Yielded,
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct RuntimeError {
     pub message: String,
@@ -307,6 +315,33 @@ impl VM {
             captures: Rc::from([]),
         });
         self.dispatch()
+    }
+
+    /// Run for up to `reductions` opcodes, then yield.
+    /// Returns the outcome: Done, Yielded, or Failed.
+    pub fn run_slice(&mut self, reductions: u64) -> RunResult {
+        // Set fuel for this slice
+        let prev_fuel = self.fuel;
+        self.fuel = Some(reductions);
+
+        // If no frames, this is a fresh start — push the main frame
+        if self.frames.is_empty() {
+            self.frames.push(CallFrame {
+                proto_idx: usize::MAX,
+                ip: 0,
+                base: 0,
+                captures: Rc::from([]),
+            });
+        }
+
+        let result = self.dispatch();
+        self.fuel = prev_fuel;
+
+        match result {
+            Ok(()) => RunResult::Done,
+            Err(e) if e.is_fuel_exhausted() => RunResult::Yielded,
+            Err(e) => RunResult::Failed(e.message),
+        }
     }
 
     pub fn get_global(&self, name: &str) -> Option<&Value> {
