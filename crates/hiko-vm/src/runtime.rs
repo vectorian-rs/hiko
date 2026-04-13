@@ -4,12 +4,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BlockReason, Pid, Process, ProcessStatus};
-use crate::runtime_ops::{
-    ChildState, check_child_state, create_child_vm, deliver_message, deliver_result_to_parent,
-    prepare_delivery,
-};
+use crate::runtime_ops::create_child_vm;
 use crate::scheduler::{FifoScheduler, Scheduler};
-use crate::sendable::{self, SendableValue, deserialize, serialize};
+use crate::sendable::{SendableValue, deserialize, serialize};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
@@ -452,7 +449,6 @@ mod tests {
         assert_eq!(output, vec!["30\n"]);
     }
 
-    #[test]
     #[test]
     fn test_send_receive_basic() {
         // Child receives a message and returns it
