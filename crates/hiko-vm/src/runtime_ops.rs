@@ -64,6 +64,35 @@ pub fn create_child_vm(
     child_vm
 }
 
+// ── I/O Result construction ──────────────────────────────────────────
+// Matches stdlib/io.hml: datatype io_result = IoOk of String | IoErr of String
+// IoOk = tag 0, IoErr = tag 1
+
+const TAG_IO_OK: u16 = 0;
+const TAG_IO_ERR: u16 = 1;
+
+/// Construct an IoOk(value) in the given VM's heap.
+pub fn make_io_ok(vm: &mut VM, value: Value) -> Value {
+    use smallvec::smallvec;
+    Value::Heap(vm.heap.alloc(crate::value::HeapObject::Data {
+        tag: TAG_IO_OK,
+        fields: smallvec![value],
+    }))
+}
+
+/// Construct an IoErr(message) in the given VM's heap.
+pub fn make_io_err(vm: &mut VM, message: &str) -> Value {
+    use smallvec::smallvec;
+    let msg = Value::Heap(
+        vm.heap
+            .alloc(crate::value::HeapObject::String(message.to_string())),
+    );
+    Value::Heap(vm.heap.alloc(crate::value::HeapObject::Data {
+        tag: TAG_IO_ERR,
+        fields: smallvec![msg],
+    }))
+}
+
 /// Serialize the result value from a finished process.
 pub fn serialize_result(vm: &VM) -> SendableValue {
     let val = vm.stack.last().copied().unwrap_or(Value::Unit);

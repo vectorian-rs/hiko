@@ -108,6 +108,8 @@ pub struct VM {
     pending_runtime_request: Option<RuntimeRequest>,
     /// Effect tags handled by the runtime (I/O effects).
     runtime_effect_tags: std::collections::HashSet<u16>,
+    /// Effect metadata from compiled program (name → tag).
+    effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
     /// Saved continuation when blocked on runtime I/O. GC root.
     pub blocked_continuation: Option<GcRef>,
 }
@@ -205,6 +207,7 @@ impl VM {
             frames: Vec::new(),
             globals: Vec::new(),
             global_names: HashMap::new(),
+            effect_metadata: program.effects.clone(),
             protos: program.functions,
             main_chunk: program.main,
             output: Vec::new(),
@@ -275,7 +278,16 @@ impl VM {
         CompiledProgram {
             main: self.main_chunk.clone(),
             functions: self.protos.clone(),
+            effects: self.effect_metadata.clone(),
         }
+    }
+
+    /// Look up an effect tag by name from compiled metadata.
+    pub fn effect_tag_by_name(&self, name: &str) -> Option<u16> {
+        self.effect_metadata
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.tag)
     }
 
     /// Set the allowed commands for the exec builtin.
@@ -359,7 +371,8 @@ impl VM {
                 Value::Heap(r) => Some(*r),
                 _ => None,
             })
-            .chain(self.string_cache.values().copied());
+            .chain(self.string_cache.values().copied())
+            .chain(self.blocked_continuation.iter().copied());
         self.heap.collect(roots);
     }
 

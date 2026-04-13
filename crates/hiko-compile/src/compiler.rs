@@ -150,6 +150,11 @@ impl Compiler {
             CompiledProgram {
                 main: main.chunk,
                 functions: c.functions,
+                effects: c
+                    .effect_tags
+                    .into_iter()
+                    .map(|(name, tag)| crate::chunk::EffectMeta { name, tag })
+                    .collect(),
             },
             warnings,
         ))

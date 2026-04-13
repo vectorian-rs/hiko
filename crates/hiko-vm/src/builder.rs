@@ -107,8 +107,8 @@ impl VMBuilder {
             "string_join",
             "spawn",
             "await_process",
-            "send_message",
-            "receive_message",
+            // send_message and receive_message removed from user model (v1)
+            // structured concurrency via spawn/await only
             "panic",
             "assert",
             "assert_eq",

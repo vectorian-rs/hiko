@@ -136,26 +136,25 @@ impl ThreadedRuntime {
                 if let Some(&pid) = io_waiters.get(&token) {
                     drop(io_waiters);
                     if let Some(mut process) = self.table.processes.get_mut(&pid) {
-                        match result {
+                        // Construct IoOk or IoErr for effect-based I/O
+                        let resume_val = match result {
                             crate::io_backend::IoResult::Ok(sv) => {
-                                // Deserialize result into process heap
                                 let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
-                                // If process has a blocked continuation (effect-based I/O),
-                                // resume it. Otherwise use deliver_message (builtin I/O).
-                                if process.vm.blocked_continuation.is_some() {
-                                    process.vm.resume_blocked(val);
-                                } else {
-                                    process.vm.stack.pop(); // remove placeholder
-                                    process.vm.push_value(val);
-                                }
-                                process.status = ProcessStatus::Runnable;
-                                drop(process);
-                                self.scheduler.enqueue(pid);
+                                crate::runtime_ops::make_io_ok(&mut process.vm, val)
                             }
                             crate::io_backend::IoResult::Err(msg) => {
-                                process.status = ProcessStatus::Failed(format!("I/O error: {msg}"));
+                                crate::runtime_ops::make_io_err(&mut process.vm, &msg)
                             }
+                        };
+                        if process.vm.blocked_continuation.is_some() {
+                            process.vm.resume_blocked(resume_val);
+                        } else {
+                            process.vm.stack.pop();
+                            process.vm.push_value(resume_val);
                         }
+                        process.status = ProcessStatus::Runnable;
+                        drop(process);
+                        self.scheduler.enqueue(pid);
                     }
                     self.table.io_waiters.lock().unwrap().remove(&token);
                 }
