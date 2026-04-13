@@ -16,6 +16,8 @@ pub enum BlockReason {
     Receive,
     /// Waiting for a child process to complete.
     Await(Pid),
+    /// Waiting for an I/O operation to complete.
+    Io(crate::io_backend::IoToken),
 }
 
 /// Process lifecycle status.

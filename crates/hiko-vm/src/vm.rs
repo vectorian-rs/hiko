@@ -38,6 +38,8 @@ pub enum RunResult {
     },
     /// Process requested to receive a message.
     Receive,
+    /// Process requested an async I/O operation.
+    Io(crate::io_backend::IoRequest),
 }
 
 #[derive(Debug)]
@@ -113,6 +115,7 @@ pub enum RuntimeRequest {
         value: crate::sendable::SendableValue,
     },
     Receive,
+    Io(crate::io_backend::IoRequest),
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -446,6 +449,7 @@ impl VM {
                 RuntimeRequest::Await(pid) => RunResult::Await(pid),
                 RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
                 RuntimeRequest::Receive => RunResult::Receive,
+                RuntimeRequest::Io(req) => RunResult::Io(req),
             };
         }
 

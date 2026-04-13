@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod builtins;
 pub mod heap;
+pub mod io_backend;
 pub mod policy;
 pub mod process;
 pub mod runtime;
