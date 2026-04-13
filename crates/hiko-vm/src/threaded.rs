@@ -4,82 +4,66 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use dashmap::DashMap;
+
 use crate::process::{BlockReason, Pid, Process, ProcessStatus};
+use crate::runtime_ops::{
+    self, ChildState, check_child_state, create_child_vm, deliver_message,
+    deliver_result_to_parent, prepare_delivery,
+};
 use crate::scheduler::{FifoScheduler, Scheduler};
-use crate::sendable::{SendableValue, deserialize, serialize};
+use crate::sendable::{SendableValue, serialize};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
 
-/// Thread-safe process table.
+/// Thread-safe process table using DashMap for fine-grained locking.
+/// Each entry is independently lockable — workers accessing different
+/// processes don't block each other.
 struct ProcessTable {
-    processes: Mutex<HashMap<Pid, Process>>,
+    processes: DashMap<Pid, Process>,
     waiters: Mutex<HashMap<Pid, Vec<Pid>>>,
 }
 
 impl ProcessTable {
     fn new() -> Self {
         Self {
-            processes: Mutex::new(HashMap::new()),
+            processes: DashMap::new(),
             waiters: Mutex::new(HashMap::new()),
         }
     }
 
     fn insert(&self, process: Process) {
-        self.processes.lock().unwrap().insert(process.pid, process);
+        self.processes.insert(process.pid, process);
     }
 
-    /// Take a process out of the table for exclusive execution.
     fn take(&self, pid: Pid) -> Option<Process> {
-        self.processes.lock().unwrap().remove(&pid)
+        self.processes.remove(&pid).map(|(_, p)| p)
     }
 
-    /// Return a process to the table after execution.
     fn return_process(&self, process: Process) {
-        self.processes.lock().unwrap().insert(process.pid, process);
-    }
-
-    /// Get a process's status.
-    fn get_status(&self, pid: Pid) -> Option<String> {
-        self.processes
-            .lock()
-            .unwrap()
-            .get(&pid)
-            .map(|p| match &p.status {
-                ProcessStatus::Done => "done".into(),
-                ProcessStatus::Failed(m) => format!("failed:{m}"),
-                ProcessStatus::Runnable => "runnable".into(),
-                ProcessStatus::Blocked(_) => "blocked".into(),
-            })
-    }
-
-    fn get_parent(&self, pid: Pid) -> Option<Option<Pid>> {
-        self.processes.lock().unwrap().get(&pid).map(|p| p.parent)
+        self.processes.insert(process.pid, process);
     }
 
     fn get_output(&self, pid: Pid) -> Vec<String> {
         self.processes
-            .lock()
-            .unwrap()
             .get(&pid)
             .map(|p| p.vm.get_output().to_vec())
             .unwrap_or_default()
     }
 
     fn all_outputs(&self) -> Vec<String> {
-        let procs = self.processes.lock().unwrap();
         let mut out = Vec::new();
-        for p in procs.values() {
-            out.extend(p.vm.get_output().iter().cloned());
+        for entry in self.processes.iter() {
+            out.extend(entry.value().vm.get_output().iter().cloned());
         }
         out
     }
 
     fn is_all_done_or_blocked(&self) -> bool {
-        let procs = self.processes.lock().unwrap();
-        procs
-            .values()
-            .all(|p| p.is_done() || matches!(p.status, ProcessStatus::Blocked(_)))
+        self.processes
+            .iter()
+            .all(|e| e.is_done() || matches!(e.status, ProcessStatus::Blocked(_)))
     }
 }
 
@@ -147,15 +131,12 @@ impl ThreadedRuntime {
 
 fn worker_loop(table: &ProcessTable, scheduler: &dyn Scheduler, next_pid: &AtomicU64) {
     loop {
-        // Block until work is available or shutdown
         let pid = match scheduler.dequeue() {
             Some(pid) => pid,
-            None => return, // shutdown signaled
+            None => return,
         };
 
         let reductions = scheduler.reductions(pid);
-
-        // Take the process out for exclusive access
         let mut process = match table.take(pid) {
             Some(p) => p,
             None => continue,
@@ -186,17 +167,11 @@ fn worker_loop(table: &ProcessTable, scheduler: &dyn Scheduler, next_pid: &Atomi
             } => {
                 let child_pid = Pid(next_pid.fetch_add(1, Ordering::Relaxed));
                 let program = process.vm.get_program();
-                let mut child_vm = VM::new(program);
-                let child_captures: Vec<Value> = captures
-                    .into_iter()
-                    .map(|v| deserialize(v, &mut child_vm.heap))
-                    .collect();
-                child_vm.setup_closure_call(proto_idx, &child_captures);
+                let child_vm = create_child_vm(program, proto_idx, captures);
                 let child = Process::new(child_pid, child_vm, Some(pid));
                 table.insert(child);
                 scheduler.enqueue(child_pid);
 
-                // Resume parent with child pid
                 process.vm.stack.pop();
                 process.vm.push_value(Value::Int(child_pid.0 as i64));
                 table.return_process(process);
@@ -224,27 +199,18 @@ fn handle_await(
 ) {
     let parent_pid = parent.pid;
 
-    enum ChildState {
-        Done(SendableValue),
-        Failed(String),
-        Running,
-        NotFound,
-        NotChild,
-    }
-
     let child_state = {
-        let procs = table.processes.lock().unwrap();
-        match procs.get(&child_pid) {
+        match table.processes.get(&child_pid) {
             None => ChildState::NotFound,
-            Some(c) if c.parent != Some(parent_pid) => ChildState::NotChild,
-            Some(c) => match &c.status {
-                ProcessStatus::Done => {
-                    let val = c.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    ChildState::Done(serialize(val, &c.vm.heap).unwrap_or(SendableValue::Unit))
-                }
-                ProcessStatus::Failed(msg) => ChildState::Failed(msg.clone()),
-                _ => ChildState::Running,
-            },
+            Some(entry) => {
+                let c = entry.value();
+                check_child_state(
+                    Some((&c.status, c.parent)),
+                    parent_pid,
+                    c.vm.stack.last().copied(),
+                    Some(&c.vm.heap),
+                )
+            }
         }
     };
 
@@ -262,9 +228,7 @@ fn handle_await(
             table.return_process(parent);
         }
         ChildState::Done(sendable) => {
-            parent.vm.stack.pop();
-            let val = deserialize(sendable, &mut parent.vm.heap);
-            parent.vm.push_value(val);
+            deliver_result_to_parent(&mut parent.vm, sendable);
             table.return_process(parent);
             scheduler.enqueue(parent_pid);
         }
@@ -273,7 +237,6 @@ fn handle_await(
             table.return_process(parent);
         }
         ChildState::Running => {
-            // Child still running — block parent
             parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
             table.return_process(parent);
             table
@@ -295,28 +258,38 @@ fn handle_send(
     value: SendableValue,
 ) {
     let sender_pid = sender.pid;
-    let mut procs = table.processes.lock().unwrap();
 
-    match procs.get_mut(&target_pid) {
-        Some(target) => {
+    // Self-send: put message in own mailbox
+    if target_pid == sender_pid {
+        sender.mailbox.push_back(value);
+        table.return_process(sender);
+        scheduler.enqueue(sender_pid);
+        return;
+    }
+
+    // Return sender first so the table has it
+    table.return_process(sender);
+
+    match table.processes.get_mut(&target_pid) {
+        Some(mut target) => {
             if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
                 target.status = ProcessStatus::Runnable;
-                target.vm.stack.pop();
-                let val = deserialize(value, &mut target.vm.heap);
-                target.vm.push_value(val);
+                deliver_message(&mut target.vm, value);
+                drop(target);
                 scheduler.enqueue(target_pid);
             } else {
                 target.mailbox.push_back(value);
             }
-            drop(procs);
-            table.return_process(sender);
             scheduler.enqueue(sender_pid);
         }
         None => {
-            drop(procs);
-            sender.status =
-                ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
-            table.return_process(sender);
+            // Target doesn't exist — fail sender
+            if let Some(mut sender) = table.processes.get_mut(&sender_pid) {
+                sender.status = ProcessStatus::Failed(format!(
+                    "send_message: unknown process {:?}",
+                    target_pid
+                ));
+            }
         }
     }
 }
@@ -324,9 +297,7 @@ fn handle_send(
 fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: Process) {
     let pid = process.pid;
     if let Some(msg) = process.mailbox.pop_front() {
-        process.vm.stack.pop();
-        let val = deserialize(msg, &mut process.vm.heap);
-        process.vm.push_value(val);
+        deliver_message(&mut process.vm, msg);
         table.return_process(process);
         scheduler.enqueue(pid);
     } else {
@@ -342,30 +313,23 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
         None => return,
     };
 
-    // Serialize result once
-    let delivery = {
-        let procs = table.processes.lock().unwrap();
-        let child = &procs[&finished_pid];
-        match &child.status {
-            ProcessStatus::Done => {
-                let val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
-                Ok(serialize(val, &child.vm.heap).unwrap_or(SendableValue::Unit))
-            }
-            ProcessStatus::Failed(msg) => Err(msg.clone()),
-            _ => Err("child not finished".into()),
-        }
+    let delivery = table
+        .processes
+        .get(&finished_pid)
+        .map(|p| prepare_delivery(&p.status, &p.vm));
+
+    let delivery = match delivery {
+        Some(d) => d,
+        None => return,
     };
 
     for waiter_pid in waiter_pids {
-        let mut procs = table.processes.lock().unwrap();
-        if let Some(waiter) = procs.get_mut(&waiter_pid) {
+        if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
             match &delivery {
                 Ok(sendable) => {
-                    waiter.vm.stack.pop();
-                    let val = deserialize(sendable.clone(), &mut waiter.vm.heap);
-                    waiter.vm.push_value(val);
+                    deliver_result_to_parent(&mut waiter.vm, sendable.clone());
                     waiter.status = ProcessStatus::Runnable;
-                    drop(procs);
+                    drop(waiter);
                     scheduler.enqueue(waiter_pid);
                 }
                 Err(msg) => {
@@ -416,7 +380,6 @@ mod tests {
 
     #[test]
     fn test_threaded_many_processes() {
-        // Spawn 10 children that each compute a value
         let program = compile(
             "fun make n = spawn (fn () => n * 2)\n\
              val c1 = make 1\n\

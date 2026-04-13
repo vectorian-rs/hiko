@@ -4,8 +4,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BlockReason, Pid, Process, ProcessStatus};
+use crate::runtime_ops::{
+    ChildState, check_child_state, create_child_vm, deliver_message, deliver_result_to_parent,
+    prepare_delivery,
+};
 use crate::scheduler::{FifoScheduler, Scheduler};
-use crate::sendable::{deserialize, serialize};
+use crate::sendable::{self, SendableValue, deserialize, serialize};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
@@ -127,27 +131,12 @@ impl Runtime {
         &mut self,
         parent_pid: Pid,
         proto_idx: usize,
-        captures: Vec<crate::sendable::SendableValue>,
+        captures: Vec<SendableValue>,
     ) -> Pid {
         let child_pid = self.new_pid();
-
-        // Clone the parent's compiled program for the child
         let parent = self.processes.get(&parent_pid).unwrap();
         let program = parent.vm.get_program();
-
-        // Create a child VM with all builtins
-        let mut child_vm = VM::new(program);
-
-        // Deserialize captures into child's heap
-        let child_captures: Vec<Value> = captures
-            .into_iter()
-            .map(|v| deserialize(v, &mut child_vm.heap))
-            .collect();
-
-        // Set up the child VM to execute the closure's prototype
-        // The closure takes Unit as argument (fn () => ...)
-        child_vm.setup_closure_call(proto_idx, &child_captures);
-
+        let child_vm = create_child_vm(program, proto_idx, captures);
         let child = Process::new(child_pid, child_vm, Some(parent_pid));
         self.processes.insert(child_pid, child);
         self.scheduler.enqueue(child_pid);

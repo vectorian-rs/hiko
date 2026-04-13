@@ -4,6 +4,7 @@ pub mod heap;
 pub mod policy;
 pub mod process;
 pub mod runtime;
+pub mod runtime_ops;
 pub mod scheduler;
 pub mod sendable;
 pub mod threaded;
