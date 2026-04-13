@@ -25,6 +25,7 @@ pub enum Value {
 }
 
 /// Heap-allocated objects managed by the GC.
+#[derive(Debug)]
 pub enum HeapObject {
     String(String),
     Tuple(Fields),
@@ -48,7 +49,7 @@ pub enum HeapObject {
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SavedFrame {
     pub proto_idx: usize,
     pub ip: usize,
