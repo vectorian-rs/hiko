@@ -1,8 +1,7 @@
 //! Multi-threaded runtime: N worker threads executing hiko processes in parallel.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 
@@ -21,17 +20,16 @@ use hiko_compile::chunk::CompiledProgram;
 /// Thread-safe process table using DashMap for fine-grained locking.
 struct ProcessTable {
     processes: DashMap<Pid, Process>,
-    waiters: Mutex<HashMap<Pid, Vec<Pid>>>,
-    /// Map from IoToken to the process waiting for that I/O.
-    io_waiters: Mutex<HashMap<IoToken, Pid>>,
+    waiters: DashMap<Pid, Vec<Pid>>,
+    io_waiters: DashMap<IoToken, Pid>,
 }
 
 impl ProcessTable {
     fn new() -> Self {
         Self {
             processes: DashMap::new(),
-            waiters: Mutex::new(HashMap::new()),
-            io_waiters: Mutex::new(HashMap::new()),
+            waiters: DashMap::new(),
+            io_waiters: DashMap::new(),
         }
     }
 
@@ -71,7 +69,7 @@ impl ProcessTable {
     /// Check if all non-done processes are permanently blocked
     /// (blocked on Receive/Await with no possible waker).
     fn has_permanently_blocked(&self) -> bool {
-        let io_count = self.io_waiters.lock().unwrap().len();
+        let io_count = self.io_waiters.len();
         if io_count > 0 {
             return false; // I/O may still complete
         }
@@ -150,11 +148,8 @@ impl ThreadedRuntime {
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
             for (token, result) in completions {
-                let io_waiters = self.table.io_waiters.lock().unwrap();
-                if let Some(&pid) = io_waiters.get(&token) {
-                    drop(io_waiters);
+                if let Some((_, pid)) = self.table.io_waiters.remove(&token) {
                     if let Some(mut process) = self.table.processes.get_mut(&pid) {
-                        // Construct IoOk or IoErr for effect-based I/O
                         let resume_val = match result {
                             crate::io_backend::IoResult::Ok(sv) => {
                                 let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
@@ -174,12 +169,11 @@ impl ThreadedRuntime {
                         drop(process);
                         self.scheduler.enqueue(pid);
                     }
-                    self.table.io_waiters.lock().unwrap().remove(&token);
                 }
             }
 
             if self.table.is_all_done_or_blocked() {
-                let has_io_waiters = !self.table.io_waiters.lock().unwrap().is_empty();
+                let has_io_waiters = !self.table.io_waiters.is_empty();
                 if !has_io_waiters {
                     // Detect deadlock: blocked processes with no possible waker
                     if self.table.has_permanently_blocked() {
@@ -279,7 +273,7 @@ fn worker_loop(
                 let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
                 process.status = ProcessStatus::Blocked(BlockReason::Io(token));
                 table.return_process(process);
-                table.io_waiters.lock().unwrap().insert(token, pid);
+                table.io_waiters.insert(token, pid);
                 io_backend.register(token, request);
             }
             RunResult::RuntimeEffect { tag, payload } => {
@@ -292,7 +286,7 @@ fn worker_loop(
                 };
                 process.status = ProcessStatus::Blocked(BlockReason::Io(token));
                 table.return_process(process);
-                table.io_waiters.lock().unwrap().insert(token, pid);
+                table.io_waiters.insert(token, pid);
                 io_backend.register(token, io_request);
             }
         }
@@ -347,13 +341,7 @@ fn handle_await(
         ChildState::Running => {
             parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
             table.return_process(parent);
-            table
-                .waiters
-                .lock()
-                .unwrap()
-                .entry(child_pid)
-                .or_default()
-                .push(parent_pid);
+            table.waiters.entry(child_pid).or_default().push(parent_pid);
         }
     }
 }
@@ -414,9 +402,8 @@ fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: 
 }
 
 fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
-    let waiter_pids = table.waiters.lock().unwrap().remove(&finished_pid);
-    let waiter_pids = match waiter_pids {
-        Some(w) => w,
+    let waiter_pids = match table.waiters.remove(&finished_pid) {
+        Some((_, w)) => w,
         None => return,
     };
 
