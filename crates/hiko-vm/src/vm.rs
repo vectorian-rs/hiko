@@ -30,8 +30,14 @@ pub enum RunResult {
         captures: Vec<crate::sendable::SendableValue>,
     },
     /// Process requested to await a child result.
-    /// Contains the child Pid as u64.
     Await(u64),
+    /// Process requested to send a message.
+    Send {
+        target_pid: u64,
+        value: crate::sendable::SendableValue,
+    },
+    /// Process requested to receive a message.
+    Receive,
 }
 
 #[derive(Debug)]
@@ -88,6 +94,8 @@ pub struct VM {
     println_builtin_id: Option<u16>,
     spawn_builtin_id: Option<u16>,
     await_builtin_id: Option<u16>,
+    send_builtin_id: Option<u16>,
+    receive_builtin_id: Option<u16>,
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
 }
@@ -100,6 +108,11 @@ pub enum RuntimeRequest {
         captures: Vec<crate::sendable::SendableValue>,
     },
     Await(u64),
+    Send {
+        target_pid: u64,
+        value: crate::sendable::SendableValue,
+    },
+    Receive,
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -179,6 +192,8 @@ impl VM {
             println_builtin_id: None,
             spawn_builtin_id: None,
             await_builtin_id: None,
+            send_builtin_id: None,
+            receive_builtin_id: None,
             pending_runtime_request: None,
         }
     }
@@ -237,6 +252,8 @@ impl VM {
             "exec" => self.exec_builtin_id = Some(idx),
             "spawn" => self.spawn_builtin_id = Some(idx),
             "await_process" => self.await_builtin_id = Some(idx),
+            "send_message" => self.send_builtin_id = Some(idx),
+            "receive_message" => self.receive_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -419,6 +436,8 @@ impl VM {
                     captures,
                 },
                 RuntimeRequest::Await(pid) => RunResult::Await(pid),
+                RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
+                RuntimeRequest::Receive => RunResult::Receive,
             };
         }
 
@@ -536,6 +555,56 @@ impl VM {
                     });
                 }
             }
+        }
+
+        // Send: serialize value and signal runtime
+        if self.send_builtin_id == Some(builtin_id) {
+            let (v_pid, v_val) = match first_arg {
+                Value::Heap(r) => match self.heap.get(r) {
+                    Ok(HeapObject::Tuple(t)) if t.len() >= 2 => (t[0], t[1]),
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "send_message: expected (Int, value)".into(),
+                        });
+                    }
+                },
+                _ => {
+                    return Err(RuntimeError {
+                        message: "send_message: expected (Int, value)".into(),
+                    });
+                }
+            };
+            let target_pid = match v_pid {
+                Value::Int(pid) => pid as u64,
+                _ => {
+                    return Err(RuntimeError {
+                        message: "send_message: first element must be Int (pid)".into(),
+                    });
+                }
+            };
+            let sendable =
+                crate::sendable::serialize(v_val, &self.heap).map_err(|e| RuntimeError {
+                    message: format!("send_message: {e}"),
+                })?;
+            self.pending_runtime_request = Some(RuntimeRequest::Send {
+                target_pid,
+                value: sendable,
+            });
+            self.stack.truncate(callee_pos);
+            self.push(Value::Unit)?;
+            return Err(RuntimeError {
+                message: "runtime request".into(),
+            });
+        }
+
+        // Receive: signal runtime to pop from mailbox
+        if self.receive_builtin_id == Some(builtin_id) {
+            self.pending_runtime_request = Some(RuntimeRequest::Receive);
+            self.stack.truncate(callee_pos);
+            self.push(Value::Unit)?;
+            return Err(RuntimeError {
+                message: "runtime request".into(),
+            });
         }
 
         // Exec is fully intercepted: whitelist check + timeout

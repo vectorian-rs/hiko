@@ -107,6 +107,8 @@ impl VMBuilder {
             "string_join",
             "spawn",
             "await_process",
+            "send_message",
+            "receive_message",
             "panic",
             "assert",
             "assert_eq",
