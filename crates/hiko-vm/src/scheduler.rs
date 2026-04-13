@@ -21,6 +21,9 @@ pub trait Scheduler: Send + Sync {
     /// Hint: how many reductions to grant this process.
     fn reductions(&self, pid: Pid) -> u64;
 
+    /// Non-blocking dequeue. Returns None if no process is ready.
+    fn try_dequeue(&self) -> Option<Pid>;
+
     /// Signal all waiting workers to shut down.
     fn shutdown(&self);
 }
@@ -77,6 +80,14 @@ impl Scheduler for FifoScheduler {
 
     fn reductions(&self, _pid: Pid) -> u64 {
         self.reductions_per_slice
+    }
+
+    fn try_dequeue(&self) -> Option<Pid> {
+        let mut state = self.state.lock().unwrap();
+        if state.shutdown {
+            return None;
+        }
+        state.queue.pop_front()
     }
 
     fn shutdown(&self) {

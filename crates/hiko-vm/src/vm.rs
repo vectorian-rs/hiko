@@ -318,11 +318,15 @@ impl VM {
     }
 
     /// Run for up to `reductions` opcodes, then yield.
+    /// Respects any existing fuel limit (takes the minimum).
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
-        // Set fuel for this slice
-        let prev_fuel = self.fuel;
-        self.fuel = Some(reductions);
+        // Use the minimum of slice reductions and any existing fuel cap
+        let effective = match self.fuel {
+            Some(remaining) => remaining.min(reductions),
+            None => reductions,
+        };
+        self.fuel = Some(effective);
 
         // If no frames, this is a fresh start — push the main frame
         if self.frames.is_empty() {
@@ -335,7 +339,8 @@ impl VM {
         }
 
         let result = self.dispatch();
-        self.fuel = prev_fuel;
+        // After slice: clear slice fuel, keep fuel=None for next slice
+        self.fuel = None;
 
         match result {
             Ok(()) => RunResult::Done,

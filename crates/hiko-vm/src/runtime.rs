@@ -100,26 +100,7 @@ impl Runtime {
     /// Try to dequeue a runnable process without blocking.
     /// Returns None when no runnable processes remain.
     fn try_dequeue(&self) -> Option<Pid> {
-        // For single-threaded runtime: check if any process is runnable
-        for process in self.processes.values() {
-            if process.is_runnable() {
-                // Drain from the scheduler
-                // Since we're single-threaded, we can check directly
-            }
-        }
-        // Use a non-blocking approach: if scheduler has something, take it
-        // For the FIFO scheduler, we need to check if the queue has items
-        // without blocking. Use a simple approach:
-        let has_runnable = self.processes.values().any(|p| p.is_runnable());
-        if !has_runnable {
-            return None;
-        }
-        // The scheduler was already notified via enqueue.
-        // For single-threaded use, directly pop from processes.
-        self.processes
-            .values()
-            .find(|p| p.is_runnable())
-            .map(|p| p.pid)
+        self.scheduler.try_dequeue()
     }
 
     /// Wake all processes waiting for the given pid to finish.
