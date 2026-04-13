@@ -85,7 +85,7 @@ impl ProcessTable {
 
 /// Multi-threaded hiko runtime.
 pub struct ThreadedRuntime {
-    next_pid: AtomicU64,
+    next_pid: Arc<AtomicU64>,
     table: Arc<ProcessTable>,
     scheduler: Arc<dyn Scheduler>,
     num_workers: usize,
@@ -94,7 +94,7 @@ pub struct ThreadedRuntime {
 impl ThreadedRuntime {
     pub fn new(num_workers: usize) -> Self {
         Self {
-            next_pid: AtomicU64::new(1),
+            next_pid: Arc::new(AtomicU64::new(1)),
             table: Arc::new(ProcessTable::new()),
             scheduler: Arc::new(FifoScheduler::new(1000)),
             num_workers,
@@ -120,16 +120,23 @@ impl ThreadedRuntime {
             .map(|_| {
                 let table = Arc::clone(&self.table);
                 let scheduler = Arc::clone(&self.scheduler);
-                let next_pid = &self.next_pid as *const AtomicU64 as usize;
+                let next_pid = Arc::clone(&self.next_pid);
 
                 std::thread::spawn(move || {
-                    let next_pid = unsafe { &*(next_pid as *const AtomicU64) };
-                    worker_loop(&table, &*scheduler, next_pid);
+                    worker_loop(&table, &*scheduler, &next_pid);
                 })
             })
             .collect();
 
-        // Wait for all workers to finish
+        // Monitor: wait for all processes to complete, then signal shutdown
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            if self.table.is_all_done_or_blocked() {
+                self.scheduler.shutdown();
+                break;
+            }
+        }
+
         for h in handles {
             h.join().unwrap();
         }
@@ -140,17 +147,10 @@ impl ThreadedRuntime {
 
 fn worker_loop(table: &ProcessTable, scheduler: &dyn Scheduler, next_pid: &AtomicU64) {
     loop {
-        let pid = match scheduler.try_dequeue() {
+        // Block until work is available or shutdown
+        let pid = match scheduler.dequeue() {
             Some(pid) => pid,
-            None => {
-                // Check if all processes are done or blocked
-                if table.is_all_done_or_blocked() {
-                    return;
-                }
-                // Yield and retry
-                std::thread::yield_now();
-                continue;
-            }
+            None => return, // shutdown signaled
         };
 
         let reductions = scheduler.reductions(pid);
@@ -224,49 +224,55 @@ fn handle_await(
 ) {
     let parent_pid = parent.pid;
 
-    // Check child state
-    let child_info = {
+    enum ChildState {
+        Done(SendableValue),
+        Failed(String),
+        Running,
+        NotFound,
+        NotChild,
+    }
+
+    let child_state = {
         let procs = table.processes.lock().unwrap();
-        procs.get(&child_pid).map(|c| {
-            let is_child = c.parent == Some(parent_pid);
-            let state = match &c.status {
+        match procs.get(&child_pid) {
+            None => ChildState::NotFound,
+            Some(c) if c.parent != Some(parent_pid) => ChildState::NotChild,
+            Some(c) => match &c.status {
                 ProcessStatus::Done => {
                     let val = c.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    let sendable = serialize(val, &c.vm.heap).unwrap_or(SendableValue::Unit);
-                    ("done", Some(sendable), String::new())
+                    ChildState::Done(serialize(val, &c.vm.heap).unwrap_or(SendableValue::Unit))
                 }
-                ProcessStatus::Failed(msg) => ("failed", None, msg.clone()),
-                _ => ("running", None, String::new()),
-            };
-            (is_child, state)
-        })
+                ProcessStatus::Failed(msg) => ChildState::Failed(msg.clone()),
+                _ => ChildState::Running,
+            },
+        }
     };
 
-    match child_info {
-        None => {
+    match child_state {
+        ChildState::NotFound => {
             parent.status =
                 ProcessStatus::Failed(format!("await: unknown process {:?}", child_pid));
             table.return_process(parent);
         }
-        Some((false, _)) => {
+        ChildState::NotChild => {
             parent.status = ProcessStatus::Failed(format!(
                 "await: process {:?} is not a child of {:?}",
                 child_pid, parent_pid
             ));
             table.return_process(parent);
         }
-        Some((true, ("done", Some(sendable), _))) => {
+        ChildState::Done(sendable) => {
             parent.vm.stack.pop();
             let val = deserialize(sendable, &mut parent.vm.heap);
             parent.vm.push_value(val);
             table.return_process(parent);
             scheduler.enqueue(parent_pid);
         }
-        Some((true, ("failed", _, msg))) => {
+        ChildState::Failed(msg) => {
             parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
             table.return_process(parent);
         }
-        Some((true, _)) => {
+        ChildState::Running => {
             // Child still running — block parent
             parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
             table.return_process(parent);
