@@ -561,7 +561,7 @@ impl VM {
         if self.send_builtin_id == Some(builtin_id) {
             let (v_pid, v_val) = match first_arg {
                 Value::Heap(r) => match self.heap.get(r) {
-                    Ok(HeapObject::Tuple(t)) if t.len() >= 2 => (t[0], t[1]),
+                    Ok(HeapObject::Tuple(t)) if t.len() == 2 => (t[0], t[1]),
                     _ => {
                         return Err(RuntimeError {
                             message: "send_message: expected (Int, value)".into(),

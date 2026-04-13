@@ -230,16 +230,16 @@ impl Runtime {
     ) {
         match self.processes.get_mut(&target_pid) {
             Some(target) => {
-                target.mailbox.push_back(value);
-                // If target was blocked on Receive, wake it
                 if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
+                    // Target is waiting — deliver directly, skip mailbox round-trip
                     target.status = ProcessStatus::Runnable;
-                    // Deliver the message immediately
-                    let msg = target.mailbox.pop_front().unwrap();
-                    target.vm.stack.pop(); // remove placeholder
-                    let val = deserialize(msg, &mut target.vm.heap);
+                    target.vm.stack.pop();
+                    let val = deserialize(value, &mut target.vm.heap);
                     target.vm.push_value(val);
                     self.scheduler.enqueue(target_pid);
+                } else {
+                    // Target is running — queue in mailbox
+                    target.mailbox.push_back(value);
                 }
                 // Resume sender
                 self.scheduler.enqueue(sender_pid);
