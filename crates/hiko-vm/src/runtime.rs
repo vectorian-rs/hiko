@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::process::{Pid, Process, ProcessStatus};
+use crate::process::{BlockReason, Pid, Process, ProcessStatus};
 use crate::scheduler::{FifoScheduler, Scheduler};
+use crate::sendable::{deserialize, serialize};
+use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
 
@@ -72,10 +74,11 @@ impl Runtime {
 
             match result {
                 RunResult::Done => {
+                    // Serialize the return value (top of stack)
                     let process = self.processes.get_mut(&pid).unwrap();
                     process.status = ProcessStatus::Done;
                     self.scheduler.remove(pid);
-                    self.wake_waiters(pid);
+                    self.wake_and_deliver_results(pid);
                 }
                 RunResult::Yielded => {
                     self.scheduler.enqueue(pid);
@@ -84,7 +87,23 @@ impl Runtime {
                     let process = self.processes.get_mut(&pid).unwrap();
                     process.status = ProcessStatus::Failed(msg);
                     self.scheduler.remove(pid);
-                    self.wake_waiters(pid);
+                    self.wake_and_deliver_results(pid);
+                }
+                RunResult::Spawn {
+                    proto_idx,
+                    captures,
+                } => {
+                    let child_pid = self.handle_spawn(pid, proto_idx, captures);
+                    // Resume parent with child pid
+                    let process = self.processes.get_mut(&pid).unwrap();
+                    // Replace the Unit placeholder with the actual Pid
+                    process.vm.stack.pop();
+                    process.vm.push_value(Value::Int(child_pid.0 as i64));
+                    self.scheduler.enqueue(pid);
+                }
+                RunResult::Await(child_pid_val) => {
+                    let child_pid = Pid(child_pid_val);
+                    self.handle_await(pid, child_pid);
                 }
             }
         }
@@ -97,22 +116,148 @@ impl Runtime {
         Ok(all_output)
     }
 
+    /// Handle a spawn request: create child process from closure prototype.
+    fn handle_spawn(
+        &mut self,
+        parent_pid: Pid,
+        proto_idx: usize,
+        captures: Vec<crate::sendable::SendableValue>,
+    ) -> Pid {
+        let child_pid = self.new_pid();
+
+        // Clone the parent's compiled program for the child
+        let parent = self.processes.get(&parent_pid).unwrap();
+        let program = parent.vm.get_program();
+
+        // Create a child VM with all builtins
+        let mut child_vm = VM::new(program);
+
+        // Deserialize captures into child's heap
+        let child_captures: Vec<Value> = captures
+            .into_iter()
+            .map(|v| deserialize(v, &mut child_vm.heap))
+            .collect();
+
+        // Set up the child VM to execute the closure's prototype
+        // The closure takes Unit as argument (fn () => ...)
+        child_vm.setup_closure_call(proto_idx, &child_captures);
+
+        let child = Process::new(child_pid, child_vm, Some(parent_pid));
+        self.processes.insert(child_pid, child);
+        self.scheduler.enqueue(child_pid);
+        child_pid
+    }
+
+    /// Handle an await request: block parent or resume with result.
+    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid) {
+        // Extract child state as an owned value to avoid borrow conflicts
+        enum ChildState {
+            Done,
+            Failed(String),
+            Running,
+            NotFound,
+            NotChild,
+        }
+
+        let child_state = match self.processes.get(&child_pid) {
+            None => ChildState::NotFound,
+            Some(child) => {
+                // Parent-only await: only the spawning parent may await
+                if child.parent != Some(parent_pid) {
+                    ChildState::NotChild
+                } else {
+                    match &child.status {
+                        ProcessStatus::Done => ChildState::Done,
+                        ProcessStatus::Failed(msg) => ChildState::Failed(msg.clone()),
+                        _ => ChildState::Running,
+                    }
+                }
+            }
+        };
+
+        match child_state {
+            ChildState::Done => {
+                let sendable = {
+                    let child = &self.processes[&child_pid];
+                    let val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
+                    serialize(val, &child.vm.heap).unwrap_or(crate::sendable::SendableValue::Unit)
+                };
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.vm.stack.pop();
+                let val = deserialize(sendable, &mut parent.vm.heap);
+                parent.vm.push_value(val);
+                self.scheduler.enqueue(parent_pid);
+            }
+            ChildState::Failed(msg) => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
+                self.scheduler.remove(parent_pid);
+            }
+            ChildState::Running => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
+                self.waiters.entry(child_pid).or_default().push(parent_pid);
+            }
+            ChildState::NotFound => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status =
+                    ProcessStatus::Failed(format!("await: unknown process {:?}", child_pid));
+                self.scheduler.remove(parent_pid);
+            }
+            ChildState::NotChild => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(format!(
+                    "await: process {:?} is not a child of {:?}",
+                    child_pid, parent_pid
+                ));
+                self.scheduler.remove(parent_pid);
+            }
+        }
+    }
+
+    /// When a child finishes, wake blocked parents and give them the result.
+    fn wake_and_deliver_results(&mut self, finished_pid: Pid) {
+        let waiter_pids = match self.waiters.remove(&finished_pid) {
+            Some(w) => w,
+            None => return,
+        };
+
+        // Serialize the finished process's result once, before borrowing waiters
+        let child = &self.processes[&finished_pid];
+        let delivery = match &child.status {
+            ProcessStatus::Done => {
+                let val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
+                let sendable =
+                    serialize(val, &child.vm.heap).unwrap_or(crate::sendable::SendableValue::Unit);
+                Ok(sendable)
+            }
+            ProcessStatus::Failed(msg) => Err(msg.clone()),
+            _ => Err("child not finished".into()),
+        };
+
+        for waiter in waiter_pids {
+            if let Some(process) = self.processes.get_mut(&waiter) {
+                match &delivery {
+                    Ok(sendable) => {
+                        process.vm.stack.pop();
+                        let val = deserialize(sendable.clone(), &mut process.vm.heap);
+                        process.vm.push_value(val);
+                        process.status = ProcessStatus::Runnable;
+                        self.scheduler.enqueue(waiter);
+                    }
+                    Err(msg) => {
+                        process.status =
+                            ProcessStatus::Failed(format!("child process failed: {msg}"));
+                    }
+                }
+            }
+        }
+    }
+
     /// Try to dequeue a runnable process without blocking.
     /// Returns None when no runnable processes remain.
     fn try_dequeue(&self) -> Option<Pid> {
         self.scheduler.try_dequeue()
-    }
-
-    /// Wake all processes waiting for the given pid to finish.
-    fn wake_waiters(&mut self, finished_pid: Pid) {
-        if let Some(waiter_pids) = self.waiters.remove(&finished_pid) {
-            for waiter in waiter_pids {
-                if let Some(process) = self.processes.get_mut(&waiter) {
-                    process.status = ProcessStatus::Runnable;
-                    self.scheduler.enqueue(waiter);
-                }
-            }
-        }
     }
 
     /// Get a process's output.
@@ -184,11 +329,11 @@ mod tests {
         let mut vm = VM::new(program);
         // Run with very few reductions — should yield
         let result = vm.run_slice(100);
-        assert_eq!(result, RunResult::Yielded);
+        assert!(matches!(result, RunResult::Yielded));
 
         // Continue running with more fuel — should complete
         let result = vm.run_slice(1_000_000);
-        assert_eq!(result, RunResult::Done);
+        assert!(matches!(result, RunResult::Done));
     }
 
     #[test]
@@ -196,7 +341,7 @@ mod tests {
         let program = compile("val x = 1 + 1");
         let mut vm = VM::new(program);
         let result = vm.run_slice(1000);
-        assert_eq!(result, RunResult::Done);
+        assert!(matches!(result, RunResult::Done));
     }
 
     #[test]
@@ -213,5 +358,53 @@ mod tests {
         assert!(runtime.processes[&pid].is_done());
         let output = runtime.get_output(pid);
         assert_eq!(output, vec!["done\n"]);
+    }
+
+    #[test]
+    fn test_spawn_and_await_basic() {
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.processes[&pid].is_done());
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["42\n"]);
+    }
+
+    #[test]
+    fn test_spawn_with_captured_value() {
+        // Use let-binding to force closure capture (top-level vals are globals,
+        // not captured by closures in the child VM)
+        let program = compile(
+            "fun make_spawner x = spawn (fn () => x + 32)\n\
+             val child = make_spawner 10\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["42\n"]);
+    }
+
+    #[test]
+    fn test_spawn_two_children() {
+        let program = compile(
+            "val c1 = spawn (fn () => 10)\n\
+             val c2 = spawn (fn () => 20)\n\
+             val r1 = await_process c1\n\
+             val r2 = await_process c2\n\
+             val _ = println (int_to_string (r1 + r2))",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["30\n"]);
     }
 }
