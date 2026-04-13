@@ -477,4 +477,32 @@ mod tests {
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["99\n"]);
     }
+
+    #[test]
+    fn test_perform_io_sleep() {
+        // perform_io ("sleep", 0) should complete via mock backend
+        let program = compile(
+            "val _ = perform_io (\"sleep\", 0)\n\
+             val _ = println \"after sleep\"",
+        );
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["after sleep\n"]);
+    }
+
+    #[test]
+    fn test_perform_io_custom() {
+        // perform_io ("echo", 42) should return 42 via mock backend
+        let program = compile(
+            "val result : Int = perform_io (\"echo\", 42)\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["42\n"]);
+    }
 }

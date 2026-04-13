@@ -109,6 +109,7 @@ impl VMBuilder {
             "await_process",
             "send_message",
             "receive_message",
+            "perform_io",
             "panic",
             "assert",
             "assert_eq",

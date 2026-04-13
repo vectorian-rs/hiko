@@ -98,6 +98,7 @@ pub struct VM {
     await_builtin_id: Option<u16>,
     send_builtin_id: Option<u16>,
     receive_builtin_id: Option<u16>,
+    perform_io_builtin_id: Option<u16>,
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
 }
@@ -205,6 +206,7 @@ impl VM {
             await_builtin_id: None,
             send_builtin_id: None,
             receive_builtin_id: None,
+            perform_io_builtin_id: None,
             pending_runtime_request: None,
         }
     }
@@ -265,6 +267,7 @@ impl VM {
             "await_process" => self.await_builtin_id = Some(idx),
             "send_message" => self.send_builtin_id = Some(idx),
             "receive_message" => self.receive_builtin_id = Some(idx),
+            "perform_io" => self.perform_io_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -612,6 +615,66 @@ impl VM {
         // Receive: signal runtime to pop from mailbox
         if self.receive_builtin_id == Some(builtin_id) {
             self.pending_runtime_request = Some(RuntimeRequest::Receive);
+            self.stack.truncate(callee_pos);
+            self.push(Value::Unit)?;
+            return Err(RuntimeError {
+                message: "runtime request".into(),
+            });
+        }
+
+        // Perform I/O: extract (operation, payload), signal runtime
+        if self.perform_io_builtin_id == Some(builtin_id) {
+            let (v_op, v_payload) = match first_arg {
+                Value::Heap(r) => match self.heap.get(r) {
+                    Ok(HeapObject::Tuple(t)) if t.len() == 2 => (t[0], t[1]),
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "perform_io: expected (String, value)".into(),
+                        });
+                    }
+                },
+                _ => {
+                    return Err(RuntimeError {
+                        message: "perform_io: expected (String, value)".into(),
+                    });
+                }
+            };
+            let operation = match v_op {
+                Value::Heap(r) => match self.heap.get(r) {
+                    Ok(HeapObject::String(s)) => s.clone(),
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "perform_io: operation must be String".into(),
+                        });
+                    }
+                },
+                _ => {
+                    return Err(RuntimeError {
+                        message: "perform_io: operation must be String".into(),
+                    });
+                }
+            };
+            // Handle "sleep" specially
+            let io_request = if operation == "sleep" {
+                match v_payload {
+                    Value::Int(ms) if ms >= 0 => crate::io_backend::IoRequest::Sleep(
+                        std::time::Duration::from_millis(ms as u64),
+                    ),
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "perform_io sleep: expected non-negative Int".into(),
+                        });
+                    }
+                }
+            } else {
+                let payload = crate::sendable::serialize(v_payload, &self.heap).map_err(|e| {
+                    RuntimeError {
+                        message: format!("perform_io: {e}"),
+                    }
+                })?;
+                crate::io_backend::IoRequest::Custom { operation, payload }
+            };
+            self.pending_runtime_request = Some(RuntimeRequest::Io(io_request));
             self.stack.truncate(callee_pos);
             self.push(Value::Unit)?;
             return Err(RuntimeError {

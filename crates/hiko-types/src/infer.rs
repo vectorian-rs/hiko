@@ -371,6 +371,10 @@ impl InferCtx {
                 Type::arrow(Type::Tuple(vec![Type::int(), a.clone()]), Type::unit()),
             ),
             ("receive_message", Type::arrow(Type::unit(), a.clone())),
+            (
+                "perform_io",
+                Type::arrow(Type::Tuple(vec![Type::string(), a.clone()]), a.clone()),
+            ),
             ("exit", Type::arrow(Type::int(), Type::unit())),
             ("panic", Type::arrow(Type::string(), a.clone())),
             // Testing
