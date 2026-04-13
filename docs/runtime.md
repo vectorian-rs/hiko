@@ -162,7 +162,7 @@ perform Yield 42
                                enqueue A
 ```
 
-Regular effects (state, generators, error handling) never interact with the scheduler. Only process-level operations (`spawn`, `send`, `receive`, `await`) cause scheduler transitions.
+User-defined algebraic effects are process-local. Scheduler-visible transitions happen only at runtime boundary operations: reduction exhaustion (fuel), `spawn`/`send`/`receive`/`await`, and I/O suspension.
 
 ### Async I/O via effects
 
@@ -195,8 +195,8 @@ trait Scheduler: Send + Sync {
     fn enqueue(&self, pid: Pid);
 
     /// Block until a runnable process is available, then return it.
-    /// Called by each worker thread.
-    fn dequeue(&self) -> Pid;
+    /// Returns None on shutdown. Called by each worker thread.
+    fn dequeue(&self) -> Option<Pid>;
 
     /// A process finished or failed — remove it from scheduling.
     fn remove(&self, pid: Pid);
@@ -230,7 +230,8 @@ Workers interact with the scheduler only through the trait:
 
 ```
 loop {
-    pid = scheduler.dequeue()          // blocks if empty
+    pid = scheduler.dequeue()          // blocks if empty, None = shutdown
+    if pid is None: break
     reductions = scheduler.reductions(pid)
     process = processes.take(pid)
 
@@ -310,6 +311,55 @@ fun both f g =
   in (await t1, await t2) end
 ```
 
+## Semantic decisions (v1)
+
+### Await ownership
+
+Only the parent may await a child. The child's result is consumed once. Awaiting a non-child pid is a runtime error. This avoids fan-in ambiguity and simplifies the result lifecycle.
+
+### Failure propagation
+
+If a child process ends in `Failed(msg)`, `await` in the parent re-raises the error. The parent receives an error, not a silent default. The parent can handle it:
+
+```sml
+datatype 'a result = Ok of 'a | Err of String
+
+fun try_await pid =
+  handle await pid
+  with return x => Ok x
+     | Fail msg _ => Err msg
+```
+
+### Receive semantics
+
+v1 receive is **FIFO, first message only**. No selective receive, no pattern-matching on mailbox contents. The first message in the queue is returned, regardless of shape.
+
+Selective receive (Erlang-style `receive ... of pattern => ...`) is a future extension.
+
+### Spawn payload
+
+`spawn` does NOT send a raw closure across process boundaries. The runtime:
+
+1. Extracts the closure's prototype index (bytecode reference)
+2. Serializes captured values as `SendableValue`
+3. Creates a new VM with the same compiled program
+4. Deserializes captured values into the new VM's heap
+5. Begins execution at the closure's entry point
+
+If captured values contain non-sendable types (closures, continuations), `spawn` returns a runtime error.
+
+### Process table ownership
+
+The process table stores processes behind **per-process synchronization**. Workers acquire exclusive access only to the process they are currently running. Other processes remain accessible for mailbox delivery and status queries without blocking the running worker.
+
+```rust
+struct ProcessTable {
+    processes: HashMap<Pid, Mutex<Process>>,
+}
+```
+
+A worker locks one process, runs it, unlocks it. Mailbox delivery locks only the target process's mutex, not the whole table.
+
 ## I/O backend
 
 Abstract trait — implementation chosen at runtime startup:
@@ -325,14 +375,19 @@ Supports readiness-based (epoll, kqueue) and completion-based (io_uring) backend
 
 ## Safety
 
+### Central invariant
+
+**No pointer from process A's heap into process B's heap.** Enforced by the `SendableValue` boundary.
+
 ### What Rust enforces
 
 | Invariant | Mechanism |
 |---|---|
-| `SendableValue` has no `GcRef` | Enum definition |
-| `SendableValue` is `Send + Sync` | Rust type system |
-| Continuations not sendable | Not a variant |
-| `Arc<str>` is thread-safe | `Arc` is `Send + Sync` |
+| `SendableValue` has no `GcRef` | Enum definition — physically can't hold one |
+| `SendableValue` is `Send + Sync + 'static` | Rust type system — `Arc<str>` is `Send + Sync` |
+| Continuations not sendable | Not a variant of `SendableValue` |
+| Closures not sendable | Not a variant — spawn serializes captures separately |
+| `Arc<str>` is thread-safe | `Arc` is `Send + Sync`, immutable content |
 
 ### What can go wrong (not memory corruption)
 
@@ -360,9 +415,29 @@ Supports readiness-based (epoll, kqueue) and completion-based (io_uring) backend
 ## Design principles
 
 1. **Prefer isolation over sharing** — no shared mutable state, ever
-2. **Prefer copying over synchronization** — copy the shape, share immutable leaves
+2. **Prefer process isolation and immutable sharing over shared mutable synchronization** — copy the shape, share immutable leaves via `Arc`
 3. **Prefer simplicity over elegance** — explicit state machines, boring Rust code
 4. **Effects are control flow, not I/O** — the runtime interprets effects as I/O
 5. **GC is local** — never stop the world, always stop one process
 6. **The VM doesn't change** — processes are just multiple VM instances
 7. **Pluggable policies** — scheduler and I/O backend are traits, swappable without touching the runtime core
+
+### Central invariant
+
+**No pointer from process A's heap into process B's heap.**
+
+This single rule makes per-process GC correct, eliminates data races, and keeps the runtime simple. Everything else follows from it.
+
+### Note on `Arc<[Value]>` in Closure
+
+`Closure { captures: Arc<[Value]> }` is safe **within** one process. The `Arc` shares capture arrays between closures in the same VM. It must never leak into `SendableValue` — `Arc` here means "shared within a process," not "shared across processes."
+
+## Non-goals (v1)
+
+- No shared-heap fibers (Eio-style)
+- No selective receive (Erlang-style pattern-matching on mailbox)
+- No multi-shot continuations
+- No distributed runtime (cross-machine messaging)
+- No shared mutable objects across processes
+- No work-stealing scheduler (v1 uses FIFO)
+- No pre-built I/O backend (v1 focuses on spawn/await/send/receive)
