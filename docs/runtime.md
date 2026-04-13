@@ -30,11 +30,12 @@ We add: `Arc`-shared immutable leaves to avoid Erlang's deep copy cost.
 ┌──────────────────────────────────────────────────┐
 │                    Runtime                        │
 │                                                   │
-│  Scheduler                                        │
-│  ├── run_queue: [Pid]                             │
-│  ├── processes: {Pid → Process}                   │
-│  ├── waiters: {Pid → [Pid]}                       │
-│  └── io_backend: impl IoBackend                   │
+│  Scheduler (trait — pluggable)                    │
+│  ├── enqueue / dequeue / remove / reductions      │
+│  │                                                │
+│  Process Table: {Pid → Process}                   │
+│  Waiters: {Pid → [Pid]}                           │
+│  I/O Backend (trait — pluggable)                  │
 │                                                   │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐         │
 │  │ Worker 0 │ │ Worker 1 │ │ Worker N │         │
@@ -181,28 +182,75 @@ The effect system is the suspension mechanism. The I/O backend is the completion
 
 ## Scheduler
 
+The scheduler is behind a trait so it can be replaced without touching the rest of the runtime.
+
+### Trait
+
+```rust
+/// Scheduling decisions are isolated behind this trait.
+/// The runtime calls into the scheduler; the scheduler never
+/// reaches into runtime internals.
+trait Scheduler: Send + Sync {
+    /// A process became runnable (new, yielded, or unblocked).
+    fn enqueue(&self, pid: Pid);
+
+    /// Block until a runnable process is available, then return it.
+    /// Called by each worker thread.
+    fn dequeue(&self) -> Pid;
+
+    /// A process finished or failed — remove it from scheduling.
+    fn remove(&self, pid: Pid);
+
+    /// Hint: how many reductions to grant this process.
+    /// The scheduler can vary this per process for fairness tuning.
+    fn reductions(&self, pid: Pid) -> u64;
+}
+```
+
+### Bundled implementations
+
+**`FifoScheduler`** (default) — simple FIFO queue. Fixed reduction count. Good enough for most workloads.
+
+```rust
+struct FifoScheduler {
+    queue: Mutex<VecDeque<Pid>>,
+    notify: Condvar,
+    reductions: u64,
+}
+```
+
+Future implementations (not in v1):
+- **`PriorityScheduler`** — per-process priority levels, higher priority dequeued first
+- **`WorkStealingScheduler`** — per-worker queues with stealing for load balance
+- **`FairScheduler`** — tracks accumulated reductions, reduces slice for long-running processes
+
 ### Worker loop
+
+Workers interact with the scheduler only through the trait:
 
 ```
 loop {
-    pid = dequeue runnable process (block if empty)
-    process = take process
+    pid = scheduler.dequeue()          // blocks if empty
+    reductions = scheduler.reductions(pid)
+    process = processes.take(pid)
 
-    match process.vm.run_slice(REDUCTIONS) {
-        Yield       → enqueue back
-        Done(value) → store result, wake awaiters
-        Spawn(fn)   → create child process, enqueue it
-        Send(pid,v) → push to target mailbox, wake if blocked
-        Receive     → pop mailbox or block
-        Await(pid)  → check if done or block
-        Io(req)     → register with backend, block
+    match process.vm.run_slice(reductions) {
+        Yield       → scheduler.enqueue(pid)
+        Done(value) → scheduler.remove(pid); wake awaiters
+        Spawn(fn)   → create child; scheduler.enqueue(child_pid)
+        Send(pid,v) → push to mailbox; scheduler.enqueue(target) if blocked
+        Receive     → pop mailbox or mark blocked
+        Await(pid)  → check done or mark blocked
+        Io(req)     → register with backend; mark blocked
     }
 }
 ```
 
+The worker loop never makes scheduling decisions — it reports events, the scheduler decides ordering.
+
 ### Preemption
 
-Each process gets N opcode executions per scheduling slice (reuses hiko's existing fuel mechanism). After N reductions, the VM yields. No process can starve others.
+Each process gets N opcode executions per slice (from `scheduler.reductions(pid)`). After N reductions, the VM yields. No process can starve others. The scheduler controls N, allowing different policies without changing the worker loop.
 
 ## Garbage collection
 
@@ -317,3 +365,4 @@ Supports readiness-based (epoll, kqueue) and completion-based (io_uring) backend
 4. **Effects are control flow, not I/O** — the runtime interprets effects as I/O
 5. **GC is local** — never stop the world, always stop one process
 6. **The VM doesn't change** — processes are just multiple VM instances
+7. **Pluggable policies** — scheduler and I/O backend are traits, swappable without touching the runtime core
