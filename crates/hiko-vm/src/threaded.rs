@@ -67,6 +67,24 @@ impl ProcessTable {
             .iter()
             .all(|e| e.is_done() || matches!(e.status, ProcessStatus::Blocked(_)))
     }
+
+    /// Check if all non-done processes are permanently blocked
+    /// (blocked on Receive/Await with no possible waker).
+    fn has_permanently_blocked(&self) -> bool {
+        let io_count = self.io_waiters.lock().unwrap().len();
+        if io_count > 0 {
+            return false; // I/O may still complete
+        }
+        // If no I/O pending and no runnable processes, remaining blocked
+        // processes are deadlocked
+        self.processes.iter().any(|e| {
+            matches!(
+                e.status,
+                ProcessStatus::Blocked(BlockReason::Receive)
+                    | ProcessStatus::Blocked(BlockReason::Await(_))
+            )
+        }) && !self.processes.iter().any(|e| e.is_runnable())
+    }
 }
 
 /// Multi-threaded hiko runtime.
@@ -161,9 +179,23 @@ impl ThreadedRuntime {
             }
 
             if self.table.is_all_done_or_blocked() {
-                // Check if any are blocked on I/O — if so, keep polling
                 let has_io_waiters = !self.table.io_waiters.lock().unwrap().is_empty();
                 if !has_io_waiters {
+                    // Detect deadlock: blocked processes with no possible waker
+                    if self.table.has_permanently_blocked() {
+                        // Mark permanently blocked processes as failed
+                        for mut entry in self.table.processes.iter_mut() {
+                            if matches!(
+                                entry.status,
+                                ProcessStatus::Blocked(BlockReason::Receive)
+                                    | ProcessStatus::Blocked(BlockReason::Await(_))
+                            ) {
+                                entry.status = ProcessStatus::Failed(
+                                    "deadlock: process blocked with no possible waker".into(),
+                                );
+                            }
+                        }
+                    }
                     self.scheduler.shutdown();
                     break;
                 }
@@ -343,31 +375,30 @@ fn handle_send(
         return;
     }
 
-    // Return sender first so the table has it
+    // Check target existence while sender is still held (no TOCTOU)
+    let target_exists = table.processes.contains_key(&target_pid);
+
+    if !target_exists {
+        sender.status =
+            ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
+        table.return_process(sender);
+        return;
+    }
+
+    // Target exists — return sender, then deliver
     table.return_process(sender);
 
-    match table.processes.get_mut(&target_pid) {
-        Some(mut target) => {
-            if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
-                target.status = ProcessStatus::Runnable;
-                deliver_message(&mut target.vm, value);
-                drop(target);
-                scheduler.enqueue(target_pid);
-            } else {
-                target.mailbox.push_back(value);
-            }
-            scheduler.enqueue(sender_pid);
-        }
-        None => {
-            // Target doesn't exist — fail sender
-            if let Some(mut sender) = table.processes.get_mut(&sender_pid) {
-                sender.status = ProcessStatus::Failed(format!(
-                    "send_message: unknown process {:?}",
-                    target_pid
-                ));
-            }
+    if let Some(mut target) = table.processes.get_mut(&target_pid) {
+        if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
+            target.status = ProcessStatus::Runnable;
+            deliver_message(&mut target.vm, value);
+            drop(target);
+            scheduler.enqueue(target_pid);
+        } else {
+            target.mailbox.push_back(value);
         }
     }
+    scheduler.enqueue(sender_pid);
 }
 
 fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: Process) {
