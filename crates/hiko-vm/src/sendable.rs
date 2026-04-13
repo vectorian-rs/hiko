@@ -148,7 +148,7 @@ mod tests {
     use crate::heap::Heap;
     use crate::value::HeapObject;
     use smallvec::smallvec;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn round_trip(value: Value, heap: &Heap) -> Value {
         let sendable = serialize(value, heap).expect("serialize failed");
@@ -356,7 +356,7 @@ mod tests {
         let mut heap = Heap::new();
         let closure = Value::Heap(heap.alloc(HeapObject::Closure {
             proto_idx: 0,
-            captures: Rc::from(vec![].into_boxed_slice()),
+            captures: Arc::from(vec![].into_boxed_slice()),
         }));
         let result = serialize(closure, &heap);
         assert!(result.is_err());
@@ -440,7 +440,7 @@ mod tests {
         let mut heap = Heap::new();
         let closure = Value::Heap(heap.alloc(HeapObject::Closure {
             proto_idx: 0,
-            captures: Rc::from(vec![].into_boxed_slice()),
+            captures: Arc::from(vec![].into_boxed_slice()),
         }));
         let t = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![Value::Int(1), closure])));
         let result = serialize(t, &heap);

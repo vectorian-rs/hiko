@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Inline storage for up to 2 Values (32 bytes) without heap allocation.
 /// Covers cons cells (2 fields), pairs, and nullary/unary constructors.
@@ -35,7 +35,7 @@ pub enum HeapObject {
     },
     Closure {
         proto_idx: usize,
-        captures: Rc<[Value]>,
+        captures: Arc<[Value]>,
     },
     Bytes(Vec<u8>),
     /// Opaque RNG state (PCG-XSH-RR-64/32).
@@ -54,7 +54,7 @@ pub struct SavedFrame {
     pub proto_idx: usize,
     pub ip: usize,
     pub base_offset: usize,
-    pub captures: Rc<[Value]>,
+    pub captures: Arc<[Value]>,
 }
 
 impl HeapObject {

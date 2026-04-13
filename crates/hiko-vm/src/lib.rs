@@ -6,5 +6,6 @@ pub mod process;
 pub mod runtime;
 pub mod scheduler;
 pub mod sendable;
+pub mod threaded;
 pub mod value;
 pub mod vm;
