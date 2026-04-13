@@ -4,8 +4,7 @@
 //! request with the backend, and resumes the process when the backend
 //! reports completion. No worker thread is blocked during I/O.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::sendable::SendableValue;
@@ -49,14 +48,12 @@ pub trait IoBackend: Send + Sync {
 /// Mock I/O backend for deterministic testing.
 /// Completes requests immediately or after a configurable delay.
 pub struct MockIoBackend {
-    pending: Mutex<Vec<(IoToken, IoRequest)>>,
     completed: Mutex<Vec<(IoToken, IoResult)>>,
 }
 
 impl MockIoBackend {
     pub fn new() -> Self {
         Self {
-            pending: Mutex::new(Vec::new()),
             completed: Mutex::new(Vec::new()),
         }
     }
@@ -67,7 +64,7 @@ impl IoBackend for MockIoBackend {
         // Mock: complete immediately
         let result = match request {
             IoRequest::Sleep(_) => IoResult::Ok(SendableValue::Unit),
-            IoRequest::Custom { operation, payload } => {
+            IoRequest::Custom { payload, .. } => {
                 // Echo the payload back
                 IoResult::Ok(payload)
             }

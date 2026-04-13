@@ -13,7 +13,7 @@ use crate::runtime_ops::{
     prepare_delivery,
 };
 use crate::scheduler::{FifoScheduler, Scheduler};
-use crate::sendable::{SendableValue, deserialize};
+use crate::sendable::SendableValue;
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
