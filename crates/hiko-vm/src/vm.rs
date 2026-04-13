@@ -1,6 +1,6 @@
 use smallvec::smallvec;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
@@ -63,7 +63,7 @@ struct CallFrame {
     proto_idx: usize,
     ip: usize,
     base: usize,
-    captures: Rc<[Value]>,
+    captures: Arc<[Value]>,
 }
 
 struct HandlerFrame {
@@ -71,7 +71,7 @@ struct HandlerFrame {
     stack_base: usize,          // stack height when handler was installed
     clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
     proto_idx: usize,
-    captures: Rc<[Value]>,
+    captures: Arc<[Value]>,
 }
 
 pub struct VM {
@@ -162,6 +162,14 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     }
 }
 
+// Compile-time assertion: VM must be Send for multi-threaded scheduling.
+const _: () = {
+    fn assert_send<T: Send>() {}
+    fn check() {
+        assert_send::<VM>();
+    }
+};
+
 impl VM {
     /// Create a VM with all builtins enabled (convenience for CLI use).
     pub fn new(program: CompiledProgram) -> Self {
@@ -208,7 +216,7 @@ impl VM {
             proto_idx,
             ip: 0,
             base: 0,
-            captures: Rc::from(captures),
+            captures: Arc::from(captures),
         });
     }
 
@@ -396,7 +404,7 @@ impl VM {
             proto_idx: usize::MAX,
             ip: 0,
             base: 0,
-            captures: Rc::from([]),
+            captures: Arc::from([]),
         });
         self.dispatch()
     }
@@ -418,7 +426,7 @@ impl VM {
                 proto_idx: usize::MAX,
                 ip: 0,
                 base: 0,
-                captures: Rc::from([]),
+                captures: Arc::from([]),
             });
         }
 
@@ -1042,7 +1050,7 @@ impl VM {
                         };
                         captures.push(val);
                     }
-                    let captures: Rc<[Value]> = Rc::from(captures);
+                    let captures: Arc<[Value]> = Arc::from(captures);
                     let val = self.alloc(HeapObject::Closure {
                         proto_idx: func_proto_idx,
                         captures,
@@ -1165,7 +1173,7 @@ impl VM {
                         proto_idx,
                         ip: 0,
                         base: arg_start,
-                        captures: Rc::from([]),
+                        captures: Arc::from([]),
                     });
                 }
 
@@ -1182,7 +1190,7 @@ impl VM {
                     self.stack.truncate(base + arity);
                     self.frames[fi].ip = 0;
                     self.frames[fi].proto_idx = proto_idx;
-                    self.frames[fi].captures = Rc::from([]);
+                    self.frames[fi].captures = Arc::from([]);
                 }
 
                 Op::Return => {

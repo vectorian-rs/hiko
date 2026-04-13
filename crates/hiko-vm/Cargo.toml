@@ -9,6 +9,7 @@ repository = "https://github.com/vectorian-rs/hiko"
 [dependencies]
 hiko-compile = { version = "0.4.0", path = "../hiko-compile" }
 hiko-syntax = { version = "0.4.0", path = "../hiko-syntax" }
+dashmap = "6"
 dryoc = { version = "0.7", default-features = false }
 glob = "0.3"
 smallvec = "1"
