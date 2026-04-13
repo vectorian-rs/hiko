@@ -105,6 +105,8 @@ impl VMBuilder {
             "rng_int",
             "sleep",
             "string_join",
+            "spawn",
+            "await_process",
             "panic",
             "assert",
             "assert_eq",

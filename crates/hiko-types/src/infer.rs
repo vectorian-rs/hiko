@@ -360,6 +360,12 @@ impl InferCtx {
                 ),
             ),
             // System
+            // Process operations (spawn returns Int pid, await takes Int pid)
+            (
+                "spawn",
+                Type::arrow(Type::arrow(Type::unit(), a.clone()), Type::int()),
+            ),
+            ("await_process", Type::arrow(Type::int(), a.clone())),
             ("exit", Type::arrow(Type::int(), Type::unit())),
             ("panic", Type::arrow(Type::string(), a.clone())),
             // Testing

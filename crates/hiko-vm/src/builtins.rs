@@ -1677,6 +1677,16 @@ pub(crate) fn bi_panic(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     }
 }
 
+/// Placeholder — actual spawn logic is in VM::call_builtin.
+pub(crate) fn bi_spawn_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Err("spawn: must be called within a runtime".into())
+}
+
+/// Placeholder — actual await logic is in VM::call_builtin.
+pub(crate) fn bi_await_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Err("await_process: must be called within a runtime".into())
+}
+
 pub(crate) fn bi_assert(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
@@ -1786,6 +1796,8 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("exec", bi_exec),
         ("sleep", bi_sleep),
         ("string_join", bi_string_join),
+        ("spawn", bi_spawn_placeholder),
+        ("await_process", bi_await_placeholder),
         ("exit", bi_exit),
         ("panic", bi_panic),
         ("assert", bi_assert),

@@ -15,11 +15,23 @@ pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
 
 /// Outcome of a run_slice call.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum RunResult {
+    /// Program completed normally.
     Done,
+    /// Reduction budget exhausted; can be resumed.
     Yielded,
+    /// Program failed with an error.
     Failed(String),
+    /// Process requested to spawn a child.
+    /// Contains (proto_idx, serialized_captures).
+    Spawn {
+        proto_idx: usize,
+        captures: Vec<crate::sendable::SendableValue>,
+    },
+    /// Process requested to await a child result.
+    /// Contains the child Pid as u64.
+    Await(u64),
 }
 
 #[derive(Debug)]
@@ -53,8 +65,8 @@ struct HandlerFrame {
 }
 
 pub struct VM {
-    heap: Heap,
-    stack: Vec<Value>,
+    pub heap: Heap,
+    pub stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: Vec<Value>,
     global_names: HashMap<String, usize>,
@@ -70,6 +82,20 @@ pub struct VM {
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
+    spawn_builtin_id: Option<u16>,
+    await_builtin_id: Option<u16>,
+    /// Pending runtime request from a spawn/await builtin.
+    pending_runtime_request: Option<RuntimeRequest>,
+}
+
+/// A request from a builtin to the runtime.
+#[derive(Debug)]
+pub enum RuntimeRequest {
+    Spawn {
+        proto_idx: usize,
+        captures: Vec<crate::sendable::SendableValue>,
+    },
+    Await(u64),
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -147,6 +173,41 @@ impl VM {
             exec_builtin_id: None,
             print_builtin_id: None,
             println_builtin_id: None,
+            spawn_builtin_id: None,
+            await_builtin_id: None,
+            pending_runtime_request: None,
+        }
+    }
+
+    /// Set up the VM to execute a closure prototype with the given captures.
+    /// Used by the runtime to start child processes.
+    pub fn setup_closure_call(&mut self, proto_idx: usize, captures: &[Value]) {
+        // Push Unit as the argument (fn () => ...)
+        self.stack.push(Value::Unit);
+        // Push a call frame for the closure
+        self.frames.push(CallFrame {
+            proto_idx,
+            ip: 0,
+            base: 0,
+            captures: Rc::from(captures),
+        });
+    }
+
+    /// Take a pending runtime request (if any).
+    pub fn take_runtime_request(&mut self) -> Option<RuntimeRequest> {
+        self.pending_runtime_request.take()
+    }
+
+    /// Push a value onto the stack (used by runtime to inject results).
+    pub fn push_value(&mut self, value: Value) {
+        self.stack.push(value);
+    }
+
+    /// Get the compiled program (for cloning to child processes).
+    pub fn get_program(&self) -> CompiledProgram {
+        CompiledProgram {
+            main: self.main_chunk.clone(),
+            functions: self.protos.clone(),
         }
     }
 
@@ -170,6 +231,8 @@ impl VM {
             "print" => self.print_builtin_id = Some(idx),
             "println" => self.println_builtin_id = Some(idx),
             "exec" => self.exec_builtin_id = Some(idx),
+            "spawn" => self.spawn_builtin_id = Some(idx),
+            "await_process" => self.await_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -339,12 +402,40 @@ impl VM {
         }
 
         let result = self.dispatch();
-        // After slice: clear slice fuel, keep fuel=None for next slice
         self.fuel = None;
+
+        // Check for pending runtime request (spawn/await)
+        if let Some(req) = self.pending_runtime_request.take() {
+            return match req {
+                RuntimeRequest::Spawn {
+                    proto_idx,
+                    captures,
+                } => RunResult::Spawn {
+                    proto_idx,
+                    captures,
+                },
+                RuntimeRequest::Await(pid) => RunResult::Await(pid),
+            };
+        }
 
         match result {
             Ok(()) => RunResult::Done,
-            Err(e) if e.is_fuel_exhausted() => RunResult::Yielded,
+            Err(e) if e.is_fuel_exhausted() => {
+                // Check again — request might have been set just before fuel ran out
+                if let Some(req) = self.pending_runtime_request.take() {
+                    return match req {
+                        RuntimeRequest::Spawn {
+                            proto_idx,
+                            captures,
+                        } => RunResult::Spawn {
+                            proto_idx,
+                            captures,
+                        },
+                        RuntimeRequest::Await(pid) => RunResult::Await(pid),
+                    };
+                }
+                RunResult::Yielded
+            }
             Err(e) => RunResult::Failed(e.message),
         }
     }
@@ -391,6 +482,70 @@ impl VM {
         arity: usize,
     ) -> Result<(), RuntimeError> {
         let first_arg = self.stack[callee_pos + 1];
+
+        // Spawn: extract closure, serialize captures, signal runtime
+        if self.spawn_builtin_id == Some(builtin_id) {
+            let closure_val = self.stack[callee_pos + 1];
+            match closure_val {
+                Value::Heap(r) => match self.heap.get(r) {
+                    Ok(HeapObject::Closure {
+                        proto_idx,
+                        captures,
+                    }) => {
+                        let mut serialized = Vec::new();
+                        for &v in captures.iter() {
+                            serialized.push(crate::sendable::serialize(v, &self.heap).map_err(
+                                |e| RuntimeError {
+                                    message: format!("spawn: {e}"),
+                                },
+                            )?);
+                        }
+                        self.pending_runtime_request = Some(RuntimeRequest::Spawn {
+                            proto_idx: *proto_idx,
+                            captures: serialized,
+                        });
+                        self.stack.truncate(callee_pos);
+                        // Push a placeholder — runtime will replace with Pid
+                        self.push(Value::Unit)?;
+                        // Stop execution so runtime can handle the request
+                        return Err(RuntimeError {
+                            message: "fuel exhausted (runtime request)".into(),
+                        });
+                    }
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "spawn: expected a function".into(),
+                        });
+                    }
+                },
+                _ => {
+                    return Err(RuntimeError {
+                        message: "spawn: expected a function".into(),
+                    });
+                }
+            }
+        }
+
+        // Await: signal runtime to block until child completes
+        if self.await_builtin_id == Some(builtin_id) {
+            let pid_val = self.stack[callee_pos + 1];
+            match pid_val {
+                Value::Int(pid) => {
+                    self.pending_runtime_request = Some(RuntimeRequest::Await(pid as u64));
+                    self.stack.truncate(callee_pos);
+                    // Push placeholder — runtime will replace with result
+                    self.push(Value::Unit)?;
+                    return Err(RuntimeError {
+                        message: "fuel exhausted (runtime request)".into(),
+                    });
+                }
+                _ => {
+                    return Err(RuntimeError {
+                        message: "await_process: expected Int (pid)".into(),
+                    });
+                }
+            }
+        }
 
         // Exec is fully intercepted: whitelist check + timeout
         if self.exec_builtin_id == Some(builtin_id) {
