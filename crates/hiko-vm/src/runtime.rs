@@ -150,48 +150,66 @@ impl Runtime {
 
     /// Handle an await request: block parent or resume with result.
     fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid) {
-        // Check child status without holding a mutable borrow
-        let child_status = self.processes.get(&child_pid).map(|c| match &c.status {
-            ProcessStatus::Done => "done",
-            ProcessStatus::Failed(_) => "failed",
-            _ => "running",
-        });
+        // Extract child state as an owned value to avoid borrow conflicts
+        enum ChildState {
+            Done,
+            Failed(String),
+            Running,
+            NotFound,
+            NotChild,
+        }
 
-        match child_status {
-            Some("done") => {
-                // Serialize child's return value
+        let child_state = match self.processes.get(&child_pid) {
+            None => ChildState::NotFound,
+            Some(child) => {
+                // Parent-only await: only the spawning parent may await
+                if child.parent != Some(parent_pid) {
+                    ChildState::NotChild
+                } else {
+                    match &child.status {
+                        ProcessStatus::Done => ChildState::Done,
+                        ProcessStatus::Failed(msg) => ChildState::Failed(msg.clone()),
+                        _ => ChildState::Running,
+                    }
+                }
+            }
+        };
+
+        match child_state {
+            ChildState::Done => {
                 let sendable = {
-                    let child = self.processes.get(&child_pid).unwrap();
-                    let child_val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    serialize(child_val, &child.vm.heap)
-                        .unwrap_or(crate::sendable::SendableValue::Unit)
+                    let child = &self.processes[&child_pid];
+                    let val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
+                    serialize(val, &child.vm.heap).unwrap_or(crate::sendable::SendableValue::Unit)
                 };
-                // Deserialize into parent's heap
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.vm.stack.pop(); // remove Unit placeholder
+                parent.vm.stack.pop();
                 let val = deserialize(sendable, &mut parent.vm.heap);
                 parent.vm.push_value(val);
                 self.scheduler.enqueue(parent_pid);
             }
-            Some("failed") => {
-                let msg = match &self.processes[&child_pid].status {
-                    ProcessStatus::Failed(m) => m.clone(),
-                    _ => "unknown".into(),
-                };
+            ChildState::Failed(msg) => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
                 self.scheduler.remove(parent_pid);
             }
-            Some(_) => {
-                // Child still running — block parent
+            ChildState::Running => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
                 self.waiters.entry(child_pid).or_default().push(parent_pid);
             }
-            None => {
+            ChildState::NotFound => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status =
                     ProcessStatus::Failed(format!("await: unknown process {:?}", child_pid));
+                self.scheduler.remove(parent_pid);
+            }
+            ChildState::NotChild => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(format!(
+                    "await: process {:?} is not a child of {:?}",
+                    child_pid, parent_pid
+                ));
                 self.scheduler.remove(parent_pid);
             }
         }

@@ -44,6 +44,10 @@ impl RuntimeError {
         self.message.starts_with("fuel exhausted")
     }
 
+    pub fn is_runtime_request(&self) -> bool {
+        self.message == "runtime request"
+    }
+
     pub fn is_heap_limit(&self) -> bool {
         self.message.starts_with("heap limit exceeded")
     }
@@ -420,22 +424,11 @@ impl VM {
 
         match result {
             Ok(()) => RunResult::Done,
-            Err(e) if e.is_fuel_exhausted() => {
-                // Check again — request might have been set just before fuel ran out
-                if let Some(req) = self.pending_runtime_request.take() {
-                    return match req {
-                        RuntimeRequest::Spawn {
-                            proto_idx,
-                            captures,
-                        } => RunResult::Spawn {
-                            proto_idx,
-                            captures,
-                        },
-                        RuntimeRequest::Await(pid) => RunResult::Await(pid),
-                    };
-                }
+            Err(e) if e.is_runtime_request() => {
+                // Should have been caught by the check above — this is a fallback
                 RunResult::Yielded
             }
+            Err(e) if e.is_fuel_exhausted() => RunResult::Yielded,
             Err(e) => RunResult::Failed(e.message),
         }
     }
@@ -507,9 +500,8 @@ impl VM {
                         self.stack.truncate(callee_pos);
                         // Push a placeholder — runtime will replace with Pid
                         self.push(Value::Unit)?;
-                        // Stop execution so runtime can handle the request
                         return Err(RuntimeError {
-                            message: "fuel exhausted (runtime request)".into(),
+                            message: "runtime request".into(),
                         });
                     }
                     _ => {
@@ -533,10 +525,9 @@ impl VM {
                 Value::Int(pid) => {
                     self.pending_runtime_request = Some(RuntimeRequest::Await(pid as u64));
                     self.stack.truncate(callee_pos);
-                    // Push placeholder — runtime will replace with result
                     self.push(Value::Unit)?;
                     return Err(RuntimeError {
-                        message: "fuel exhausted (runtime request)".into(),
+                        message: "runtime request".into(),
                     });
                 }
                 _ => {
