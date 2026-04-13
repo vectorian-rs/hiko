@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 
 use crate::io_backend::{IoBackend, IoToken, MockIoBackend};
-use crate::process::{BlockReason, Pid, Process, ProcessStatus};
+use crate::process::{BlockReason, Pid, Process, ProcessStatus, Scope, ScopeId};
 use crate::runtime_ops::{
     ChildState, check_child_state, create_child_vm, deliver_message, deliver_result_to_parent,
     prepare_delivery,
@@ -22,6 +22,7 @@ struct ProcessTable {
     processes: DashMap<Pid, Process>,
     waiters: DashMap<Pid, Vec<Pid>>,
     io_waiters: DashMap<IoToken, Pid>,
+    scopes: DashMap<ScopeId, Scope>,
 }
 
 impl ProcessTable {
@@ -30,6 +31,7 @@ impl ProcessTable {
             processes: DashMap::new(),
             waiters: DashMap::new(),
             io_waiters: DashMap::new(),
+            scopes: DashMap::new(),
         }
     }
 
@@ -288,6 +290,12 @@ fn worker_loop(
                 table.return_process(process);
                 table.io_waiters.insert(token, pid);
                 io_backend.register(token, io_request);
+            }
+            RunResult::Cancelled => {
+                process.status = ProcessStatus::Failed("cancelled".into());
+                table.return_process(process);
+                scheduler.remove(pid);
+                wake_waiters(table, scheduler, pid);
             }
         }
     }

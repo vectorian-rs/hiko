@@ -41,11 +41,12 @@ pub enum RunResult {
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
     /// Process performed an unhandled effect handled by the runtime.
-    /// Continuation is saved in process.blocked_continuation.
     RuntimeEffect {
         tag: u16,
         payload: crate::sendable::SendableValue,
     },
+    /// Process was cancelled at a suspension point.
+    Cancelled,
 }
 
 #[derive(Debug)]
@@ -112,6 +113,8 @@ pub struct VM {
     effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
     /// Saved continuation when blocked on runtime I/O. GC root.
     pub blocked_continuation: Option<GcRef>,
+    /// Cooperative cancellation flag. Checked at suspension points.
+    pub cancelled: bool,
 }
 
 /// A request from a builtin to the runtime.
@@ -227,6 +230,7 @@ impl VM {
             pending_runtime_request: None,
             runtime_effect_tags: std::collections::HashSet::new(),
             blocked_continuation: None,
+            cancelled: false,
         }
     }
 
@@ -472,6 +476,11 @@ impl VM {
             None => reductions,
         };
         self.fuel = Some(effective);
+
+        // Cancellation check before execution
+        if self.cancelled {
+            return RunResult::Cancelled;
+        }
 
         // If no frames, this is a fresh start — push the main frame
         if self.frames.is_empty() {

@@ -122,6 +122,12 @@ impl Runtime {
                     process.status =
                         ProcessStatus::Failed("runtime effects require ThreadedRuntime".into());
                 }
+                RunResult::Cancelled => {
+                    let process = self.processes.get_mut(&pid).unwrap();
+                    process.status = ProcessStatus::Failed("cancelled".into());
+                    self.scheduler.remove(pid);
+                    self.wake_and_deliver_results(pid);
+                }
             }
         }
 
