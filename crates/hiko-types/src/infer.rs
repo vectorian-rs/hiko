@@ -366,6 +366,11 @@ impl InferCtx {
                 Type::arrow(Type::arrow(Type::unit(), a.clone()), Type::int()),
             ),
             ("await_process", Type::arrow(Type::int(), a.clone())),
+            (
+                "send_message",
+                Type::arrow(Type::Tuple(vec![Type::int(), a.clone()]), Type::unit()),
+            ),
+            ("receive_message", Type::arrow(Type::unit(), a.clone())),
             ("exit", Type::arrow(Type::int(), Type::unit())),
             ("panic", Type::arrow(Type::string(), a.clone())),
             // Testing

@@ -105,6 +105,12 @@ impl Runtime {
                     let child_pid = Pid(child_pid_val);
                     self.handle_await(pid, child_pid);
                 }
+                RunResult::Send { target_pid, value } => {
+                    self.handle_send(pid, Pid(target_pid), value);
+                }
+                RunResult::Receive => {
+                    self.handle_receive(pid);
+                }
             }
         }
 
@@ -212,6 +218,55 @@ impl Runtime {
                 ));
                 self.scheduler.remove(parent_pid);
             }
+        }
+    }
+
+    /// Handle a send request: push message to target's mailbox.
+    fn handle_send(
+        &mut self,
+        sender_pid: Pid,
+        target_pid: Pid,
+        value: crate::sendable::SendableValue,
+    ) {
+        match self.processes.get_mut(&target_pid) {
+            Some(target) => {
+                if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
+                    // Target is waiting — deliver directly, skip mailbox round-trip
+                    target.status = ProcessStatus::Runnable;
+                    target.vm.stack.pop();
+                    let val = deserialize(value, &mut target.vm.heap);
+                    target.vm.push_value(val);
+                    self.scheduler.enqueue(target_pid);
+                } else {
+                    // Target is running — queue in mailbox
+                    target.mailbox.push_back(value);
+                }
+                // Resume sender
+                self.scheduler.enqueue(sender_pid);
+            }
+            None => {
+                let sender = self.processes.get_mut(&sender_pid).unwrap();
+                sender.status = ProcessStatus::Failed(format!(
+                    "send_message: unknown process {:?}",
+                    target_pid
+                ));
+                self.scheduler.remove(sender_pid);
+            }
+        }
+    }
+
+    /// Handle a receive request: pop from mailbox or block.
+    fn handle_receive(&mut self, pid: Pid) {
+        let process = self.processes.get_mut(&pid).unwrap();
+        if let Some(msg) = process.mailbox.pop_front() {
+            // Message available — deliver immediately
+            process.vm.stack.pop(); // remove placeholder
+            let val = deserialize(msg, &mut process.vm.heap);
+            process.vm.push_value(val);
+            self.scheduler.enqueue(pid);
+        } else {
+            // No messages — block until one arrives
+            process.status = ProcessStatus::Blocked(BlockReason::Receive);
         }
     }
 
@@ -406,5 +461,76 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.get_output(pid);
         assert_eq!(output, vec!["30\n"]);
+    }
+
+    #[test]
+    #[test]
+    fn test_send_receive_basic() {
+        // Child receives a message and returns it
+        let program = compile(
+            "val child = spawn (fn () =>\n\
+               let val (msg : Int) = receive_message ()\n\
+               in msg end)\n\
+             val _ = send_message (child, 99)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["99\n"]);
+    }
+
+    #[test]
+    fn test_send_receive_fifo_order() {
+        // Child receives 3 messages, returns their sum
+        let program = compile(
+            "val child = spawn (fn () =>\n\
+               let val (a : Int) = receive_message ()\n\
+                   val (b : Int) = receive_message ()\n\
+                   val (c : Int) = receive_message ()\n\
+               in a + b + c end)\n\
+             val _ = send_message (child, 10)\n\
+             val _ = send_message (child, 20)\n\
+             val _ = send_message (child, 30)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["60\n"]);
+    }
+
+    #[test]
+    fn test_receive_blocks_until_message() {
+        // Child calls receive before parent sends
+        let program = compile(
+            "val child = spawn (fn () =>\n\
+               let val (msg : Int) = receive_message ()\n\
+               in msg end)\n\
+             val _ = send_message (child, 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["42\n"]);
+    }
+
+    #[test]
+    fn test_send_to_dead_process() {
+        let program = compile("val _ = send_message (999, 42)");
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        match &runtime.processes[&pid].status {
+            ProcessStatus::Failed(msg) => assert!(msg.contains("unknown process")),
+            other => panic!("expected Failed, got {:?}", other),
+        }
     }
 }
