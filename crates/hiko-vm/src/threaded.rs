@@ -135,22 +135,26 @@ impl ThreadedRuntime {
                 let io_waiters = self.table.io_waiters.lock().unwrap();
                 if let Some(&pid) = io_waiters.get(&token) {
                     drop(io_waiters);
-                    // Deliver I/O result to the blocked process
                     if let Some(mut process) = self.table.processes.get_mut(&pid) {
-                        let val = match result {
+                        match result {
                             crate::io_backend::IoResult::Ok(sv) => {
-                                deliver_message(&mut process.vm, sv);
-                                true
+                                // Deserialize result into process heap
+                                let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
+                                // If process has a blocked continuation (effect-based I/O),
+                                // resume it. Otherwise use deliver_message (builtin I/O).
+                                if process.vm.blocked_continuation.is_some() {
+                                    process.vm.resume_blocked(val);
+                                } else {
+                                    process.vm.stack.pop(); // remove placeholder
+                                    process.vm.push_value(val);
+                                }
+                                process.status = ProcessStatus::Runnable;
+                                drop(process);
+                                self.scheduler.enqueue(pid);
                             }
                             crate::io_backend::IoResult::Err(msg) => {
                                 process.status = ProcessStatus::Failed(format!("I/O error: {msg}"));
-                                false
                             }
-                        };
-                        if val {
-                            process.status = ProcessStatus::Runnable;
-                            drop(process);
-                            self.scheduler.enqueue(pid);
                         }
                     }
                     self.table.io_waiters.lock().unwrap().remove(&token);
@@ -246,6 +250,19 @@ fn worker_loop(
                 table.return_process(process);
                 table.io_waiters.lock().unwrap().insert(token, pid);
                 io_backend.register(token, request);
+            }
+            RunResult::RuntimeEffect { tag, payload } => {
+                // Effect-based I/O: process has saved its continuation.
+                // Map the effect tag to an I/O request and register with backend.
+                let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
+                let io_request = crate::io_backend::IoRequest::Custom {
+                    operation: format!("effect_{tag}"),
+                    payload,
+                };
+                process.status = ProcessStatus::Blocked(BlockReason::Io(token));
+                table.return_process(process);
+                table.io_waiters.lock().unwrap().insert(token, pid);
+                io_backend.register(token, io_request);
             }
         }
     }

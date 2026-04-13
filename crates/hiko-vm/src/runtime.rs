@@ -113,10 +113,14 @@ impl Runtime {
                     self.handle_receive(pid);
                 }
                 RunResult::Io(_req) => {
-                    // Single-threaded runtime: I/O not supported, fail
                     let process = self.processes.get_mut(&pid).unwrap();
                     process.status =
                         ProcessStatus::Failed("async I/O requires ThreadedRuntime".into());
+                }
+                RunResult::RuntimeEffect { .. } => {
+                    let process = self.processes.get_mut(&pid).unwrap();
+                    process.status =
+                        ProcessStatus::Failed("runtime effects require ThreadedRuntime".into());
                 }
             }
         }

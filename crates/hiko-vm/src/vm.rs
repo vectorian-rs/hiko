@@ -40,6 +40,12 @@ pub enum RunResult {
     Receive,
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
+    /// Process performed an unhandled effect handled by the runtime.
+    /// Continuation is saved in process.blocked_continuation.
+    RuntimeEffect {
+        tag: u16,
+        payload: crate::sendable::SendableValue,
+    },
 }
 
 #[derive(Debug)]
@@ -100,6 +106,10 @@ pub struct VM {
     receive_builtin_id: Option<u16>,
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
+    /// Effect tags handled by the runtime (I/O effects).
+    runtime_effect_tags: std::collections::HashSet<u16>,
+    /// Saved continuation when blocked on runtime I/O. GC root.
+    pub blocked_continuation: Option<GcRef>,
 }
 
 /// A request from a builtin to the runtime.
@@ -116,6 +126,12 @@ pub enum RuntimeRequest {
     },
     Receive,
     Io(crate::io_backend::IoRequest),
+    /// An unhandled effect that the runtime should handle as I/O.
+    /// The process has saved its continuation in blocked_continuation.
+    RuntimeEffect {
+        tag: u16,
+        payload: crate::sendable::SendableValue,
+    },
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -206,6 +222,8 @@ impl VM {
             send_builtin_id: None,
             receive_builtin_id: None,
             pending_runtime_request: None,
+            runtime_effect_tags: std::collections::HashSet::new(),
+            blocked_continuation: None,
         }
     }
 
@@ -221,6 +239,25 @@ impl VM {
             base: 0,
             captures: Arc::from(captures),
         });
+    }
+
+    /// Register an effect tag as runtime-handled (I/O).
+    /// When this effect is performed with no user handler,
+    /// the VM suspends instead of erroring.
+    pub fn register_runtime_effect(&mut self, tag: u16) {
+        self.runtime_effect_tags.insert(tag);
+    }
+
+    /// Resume a blocked continuation with a result value.
+    /// Used by the runtime after I/O completion.
+    pub fn resume_blocked(&mut self, result: Value) {
+        if let Some(cont_ref) = self.blocked_continuation.take() {
+            // Push the continuation and result, then let Resume opcode handle it
+            self.stack.push(Value::Heap(cont_ref));
+            self.stack.push(result);
+            // We need to execute Resume manually since we're not in the dispatch loop
+            // The dispatch loop will handle it on the next run_slice
+        }
     }
 
     /// Take a pending runtime request (if any).
@@ -450,6 +487,9 @@ impl VM {
                 RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
                 RuntimeRequest::Receive => RunResult::Receive,
                 RuntimeRequest::Io(req) => RunResult::Io(req),
+                RuntimeRequest::RuntimeEffect { tag, payload } => {
+                    RunResult::RuntimeEffect { tag, payload }
+                }
             };
         }
 
@@ -1240,20 +1280,81 @@ impl VM {
                     let effect_tag = self.read_u16()?;
                     let payload = self.pop()?;
 
-                    let (h_idx, clause_ip) = self
-                        .handlers
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find_map(|(hi, h)| {
+                    // Step 1: look for user handler
+                    let user_handler =
+                        self.handlers.iter().enumerate().rev().find_map(|(hi, h)| {
                             h.clauses
                                 .iter()
                                 .find(|(t, _)| *t == effect_tag)
                                 .map(|(_, ip)| (hi, *ip))
-                        })
-                        .ok_or_else(|| RuntimeError {
-                            message: format!("unhandled effect (tag {effect_tag})"),
-                        })?;
+                        });
+
+                    // Step 2: if no user handler, check runtime effect table
+                    if user_handler.is_none() && self.runtime_effect_tags.contains(&effect_tag) {
+                        // Capture continuation: save entire stack and frames
+                        // above the bottom frame (frame 0 is the main frame)
+                        let save_from = if self.frames.len() > 1 {
+                            self.frames[1].base
+                        } else {
+                            self.stack.len()
+                        };
+                        let saved_stack = self.stack.split_off(save_from);
+
+                        let mut saved_frames = Vec::new();
+                        for frame in &self.frames[1..] {
+                            saved_frames.push(SavedFrame {
+                                proto_idx: frame.proto_idx,
+                                ip: frame.ip,
+                                base_offset: frame.base.saturating_sub(save_from),
+                                captures: frame.captures.clone(),
+                            });
+                        }
+                        // Also save current frame (frame 0) IP so we can resume
+                        let main_frame = &self.frames[0];
+                        saved_frames.insert(
+                            0,
+                            SavedFrame {
+                                proto_idx: main_frame.proto_idx,
+                                ip: main_frame.ip,
+                                base_offset: 0,
+                                captures: main_frame.captures.clone(),
+                            },
+                        );
+
+                        let cont = self.alloc(HeapObject::Continuation {
+                            saved_frames,
+                            saved_stack,
+                        });
+
+                        // Store continuation in blocked slot
+                        self.blocked_continuation = Some(match cont {
+                            Value::Heap(r) => r,
+                            _ => unreachable!(),
+                        });
+
+                        // Serialize payload for runtime
+                        let payload_sendable = crate::sendable::serialize(payload, &self.heap)
+                            .map_err(|e| RuntimeError {
+                                message: format!("effect payload not sendable: {e}"),
+                            })?;
+
+                        self.pending_runtime_request = Some(RuntimeRequest::RuntimeEffect {
+                            tag: effect_tag,
+                            payload: payload_sendable,
+                        });
+
+                        // Truncate frames to just the main frame
+                        self.frames.truncate(1);
+
+                        return Err(RuntimeError {
+                            message: "runtime request".into(),
+                        });
+                    }
+
+                    // Step 3: no user handler and not runtime-handled → error
+                    let (h_idx, clause_ip) = user_handler.ok_or_else(|| RuntimeError {
+                        message: format!("unhandled effect (tag {effect_tag})"),
+                    })?;
 
                     let handler = self.handlers.remove(h_idx);
                     self.handlers.truncate(h_idx);
