@@ -1,0 +1,73 @@
+(* effect_io.hml -- Effect-based async I/O
+ *
+ * Demonstrates direct-style async without function coloring.
+ * Effects are intercepted by the runtime — no user handler needed.
+ *
+ * NOTE: Requires ThreadedRuntime with an I/O backend.
+ * With MockIoBackend, Sleep completes instantly and HttpGet
+ * echoes the URL back. A real backend would do actual I/O.
+ *)
+
+use "../stdlib/io.hml"
+
+(* --- Sleep example ---
+ *
+ * perform Sleep 1000 suspends the process for 1 second.
+ * No callback, no async/await, no function coloring.
+ *)
+
+val _ = println "before sleep"
+val sleep_result = perform Sleep 0
+val _ = case sleep_result of
+    IoOk _ => println "after sleep (ok)"
+  | IoErr e => println ("sleep failed: " ^ e)
+
+(* --- HttpGet example ---
+ *
+ * perform HttpGet url suspends the process until the HTTP
+ * response arrives. The runtime handles the network call.
+ *
+ * With MockIoBackend, this echoes the URL back as the result.
+ * With a real backend, it would return the response body.
+ *)
+
+val _ = println "fetching..."
+val http_result = perform HttpGet "https://api.example.com/data"
+val _ = case http_result of
+    IoOk body => println ("got response: " ^ body)
+  | IoErr e => println ("http failed: " ^ e)
+
+(* --- Concurrent I/O via spawn ---
+ *
+ * Two HTTP requests running in parallel.
+ * Each child process performs its own effect.
+ * The runtime schedules them across worker threads.
+ *)
+
+fun fetch url = perform HttpGet url
+
+val t1 = spawn (fn () => fetch "https://api.example.com/users")
+val t2 = spawn (fn () => fetch "https://api.example.com/posts")
+
+val r1 = await_process t1
+val r2 = await_process t2
+
+val _ = case (r1, r2) of
+    (IoOk a, IoOk b) => println ("concurrent fetch done: " ^ a ^ " + " ^ b)
+  | _ => println "one or both fetches failed"
+
+(* --- User handler overrides runtime (testing) ---
+ *
+ * If a user handler is installed, it takes priority.
+ * The runtime never sees the effect.
+ * This makes testing trivial — mock at the language level.
+ *)
+
+val mock_result =
+  handle perform HttpGet "https://should.not.hit.network"
+  with return x => x
+     | HttpGet url k => resume k (IoOk ("mocked: " ^ url))
+
+val _ = case mock_result of
+    IoOk body => println body
+  | IoErr _ => println "unexpected error"
