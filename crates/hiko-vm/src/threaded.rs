@@ -120,7 +120,8 @@ impl ThreadedRuntime {
 
     pub fn spawn_root(&self, program: CompiledProgram) -> Pid {
         let pid = self.new_pid();
-        let vm = VM::new(program);
+        let mut vm = VM::new(program);
+        crate::runtime_ops::register_runtime_effects(&mut vm);
         let process = Process::new(pid, vm, None);
         self.table.insert(process);
         self.scheduler.enqueue(pid);
@@ -521,5 +522,21 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["99\n"]);
+    }
+
+    #[test]
+    fn test_effect_based_io_sleep() {
+        // Effect-based I/O: Sleep effect handled by runtime
+        // MockIoBackend completes immediately
+        let program = compile(
+            "effect Sleep of Int\n\
+             val _ = perform Sleep 0\n\
+             val _ = println \"after sleep\"",
+        );
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["after sleep\n"]);
     }
 }

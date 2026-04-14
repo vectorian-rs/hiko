@@ -110,6 +110,20 @@ pub fn make_io_err(vm: &mut VM, message: &str) -> Value {
     }))
 }
 
+/// Known runtime-handled effect names.
+/// Effects with these names are automatically registered as runtime-handled
+/// when a VM is created, so `perform` suspends instead of erroring.
+pub const RUNTIME_EFFECT_NAMES: &[&str] = &["HttpGet", "Sleep"];
+
+/// Register known runtime effects on a VM based on its compiled effect metadata.
+pub fn register_runtime_effects(vm: &mut VM) {
+    for meta in vm.effect_metadata.clone() {
+        if RUNTIME_EFFECT_NAMES.contains(&meta.name.as_str()) {
+            vm.register_runtime_effect(meta.tag);
+        }
+    }
+}
+
 /// Serialize the result value from a finished process.
 pub fn serialize_result(vm: &VM) -> SendableValue {
     let val = vm.stack.last().copied().unwrap_or(Value::Unit);

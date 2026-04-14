@@ -116,7 +116,7 @@ pub struct VM {
     /// Effect tags handled by the runtime (I/O effects).
     runtime_effect_tags: std::collections::HashSet<u16>,
     /// Effect metadata from compiled program (name → tag).
-    effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
+    pub effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
     /// Saved continuation when blocked on runtime I/O. GC root.
     pub blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
@@ -266,13 +266,61 @@ impl VM {
 
     /// Resume a blocked continuation with a result value.
     /// Used by the runtime after I/O completion.
+    /// Restores the saved frames and stack, then pushes the result
+    /// as the return value of `perform`.
     pub fn resume_blocked(&mut self, result: Value) {
         if let Some(cont_ref) = self.blocked_continuation.take() {
-            // Push the continuation and result, then let Resume opcode handle it
-            self.stack.push(Value::Heap(cont_ref));
+            // Get the saved continuation
+            let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
+                Ok(HeapObject::Continuation {
+                    saved_frames,
+                    saved_stack,
+                }) => (saved_frames.clone(), saved_stack.clone()),
+                _ => return, // corrupted continuation — silently fail
+            };
+
+            // Restore saved stack
+            let stack_base = self.stack.len();
+            self.stack.extend_from_slice(&saved_stack);
+
+            // Restore saved frames
+            // The first saved frame was the main frame at suspension time.
+            // Use the current main frame's base as the anchor.
+            let main_base = if self.frames.is_empty() {
+                0
+            } else {
+                self.frames[0].base
+            };
+
+            // Remove all frames above the main frame
+            self.frames.truncate(1);
+
+            for (i, sf) in saved_frames.iter().enumerate() {
+                let frame_base = if i == 0 {
+                    main_base
+                } else {
+                    stack_base + sf.base_offset
+                };
+                if i == 0 && !self.frames.is_empty() {
+                    // Overwrite the main frame with the saved one
+                    self.frames[0] = CallFrame {
+                        proto_idx: sf.proto_idx,
+                        ip: sf.ip,
+                        base: frame_base,
+                        captures: sf.captures.clone(),
+                    };
+                } else {
+                    self.frames.push(CallFrame {
+                        proto_idx: sf.proto_idx,
+                        ip: sf.ip,
+                        base: frame_base,
+                        captures: sf.captures.clone(),
+                    });
+                }
+            }
+
+            // Push the result as the return value of `perform`
             self.stack.push(result);
-            // We need to execute Resume manually since we're not in the dispatch loop
-            // The dispatch loop will handle it on the next run_slice
         }
     }
 
