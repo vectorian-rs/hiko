@@ -50,6 +50,8 @@ pub fn deliver_message(vm: &mut VM, msg: SendableValue) {
 }
 
 /// Create a child VM from a parent's program with serialized captures.
+/// Uses VM::new (all builtins, no restrictions). For capability-aware
+/// child creation, use create_child_vm_from_parent.
 pub fn create_child_vm(
     program: CompiledProgram,
     proto_idx: usize,
@@ -62,6 +64,64 @@ pub fn create_child_vm(
         .collect();
     child_vm.setup_closure_call(proto_idx, &child_captures);
     child_vm
+}
+
+/// Create a child VM that inherits capabilities from the parent VM.
+pub fn create_child_vm_from_parent(
+    parent_vm: &VM,
+    proto_idx: usize,
+    captures: Vec<SendableValue>,
+) -> VM {
+    let mut child_vm = parent_vm.create_child();
+    let child_captures: Vec<Value> = captures
+        .into_iter()
+        .map(|v| deserialize(v, &mut child_vm.heap))
+        .collect();
+    child_vm.setup_closure_call(proto_idx, &child_captures);
+    child_vm
+}
+
+// ── I/O Result construction ──────────────────────────────────────────
+// Matches stdlib/io.hml: datatype io_result = IoOk of String | IoErr of String
+// IoOk = tag 0, IoErr = tag 1
+
+const TAG_IO_OK: u16 = 0;
+const TAG_IO_ERR: u16 = 1;
+
+/// Construct an IoOk(value) in the given VM's heap.
+pub fn make_io_ok(vm: &mut VM, value: Value) -> Value {
+    use smallvec::smallvec;
+    Value::Heap(vm.heap.alloc(crate::value::HeapObject::Data {
+        tag: TAG_IO_OK,
+        fields: smallvec![value],
+    }))
+}
+
+/// Construct an IoErr(message) in the given VM's heap.
+pub fn make_io_err(vm: &mut VM, message: &str) -> Value {
+    use smallvec::smallvec;
+    let msg = Value::Heap(
+        vm.heap
+            .alloc(crate::value::HeapObject::String(message.to_string())),
+    );
+    Value::Heap(vm.heap.alloc(crate::value::HeapObject::Data {
+        tag: TAG_IO_ERR,
+        fields: smallvec![msg],
+    }))
+}
+
+/// Known runtime-handled effect names.
+/// Effects with these names are automatically registered as runtime-handled
+/// when a VM is created, so `perform` suspends instead of erroring.
+pub const RUNTIME_EFFECT_NAMES: &[&str] = &["HttpGet", "Sleep"];
+
+/// Register known runtime effects on a VM based on its compiled effect metadata.
+pub fn register_runtime_effects(vm: &mut VM) {
+    for meta in vm.effect_metadata.clone() {
+        if RUNTIME_EFFECT_NAMES.contains(&meta.name.as_str()) {
+            vm.register_runtime_effect(meta.tag);
+        }
+    }
 }
 
 /// Serialize the result value from a finished process.

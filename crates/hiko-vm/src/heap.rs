@@ -7,6 +7,10 @@ pub struct Heap {
     alloc_since_gc: usize,
     gc_threshold: usize,
     max_objects: Option<usize>,
+    /// Filesystem root for path enforcement (empty = unrestricted).
+    pub fs_root: String,
+    /// Allowed HTTP hosts (empty = unrestricted).
+    pub http_allowed_hosts: Vec<String>,
 }
 
 impl Default for Heap {
@@ -24,6 +28,59 @@ impl Heap {
             alloc_since_gc: 0,
             gc_threshold: 1024,
             max_objects: None,
+            fs_root: String::new(),
+            http_allowed_hosts: Vec::new(),
+        }
+    }
+
+    /// Check if a path is within the allowed filesystem root.
+    pub fn check_fs_path(&self, path: &str) -> Result<String, String> {
+        if self.fs_root.is_empty() {
+            return Ok(path.to_string());
+        }
+        let root = std::path::Path::new(&self.fs_root);
+        let target = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            root.join(path)
+        };
+        // Normalize by resolving .. components
+        let mut normalized = std::path::PathBuf::new();
+        for component in target.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                _ => normalized.push(component),
+            }
+        }
+        if !normalized.starts_with(root) {
+            return Err(format!(
+                "path '{}' is outside allowed root '{}'",
+                path, self.fs_root
+            ));
+        }
+        Ok(normalized.to_string_lossy().to_string())
+    }
+
+    /// Check if a URL's host is allowed.
+    pub fn check_http_host(&self, url: &str) -> Result<(), String> {
+        if self.http_allowed_hosts.is_empty() {
+            return Ok(());
+        }
+        let host = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .and_then(|rest| rest.split('/').next())
+            .and_then(|host_port| host_port.split(':').next())
+            .unwrap_or("");
+        if self.http_allowed_hosts.iter().any(|h| h == host) {
+            Ok(())
+        } else {
+            Err(format!(
+                "host '{}' not in allowed hosts: {:?}",
+                host, self.http_allowed_hosts
+            ))
         }
     }
 

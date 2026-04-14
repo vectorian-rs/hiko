@@ -272,7 +272,10 @@ pub(crate) fn bi_read_file(args: &[Value], heap: &mut Heap) -> Result<Value, Str
         },
         _ => return Err("read_file: expected String".into()),
     };
-    let contents = std::fs::read_to_string(&path).map_err(|e| format!("read_file: {e}"))?;
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("read_file: {e}"))?;
+    let contents = std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file: {e}"))?;
     Ok(Value::Heap(heap.alloc(HeapObject::String(contents))))
 }
 
@@ -298,7 +301,10 @@ pub(crate) fn bi_write_file(args: &[Value], heap: &mut Heap) -> Result<Value, St
         },
         _ => return Err("write_file: expected String".into()),
     };
-    std::fs::write(&path, &contents).map_err(|e| format!("write_file: {e}"))?;
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("write_file: {e}"))?;
+    std::fs::write(&checked_path, &contents).map_err(|e| format!("write_file: {e}"))?;
     Ok(Value::Unit)
 }
 
@@ -441,11 +447,21 @@ pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
         _ => return Err("read_file_tagged: expected String for path".into()),
     };
     let offset = match v_offset {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => {
+            return Err(format!(
+                "read_file_tagged: offset must be non-negative, got {n}"
+            ));
+        }
         _ => return Err("read_file_tagged: expected Int for offset".into()),
     };
     let limit = match v_limit {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => {
+            return Err(format!(
+                "read_file_tagged: limit must be non-negative, got {n}"
+            ));
+        }
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
@@ -1051,6 +1067,8 @@ fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value
 /// Convenience: HTTP GET, returns (status, headers, body_string).
 pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let url = extract_string_arg(args, heap, "http_get")?;
+    heap.check_http_host(&url)
+        .map_err(|e| format!("http_get: {e}"))?;
     let response = ureq::get(&url)
         .call()
         .map_err(|e| format!("http_get: {e}"))?;
@@ -1148,6 +1166,8 @@ fn do_http_request(
     name: &str,
     heap: &mut Heap,
 ) -> Result<(Value, Value, Box<dyn std::io::Read + Send>), String> {
+    heap.check_http_host(url)
+        .map_err(|e| format!("{name}: {e}"))?;
     macro_rules! call_no_body {
         ($req_fn:expr) => {{
             let mut req = $req_fn(url);
@@ -1404,7 +1424,8 @@ pub(crate) fn bi_bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, Str
         _ => return Err("bytes_get: expected Bytes".into()),
     };
     let idx = match v1 {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => return Err(format!("bytes_get: index must be non-negative, got {n}")),
         _ => return Err("bytes_get: expected Int for index".into()),
     };
     if idx >= bytes.len() {
@@ -1433,11 +1454,13 @@ pub(crate) fn bi_bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, S
         _ => return Err("bytes_slice: expected Bytes".into()),
     };
     let start = match v1 {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => return Err(format!("bytes_slice: start must be non-negative, got {n}")),
         _ => return Err("bytes_slice: expected Int for start".into()),
     };
     let len = match v2 {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => return Err(format!("bytes_slice: length must be non-negative, got {n}")),
         _ => return Err("bytes_slice: expected Int for length".into()),
     };
     let end = (start + len).min(bytes.len());

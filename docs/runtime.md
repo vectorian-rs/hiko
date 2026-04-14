@@ -1,102 +1,76 @@
-# Hiko Runtime: Erlang-Style Processes with Local Algebraic Effects
+
+# Hiko Runtime: Effect-Based Async with Isolated Processes
 
 ## Overview
 
-Hiko's runtime executes many isolated processes on a fixed pool of worker threads. Each process has its own VM, heap, stack, and effect handlers. Communication between processes is by message passing only. No mutable state is shared between processes.
+Hiko's runtime executes many **isolated processes** on a fixed pool of worker threads. Each process has its own VM, heap, stack, and effect handlers. No mutable state is shared between processes.
+
+The system exposes **effect-based async I/O with structured concurrency (`spawn` / `await`)**, without function coloring.
 
 This design combines:
-- **Algebraic effects** for direct-style async (no function coloring)
-- **Erlang-style isolation** for safety and simplicity
-- **Arc-shared immutable leaves** for efficient message passing
+
+* **Algebraic effects** for direct-style async
+* **Process isolation** for safety and simple GC
+* **Per-process heaps and GC**
+* **Arc-shared immutable leaves** for efficient data transfer at process boundaries
+
+---
 
 ## Comparison with alternatives
 
-| | Hiko | OCaml Eio | Erlang/BEAM |
-|---|---|---|---|
-| Concurrency unit | Isolated process (own heap) | Fiber (shared heap) | Process (own heap) |
-| Communication | Message passing (copy shape, share leaves) | Shared memory | Message passing (deep copy) |
-| GC | Per-process, independent | Global, stop-the-world | Per-process, independent |
-| Async style | Effects (no coloring) | Effects (no coloring) | Receive loops |
-| Continuations | Local to process | Local to fiber | None |
-| Large payload passing | Zero-copy via `Arc<str>` | Zero-copy (same heap) | Deep copy |
+|                       | Hiko                           | OCaml Eio              | Erlang/BEAM              |
+| --------------------- | ------------------------------ | ---------------------- | ------------------------ |
+| Concurrency unit      | Isolated process (own heap)    | Fiber (shared heap)    | Process (own heap)       |
+| Communication model   | Structured (`spawn` / `await`) | Shared memory          | Message passing          |
+| GC                    | Per-process, independent       | Global, stop-the-world | Per-process, independent |
+| Async style           | Effects (no coloring)          | Effects (no coloring)  | Receive loops            |
+| Continuations         | Local to process               | Local to fiber         | None                     |
+| Large payload passing | Zero-copy via `Arc<str>`       | Zero-copy (same heap)  | Deep copy                |
 
-We borrow from Eio: direct-style async via effects, no function coloring.
-We borrow from Erlang: isolated processes, message passing, per-process GC.
-We add: `Arc`-shared immutable leaves to avoid Erlang's deep copy cost.
+We borrow from Eio: direct-style async via effects.
+We borrow from Erlang: isolated processes and per-process GC.
+We **do not adopt the actor/message-passing programming model**.
+
+---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                    Runtime                        │
-│                                                   │
-│  Scheduler (trait — pluggable)                    │
-│  ├── enqueue / dequeue / remove / reductions      │
-│  │                                                │
-│  Process Table: {Pid → Process}                   │
-│  Waiters: {Pid → [Pid]}                           │
-│  I/O Backend (trait — pluggable)                  │
-│                                                   │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐         │
-│  │ Worker 0 │ │ Worker 1 │ │ Worker N │         │
-│  │ (thread) │ │ (thread) │ │ (thread) │         │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘         │
-│       │             │             │               │
-│  ┌────▼─────┐ ┌────▼─────┐ ┌────▼─────┐         │
-│  │ Process  │ │ Process  │ │ Process  │         │
-│  │ VM+Heap  │ │ VM+Heap  │ │ VM+Heap  │         │
-│  │ Mailbox  │ │ Mailbox  │ │ Mailbox  │         │
-│  └──────────┘ └──────────┘ └──────────┘         │
-│                                                   │
-│  I/O Backend (trait: polling / io_uring / mock)   │
-└──────────────────────────────────────────────────┘
+⟨ Processes, Scheduler, IoBackend ⟩
 ```
+
+Processes are scheduled onto a pool of worker threads. A process may move between threads; ownership of heap and state is always with the process.
+
+---
 
 ## Process
 
-Each process is a complete isolated VM instance.
-
 ```rust
-struct Pid(u64);
-
 struct Process {
     pid: Pid,
     vm: VM,
-    mailbox: VecDeque<SendableValue>,
     status: ProcessStatus,
     parent: Option<Pid>,
     result: Option<SendableValue>,
-}
-
-enum ProcessStatus {
-    Runnable,
-    Blocked(BlockReason),
-    Done,
-    Failed(String),
-}
-
-enum BlockReason {
-    Receive,
-    Await(Pid),
-    Io(IoToken),
+    blocked_continuation: Option<GcRef>, // GC root when suspended
 }
 ```
 
-A process owns:
-- Its VM (heap, stack, frames, handlers, globals)
-- Its mailbox (incoming messages)
-- Its status (runnable, blocked, done)
+Each process owns:
 
-A process does NOT share:
-- Heap objects with other processes
-- Stack frames or continuations
-- Handler state
+* VM (heap, stack, frames, handlers)
+* its continuation when suspended
+* its execution lifecycle
 
-## Message passing
+There is **no mailbox** and no general inter-process messaging in the user model.
+
+---
+
+## Process boundaries and values
 
 ### SendableValue
 
-Only `SendableValue` crosses process boundaries. It contains no process-local references.
+Values that cross process boundaries (e.g., spawn captures, await results):
 
 ```rust
 enum SendableValue {
@@ -113,331 +87,221 @@ enum SendableValue {
 }
 ```
 
-**Rule: copy the shape, share the large immutable leaves.**
+Rule:
 
-- Scalars: copied by value (zero cost)
-- Strings/Bytes: `Arc` clone (atomic increment, zero-copy)
-- Tuples/Lists/Data: structural copy, leaf sharing
+> **Copy the shape, share immutable leaves**
 
-What is NOT sendable: closures, continuations, `Rng` state, `GcRef`.
-
-### Conversion
-
-```rust
-fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String>
-fn deserialize(msg: SendableValue, heap: &mut Heap) -> Value
-```
-
-### HeapObject representation
-
-To enable zero-copy string sharing, the VM's internal string representation uses `Arc<str>`:
-
-```rust
-enum HeapObject {
-    String(Arc<str>),
-    Bytes(Arc<[u8]>),
-    Tuple(Fields),
-    Data { tag: u16, fields: Fields },
-    Rng { state: u64, inc: u64 },
-    Closure { proto_idx: usize, captures: Arc<[Value]> },
-    Continuation { saved_frames: Vec<SavedFrame>, saved_stack: Vec<Value> },
-}
-```
-
-This makes `VM string → SendableValue::String` just `Arc::clone` — one atomic increment.
+---
 
 ## Effects
 
-Effects are **entirely process-local**. No changes to existing effect opcodes (`InstallHandler`, `Perform`, `Resume`).
+Effects are **process-local**, with extended resolution in `perform`.
 
-```
-Process A                     Scheduler
-─────────                     ─────────
-perform Yield 42
-  handler catches it
-  resume k ()
-  continues running           (scheduler never involved)
-  ...
-  fuel runs out               ← Yield to scheduler
-                               enqueue A
-```
+### Resolution order
 
-User-defined algebraic effects are process-local. Scheduler-visible transitions happen only at runtime boundary operations: reduction exhaustion (fuel), `spawn`/`send`/`receive`/`await`, and I/O suspension.
+1. User handler
+2. Runtime-handled effect
+3. Unhandled effect error
 
-### Async I/O via effects
+No new surface syntax is introduced.
+
+---
+
+## Runtime-handled effects (I/O)
+
+Certain effects are intercepted by the runtime when no user handler is present.
+
+### Example
 
 ```sml
-(* User writes blocking-looking code *)
-val data = perform Read fd
+effect HttpGet of String
 
-(* Runtime handler: *)
-(* 1. Capture continuation k *)
-(* 2. Mark process Blocked(Io) *)
-(* 3. Register fd with I/O backend *)
-(* 4. Yield to scheduler *)
-(* 5. When I/O completes: resume k with data *)
+val res = perform HttpGet "https://api.example.com"
 ```
 
-The effect system is the suspension mechanism. The I/O backend is the completion mechanism. The user code looks synchronous.
+### Execution
+
+1. No user handler found
+
+2. Effect matches runtime-handled table
+
+3. VM:
+
+   * captures continuation
+   * stores it in `blocked_continuation`
+   * returns `RuntimeEffect { tag, payload }`
+
+4. Scheduler:
+
+   * marks process `Blocked(Io)`
+   * submits request to I/O backend
+
+5. On completion:
+
+   * result is deserialized into process heap
+   * continuation is resumed
+   * process is re-enqueued
+
+---
+
+## I/O semantics
+
+### One-shot continuations
+
+* Continuations are resumed **exactly once**
+* No multi-shot continuations in v1
+
+### Result-based error handling
+
+All runtime-handled I/O effects return:
+
+```sml
+datatype 'a result = Ok of 'a | Err of Error
+```
+
+Usage:
+
+```sml
+val res = perform HttpGet url
+
+case res of
+  Ok body => ...
+| Err e   => ...
+```
+
+### Rule
+
+> The runtime never kills a process for I/O failure. It always resumes with a `Result`.
+
+---
 
 ## Scheduler
 
-The scheduler is behind a trait so it can be replaced without touching the rest of the runtime.
-
-### Trait
+Scheduler is abstracted via a trait:
 
 ```rust
-/// Scheduling decisions are isolated behind this trait.
-/// The runtime calls into the scheduler; the scheduler never
-/// reaches into runtime internals.
-trait Scheduler: Send + Sync {
-    /// A process became runnable (new, yielded, or unblocked).
+trait Scheduler {
     fn enqueue(&self, pid: Pid);
-
-    /// Block until a runnable process is available, then return it.
-    /// Returns None on shutdown. Called by each worker thread.
     fn dequeue(&self) -> Option<Pid>;
-
-    /// A process finished or failed — remove it from scheduling.
     fn remove(&self, pid: Pid);
-
-    /// Hint: how many reductions to grant this process.
-    /// The scheduler can vary this per process for fairness tuning.
     fn reductions(&self, pid: Pid) -> u64;
 }
 ```
 
-### Bundled implementations
-
-**`FifoScheduler`** (default) — simple FIFO queue. Fixed reduction count. Good enough for most workloads.
-
-```rust
-struct FifoScheduler {
-    queue: Mutex<VecDeque<Pid>>,
-    notify: Condvar,
-    reductions: u64,
-}
-```
-
-Future implementations (not in v1):
-- **`PriorityScheduler`** — per-process priority levels, higher priority dequeued first
-- **`WorkStealingScheduler`** — per-worker queues with stealing for load balance
-- **`FairScheduler`** — tracks accumulated reductions, reduces slice for long-running processes
-
 ### Worker loop
 
-Workers interact with the scheduler only through the trait:
-
 ```
-loop {
-    pid = scheduler.dequeue()          // blocks if empty, None = shutdown
-    if pid is None: break
-    reductions = scheduler.reductions(pid)
-    process = processes.take(pid)
+loop:
+  pid = dequeue()
+  run process for N reductions
 
-    match process.vm.run_slice(reductions) {
-        Yield       → scheduler.enqueue(pid)
-        Done(value) → scheduler.remove(pid); wake awaiters
-        Spawn(fn)   → create child; scheduler.enqueue(child_pid)
-        Send(pid,v) → push to mailbox; scheduler.enqueue(target) if blocked
-        Receive     → pop mailbox or mark blocked
-        Await(pid)  → check done or mark blocked
-        Io(req)     → register with backend; mark blocked
-    }
-}
+  match result:
+    Yield         → enqueue
+    Done          → complete + wake awaiters
+    RuntimeEffect → block + register I/O
+    Await         → block or resume
 ```
 
-The worker loop never makes scheduling decisions — it reports events, the scheduler decides ordering.
+The scheduler only observes:
 
-### Preemption
+* Yield (fuel exhaustion)
+* Block (I/O, await)
+* Done
 
-Each process gets N opcode executions per slice (from `scheduler.reductions(pid)`). After N reductions, the VM yields. No process can starve others. The scheduler controls N, allowing different policies without changing the worker loop.
+---
 
 ## Garbage collection
 
-### Per-process, independent
+### Per-process
 
-Each process has its own heap and its own GC. When one process needs collection, only that process pauses. All other processes continue running.
+* Each process has its own heap
+* GC pauses only that process
+* No global stop-the-world
 
 ### Root set
 
-For one process:
-- Operand stack
-- Call frames (locals, captures)
-- Handler frames
-- Captured continuations
-- Global variables
+Includes:
 
-NOT roots: other processes, scheduler state, mailbox contents.
+* stack
+* frames
+* handlers
+* **blocked_continuation**
 
-### Mailbox boundary
+### Invariant
 
-- Mailbox stores `SendableValue` (outside the process heap)
-- Receiving deserializes into the local heap
-- GC never traces mailbox contents
+> **No pointer from process A's heap into process B's heap**
 
-### Arc leaves and GC
+---
 
-- `Arc<str>` inside `HeapObject` is an opaque Rust payload
-- Collecting a heap object drops the `Arc`, decrementing the refcount
-- The data lives until the last `Arc` is dropped (possibly in another process)
-- No special GC handling needed
+## Structured concurrency
 
-### Key invariant
-
-**No pointer from process A's heap into process B's heap.**
-
-With `SendableValue` as the boundary, this holds naturally.
-
-## User-facing API
+### API
 
 ```sml
-(* Spawn a new process *)
-val child = spawn (fn () => compute_something ())
-
-(* Wait for a process to complete *)
-val result = await child
-
-(* Send a message *)
-val _ = send (child, JStr "hello")
-
-(* Receive a message (blocks until available) *)
-val msg = receive ()
-
-(* Run two things concurrently *)
-fun both f g =
-  let val t1 = spawn f
-      val t2 = spawn g
-  in (await t1, await t2) end
+val pid = spawn (fn () => perform HttpGet url)
+val res = await pid
 ```
+
+### Semantics
+
+* `spawn` creates a new isolated process
+* `await` blocks until completion
+* result is delivered exactly once
+
+---
 
 ## Semantic decisions (v1)
 
-### Await ownership
+### Await
 
-Only the parent may await a child. The child's result is consumed once. Awaiting a non-child pid is a runtime error. This avoids fan-in ambiguity and simplifies the result lifecycle.
+* Only parent may await child
+* Result consumed once
 
-### Failure propagation
+### Spawn
 
-If a child process ends in `Failed(msg)`, `await` in the parent re-raises the error. The parent receives an error, not a silent default. The parent can handle it:
+* Closures are serialized via captured values
+* Non-sendable captures → runtime error
 
-```sml
-datatype 'a result = Ok of 'a | Err of String
+---
 
-fun try_await pid =
-  handle await pid
-  with return x => Ok x
-     | Fail msg _ => Err msg
-```
+## Failure model
 
-### Receive semantics
+| Case                        | Behavior                 |
+| --------------------------- | ------------------------ |
+| Child process failure       | propagated via `await`   |
+| I/O failure                 | returned as `Result.Err` |
+| Runtime invariant violation | process failure          |
 
-v1 receive is **FIFO, first message only**. No selective receive, no pattern-matching on mailbox contents. The first message in the queue is returned, regardless of shape.
-
-Selective receive (Erlang-style `receive ... of pattern => ...`) is a future extension.
-
-### Spawn payload
-
-`spawn` does NOT send a raw closure across process boundaries. The runtime:
-
-1. Extracts the closure's prototype index (bytecode reference)
-2. Serializes captured values as `SendableValue`
-3. Creates a new VM with the same compiled program
-4. Deserializes captured values into the new VM's heap
-5. Begins execution at the closure's entry point
-
-If captured values contain non-sendable types (closures, continuations), `spawn` returns a runtime error.
-
-### Process table ownership
-
-The process table stores processes behind **per-process synchronization**. Workers acquire exclusive access only to the process they are currently running. Other processes remain accessible for mailbox delivery and status queries without blocking the running worker.
-
-```rust
-struct ProcessTable {
-    processes: HashMap<Pid, Mutex<Process>>,
-}
-```
-
-A worker locks one process, runs it, unlocks it. Mailbox delivery locks only the target process's mutex, not the whole table.
-
-## I/O backend
-
-Abstract trait — implementation chosen at runtime startup:
-
-```rust
-trait IoBackend: Send + Sync {
-    fn register(&self, token: IoToken, interest: IoInterest);
-    fn poll(&self, timeout: Duration) -> Vec<(IoToken, IoResult)>;
-}
-```
-
-Supports readiness-based (epoll, kqueue) and completion-based (io_uring) backends. The VM never directly touches the I/O backend.
+---
 
 ## Safety
 
-### Central invariant
+### Enforced by Rust
 
-**No pointer from process A's heap into process B's heap.** Enforced by the `SendableValue` boundary.
+* No shared mutable state
+* `SendableValue` cannot contain `GcRef`
+* `Arc` ensures safe immutable sharing
 
-### What Rust enforces
+### Cannot happen
 
-| Invariant | Mechanism |
-|---|---|
-| `SendableValue` has no `GcRef` | Enum definition — physically can't hold one |
-| `SendableValue` is `Send + Sync + 'static` | Rust type system — `Arc<str>` is `Send + Sync` |
-| Continuations not sendable | Not a variant of `SendableValue` |
-| Closures not sendable | Not a variant — spawn serializes captures separately |
-| `Arc<str>` is thread-safe | `Arc` is `Send + Sync`, immutable content |
+* Data races
+* Cross-process pointer corruption
+* Concurrent GC bugs
 
-### What can go wrong (not memory corruption)
-
-- Memory retention: process holds `Arc<str>` to large string after done with it
-- Deadlock: process A awaits B, B awaits A
-- Starvation: process runs expensive pure computation (mitigated by reduction counting)
-
-### What cannot happen in safe Rust
-
-- Data races on shared mutable state (no shared mutable state)
-- Use-after-free across processes (no cross-process pointers)
-- Concurrent GC bugs (no concurrent GC)
-
-## Implementation milestones
-
-| Milestone | Scope | Threading |
-|---|---|---|
-| 1 | `SendableValue`, `Process`, single-threaded scheduler, `spawn`/`await` | 1 thread |
-| 2 | Thread pool, `crossbeam` channels, work distribution | N threads |
-| 3 | `send`/`receive` mailbox messaging | N threads |
-| 4 | I/O backend trait, `polling`-based implementation | N+1 threads |
-| 5 | `Rc` → `Arc` in VM for work-stealing | N threads |
-| 6 | `HeapObject::String(String)` → `HeapObject::String(Arc<str>)` | N threads |
+---
 
 ## Design principles
 
-1. **Prefer isolation over sharing** — no shared mutable state, ever
-2. **Prefer process isolation and immutable sharing over shared mutable synchronization** — copy the shape, share immutable leaves via `Arc`
-3. **Prefer simplicity over elegance** — explicit state machines, boring Rust code
-4. **Effects are control flow, not I/O** — the runtime interprets effects as I/O
-5. **GC is local** — never stop the world, always stop one process
-6. **The VM doesn't change** — processes are just multiple VM instances
-7. **Pluggable policies** — scheduler and I/O backend are traits, swappable without touching the runtime core
+1. Isolation over sharing
+2. Copy structure, share immutable data
+3. Effects are control flow, not I/O
+4. Runtime interprets effects as I/O
+5. GC is local
+6. Structured concurrency over unstructured messaging
 
-### Central invariant
+---
 
-**No pointer from process A's heap into process B's heap.**
+## Summary
 
-This single rule makes per-process GC correct, eliminates data races, and keeps the runtime simple. Everything else follows from it.
+> Hiko provides effect-based asynchronous programming with isolated processes, enabling direct-style concurrency without shared memory, function coloring, or complex global GC.
 
-### Note on `Arc<[Value]>` in Closure
-
-`Closure { captures: Arc<[Value]> }` is safe **within** one process. The `Arc` shares capture arrays between closures in the same VM. It must never leak into `SendableValue` — `Arc` here means "shared within a process," not "shared across processes."
-
-## Non-goals (v1)
-
-- No shared-heap fibers (Eio-style)
-- No selective receive (Erlang-style pattern-matching on mailbox)
-- No multi-shot continuations
-- No distributed runtime (cross-machine messaging)
-- No shared mutable objects across processes
-- No work-stealing scheduler (v1 uses FIFO)
-- No pre-built I/O backend (v1 focuses on spawn/await/send/receive)

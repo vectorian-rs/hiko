@@ -26,10 +26,19 @@ pub struct FunctionProto {
     pub chunk: Chunk,
 }
 
+/// Metadata about a declared effect for runtime resolution.
+#[derive(Debug, Clone)]
+pub struct EffectMeta {
+    pub name: String,
+    pub tag: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompiledProgram {
     pub main: Chunk,
     pub functions: Vec<FunctionProto>,
+    /// Effect name → tag mapping for runtime-handled effect resolution.
+    pub effects: Vec<EffectMeta>,
 }
 
 impl Chunk {

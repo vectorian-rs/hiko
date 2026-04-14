@@ -40,6 +40,13 @@ pub enum RunResult {
     Receive,
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
+    /// Process performed an unhandled effect handled by the runtime.
+    RuntimeEffect {
+        tag: u16,
+        payload: crate::sendable::SendableValue,
+    },
+    /// Process was cancelled at a suspension point.
+    Cancelled,
 }
 
 #[derive(Debug)]
@@ -89,8 +96,14 @@ pub struct VM {
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
     fuel: Option<u64>,
+    /// Persistent total fuel budget (from VMBuilder.max_fuel). Not reset per slice.
+    max_fuel_remaining: Option<u64>,
     exec_allowed: Vec<String>,
     exec_timeout: u64,
+    /// Filesystem root for path enforcement. Empty means no restriction.
+    fs_root: String,
+    /// Allowed HTTP hosts. Empty means no restriction.
+    http_allowed_hosts: Vec<String>,
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
@@ -100,6 +113,14 @@ pub struct VM {
     receive_builtin_id: Option<u16>,
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
+    /// Effect tags handled by the runtime (I/O effects).
+    runtime_effect_tags: std::collections::HashSet<u16>,
+    /// Effect metadata from compiled program (name → tag).
+    pub effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
+    /// Saved continuation when blocked on runtime I/O. GC root.
+    pub blocked_continuation: Option<GcRef>,
+    /// Cooperative cancellation flag. Checked at suspension points.
+    pub cancelled: bool,
 }
 
 /// A request from a builtin to the runtime.
@@ -116,6 +137,12 @@ pub enum RuntimeRequest {
     },
     Receive,
     Io(crate::io_backend::IoRequest),
+    /// An unhandled effect that the runtime should handle as I/O.
+    /// The process has saved its continuation in blocked_continuation.
+    RuntimeEffect {
+        tag: u16,
+        payload: crate::sendable::SendableValue,
+    },
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -189,6 +216,7 @@ impl VM {
             frames: Vec::new(),
             globals: Vec::new(),
             global_names: HashMap::new(),
+            effect_metadata: program.effects.clone(),
             protos: program.functions,
             main_chunk: program.main,
             output: Vec::new(),
@@ -196,8 +224,11 @@ impl VM {
             handlers: Vec::new(),
             string_cache: HashMap::new(),
             fuel: None,
+            max_fuel_remaining: None,
             exec_allowed: Vec::new(),
             exec_timeout: 30,
+            fs_root: String::new(),
+            http_allowed_hosts: Vec::new(),
             exec_builtin_id: None,
             print_builtin_id: None,
             println_builtin_id: None,
@@ -206,6 +237,9 @@ impl VM {
             send_builtin_id: None,
             receive_builtin_id: None,
             pending_runtime_request: None,
+            runtime_effect_tags: std::collections::HashSet::new(),
+            blocked_continuation: None,
+            cancelled: false,
         }
     }
 
@@ -223,6 +257,73 @@ impl VM {
         });
     }
 
+    /// Register an effect tag as runtime-handled (I/O).
+    /// When this effect is performed with no user handler,
+    /// the VM suspends instead of erroring.
+    pub fn register_runtime_effect(&mut self, tag: u16) {
+        self.runtime_effect_tags.insert(tag);
+    }
+
+    /// Resume a blocked continuation with a result value.
+    /// Used by the runtime after I/O completion.
+    /// Restores the saved frames and stack, then pushes the result
+    /// as the return value of `perform`.
+    pub fn resume_blocked(&mut self, result: Value) {
+        if let Some(cont_ref) = self.blocked_continuation.take() {
+            // Get the saved continuation
+            let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
+                Ok(HeapObject::Continuation {
+                    saved_frames,
+                    saved_stack,
+                }) => (saved_frames.clone(), saved_stack.clone()),
+                _ => return, // corrupted continuation — silently fail
+            };
+
+            // Restore saved stack
+            let stack_base = self.stack.len();
+            self.stack.extend_from_slice(&saved_stack);
+
+            // Restore saved frames
+            // The first saved frame was the main frame at suspension time.
+            // Use the current main frame's base as the anchor.
+            let main_base = if self.frames.is_empty() {
+                0
+            } else {
+                self.frames[0].base
+            };
+
+            // Remove all frames above the main frame
+            self.frames.truncate(1);
+
+            for (i, sf) in saved_frames.iter().enumerate() {
+                let frame_base = if i == 0 {
+                    main_base
+                } else {
+                    stack_base + sf.base_offset
+                };
+                if i == 0 && !self.frames.is_empty() {
+                    // Overwrite the main frame with the saved one
+                    self.frames[0] = CallFrame {
+                        proto_idx: sf.proto_idx,
+                        ip: sf.ip,
+                        base: frame_base,
+                        captures: sf.captures.clone(),
+                    };
+                } else {
+                    self.frames.push(CallFrame {
+                        proto_idx: sf.proto_idx,
+                        ip: sf.ip,
+                        base: frame_base,
+                        captures: sf.captures.clone(),
+                    });
+                }
+            }
+
+            // Push the result as the return value of `perform`
+            self.stack.push(result);
+        }
+    }
+
     /// Take a pending runtime request (if any).
     pub fn take_runtime_request(&mut self) -> Option<RuntimeRequest> {
         self.pending_runtime_request.take()
@@ -233,11 +334,104 @@ impl VM {
         self.stack.push(value);
     }
 
+    /// Create a child VM with the same builtins and capabilities as this VM.
+    pub fn create_child(&self) -> VM {
+        let program = self.get_program();
+        let mut child = VM::from_program(program);
+        // Copy all registered builtins
+        for entry in &self.builtins {
+            child.register_builtin(entry.name, entry.func);
+        }
+        // Copy capability settings
+        child.set_exec_allowed(self.exec_allowed.clone());
+        child.set_exec_timeout(self.exec_timeout);
+        child.set_fs_root(self.fs_root.clone());
+        child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
+        // Copy fuel budget
+        if let Some(remaining) = self.max_fuel_remaining {
+            child.max_fuel_remaining = Some(remaining);
+        }
+        // Copy runtime effect tags
+        for &tag in &self.runtime_effect_tags {
+            child.register_runtime_effect(tag);
+        }
+        child
+    }
+
     /// Get the compiled program (for cloning to child processes).
     pub fn get_program(&self) -> CompiledProgram {
         CompiledProgram {
             main: self.main_chunk.clone(),
             functions: self.protos.clone(),
+            effects: self.effect_metadata.clone(),
+        }
+    }
+
+    /// Look up an effect tag by name from compiled metadata.
+    pub fn effect_tag_by_name(&self, name: &str) -> Option<u16> {
+        self.effect_metadata
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.tag)
+    }
+
+    /// Set the filesystem root for path enforcement.
+    pub fn set_fs_root(&mut self, root: String) {
+        self.fs_root = root.clone();
+        self.heap.fs_root = root;
+    }
+
+    /// Set allowed HTTP hosts.
+    pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
+        self.http_allowed_hosts = hosts.clone();
+        self.heap.http_allowed_hosts = hosts;
+    }
+
+    /// Check if a filesystem path is within the allowed root.
+    /// Returns the canonicalized path or an error.
+    pub fn check_fs_path(&self, path: &str) -> Result<std::path::PathBuf, String> {
+        if self.fs_root.is_empty() {
+            return Ok(std::path::PathBuf::from(path));
+        }
+        let root = std::fs::canonicalize(&self.fs_root)
+            .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?;
+        let target = if std::path::Path::new(path).is_absolute() {
+            std::fs::canonicalize(path)
+        } else {
+            std::fs::canonicalize(root.join(path))
+        }
+        .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
+
+        if !target.starts_with(&root) {
+            return Err(format!(
+                "path '{}' is outside allowed root '{}'",
+                target.display(),
+                root.display()
+            ));
+        }
+        Ok(target)
+    }
+
+    /// Check if a URL's host is in the allowed hosts list.
+    pub fn check_http_host(&self, url: &str) -> Result<(), String> {
+        if self.http_allowed_hosts.is_empty() {
+            return Ok(());
+        }
+        // Extract host from URL
+        let host = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .and_then(|rest| rest.split('/').next())
+            .and_then(|host_port| host_port.split(':').next())
+            .unwrap_or("");
+
+        if self.http_allowed_hosts.iter().any(|h| h == host) {
+            Ok(())
+        } else {
+            Err(format!(
+                "host '{}' not in allowed hosts: {:?}",
+                host, self.http_allowed_hosts
+            ))
         }
     }
 
@@ -288,8 +482,10 @@ impl VM {
     }
 
     /// Set the fuel limit (max opcode executions).
+    /// This sets both the per-run fuel and the persistent budget.
     pub fn set_fuel(&mut self, fuel: u64) {
         self.fuel = Some(fuel);
+        self.max_fuel_remaining = Some(fuel);
     }
 
     // ── Heap helpers ─────────────────────────────────────────────────
@@ -322,7 +518,8 @@ impl VM {
                 Value::Heap(r) => Some(*r),
                 _ => None,
             })
-            .chain(self.string_cache.values().copied());
+            .chain(self.string_cache.values().copied())
+            .chain(self.blocked_continuation.iter().copied());
         self.heap.collect(roots);
     }
 
@@ -416,12 +613,23 @@ impl VM {
     /// Respects any existing fuel limit (takes the minimum).
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
-        // Use the minimum of slice reductions and any existing fuel cap
-        let effective = match self.fuel {
+        // Check persistent fuel budget
+        if let Some(ref remaining) = self.max_fuel_remaining {
+            if *remaining == 0 {
+                return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
+            }
+        }
+        // Use the minimum of slice reductions and persistent budget
+        let effective = match self.max_fuel_remaining {
             Some(remaining) => remaining.min(reductions),
             None => reductions,
         };
         self.fuel = Some(effective);
+
+        // Cancellation check before execution
+        if self.cancelled {
+            return RunResult::Cancelled;
+        }
 
         // If no frames, this is a fresh start — push the main frame
         if self.frames.is_empty() {
@@ -434,6 +642,13 @@ impl VM {
         }
 
         let result = self.dispatch();
+
+        // Update persistent fuel budget: deduct consumed reductions
+        if let Some(ref mut remaining) = self.max_fuel_remaining {
+            let consumed = effective.saturating_sub(self.fuel.unwrap_or(0));
+            *remaining = remaining.saturating_sub(consumed);
+        }
+        // Clear per-slice fuel for next slice
         self.fuel = None;
 
         // Check for pending runtime request (spawn/await)
@@ -450,6 +665,9 @@ impl VM {
                 RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
                 RuntimeRequest::Receive => RunResult::Receive,
                 RuntimeRequest::Io(req) => RunResult::Io(req),
+                RuntimeRequest::RuntimeEffect { tag, payload } => {
+                    RunResult::RuntimeEffect { tag, payload }
+                }
             };
         }
 
@@ -1240,20 +1458,81 @@ impl VM {
                     let effect_tag = self.read_u16()?;
                     let payload = self.pop()?;
 
-                    let (h_idx, clause_ip) = self
-                        .handlers
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find_map(|(hi, h)| {
+                    // Step 1: look for user handler
+                    let user_handler =
+                        self.handlers.iter().enumerate().rev().find_map(|(hi, h)| {
                             h.clauses
                                 .iter()
                                 .find(|(t, _)| *t == effect_tag)
                                 .map(|(_, ip)| (hi, *ip))
-                        })
-                        .ok_or_else(|| RuntimeError {
-                            message: format!("unhandled effect (tag {effect_tag})"),
-                        })?;
+                        });
+
+                    // Step 2: if no user handler, check runtime effect table
+                    if user_handler.is_none() && self.runtime_effect_tags.contains(&effect_tag) {
+                        // Capture continuation: save entire stack and frames
+                        // above the bottom frame (frame 0 is the main frame)
+                        let save_from = if self.frames.len() > 1 {
+                            self.frames[1].base
+                        } else {
+                            self.stack.len()
+                        };
+                        let saved_stack = self.stack.split_off(save_from);
+
+                        let mut saved_frames = Vec::new();
+                        for frame in &self.frames[1..] {
+                            saved_frames.push(SavedFrame {
+                                proto_idx: frame.proto_idx,
+                                ip: frame.ip,
+                                base_offset: frame.base.saturating_sub(save_from),
+                                captures: frame.captures.clone(),
+                            });
+                        }
+                        // Also save current frame (frame 0) IP so we can resume
+                        let main_frame = &self.frames[0];
+                        saved_frames.insert(
+                            0,
+                            SavedFrame {
+                                proto_idx: main_frame.proto_idx,
+                                ip: main_frame.ip,
+                                base_offset: 0,
+                                captures: main_frame.captures.clone(),
+                            },
+                        );
+
+                        let cont = self.alloc(HeapObject::Continuation {
+                            saved_frames,
+                            saved_stack,
+                        });
+
+                        // Store continuation in blocked slot
+                        self.blocked_continuation = Some(match cont {
+                            Value::Heap(r) => r,
+                            _ => unreachable!(),
+                        });
+
+                        // Serialize payload for runtime
+                        let payload_sendable = crate::sendable::serialize(payload, &self.heap)
+                            .map_err(|e| RuntimeError {
+                                message: format!("effect payload not sendable: {e}"),
+                            })?;
+
+                        self.pending_runtime_request = Some(RuntimeRequest::RuntimeEffect {
+                            tag: effect_tag,
+                            payload: payload_sendable,
+                        });
+
+                        // Truncate frames to just the main frame
+                        self.frames.truncate(1);
+
+                        return Err(RuntimeError {
+                            message: "runtime request".into(),
+                        });
+                    }
+
+                    // Step 3: no user handler and not runtime-handled → error
+                    let (h_idx, clause_ip) = user_handler.ok_or_else(|| RuntimeError {
+                        message: format!("unhandled effect (tag {effect_tag})"),
+                    })?;
 
                     let handler = self.handlers.remove(h_idx);
                     self.handlers.truncate(h_idx);

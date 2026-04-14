@@ -1,13 +1,12 @@
 //! Multi-threaded runtime: N worker threads executing hiko processes in parallel.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 
 use crate::io_backend::{IoBackend, IoToken, MockIoBackend};
-use crate::process::{BlockReason, Pid, Process, ProcessStatus};
+use crate::process::{BlockReason, Pid, Process, ProcessStatus, Scope, ScopeId};
 use crate::runtime_ops::{
     ChildState, check_child_state, create_child_vm, deliver_message, deliver_result_to_parent,
     prepare_delivery,
@@ -21,17 +20,18 @@ use hiko_compile::chunk::CompiledProgram;
 /// Thread-safe process table using DashMap for fine-grained locking.
 struct ProcessTable {
     processes: DashMap<Pid, Process>,
-    waiters: Mutex<HashMap<Pid, Vec<Pid>>>,
-    /// Map from IoToken to the process waiting for that I/O.
-    io_waiters: Mutex<HashMap<IoToken, Pid>>,
+    waiters: DashMap<Pid, Vec<Pid>>,
+    io_waiters: DashMap<IoToken, Pid>,
+    scopes: DashMap<ScopeId, Scope>,
 }
 
 impl ProcessTable {
     fn new() -> Self {
         Self {
             processes: DashMap::new(),
-            waiters: Mutex::new(HashMap::new()),
-            io_waiters: Mutex::new(HashMap::new()),
+            waiters: DashMap::new(),
+            io_waiters: DashMap::new(),
+            scopes: DashMap::new(),
         }
     }
 
@@ -66,6 +66,24 @@ impl ProcessTable {
         self.processes
             .iter()
             .all(|e| e.is_done() || matches!(e.status, ProcessStatus::Blocked(_)))
+    }
+
+    /// Check if all non-done processes are permanently blocked
+    /// (blocked on Receive/Await with no possible waker).
+    fn has_permanently_blocked(&self) -> bool {
+        let io_count = self.io_waiters.len();
+        if io_count > 0 {
+            return false; // I/O may still complete
+        }
+        // If no I/O pending and no runnable processes, remaining blocked
+        // processes are deadlocked
+        self.processes.iter().any(|e| {
+            matches!(
+                e.status,
+                ProcessStatus::Blocked(BlockReason::Receive)
+                    | ProcessStatus::Blocked(BlockReason::Await(_))
+            )
+        }) && !self.processes.iter().any(|e| e.is_runnable())
     }
 }
 
@@ -102,7 +120,8 @@ impl ThreadedRuntime {
 
     pub fn spawn_root(&self, program: CompiledProgram) -> Pid {
         let pid = self.new_pid();
-        let vm = VM::new(program);
+        let mut vm = VM::new(program);
+        crate::runtime_ops::register_runtime_effects(&mut vm);
         let process = Process::new(pid, vm, None);
         self.table.insert(process);
         self.scheduler.enqueue(pid);
@@ -132,35 +151,48 @@ impl ThreadedRuntime {
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
             for (token, result) in completions {
-                let io_waiters = self.table.io_waiters.lock().unwrap();
-                if let Some(&pid) = io_waiters.get(&token) {
-                    drop(io_waiters);
-                    // Deliver I/O result to the blocked process
+                if let Some((_, pid)) = self.table.io_waiters.remove(&token) {
                     if let Some(mut process) = self.table.processes.get_mut(&pid) {
-                        let val = match result {
+                        let resume_val = match result {
                             crate::io_backend::IoResult::Ok(sv) => {
-                                deliver_message(&mut process.vm, sv);
-                                true
+                                let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
+                                crate::runtime_ops::make_io_ok(&mut process.vm, val)
                             }
                             crate::io_backend::IoResult::Err(msg) => {
-                                process.status = ProcessStatus::Failed(format!("I/O error: {msg}"));
-                                false
+                                crate::runtime_ops::make_io_err(&mut process.vm, &msg)
                             }
                         };
-                        if val {
-                            process.status = ProcessStatus::Runnable;
-                            drop(process);
-                            self.scheduler.enqueue(pid);
+                        if process.vm.blocked_continuation.is_some() {
+                            process.vm.resume_blocked(resume_val);
+                        } else {
+                            process.vm.stack.pop();
+                            process.vm.push_value(resume_val);
                         }
+                        process.status = ProcessStatus::Runnable;
+                        drop(process);
+                        self.scheduler.enqueue(pid);
                     }
-                    self.table.io_waiters.lock().unwrap().remove(&token);
                 }
             }
 
             if self.table.is_all_done_or_blocked() {
-                // Check if any are blocked on I/O — if so, keep polling
-                let has_io_waiters = !self.table.io_waiters.lock().unwrap().is_empty();
+                let has_io_waiters = !self.table.io_waiters.is_empty();
                 if !has_io_waiters {
+                    // Detect deadlock: blocked processes with no possible waker
+                    if self.table.has_permanently_blocked() {
+                        // Mark permanently blocked processes as failed
+                        for mut entry in self.table.processes.iter_mut() {
+                            if matches!(
+                                entry.status,
+                                ProcessStatus::Blocked(BlockReason::Receive)
+                                    | ProcessStatus::Blocked(BlockReason::Await(_))
+                            ) {
+                                entry.status = ProcessStatus::Failed(
+                                    "deadlock: process blocked with no possible waker".into(),
+                                );
+                            }
+                        }
+                    }
                     self.scheduler.shutdown();
                     break;
                 }
@@ -218,8 +250,11 @@ fn worker_loop(
                 captures,
             } => {
                 let child_pid = Pid(next_pid.fetch_add(1, Ordering::Relaxed));
-                let program = process.vm.get_program();
-                let child_vm = create_child_vm(program, proto_idx, captures);
+                let child_vm = crate::runtime_ops::create_child_vm_from_parent(
+                    &process.vm,
+                    proto_idx,
+                    captures,
+                );
                 let child = Process::new(child_pid, child_vm, Some(pid));
                 table.insert(child);
                 scheduler.enqueue(child_pid);
@@ -244,8 +279,27 @@ fn worker_loop(
                 let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
                 process.status = ProcessStatus::Blocked(BlockReason::Io(token));
                 table.return_process(process);
-                table.io_waiters.lock().unwrap().insert(token, pid);
+                table.io_waiters.insert(token, pid);
                 io_backend.register(token, request);
+            }
+            RunResult::RuntimeEffect { tag, payload } => {
+                // Effect-based I/O: process has saved its continuation.
+                // Map the effect tag to an I/O request and register with backend.
+                let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
+                let io_request = crate::io_backend::IoRequest::Custom {
+                    operation: format!("effect_{tag}"),
+                    payload,
+                };
+                process.status = ProcessStatus::Blocked(BlockReason::Io(token));
+                table.return_process(process);
+                table.io_waiters.insert(token, pid);
+                io_backend.register(token, io_request);
+            }
+            RunResult::Cancelled => {
+                process.status = ProcessStatus::Failed("cancelled".into());
+                table.return_process(process);
+                scheduler.remove(pid);
+                wake_waiters(table, scheduler, pid);
             }
         }
     }
@@ -299,13 +353,7 @@ fn handle_await(
         ChildState::Running => {
             parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
             table.return_process(parent);
-            table
-                .waiters
-                .lock()
-                .unwrap()
-                .entry(child_pid)
-                .or_default()
-                .push(parent_pid);
+            table.waiters.entry(child_pid).or_default().push(parent_pid);
         }
     }
 }
@@ -327,31 +375,30 @@ fn handle_send(
         return;
     }
 
-    // Return sender first so the table has it
+    // Check target existence while sender is still held (no TOCTOU)
+    let target_exists = table.processes.contains_key(&target_pid);
+
+    if !target_exists {
+        sender.status =
+            ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
+        table.return_process(sender);
+        return;
+    }
+
+    // Target exists — return sender, then deliver
     table.return_process(sender);
 
-    match table.processes.get_mut(&target_pid) {
-        Some(mut target) => {
-            if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
-                target.status = ProcessStatus::Runnable;
-                deliver_message(&mut target.vm, value);
-                drop(target);
-                scheduler.enqueue(target_pid);
-            } else {
-                target.mailbox.push_back(value);
-            }
-            scheduler.enqueue(sender_pid);
-        }
-        None => {
-            // Target doesn't exist — fail sender
-            if let Some(mut sender) = table.processes.get_mut(&sender_pid) {
-                sender.status = ProcessStatus::Failed(format!(
-                    "send_message: unknown process {:?}",
-                    target_pid
-                ));
-            }
+    if let Some(mut target) = table.processes.get_mut(&target_pid) {
+        if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
+            target.status = ProcessStatus::Runnable;
+            deliver_message(&mut target.vm, value);
+            drop(target);
+            scheduler.enqueue(target_pid);
+        } else {
+            target.mailbox.push_back(value);
         }
     }
+    scheduler.enqueue(sender_pid);
 }
 
 fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: Process) {
@@ -367,9 +414,8 @@ fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: 
 }
 
 fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
-    let waiter_pids = table.waiters.lock().unwrap().remove(&finished_pid);
-    let waiter_pids = match waiter_pids {
-        Some(w) => w,
+    let waiter_pids = match table.waiters.remove(&finished_pid) {
+        Some((_, w)) => w,
         None => return,
     };
 
@@ -476,5 +522,21 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["99\n"]);
+    }
+
+    #[test]
+    fn test_effect_based_io_sleep() {
+        // Effect-based I/O: Sleep effect handled by runtime
+        // MockIoBackend completes immediately
+        let program = compile(
+            "effect Sleep of Int\n\
+             val _ = perform Sleep 0\n\
+             val _ = println \"after sleep\"",
+        );
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["after sleep\n"]);
     }
 }
