@@ -131,11 +131,10 @@ impl VMBuilder {
             "list_dir",
             "path_join",
             "read_file_tagged",
-            "edit_file_tagged",
             "glob",
             "walk_dir",
         ];
-        let fs_write = ["write_file", "create_dir"];
+        let fs_write = ["write_file", "create_dir", "edit_file_tagged"];
         let fs_delete = ["remove_file"];
 
         for entry in builtins::builtin_entries() {

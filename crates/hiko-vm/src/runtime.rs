@@ -75,8 +75,19 @@ impl Runtime {
 
             match result {
                 RunResult::Done => {
-                    // Serialize the return value (top of stack)
                     let process = self.processes.get_mut(&pid).unwrap();
+                    // Serialize result once on completion
+                    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+                    match serialize(val, &process.vm.heap) {
+                        Ok(sv) => process.result = Some(sv),
+                        Err(e) => {
+                            process.status =
+                                ProcessStatus::Failed(format!("child result not sendable: {e}"));
+                            self.scheduler.remove(pid);
+                            self.wake_and_deliver_results(pid);
+                            continue;
+                        }
+                    }
                     process.status = ProcessStatus::Done;
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
@@ -185,10 +196,19 @@ impl Runtime {
 
         match child_state {
             ChildState::Done => {
-                let sendable = {
-                    let child = &self.processes[&child_pid];
-                    let val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    serialize(val, &child.vm.heap).unwrap_or(crate::sendable::SendableValue::Unit)
+                // Take result (consume once — second await will fail)
+                let sendable = match self
+                    .processes
+                    .get_mut(&child_pid)
+                    .and_then(|c| c.result.take())
+                {
+                    Some(sv) => sv,
+                    None => {
+                        let parent = self.processes.get_mut(&parent_pid).unwrap();
+                        parent.status =
+                            ProcessStatus::Failed("await: child result already consumed".into());
+                        return;
+                    }
                 };
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.vm.stack.pop();

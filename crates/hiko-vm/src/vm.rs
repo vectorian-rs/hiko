@@ -96,6 +96,8 @@ pub struct VM {
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
     fuel: Option<u64>,
+    /// Persistent total fuel budget (from VMBuilder.max_fuel). Not reset per slice.
+    max_fuel_remaining: Option<u64>,
     exec_allowed: Vec<String>,
     exec_timeout: u64,
     exec_builtin_id: Option<u16>,
@@ -218,6 +220,7 @@ impl VM {
             handlers: Vec::new(),
             string_cache: HashMap::new(),
             fuel: None,
+            max_fuel_remaining: None,
             exec_allowed: Vec::new(),
             exec_timeout: 30,
             exec_builtin_id: None,
@@ -341,8 +344,10 @@ impl VM {
     }
 
     /// Set the fuel limit (max opcode executions).
+    /// This sets both the per-run fuel and the persistent budget.
     pub fn set_fuel(&mut self, fuel: u64) {
         self.fuel = Some(fuel);
+        self.max_fuel_remaining = Some(fuel);
     }
 
     // ── Heap helpers ─────────────────────────────────────────────────
@@ -470,8 +475,14 @@ impl VM {
     /// Respects any existing fuel limit (takes the minimum).
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
-        // Use the minimum of slice reductions and any existing fuel cap
-        let effective = match self.fuel {
+        // Check persistent fuel budget
+        if let Some(ref remaining) = self.max_fuel_remaining {
+            if *remaining == 0 {
+                return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
+            }
+        }
+        // Use the minimum of slice reductions and persistent budget
+        let effective = match self.max_fuel_remaining {
             Some(remaining) => remaining.min(reductions),
             None => reductions,
         };
@@ -493,6 +504,13 @@ impl VM {
         }
 
         let result = self.dispatch();
+
+        // Update persistent fuel budget: deduct consumed reductions
+        if let Some(ref mut remaining) = self.max_fuel_remaining {
+            let consumed = effective.saturating_sub(self.fuel.unwrap_or(0));
+            *remaining = remaining.saturating_sub(consumed);
+        }
+        // Clear per-slice fuel for next slice
         self.fuel = None;
 
         // Check for pending runtime request (spawn/await)

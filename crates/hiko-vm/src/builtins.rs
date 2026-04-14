@@ -441,11 +441,21 @@ pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
         _ => return Err("read_file_tagged: expected String for path".into()),
     };
     let offset = match v_offset {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => {
+            return Err(format!(
+                "read_file_tagged: offset must be non-negative, got {n}"
+            ));
+        }
         _ => return Err("read_file_tagged: expected Int for offset".into()),
     };
     let limit = match v_limit {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => {
+            return Err(format!(
+                "read_file_tagged: limit must be non-negative, got {n}"
+            ));
+        }
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
@@ -1404,7 +1414,8 @@ pub(crate) fn bi_bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, Str
         _ => return Err("bytes_get: expected Bytes".into()),
     };
     let idx = match v1 {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => return Err(format!("bytes_get: index must be non-negative, got {n}")),
         _ => return Err("bytes_get: expected Int for index".into()),
     };
     if idx >= bytes.len() {
@@ -1433,11 +1444,13 @@ pub(crate) fn bi_bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, S
         _ => return Err("bytes_slice: expected Bytes".into()),
     };
     let start = match v1 {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => return Err(format!("bytes_slice: start must be non-negative, got {n}")),
         _ => return Err("bytes_slice: expected Int for start".into()),
     };
     let len = match v2 {
-        Value::Int(n) => n as usize,
+        Value::Int(n) if n >= 0 => n as usize,
+        Value::Int(n) => return Err(format!("bytes_slice: length must be non-negative, got {n}")),
         _ => return Err("bytes_slice: expected Int for length".into()),
     };
     let end = (start + len).min(bytes.len());
