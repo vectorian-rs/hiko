@@ -95,52 +95,32 @@ Rule:
 
 ## Effects
 
-Effects are **process-local**, with extended resolution in `perform`.
+Effects are **process-local** and used for **user-defined control flow** (state, generators, error handling).
 
-### Resolution order
-
-1. User handler
-2. Runtime-handled effect
-3. Unhandled effect error
-
-No new surface syntax is introduced.
+Effects are NOT the I/O surface. I/O uses builtins/stdlib functions.
 
 ---
 
-## Runtime-handled effects (I/O)
+## I/O Model
 
-Certain effects are intercepted by the runtime when no user handler is present.
-
-### Example
+I/O operations are exposed as ordinary builtins:
 
 ```sml
-effect HttpGet of String
-
-val res = perform HttpGet "https://api.example.com"
+val (status, headers, body) = http_get "https://api.example.com"
+val _ = sleep 1000
+val content = read_file "data.txt"
 ```
 
-### Execution
+The same source code works in both runtimes:
 
-1. No user handler found
+* **Single-threaded runtime**: builtins block the thread
+* **Threaded runtime**: builtins suspend the process via `RuntimeRequest::Io`, the I/O backend handles the operation, and the process resumes when complete
 
-2. Effect matches runtime-handled table
+No function coloring. No `perform`. No effect declarations for I/O.
 
-3. VM:
+### Testing
 
-   * captures continuation
-   * stores it in `blocked_continuation`
-   * returns `RuntimeEffect { tag, payload }`
-
-4. Scheduler:
-
-   * marks process `Blocked(Io)`
-   * submits request to I/O backend
-
-5. On completion:
-
-   * result is deserialized into process heap
-   * continuation is resumed
-   * process is re-enqueued
+Use a mock I/O backend (`MockIoBackend`) for deterministic testing. The backend is pluggable at the runtime level, not at the language level.
 
 ---
 
@@ -151,27 +131,20 @@ val res = perform HttpGet "https://api.example.com"
 * Continuations are resumed **exactly once**
 * No multi-shot continuations in v1
 
-### Result-based error handling
+### Error handling
 
-All runtime-handled I/O effects return:
-
-```sml
-datatype 'a result = Ok of 'a | Err of Error
-```
-
-Usage:
+I/O builtins return result ADTs:
 
 ```sml
-val res = perform HttpGet url
-
-case res of
-  Ok body => ...
-| Err e   => ...
+val result = http_get "https://api.example.com"
+case result of
+  IoOk body => ...
+| IoErr e   => ...
 ```
 
 ### Rule
 
-> The runtime never kills a process for I/O failure. It always resumes with a `Result`.
+> The runtime never kills a process for I/O failure. It always returns a result.
 
 ---
 
@@ -198,7 +171,7 @@ loop:
   match result:
     Yield         → enqueue
     Done          → complete + wake awaiters
-    RuntimeEffect → block + register I/O
+    Io            → block + register I/O
     Await         → block or resume
 ```
 
@@ -238,7 +211,7 @@ Includes:
 ### API
 
 ```sml
-val pid = spawn (fn () => perform HttpGet url)
+val pid = spawn (fn () => http_get url)
 val res = await pid
 ```
 

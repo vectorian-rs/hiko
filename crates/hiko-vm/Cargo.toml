@@ -19,5 +19,6 @@ regex = "1"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 ureq = "3"
+blake3 = "1"
 
 [dev-dependencies]

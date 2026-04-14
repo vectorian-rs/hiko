@@ -46,7 +46,18 @@ pub enum HeapObject {
     Continuation {
         saved_frames: Vec<SavedFrame>,
         saved_stack: Vec<Value>,
+        /// Handler removed by Perform, for auto-reinstallation by Resume.
+        saved_handler: Option<SavedHandler>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct SavedHandler {
+    pub clauses: Vec<(u16, usize)>,
+    pub proto_idx: usize,
+    pub captures: Arc<[Value]>,
+    pub locals_offset: usize,        // stack_base - handler_frame.base
+    pub handler_count_before: usize, // handler list length before removal
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +86,7 @@ impl HeapObject {
             HeapObject::Continuation {
                 saved_stack,
                 saved_frames,
+                ..
             } => {
                 visit(saved_stack, &mut f);
                 for frame in saved_frames {

@@ -369,6 +369,7 @@ mod tests {
         let cont = Value::Heap(heap.alloc(HeapObject::Continuation {
             saved_frames: vec![],
             saved_stack: vec![],
+            saved_handler: None,
         }));
         let result = serialize(cont, &heap);
         assert!(result.is_err());

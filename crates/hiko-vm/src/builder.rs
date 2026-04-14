@@ -98,6 +98,8 @@ impl VMBuilder {
             "to_upper",
             "to_lower",
             "epoch",
+            "epoch_ms",
+            "monotonic_ms",
             "bytes_length",
             "bytes_to_string",
             "string_to_bytes",

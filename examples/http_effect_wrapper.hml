@@ -1,0 +1,50 @@
+(* http_effect_wrapper.hml -- Effect abstraction over I/O builtins
+ *
+ * Design:
+ *   - Runtime I/O surface = builtin http_get
+ *   - Optional user abstraction = effect HttpGet
+ *   - Bridge = user-installed handler that calls the builtin
+ *
+ * This lets you:
+ *   - Call http_get directly for simple cases
+ *   - Define HttpGet effect for testability / mockability
+ *   - Swap real/mock handlers without changing business logic
+ *)
+
+(* ── Define the user-level effect ──────────────────────────── *)
+
+effect HttpGet of String
+
+(* ── Business logic uses the effect, not the builtin ───────── *)
+
+fun fetch_title url =
+  let val (status, _, body) = perform HttpGet url
+  in if status = 200
+     then "got " ^ int_to_string (string_length body) ^ " bytes from " ^ url
+     else "failed with status " ^ int_to_string status
+  end
+
+(* ── Demo with mock handler (no network) ───────────────────── *)
+
+val _ = println "--- Mock handler (no network) ---"
+
+val mock_result =
+  handle fetch_title "https://example.com"
+  with return x => x
+     | HttpGet url k => resume k (200, [], "mock body for " ^ url)
+
+val _ = println mock_result
+
+(* ── Demo with real handler (actual HTTP via builtin) ──────── *)
+
+(* To run with real HTTP, use:
+ *
+ *   handle fetch_title "https://httpbin.org/get"
+ *   with return x => x
+ *      | HttpGet url k =>
+ *          let val result = http_get url
+ *          in resume k result end
+ *
+ * The mock handler above proves the pattern works
+ * without requiring network access.
+ *)

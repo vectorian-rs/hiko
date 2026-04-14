@@ -6,7 +6,9 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
-use crate::value::{BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, Value};
+use crate::value::{
+    BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
+};
 
 const MAX_STACK: usize = 64 * 1024;
 const MAX_FRAMES: usize = 65536;
@@ -40,11 +42,6 @@ pub enum RunResult {
     Receive,
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
-    /// Process performed an unhandled effect handled by the runtime.
-    RuntimeEffect {
-        tag: u16,
-        payload: crate::sendable::SendableValue,
-    },
     /// Process was cancelled at a suspension point.
     Cancelled,
 }
@@ -77,7 +74,7 @@ struct CallFrame {
 
 struct HandlerFrame {
     call_frame_idx: usize,
-    stack_base: usize,          // stack height when handler was installed
+    stack_base: usize,
     clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
     proto_idx: usize,
     captures: Arc<[Value]>,
@@ -111,10 +108,17 @@ pub struct VM {
     await_builtin_id: Option<u16>,
     send_builtin_id: Option<u16>,
     receive_builtin_id: Option<u16>,
+    sleep_builtin_id: Option<u16>,
+    http_get_builtin_id: Option<u16>,
+    http_builtin_id: Option<u16>,
+    http_json_builtin_id: Option<u16>,
+    http_msgpack_builtin_id: Option<u16>,
+    http_bytes_builtin_id: Option<u16>,
+    read_file_builtin_id: Option<u16>,
+    /// When true, I/O builtins suspend via RuntimeRequest::Io instead of blocking.
+    pub async_io: bool,
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
-    /// Effect tags handled by the runtime (I/O effects).
-    runtime_effect_tags: std::collections::HashSet<u16>,
     /// Effect metadata from compiled program (name → tag).
     pub effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
     /// Saved continuation when blocked on runtime I/O. GC root.
@@ -137,12 +141,6 @@ pub enum RuntimeRequest {
     },
     Receive,
     Io(crate::io_backend::IoRequest),
-    /// An unhandled effect that the runtime should handle as I/O.
-    /// The process has saved its continuation in blocked_continuation.
-    RuntimeEffect {
-        tag: u16,
-        payload: crate::sendable::SendableValue,
-    },
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
@@ -194,9 +192,9 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
 
 // Compile-time assertion: VM must be Send for multi-threaded scheduling.
 const _: () = {
-    fn assert_send<T: Send>() {}
-    fn check() {
-        assert_send::<VM>();
+    fn _assert_send<T: Send>() {}
+    fn _check() {
+        _assert_send::<VM>();
     }
 };
 
@@ -236,8 +234,15 @@ impl VM {
             await_builtin_id: None,
             send_builtin_id: None,
             receive_builtin_id: None,
+            sleep_builtin_id: None,
+            http_get_builtin_id: None,
+            http_builtin_id: None,
+            http_json_builtin_id: None,
+            http_msgpack_builtin_id: None,
+            http_bytes_builtin_id: None,
+            read_file_builtin_id: None,
+            async_io: false,
             pending_runtime_request: None,
-            runtime_effect_tags: std::collections::HashSet::new(),
             blocked_continuation: None,
             cancelled: false,
         }
@@ -257,13 +262,6 @@ impl VM {
         });
     }
 
-    /// Register an effect tag as runtime-handled (I/O).
-    /// When this effect is performed with no user handler,
-    /// the VM suspends instead of erroring.
-    pub fn register_runtime_effect(&mut self, tag: u16) {
-        self.runtime_effect_tags.insert(tag);
-    }
-
     /// Resume a blocked continuation with a result value.
     /// Used by the runtime after I/O completion.
     /// Restores the saved frames and stack, then pushes the result
@@ -275,6 +273,7 @@ impl VM {
                 Ok(HeapObject::Continuation {
                     saved_frames,
                     saved_stack,
+                    ..
                 }) => (saved_frames.clone(), saved_stack.clone()),
                 _ => return, // corrupted continuation — silently fail
             };
@@ -351,10 +350,8 @@ impl VM {
         if let Some(remaining) = self.max_fuel_remaining {
             child.max_fuel_remaining = Some(remaining);
         }
-        // Copy runtime effect tags
-        for &tag in &self.runtime_effect_tags {
-            child.register_runtime_effect(tag);
-        }
+        // Copy async I/O mode
+        child.async_io = self.async_io;
         child
     }
 
@@ -459,6 +456,13 @@ impl VM {
             "await_process" => self.await_builtin_id = Some(idx),
             "send_message" => self.send_builtin_id = Some(idx),
             "receive_message" => self.receive_builtin_id = Some(idx),
+            "sleep" => self.sleep_builtin_id = Some(idx),
+            "http_get" => self.http_get_builtin_id = Some(idx),
+            "http" => self.http_builtin_id = Some(idx),
+            "http_json" => self.http_json_builtin_id = Some(idx),
+            "http_msgpack" => self.http_msgpack_builtin_id = Some(idx),
+            "http_bytes" => self.http_bytes_builtin_id = Some(idx),
+            "read_file" => self.read_file_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -614,10 +618,10 @@ impl VM {
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
         // Check persistent fuel budget
-        if let Some(ref remaining) = self.max_fuel_remaining {
-            if *remaining == 0 {
-                return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
-            }
+        if let Some(ref remaining) = self.max_fuel_remaining
+            && *remaining == 0
+        {
+            return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
         }
         // Use the minimum of slice reductions and persistent budget
         let effective = match self.max_fuel_remaining {
@@ -665,9 +669,6 @@ impl VM {
                 RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
                 RuntimeRequest::Receive => RunResult::Receive,
                 RuntimeRequest::Io(req) => RunResult::Io(req),
-                RuntimeRequest::RuntimeEffect { tag, payload } => {
-                    RunResult::RuntimeEffect { tag, payload }
-                }
             };
         }
 
@@ -837,6 +838,70 @@ impl VM {
             });
         }
 
+        // I/O builtins: in async mode, suspend instead of blocking
+        if self.async_io {
+            let io_request = if self.sleep_builtin_id == Some(builtin_id) {
+                let ms = match self.stack[callee_pos + 1] {
+                    Value::Int(ms) if ms >= 0 => ms as u64,
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "sleep: expected non-negative Int (milliseconds)".into(),
+                        });
+                    }
+                };
+                Some(crate::io_backend::IoRequest::Sleep(
+                    std::time::Duration::from_millis(ms),
+                ))
+            } else if self.http_get_builtin_id == Some(builtin_id) {
+                let url = crate::builtins::extract_string_arg(
+                    &self.stack[callee_pos + 1..callee_pos + 1 + arity],
+                    &self.heap,
+                    "http_get",
+                )
+                .map_err(|msg| RuntimeError { message: msg })?;
+                self.heap.check_http_host(&url).map_err(|e| RuntimeError {
+                    message: format!("http_get: {e}"),
+                })?;
+                Some(crate::io_backend::IoRequest::HttpGet { url })
+            } else if let Some(format) = self.match_http_builtin(builtin_id) {
+                let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
+                let (method, url, headers, body) =
+                    crate::builtins::extract_http_args(args, &self.heap, "http")
+                        .map_err(|msg| RuntimeError { message: msg })?;
+                self.heap.check_http_host(&url).map_err(|e| RuntimeError {
+                    message: format!("http: {e}"),
+                })?;
+                Some(crate::io_backend::IoRequest::Http {
+                    method,
+                    url,
+                    headers,
+                    body,
+                    format,
+                })
+            } else if self.read_file_builtin_id == Some(builtin_id) {
+                let path = crate::builtins::extract_string_arg(
+                    &self.stack[callee_pos + 1..callee_pos + 1 + arity],
+                    &self.heap,
+                    "read_file",
+                )
+                .map_err(|msg| RuntimeError { message: msg })?;
+                let checked = self.heap.check_fs_path(&path).map_err(|e| RuntimeError {
+                    message: format!("read_file: {e}"),
+                })?;
+                Some(crate::io_backend::IoRequest::ReadFile { path: checked })
+            } else {
+                None
+            };
+            if let Some(request) = io_request {
+                self.pending_runtime_request = Some(RuntimeRequest::Io(request));
+                self.stack.truncate(callee_pos);
+                self.push(Value::Unit)?;
+                return Err(RuntimeError {
+                    message: "runtime request".into(),
+                });
+            }
+        }
+
         // Exec is fully intercepted: whitelist check + timeout
         if self.exec_builtin_id == Some(builtin_id) {
             self.check_exec_allowed(first_arg)?;
@@ -867,6 +932,22 @@ impl VM {
             self.push(result)?;
         }
         Ok(())
+    }
+
+    /// Match a builtin ID against the four http_ variants, returning the response format.
+    fn match_http_builtin(&self, builtin_id: u16) -> Option<crate::io_backend::HttpResponseFormat> {
+        use crate::io_backend::HttpResponseFormat;
+        if self.http_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Text)
+        } else if self.http_json_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Json)
+        } else if self.http_msgpack_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Msgpack)
+        } else if self.http_bytes_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Bytes)
+        } else {
+            None
+        }
     }
 
     /// Check that the command in an exec call is in the allowed list.
@@ -1467,91 +1548,39 @@ impl VM {
                                 .map(|(_, ip)| (hi, *ip))
                         });
 
-                    // Step 2: if no user handler, check runtime effect table
-                    if user_handler.is_none() && self.runtime_effect_tags.contains(&effect_tag) {
-                        // Capture continuation: save entire stack and frames
-                        // above the bottom frame (frame 0 is the main frame)
-                        let save_from = if self.frames.len() > 1 {
-                            self.frames[1].base
-                        } else {
-                            self.stack.len()
-                        };
-                        let saved_stack = self.stack.split_off(save_from);
-
-                        let mut saved_frames = Vec::new();
-                        for frame in &self.frames[1..] {
-                            saved_frames.push(SavedFrame {
-                                proto_idx: frame.proto_idx,
-                                ip: frame.ip,
-                                base_offset: frame.base.saturating_sub(save_from),
-                                captures: frame.captures.clone(),
-                            });
-                        }
-                        // Also save current frame (frame 0) IP so we can resume
-                        let main_frame = &self.frames[0];
-                        saved_frames.insert(
-                            0,
-                            SavedFrame {
-                                proto_idx: main_frame.proto_idx,
-                                ip: main_frame.ip,
-                                base_offset: 0,
-                                captures: main_frame.captures.clone(),
-                            },
-                        );
-
-                        let cont = self.alloc(HeapObject::Continuation {
-                            saved_frames,
-                            saved_stack,
-                        });
-
-                        // Store continuation in blocked slot
-                        self.blocked_continuation = Some(match cont {
-                            Value::Heap(r) => r,
-                            _ => unreachable!(),
-                        });
-
-                        // Serialize payload for runtime
-                        let payload_sendable = crate::sendable::serialize(payload, &self.heap)
-                            .map_err(|e| RuntimeError {
-                                message: format!("effect payload not sendable: {e}"),
-                            })?;
-
-                        self.pending_runtime_request = Some(RuntimeRequest::RuntimeEffect {
-                            tag: effect_tag,
-                            payload: payload_sendable,
-                        });
-
-                        // Truncate frames to just the main frame
-                        self.frames.truncate(1);
-
-                        return Err(RuntimeError {
-                            message: "runtime request".into(),
-                        });
-                    }
-
-                    // Step 3: no user handler and not runtime-handled → error
+                    // Step 2: no user handler → error
                     let (h_idx, clause_ip) = user_handler.ok_or_else(|| RuntimeError {
                         message: format!("unhandled effect (tag {effect_tag})"),
                     })?;
 
+                    let handler_count_before = self.handlers.len();
                     let handler = self.handlers.remove(h_idx);
                     self.handlers.truncate(h_idx);
 
-                    // Save stack from handler's stack_base (the point where
-                    // InstallHandler ran). The handler frame's pre-existing
-                    // locals below this point stay on the stack.
+                    // Split the stack at handler.stack_base (where InstallHandler
+                    // ran). Everything below stays for the clause frame's use.
+                    let handler_base = self.frames[handler.call_frame_idx].base;
                     let save_from = handler.stack_base;
-                    let saved_stack = self.stack.split_off(save_from);
+                    let mut saved_stack = self.stack.split_off(save_from);
 
-                    // Save the handler frame's current IP/state so Resume
-                    // can re-create it. Its base stays on the real stack
-                    // (below save_from), but we record it with base_offset=0
-                    // and restore it specially in Resume.
+                    // Prepend handler frame's locals into saved_stack so
+                    // the restored handler frame gets its own copy at a new base.
+                    // This prevents the restored frame's Return from truncating
+                    // through the clause frame's locals.
+                    let handler_locals_count = save_from - handler_base;
+                    if handler_locals_count > 0 {
+                        let mut combined =
+                            Vec::with_capacity(handler_locals_count + saved_stack.len());
+                        combined.extend_from_slice(&self.stack[handler_base..save_from]);
+                        combined.extend_from_slice(&saved_stack);
+                        saved_stack = combined;
+                    }
+
                     let hf = &self.frames[handler.call_frame_idx];
                     let handler_frame = SavedFrame {
                         proto_idx: hf.proto_idx,
                         ip: hf.ip,
-                        base_offset: 0, // sentinel, handled specially in Resume
+                        base_offset: 0, // handler locals at start of saved_stack
                         captures: hf.captures.clone(),
                     };
 
@@ -1560,17 +1589,22 @@ impl VM {
                         saved_frames.push(SavedFrame {
                             proto_idx: frame.proto_idx,
                             ip: frame.ip,
-                            base_offset: {
-                                debug_assert!(frame.base >= save_from);
-                                frame.base - save_from
-                            },
+                            base_offset: handler_locals_count + (frame.base - save_from),
                             captures: frame.captures.clone(),
                         });
                     }
 
+                    let locals_offset = save_from - handler_base;
                     let cont = self.alloc(HeapObject::Continuation {
                         saved_frames,
                         saved_stack,
+                        saved_handler: Some(SavedHandler {
+                            clauses: handler.clauses.clone(),
+                            proto_idx: handler.proto_idx,
+                            captures: handler.captures.clone(),
+                            locals_offset,
+                            handler_count_before,
+                        }),
                     });
 
                     self.frames.truncate(handler.call_frame_idx + 1);
@@ -1597,38 +1631,53 @@ impl VM {
                             });
                         }
                     };
-                    let (saved_frames, saved_stack) = match self.heap_get(cont_ref)? {
-                        HeapObject::Continuation {
-                            saved_frames,
-                            saved_stack,
-                            ..
-                        } => (saved_frames.clone(), saved_stack.clone()),
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "resume: expected continuation".into(),
-                            });
-                        }
-                    };
+                    let (saved_frames, saved_stack, saved_handler) =
+                        match self.heap_get(cont_ref)? {
+                            HeapObject::Continuation {
+                                saved_frames,
+                                saved_stack,
+                                saved_handler,
+                            } => (
+                                saved_frames.clone(),
+                                saved_stack.clone(),
+                                saved_handler.clone(),
+                            ),
+                            _ => {
+                                return Err(RuntimeError {
+                                    message: "resume: expected continuation".into(),
+                                });
+                            }
+                        };
 
-                    // Restore saved stack and frames. The handler clause
-                    // frame stays; the resumed computation returns into it.
-                    let handler_base = self.frames.last().unwrap().base;
+                    // Restore saved stack and frames above the clause frame.
                     let stack_base = self.stack.len();
                     self.stack.extend_from_slice(&saved_stack);
 
-                    for (i, sf) in saved_frames.iter().enumerate() {
-                        let frame_base = if i == 0 {
-                            // First saved frame is the handler frame, so its
-                            // base is the same as the clause frame's base
-                            handler_base
-                        } else {
-                            stack_base + sf.base_offset
-                        };
+                    let first_restored_idx = self.frames.len();
+                    for sf in &saved_frames {
+                        let frame_base = stack_base + sf.base_offset;
                         self.frames.push(CallFrame {
                             proto_idx: sf.proto_idx,
                             ip: sf.ip,
                             base: frame_base,
                             captures: sf.captures.clone(),
+                        });
+                    }
+
+                    // Auto-reinstall handler if the clause didn't reinstall
+                    // it manually (via recursive wrapper). This eliminates the
+                    // need for `with_handler (fn () => resume k v)` and prevents
+                    // recursive frame accumulation.
+                    if let Some(sh) = saved_handler
+                        && self.handlers.len() < sh.handler_count_before
+                    {
+                        let handler_frame_base = self.frames[first_restored_idx].base;
+                        self.handlers.push(HandlerFrame {
+                            call_frame_idx: first_restored_idx,
+                            stack_base: handler_frame_base + sh.locals_offset,
+                            clauses: sh.clauses,
+                            proto_idx: sh.proto_idx,
+                            captures: sh.captures,
                         });
                     }
 
@@ -1793,6 +1842,16 @@ mod tests {
         }
     }
 
+    fn global_str(vm: &VM, name: &str) -> String {
+        match vm.get_global(name).expect(&format!("no global: {name}")) {
+            Value::Heap(r) => match vm.heap.get(*r).unwrap() {
+                HeapObject::String(s) => s.clone(),
+                v => panic!("expected String for {name}, got {v:?}"),
+            },
+            v => panic!("expected String for {name}, got {v:?}"),
+        }
+    }
+
     fn global_bool(vm: &VM, name: &str) -> bool {
         match vm.get_global(name).expect(&format!("no global: {name}")) {
             Value::Bool(b) => *b,
@@ -1939,6 +1998,37 @@ mod tests {
                with return x => x
                   | Double n k => resume k (n * 2)");
         assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    #[test]
+    fn test_effect_resume_direct_in_function() {
+        // resume k v directly in a handler clause inside a function —
+        // this was crashing due to stack corruption before the fix.
+        let vm = run("effect Fetch of String\n\
+             fun with_mock f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Fetch url k => resume k (\"got:\" ^ url)\n\
+             fun program () = perform Fetch \"test\"\n\
+             val result = with_mock program");
+        assert_eq!(global_str(&vm, "result"), "got:test");
+    }
+
+    #[test]
+    fn test_effect_multiple_performs_reinstalled() {
+        // Multiple performs through a recursively reinstalled handler
+        let vm = run("effect Ask of Int\n\
+             fun with_handler f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Ask n k => with_handler (fn () => resume k (n * 10))\n\
+             fun program () =\n\
+               let val a = perform Ask 1\n\
+                   val b = perform Ask 2\n\
+                   val c = perform Ask 3\n\
+               in a + b + c end\n\
+             val result = with_handler program");
+        assert_eq!(global_int(&vm, "result"), 60); // 10 + 20 + 30
     }
 
     #[test]

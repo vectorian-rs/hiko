@@ -19,15 +19,21 @@ pub struct Runtime {
     waiters: HashMap<Pid, Vec<Pid>>,
 }
 
-impl Runtime {
-    /// Create a new runtime with the default FIFO scheduler.
-    pub fn new() -> Self {
+impl Default for Runtime {
+    fn default() -> Self {
         Self {
             next_pid: AtomicU64::new(1),
             processes: HashMap::new(),
             scheduler: Box::new(FifoScheduler::new(1000)),
             waiters: HashMap::new(),
         }
+    }
+}
+
+impl Runtime {
+    /// Create a new runtime with the default FIFO scheduler.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Create a runtime with a custom scheduler.
@@ -49,8 +55,7 @@ impl Runtime {
     /// Returns the Pid.
     pub fn spawn_root(&mut self, program: CompiledProgram) -> Pid {
         let pid = self.new_pid();
-        let mut vm = VM::new(program);
-        crate::runtime_ops::register_runtime_effects(&mut vm);
+        let vm = VM::new(program);
         let process = Process::new(pid, vm, None);
         self.processes.insert(pid, process);
         self.scheduler.enqueue(pid);
@@ -60,12 +65,7 @@ impl Runtime {
     /// Run all processes to completion (single-threaded).
     /// Returns the root process's output lines.
     pub fn run_to_completion(&mut self) -> Result<Vec<String>, String> {
-        loop {
-            let pid = match self.try_dequeue() {
-                Some(pid) => pid,
-                None => break,
-            };
-
+        while let Some(pid) = self.try_dequeue() {
             let reductions = self.scheduler.reductions(pid);
 
             let result = {
@@ -127,11 +127,6 @@ impl Runtime {
                     let process = self.processes.get_mut(&pid).unwrap();
                     process.status =
                         ProcessStatus::Failed("async I/O requires ThreadedRuntime".into());
-                }
-                RunResult::RuntimeEffect { .. } => {
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    process.status =
-                        ProcessStatus::Failed("runtime effects require ThreadedRuntime".into());
                 }
                 RunResult::Cancelled => {
                     let process = self.processes.get_mut(&pid).unwrap();

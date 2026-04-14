@@ -230,6 +230,13 @@ impl InferCtx {
                     ]),
                 ),
             ),
+            // File I/O (bytes)
+            (
+                "read_file_bytes",
+                Type::arrow(Type::string(), Type::bytes()),
+            ),
+            // Hashing
+            ("blake3", Type::arrow(Type::bytes(), Type::string())),
             // Bytes
             ("bytes_length", Type::arrow(Type::bytes(), Type::int())),
             (
@@ -343,6 +350,8 @@ impl InferCtx {
             ("to_upper", Type::arrow(Type::string(), Type::string())),
             ("to_lower", Type::arrow(Type::string(), Type::string())),
             ("epoch", Type::arrow(Type::unit(), Type::int())),
+            ("epoch_ms", Type::arrow(Type::unit(), Type::int())),
+            ("monotonic_ms", Type::arrow(Type::unit(), Type::int())),
             ("sleep", Type::arrow(Type::int(), Type::unit())),
             (
                 "string_join",
