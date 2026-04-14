@@ -100,6 +100,10 @@ pub struct VM {
     max_fuel_remaining: Option<u64>,
     exec_allowed: Vec<String>,
     exec_timeout: u64,
+    /// Filesystem root for path enforcement. Empty means no restriction.
+    fs_root: String,
+    /// Allowed HTTP hosts. Empty means no restriction.
+    http_allowed_hosts: Vec<String>,
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
@@ -223,6 +227,8 @@ impl VM {
             max_fuel_remaining: None,
             exec_allowed: Vec::new(),
             exec_timeout: 30,
+            fs_root: String::new(),
+            http_allowed_hosts: Vec::new(),
             exec_builtin_id: None,
             print_builtin_id: None,
             println_builtin_id: None,
@@ -280,6 +286,30 @@ impl VM {
         self.stack.push(value);
     }
 
+    /// Create a child VM with the same builtins and capabilities as this VM.
+    pub fn create_child(&self) -> VM {
+        let program = self.get_program();
+        let mut child = VM::from_program(program);
+        // Copy all registered builtins
+        for entry in &self.builtins {
+            child.register_builtin(entry.name, entry.func);
+        }
+        // Copy capability settings
+        child.set_exec_allowed(self.exec_allowed.clone());
+        child.set_exec_timeout(self.exec_timeout);
+        child.set_fs_root(self.fs_root.clone());
+        child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
+        // Copy fuel budget
+        if let Some(remaining) = self.max_fuel_remaining {
+            child.max_fuel_remaining = Some(remaining);
+        }
+        // Copy runtime effect tags
+        for &tag in &self.runtime_effect_tags {
+            child.register_runtime_effect(tag);
+        }
+        child
+    }
+
     /// Get the compiled program (for cloning to child processes).
     pub fn get_program(&self) -> CompiledProgram {
         CompiledProgram {
@@ -295,6 +325,66 @@ impl VM {
             .iter()
             .find(|e| e.name == name)
             .map(|e| e.tag)
+    }
+
+    /// Set the filesystem root for path enforcement.
+    pub fn set_fs_root(&mut self, root: String) {
+        self.fs_root = root.clone();
+        self.heap.fs_root = root;
+    }
+
+    /// Set allowed HTTP hosts.
+    pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
+        self.http_allowed_hosts = hosts.clone();
+        self.heap.http_allowed_hosts = hosts;
+    }
+
+    /// Check if a filesystem path is within the allowed root.
+    /// Returns the canonicalized path or an error.
+    pub fn check_fs_path(&self, path: &str) -> Result<std::path::PathBuf, String> {
+        if self.fs_root.is_empty() {
+            return Ok(std::path::PathBuf::from(path));
+        }
+        let root = std::fs::canonicalize(&self.fs_root)
+            .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?;
+        let target = if std::path::Path::new(path).is_absolute() {
+            std::fs::canonicalize(path)
+        } else {
+            std::fs::canonicalize(root.join(path))
+        }
+        .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
+
+        if !target.starts_with(&root) {
+            return Err(format!(
+                "path '{}' is outside allowed root '{}'",
+                target.display(),
+                root.display()
+            ));
+        }
+        Ok(target)
+    }
+
+    /// Check if a URL's host is in the allowed hosts list.
+    pub fn check_http_host(&self, url: &str) -> Result<(), String> {
+        if self.http_allowed_hosts.is_empty() {
+            return Ok(());
+        }
+        // Extract host from URL
+        let host = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .and_then(|rest| rest.split('/').next())
+            .and_then(|host_port| host_port.split(':').next())
+            .unwrap_or("");
+
+        if self.http_allowed_hosts.iter().any(|h| h == host) {
+            Ok(())
+        } else {
+            Err(format!(
+                "host '{}' not in allowed hosts: {:?}",
+                host, self.http_allowed_hosts
+            ))
+        }
     }
 
     /// Set the allowed commands for the exec builtin.

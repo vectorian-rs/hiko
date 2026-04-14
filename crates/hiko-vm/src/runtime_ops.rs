@@ -50,12 +50,29 @@ pub fn deliver_message(vm: &mut VM, msg: SendableValue) {
 }
 
 /// Create a child VM from a parent's program with serialized captures.
+/// Uses VM::new (all builtins, no restrictions). For capability-aware
+/// child creation, use create_child_vm_from_parent.
 pub fn create_child_vm(
     program: CompiledProgram,
     proto_idx: usize,
     captures: Vec<SendableValue>,
 ) -> VM {
     let mut child_vm = VM::new(program);
+    let child_captures: Vec<Value> = captures
+        .into_iter()
+        .map(|v| deserialize(v, &mut child_vm.heap))
+        .collect();
+    child_vm.setup_closure_call(proto_idx, &child_captures);
+    child_vm
+}
+
+/// Create a child VM that inherits capabilities from the parent VM.
+pub fn create_child_vm_from_parent(
+    parent_vm: &VM,
+    proto_idx: usize,
+    captures: Vec<SendableValue>,
+) -> VM {
+    let mut child_vm = parent_vm.create_child();
     let child_captures: Vec<Value> = captures
         .into_iter()
         .map(|v| deserialize(v, &mut child_vm.heap))

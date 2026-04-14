@@ -249,8 +249,11 @@ fn worker_loop(
                 captures,
             } => {
                 let child_pid = Pid(next_pid.fetch_add(1, Ordering::Relaxed));
-                let program = process.vm.get_program();
-                let child_vm = create_child_vm(program, proto_idx, captures);
+                let child_vm = crate::runtime_ops::create_child_vm_from_parent(
+                    &process.vm,
+                    proto_idx,
+                    captures,
+                );
                 let child = Process::new(child_pid, child_vm, Some(pid));
                 table.insert(child);
                 scheduler.enqueue(child_pid);

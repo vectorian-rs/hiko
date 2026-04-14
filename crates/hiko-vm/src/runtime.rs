@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BlockReason, Pid, Process, ProcessStatus};
-use crate::runtime_ops::create_child_vm;
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::sendable::{SendableValue, deserialize, serialize};
 use crate::value::Value;
@@ -159,8 +158,8 @@ impl Runtime {
     ) -> Pid {
         let child_pid = self.new_pid();
         let parent = self.processes.get(&parent_pid).unwrap();
-        let program = parent.vm.get_program();
-        let child_vm = create_child_vm(program, proto_idx, captures);
+        let child_vm =
+            crate::runtime_ops::create_child_vm_from_parent(&parent.vm, proto_idx, captures);
         let child = Process::new(child_pid, child_vm, Some(parent_pid));
         self.processes.insert(child_pid, child);
         self.scheduler.enqueue(child_pid);

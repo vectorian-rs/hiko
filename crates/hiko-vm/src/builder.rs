@@ -29,6 +29,8 @@ pub struct VMBuilder {
     builtins: Vec<(&'static str, BuiltinFn)>,
     exec_allowed: Vec<String>,
     exec_timeout: u64,
+    fs_root: String,
+    http_allowed_hosts: Vec<String>,
     max_heap: Option<usize>,
     max_fuel: Option<u64>,
 }
@@ -47,6 +49,8 @@ impl VMBuilder {
             builtins: Vec::new(),
             exec_allowed: Vec::new(),
             exec_timeout: 30,
+            fs_root: String::new(),
+            http_allowed_hosts: Vec::new(),
             max_heap: None,
             max_fuel: None,
         }
@@ -123,6 +127,7 @@ impl VMBuilder {
 
     /// Include filesystem builtins filtered by policy.
     pub fn with_filesystem(mut self, policy: FilesystemPolicy) -> Self {
+        self.fs_root = policy.root.clone();
         let fs_read = [
             "read_file",
             "file_exists",
@@ -149,7 +154,8 @@ impl VMBuilder {
     }
 
     /// Include HTTP builtins.
-    pub fn with_http(mut self, _policy: HttpPolicy) -> Self {
+    pub fn with_http(mut self, policy: HttpPolicy) -> Self {
+        self.http_allowed_hosts = policy.allowed_hosts.clone();
         let http_names = [
             "http_get",
             "http",
@@ -211,6 +217,8 @@ impl VMBuilder {
 
         vm.set_exec_allowed(self.exec_allowed);
         vm.set_exec_timeout(self.exec_timeout);
+        vm.set_fs_root(self.fs_root);
+        vm.set_http_allowed_hosts(self.http_allowed_hosts);
 
         if let Some(max) = self.max_heap {
             vm.set_max_heap(max);
