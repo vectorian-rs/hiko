@@ -54,8 +54,13 @@ impl Runtime {
     /// Spawn a root process from a compiled program.
     /// Returns the Pid.
     pub fn spawn_root(&mut self, program: CompiledProgram) -> Pid {
+        self.spawn_root_vm(VM::new(program))
+    }
+
+    /// Spawn a root process from an already-configured VM.
+    /// Returns the Pid.
+    pub fn spawn_root_vm(&mut self, mut vm: VM) -> Pid {
         let pid = self.new_pid();
-        let mut vm = VM::new(program);
         vm.enable_output_capture();
         let process = Process::new(pid, vm, None);
         self.processes.insert(pid, process);
@@ -77,16 +82,20 @@ impl Runtime {
             match result {
                 RunResult::Done => {
                     let process = self.processes.get_mut(&pid).unwrap();
-                    // Serialize result once on completion
-                    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    match serialize(val, &process.vm.heap) {
-                        Ok(sv) => process.result = Some(sv),
-                        Err(e) => {
-                            process.status =
-                                ProcessStatus::Failed(format!("child result not sendable: {e}"));
-                            self.scheduler.remove(pid);
-                            self.wake_and_deliver_results(pid);
-                            continue;
+                    if process.parent.is_some() {
+                        // Child results cross a process boundary when awaited, so they must be
+                        // sendable. Root processes run in-place and may finish with local values.
+                        let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+                        match serialize(val, &process.vm.heap) {
+                            Ok(sv) => process.result = Some(sv),
+                            Err(e) => {
+                                process.status = ProcessStatus::Failed(format!(
+                                    "child result not sendable: {e}"
+                                ));
+                                self.scheduler.remove(pid);
+                                self.wake_and_deliver_results(pid);
+                                continue;
+                            }
                         }
                     }
                     process.status = ProcessStatus::Done;
@@ -341,6 +350,11 @@ impl Runtime {
             .unwrap_or_default()
     }
 
+    /// Get the current lifecycle status of a process.
+    pub fn get_status(&self, pid: Pid) -> Option<&ProcessStatus> {
+        self.processes.get(&pid).map(|p| &p.status)
+    }
+
     /// Get the number of processes.
     pub fn process_count(&self) -> usize {
         self.processes.len()
@@ -353,11 +367,20 @@ mod tests {
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::path::Path;
 
     fn compile(source: &str) -> CompiledProgram {
         let tokens = Lexer::new(source, 0).tokenize().unwrap();
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
+        compiled
+    }
+
+    fn compile_example(path: &Path) -> CompiledProgram {
+        let source = std::fs::read_to_string(path).unwrap();
+        let tokens = Lexer::new(&source, 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let (compiled, _) = Compiler::compile_file(program, path).unwrap();
         compiled
     }
 
@@ -549,5 +572,26 @@ mod tests {
             ProcessStatus::Failed(msg) => assert!(msg.contains("unknown process")),
             other => panic!("expected Failed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_spawn_stress_example() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/spawn_stress.hml");
+        let program = compile_example(&path);
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        let output = runtime.get_output(pid).join("");
+        assert!(output.contains("spawn_stress ok: 6000 children"));
+    }
+
+    #[test]
+    fn test_root_process_may_finish_with_non_sendable_value() {
+        let program = compile("val f = fn () => 1");
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        assert!(matches!(runtime.get_status(pid), Some(ProcessStatus::Done)));
     }
 }

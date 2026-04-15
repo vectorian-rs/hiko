@@ -315,8 +315,6 @@ checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 [[package]]
 name = "hiko-compile"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89ffbf2edf132b9f3f2d0f219a93fe0b499cfaebd0015f212bb0063d9f983678"
 dependencies = [
  "hiko-syntax",
  "hiko-types",
@@ -325,14 +323,10 @@ dependencies = [
 [[package]]
 name = "hiko-syntax"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0110a00b2f74426984992e3691aeb307644cf4a2c6e4f8b3bd601b89952cf7a3"
 
 [[package]]
 name = "hiko-types"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f69827420fa63ef2a0d7b892f768b5625366031930804b6b01d93e46427452d3"
 dependencies = [
  "hiko-syntax",
 ]
@@ -340,8 +334,6 @@ dependencies = [
 [[package]]
 name = "hiko-vm"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41bd910bb94385a9e9ec32c659a0ea97c0e7561b0ab091cd30e8b1cc61937731"
 dependencies = [
  "blake3",
  "dashmap",

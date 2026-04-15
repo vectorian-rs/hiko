@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Runtime and Process Execution
+
+- **Lighter child processes**: spawned VMs now share immutable compiled program/code data instead of cloning bytecode, constants, and effect metadata per child.
+- **Cheaper process startup**: new VMs start with a much smaller default stack and no eager 4096-slot heap reservation, reducing per-process overhead.
+- **Runtime-backed local runner**: `hiko-vm-hiko-run-all-policy` now executes scripts through `Runtime`, so runtime-managed examples such as `spawn_stress.hml` are exercised by `tools/run_all.hml`.
+- **Root failure reporting**: the local runtime runner now exits nonzero when the root process ends in `Failed(...)` instead of silently succeeding.
+
 ## 0.5.1
 
 ### Runtime and Tooling

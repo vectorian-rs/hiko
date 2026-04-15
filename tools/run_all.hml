@@ -1,17 +1,17 @@
 (* tool: run_all
- * description: Run all examples via hiko-cli and report per-example timing
+ * description: Run all examples and report per-example timing
  *
  * Requires an exec-enabled VM. The checked-in policy at
  * `policies/test-runner.policy.toml` already allows:
  *
  *   ./target/release/hiko-cli
+ *   ./target/release/hiko-vm-hiko-run-all-policy
  *
- * Typical setup:
+ * Typical setup for the local runtime-backed runner:
  *
- *   cargo run --bin hiko-cli -- build-vm policies/test-runner.policy.toml
- *   cd hiko-vm-test-runner-policy && cargo build --release
+ *   cd hiko-vm-hiko-run-all-policy && cargo build --release
  *   cd ..
- *   ./hiko-vm-test-runner-policy/target/release/hiko-vm-test-runner-policy tools/run_all.hml
+ *   ./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy tools/run_all.hml
  *)
 
 use "../stdlib/list.hml"
@@ -39,11 +39,22 @@ fun failure_suffix stderr =
      else ": " ^ msg
   end
 
+val runtime_runner_root = "./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy"
+val runtime_runner_local = "./target/release/hiko-vm-hiko-run-all-policy"
+
+fun example_exec file =
+  if file_exists runtime_runner_root
+  then (runtime_runner_root, [file])
+  else if file_exists runtime_runner_local
+  then (runtime_runner_local, [file])
+  else ("./target/release/hiko-cli", ["run", file])
+
 fun run_example file =
   let
     val name = display_name file
     val t0 = monotonic_ms ()
-    val (code, _, stderr) = exec ("./target/release/hiko-cli", ["run", file])
+    val (command, args) = example_exec file
+    val (code, _, stderr) = exec (command, args)
     val elapsed = monotonic_ms () - t0
     val _ =
       if code = 0

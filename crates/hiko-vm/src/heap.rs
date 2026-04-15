@@ -23,8 +23,8 @@ impl Default for Heap {
 impl Heap {
     pub fn new() -> Self {
         Heap {
-            objects: Vec::with_capacity(4096),
-            marks: Vec::with_capacity(4096),
+            objects: Vec::new(),
+            marks: Vec::new(),
             free_list: Vec::new(),
             alloc_since_gc: 0,
             gc_threshold: 1024,

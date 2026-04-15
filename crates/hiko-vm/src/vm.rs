@@ -2,7 +2,7 @@ use smallvec::smallvec;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
+use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
@@ -106,8 +106,8 @@ pub struct VM {
     frames: Vec<CallFrame>,
     globals: Vec<Value>,
     global_names: HashMap<String, usize>,
-    protos: Vec<hiko_compile::chunk::FunctionProto>,
-    main_chunk: Chunk,
+    protos: Arc<[FunctionProto]>,
+    main_chunk: Arc<Chunk>,
     output: Option<Vec<String>>,
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
@@ -140,7 +140,7 @@ pub struct VM {
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
     /// Effect metadata from compiled program (name → tag).
-    pub effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
+    pub effect_metadata: Arc<[EffectMeta]>,
     /// Saved continuation when blocked on runtime I/O. GC root.
     pub blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
@@ -231,11 +231,11 @@ impl VM {
     pub fn from_program(program: CompiledProgram) -> Self {
         VM {
             heap: Heap::new(),
-            stack: Vec::with_capacity(256),
+            stack: Vec::with_capacity(32),
             frames: Vec::new(),
             globals: Vec::new(),
             global_names: HashMap::new(),
-            effect_metadata: program.effects.clone(),
+            effect_metadata: program.effects,
             protos: program.functions,
             main_chunk: program.main,
             output: None,
@@ -2229,6 +2229,16 @@ mod tests {
         let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
         assert_eq!(err.message, "resume_blocked: expected continuation");
         assert!(vm.blocked_continuation.is_none());
+    }
+
+    #[test]
+    fn test_create_child_shares_compiled_program() {
+        let vm = compile_vm("fun id x = x\nval _ = id 1");
+        let child = vm.create_child();
+
+        assert!(Arc::ptr_eq(&vm.main_chunk, &child.main_chunk));
+        assert!(Arc::ptr_eq(&vm.protos, &child.protos));
+        assert!(Arc::ptr_eq(&vm.effect_metadata, &child.effect_metadata));
     }
 
     #[test]

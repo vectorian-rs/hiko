@@ -251,17 +251,20 @@ fn worker_loop(
 
         match result {
             RunResult::Done => {
-                // Serialize result once on completion, matching single-threaded behavior
-                let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                match crate::sendable::serialize(val, &process.vm.heap) {
-                    Ok(sv) => process.result = Some(sv),
-                    Err(e) => {
-                        process.status =
-                            ProcessStatus::Failed(format!("child result not sendable: {e}"));
-                        table.return_process(process);
-                        scheduler.remove(pid);
-                        wake_waiters(table, scheduler, pid);
-                        continue;
+                if process.parent.is_some() {
+                    // Child results cross a process boundary when awaited, so they must be
+                    // sendable. Root processes run in-place and may finish with local values.
+                    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+                    match crate::sendable::serialize(val, &process.vm.heap) {
+                        Ok(sv) => process.result = Some(sv),
+                        Err(e) => {
+                            process.status =
+                                ProcessStatus::Failed(format!("child result not sendable: {e}"));
+                            table.return_process(process);
+                            scheduler.remove(pid);
+                            wake_waiters(table, scheduler, pid);
+                            continue;
+                        }
                     }
                 }
                 process.status = ProcessStatus::Done;
@@ -748,5 +751,20 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["instant\n"]);
+    }
+
+    #[test]
+    fn test_threaded_root_process_may_finish_with_non_sendable_value() {
+        let program = compile("val f = fn () => 1");
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|p| format!("{:?}", p.status))
+            .expect("root process should exist");
+        assert_eq!(status, "Done");
     }
 }

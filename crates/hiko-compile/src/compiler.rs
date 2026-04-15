@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hiko_syntax::ast::*;
 use hiko_syntax::intern::StringInterner;
@@ -148,13 +149,14 @@ impl Compiler {
         let warnings = c.infer_ctx.warnings;
         Ok((
             CompiledProgram {
-                main: main.chunk,
-                functions: c.functions,
-                effects: c
-                    .effect_tags
-                    .into_iter()
-                    .map(|(name, tag)| crate::chunk::EffectMeta { name, tag })
-                    .collect(),
+                main: Arc::new(main.chunk),
+                functions: Arc::<[FunctionProto]>::from(c.functions),
+                effects: Arc::<[crate::chunk::EffectMeta]>::from(
+                    c.effect_tags
+                        .into_iter()
+                        .map(|(name, tag)| crate::chunk::EffectMeta { name, tag })
+                        .collect::<Vec<_>>(),
+                ),
             },
             warnings,
         ))
