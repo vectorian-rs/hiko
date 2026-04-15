@@ -220,11 +220,15 @@ impl Runtime {
                 let val = deserialize(sendable, &mut parent.vm.heap);
                 parent.vm.push_value(val);
                 self.scheduler.enqueue(parent_pid);
+                self.processes.remove(&child_pid);
+                self.waiters.remove(&child_pid);
             }
             ChildState::Failed(msg) => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
                 self.scheduler.remove(parent_pid);
+                self.processes.remove(&child_pid);
+                self.waiters.remove(&child_pid);
             }
             ChildState::Running => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
@@ -334,6 +338,8 @@ impl Runtime {
                 }
             }
         }
+
+        self.processes.remove(&finished_pid);
     }
 
     /// Try to dequeue a runnable process without blocking.
@@ -593,5 +599,37 @@ mod tests {
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         assert!(matches!(runtime.get_status(pid), Some(ProcessStatus::Done)));
+    }
+
+    #[test]
+    fn test_reaps_finished_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.process_count(), 1);
+        assert!(runtime.get_status(pid).is_some());
+    }
+
+    #[test]
+    fn test_reaps_failed_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => panic \"boom\")\n\
+             val _ = await_process child",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.process_count(), 1);
+        assert!(matches!(
+            runtime.get_status(pid),
+            Some(ProcessStatus::Failed(_))
+        ));
     }
 }

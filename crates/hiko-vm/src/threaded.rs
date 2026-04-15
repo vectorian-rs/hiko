@@ -358,6 +358,8 @@ fn handle_await(
                     Some(sv) => {
                         drop(child);
                         deliver_result_to_parent(&mut parent.vm, sv);
+                        table.processes.remove(&child_pid);
+                        table.waiters.remove(&child_pid);
                         table.return_process(parent);
                         scheduler.enqueue(parent_pid);
                     }
@@ -373,6 +375,8 @@ fn handle_await(
                 let msg = msg.clone();
                 drop(child);
                 parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
+                table.processes.remove(&child_pid);
+                table.waiters.remove(&child_pid);
                 table.return_process(parent);
             }
             _ => {
@@ -474,6 +478,8 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
             }
         }
     }
+
+    table.processes.remove(&finished_pid);
 }
 
 #[cfg(test)]
@@ -766,5 +772,40 @@ mod tests {
             .map(|p| format!("{:?}", p.status))
             .expect("root process should exist");
         assert_eq!(status, "Done");
+    }
+
+    #[test]
+    fn test_threaded_reaps_finished_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.table.processes.len(), 1);
+        assert!(runtime.table.processes.contains_key(&pid));
+    }
+
+    #[test]
+    fn test_threaded_reaps_failed_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => panic \"boom\")\n\
+             val _ = await_process child",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.table.processes.len(), 1);
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|p| format!("{:?}", p.status))
+            .expect("root process should exist");
+        assert!(status.contains("Failed"));
     }
 }
