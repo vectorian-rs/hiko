@@ -1,14 +1,14 @@
 [package]
 name = "hiko-cli"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 description = "hiko-cli: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
-hiko-syntax = { version = "0.4.0", path = "../hiko-syntax" }
-hiko-types = { version = "0.4.0", path = "../hiko-types" }
-hiko-compile = { version = "0.4.0", path = "../hiko-compile" }
-hiko-vm = { version = "0.4.0", path = "../hiko-vm" }
+hiko-syntax = { version = "0.5.0", path = "../hiko-syntax" }
+hiko-types = { version = "0.5.0", path = "../hiko-types" }
+hiko-compile = { version = "0.5.0", path = "../hiko-compile" }
+hiko-vm = { version = "0.5.0", path = "../hiko-vm" }
 codespan-reporting = "0.11"

@@ -6,6 +6,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-hiko-syntax = "0.3.0"
-hiko-compile = "0.3.0"
-hiko-vm = "0.3.0"
+hiko-syntax = { version = "0.5.0", path = "../crates/hiko-syntax" }
+hiko-compile = { version = "0.5.0", path = "../crates/hiko-compile" }
+hiko-vm = { version = "0.5.0", path = "../crates/hiko-vm" }

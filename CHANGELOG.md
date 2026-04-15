@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0
+
+### Runtime and Concurrency
+
+- **Process runtime**: added `run_slice`, `Runtime`, `ThreadedRuntime`, `Process`, `Scheduler`, and `SendableValue` for cooperative and multi-threaded execution of Hiko programs.
+- **Structured concurrency builtins**: added `spawn` and `await_process` for child process orchestration.
+- **Async I/O suspension**: unhandled effect-style I/O now suspends processes through the runtime instead of forcing direct blocking calls.
+- **I/O backend abstraction**: added pluggable I/O backends plus a mock backend for deterministic tests.
+
+### Capabilities and Tooling
+
+- **Capability-based VM builder**: added `VMBuilder` policies for core, filesystem, HTTP, exec, heap, and fuel limits.
+- **Policy-compiled VMs**: `hiko build-vm` now generates standalone binaries from TOML policy files.
+- **Agent harness**: added `hiko-harness` plus repo tools for agentic coding workflows.
+- **Example runner tool**: moved the example harness to `tools/run_all.hml`, with per-example pass/fail output and elapsed milliseconds.
+
+### Builtins and Standard Library Surface
+
+- **Filesystem capabilities**: added sandboxed file and directory builtins, hashline file editing helpers, and recursive/glob helpers.
+- **HTTP surface**: added general HTTP builtins plus JSON, MessagePack, and raw-bytes response helpers.
+- **Bytes and randomness**: added `Bytes`, `http_bytes`, `random_bytes`, and a pure RNG API with seeded generators.
+- **Utility builtins**: added regex helpers, JSON helpers, `sleep`, `string_join`, `epoch_ms`, and `monotonic_ms`.
+
+### Correctness
+
+- **Deep resume fixes**: fixed continuation corruption in non-tail resume contexts and added regressions for large direct-resume loops and pending-application restore.
+- **Blocked continuation errors**: `resume_blocked` now reports invalid continuations instead of failing silently.
+- **Filesystem root enforcement**: path checks now canonicalize roots and targets, reject traversal and symlink escape, and share one implementation across VM and heap checks.
+- **Sandboxed filesystem builtins**: `glob` and recursive directory walking now re-check resolved paths so sandbox escapes fail closed.
+
+### Examples and Documentation
+
+- Added examples for exec, regex, JSON, pipelines, effects with I/O, typed JSON, testing, benchmarking, and agent-oriented workflows.
+- Expanded README coverage for policies, generated VMs, and runtime architecture.
+
 ## 0.2.0
 
 ### Language Features
