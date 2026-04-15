@@ -9,6 +9,7 @@
 - **Runtime-backed local runner**: `hiko-vm-hiko-run-all-policy` now executes scripts through `Runtime`, so runtime-managed examples such as `spawn_stress.hml` are exercised by `tools/run_all.hml`.
 - **Root failure reporting**: the local runtime runner now exits nonzero when the root process ends in `Failed(...)` instead of silently succeeding.
 - **Documented VM stack/frame guards**: the fixed value-stack and call-frame limits are now exposed as public constants and documented alongside heap and fuel limits.
+- **Boundary-triggered local GC**: long-lived processes now opportunistically collect at suspension boundaries after moderate allocation bursts, reclaiming request-local garbage sooner without introducing any global collector.
 
 ## 0.5.1
 

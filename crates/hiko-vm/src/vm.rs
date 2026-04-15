@@ -558,6 +558,12 @@ impl VM {
         self.heap.collect(roots);
     }
 
+    fn gc_collect_at_boundary_if_needed(&mut self) {
+        if self.heap.should_collect_at_boundary() {
+            self.gc_collect_with_extra_roots(std::iter::empty());
+        }
+    }
+
     /// Format a value for display (print/println).
     fn display_value(&self, v: &Value) -> String {
         match v {
@@ -688,6 +694,7 @@ impl VM {
 
         // Check for pending runtime request (spawn/await)
         if let Some(req) = self.pending_runtime_request.take() {
+            self.gc_collect_at_boundary_if_needed();
             return match req {
                 RuntimeRequest::Spawn {
                     proto_idx,
@@ -709,7 +716,10 @@ impl VM {
                 // Should have been caught by the check above — this is a fallback
                 RunResult::Yielded
             }
-            Err(e) if e.is_fuel_exhausted() => RunResult::Yielded,
+            Err(e) if e.is_fuel_exhausted() => {
+                self.gc_collect_at_boundary_if_needed();
+                RunResult::Yielded
+            }
             Err(e) => RunResult::Failed(e.message),
         }
     }
@@ -2063,6 +2073,28 @@ mod tests {
         );
         assert_eq!(global_int(&vm, "result"), 5000);
         assert!(vm.heap_live_count() < 15000); // GC should have collected intermediate values
+    }
+
+    #[test]
+    fn test_boundary_gc_runs_before_async_suspend() {
+        let program = compile_program(
+            "fun churn n = if n = 0 then () else let val _ = (n, n) in churn (n - 1) end
+             val _ = churn 600
+             val _ = sleep 1",
+        );
+        let mut vm = VMBuilder::new(program).with_core().build();
+        vm.async_io = true;
+
+        match vm.run_slice(1_000_000) {
+            RunResult::Io(crate::io_backend::IoRequest::Sleep(_)) => {}
+            other => panic!("expected async sleep boundary, got {other:?}"),
+        }
+
+        let live = vm.heap_live_count();
+        assert!(
+            live < 100,
+            "boundary GC should reclaim request-local garbage before suspend, live={live}"
+        );
     }
 
     // ── Effect handler tests ─────────────────────────────────────────

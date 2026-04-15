@@ -95,6 +95,17 @@ impl Heap {
         self.alloc_since_gc >= self.gc_threshold
     }
 
+    /// Suspension-boundary collection for long-lived processes.
+    ///
+    /// This runs earlier than the normal allocation-driven threshold so a
+    /// process that allocates request-local garbage and then blocks or yields
+    /// can reclaim it before the next allocation burst. Keep the floor high
+    /// enough to avoid collecting on every tiny boundary.
+    pub fn should_collect_at_boundary(&self) -> bool {
+        let boundary_threshold = (self.gc_threshold / 4).max(256);
+        self.alloc_since_gc >= boundary_threshold
+    }
+
     /// Mark a single ref. Returns true if it was newly marked.
     fn mark(&mut self, r: GcRef) -> bool {
         let idx = r.0 as usize;
