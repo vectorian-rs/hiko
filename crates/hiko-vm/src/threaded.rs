@@ -406,30 +406,24 @@ fn handle_send(
         return;
     }
 
-    // Check target existence while sender is still held (no TOCTOU)
-    let target_exists = table.processes.contains_key(&target_pid);
-
-    if !target_exists {
-        sender.status =
-            ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
-        table.return_process(sender);
-        return;
-    }
-
-    // Target exists — return sender, then deliver
-    table.return_process(sender);
-
     if let Some(mut target) = table.processes.get_mut(&target_pid) {
         if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
             target.status = ProcessStatus::Runnable;
             deliver_message(&mut target.vm, value);
             drop(target);
+            table.return_process(sender);
             scheduler.enqueue(target_pid);
         } else {
             target.mailbox.push_back(value);
+            drop(target);
+            table.return_process(sender);
         }
+        scheduler.enqueue(sender_pid);
+    } else {
+        sender.status =
+            ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
+        table.return_process(sender);
     }
-    scheduler.enqueue(sender_pid);
 }
 
 fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: Process) {
@@ -571,6 +565,24 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["99\n"]);
+    }
+
+    #[test]
+    fn test_threaded_send_to_dead_process() {
+        let program = compile("val _ = send_message (999, 42)");
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        match &runtime
+            .table
+            .processes
+            .get(&pid)
+            .expect("root process should exist")
+            .status
+        {
+            ProcessStatus::Failed(msg) => assert!(msg.contains("unknown process")),
+            other => panic!("expected Failed, got {:?}", other),
+        }
     }
 
     #[test]
