@@ -1,14 +1,17 @@
 
 """benchmark.py — Walk directory recursively, hash every file."""
 import os
+import sys
 import time
 
 try:
     import blake3 as _blake3
-    def hash_fn(data): return _blake3.blake3(data).hexdigest()
 except ImportError:
-    import hashlib
-    def hash_fn(data): return hashlib.blake2b(data, digest_size=32).hexdigest()
+    sys.exit("benchmark.py requires the 'blake3' package; install it with 'pip install blake3'")
+
+
+def hash_fn(data):
+    return _blake3.blake3(data).hexdigest()
 
 SKIP = set()
 TARGET_DIR = "/Users/l1x/code/home/vectorian-rs/hiko/.git"

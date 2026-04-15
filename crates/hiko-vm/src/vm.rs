@@ -266,7 +266,7 @@ impl VM {
     /// Used by the runtime after I/O completion.
     /// Restores the saved frames and stack, then pushes the result
     /// as the return value of `perform`.
-    pub fn resume_blocked(&mut self, result: Value) {
+    pub fn resume_blocked(&mut self, result: Value) -> Result<(), RuntimeError> {
         if let Some(cont_ref) = self.blocked_continuation.take() {
             // Get the saved continuation
             let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
@@ -275,7 +275,16 @@ impl VM {
                     saved_stack,
                     ..
                 }) => (saved_frames.clone(), saved_stack.clone()),
-                _ => return, // corrupted continuation — silently fail
+                Ok(_) => {
+                    return Err(RuntimeError {
+                        message: "resume_blocked: expected continuation".into(),
+                    });
+                }
+                Err(e) => {
+                    return Err(RuntimeError {
+                        message: format!("resume_blocked: {e}"),
+                    });
+                }
             };
 
             // Restore saved stack
@@ -321,6 +330,7 @@ impl VM {
             // Push the result as the return value of `perform`
             self.stack.push(result);
         }
+        Ok(())
     }
 
     /// Take a pending runtime request (if any).
@@ -502,7 +512,9 @@ impl VM {
 
     fn alloc(&mut self, obj: HeapObject) -> Value {
         if self.heap.should_collect() {
-            self.gc_collect();
+            let mut extra_roots = Vec::new();
+            obj.for_each_gc_ref(|r| extra_roots.push(r));
+            self.gc_collect_with_extra_roots(extra_roots);
         }
         Value::Heap(self.heap.alloc(obj))
     }
@@ -511,7 +523,7 @@ impl VM {
         self.alloc(HeapObject::String(s))
     }
 
-    fn gc_collect(&mut self) {
+    fn gc_collect_with_extra_roots(&mut self, extra_roots: impl IntoIterator<Item = GcRef>) {
         let roots = self
             .stack
             .iter()
@@ -523,7 +535,8 @@ impl VM {
                 _ => None,
             })
             .chain(self.string_cache.values().copied())
-            .chain(self.blocked_continuation.iter().copied());
+            .chain(self.blocked_continuation.iter().copied())
+            .chain(extra_roots);
         self.heap.collect(roots);
     }
 
@@ -1553,76 +1566,74 @@ impl VM {
                         message: format!("unhandled effect (tag {effect_tag})"),
                     })?;
 
-                    let handler_count_before = self.handlers.len();
-                    let handler = self.handlers.remove(h_idx);
-                    self.handlers.truncate(h_idx);
+                    {
+                        // ── Unified path: always save deep continuation,
+                        // also park shallow state when possible. ──────────
+                        let handler_count_before = self.handlers.len();
+                        let handler = self.handlers.remove(h_idx);
+                        self.handlers.truncate(h_idx);
 
-                    // Split the stack at handler.stack_base (where InstallHandler
-                    // ran). Everything below stays for the clause frame's use.
-                    let handler_base = self.frames[handler.call_frame_idx].base;
-                    let save_from = handler.stack_base;
-                    let mut saved_stack = self.stack.split_off(save_from);
+                        let handler_base = self.frames[handler.call_frame_idx].base;
+                        let save_from = handler.stack_base;
+                        let mut saved_stack = self.stack.split_off(save_from);
 
-                    // Prepend handler frame's locals into saved_stack so
-                    // the restored handler frame gets its own copy at a new base.
-                    // This prevents the restored frame's Return from truncating
-                    // through the clause frame's locals.
-                    let handler_locals_count = save_from - handler_base;
-                    if handler_locals_count > 0 {
-                        let mut combined =
-                            Vec::with_capacity(handler_locals_count + saved_stack.len());
-                        combined.extend_from_slice(&self.stack[handler_base..save_from]);
-                        combined.extend_from_slice(&saved_stack);
-                        saved_stack = combined;
-                    }
+                        let handler_locals_count = save_from - handler_base;
+                        if handler_locals_count > 0 {
+                            let mut combined =
+                                Vec::with_capacity(handler_locals_count + saved_stack.len());
+                            combined.extend_from_slice(&self.stack[handler_base..save_from]);
+                            combined.extend_from_slice(&saved_stack);
+                            saved_stack = combined;
+                        }
 
-                    let hf = &self.frames[handler.call_frame_idx];
-                    let handler_frame = SavedFrame {
-                        proto_idx: hf.proto_idx,
-                        ip: hf.ip,
-                        base_offset: 0, // handler locals at start of saved_stack
-                        captures: hf.captures.clone(),
-                    };
+                        let hf = &self.frames[handler.call_frame_idx];
+                        let handler_frame = SavedFrame {
+                            proto_idx: hf.proto_idx,
+                            ip: hf.ip,
+                            base_offset: 0,
+                            captures: hf.captures.clone(),
+                        };
 
-                    let mut saved_frames = vec![handler_frame];
-                    for frame in &self.frames[handler.call_frame_idx + 1..] {
-                        saved_frames.push(SavedFrame {
-                            proto_idx: frame.proto_idx,
-                            ip: frame.ip,
-                            base_offset: handler_locals_count + (frame.base - save_from),
-                            captures: frame.captures.clone(),
+                        let mut saved_frames = vec![handler_frame];
+                        for frame in &self.frames[handler.call_frame_idx + 1..] {
+                            saved_frames.push(SavedFrame {
+                                proto_idx: frame.proto_idx,
+                                ip: frame.ip,
+                                base_offset: handler_locals_count + (frame.base - save_from),
+                                captures: frame.captures.clone(),
+                            });
+                        }
+
+                        let locals_offset = save_from - handler_base;
+                        let cont = self.alloc(HeapObject::Continuation {
+                            saved_frames,
+                            saved_stack,
+                            saved_handler: Some(SavedHandler {
+                                clauses: handler.clauses.clone(),
+                                proto_idx: handler.proto_idx,
+                                captures: handler.captures.clone(),
+                                locals_offset,
+                                handler_count_before,
+                            }),
                         });
-                    }
 
-                    let locals_offset = save_from - handler_base;
-                    let cont = self.alloc(HeapObject::Continuation {
-                        saved_frames,
-                        saved_stack,
-                        saved_handler: Some(SavedHandler {
-                            clauses: handler.clauses.clone(),
-                            proto_idx: handler.proto_idx,
-                            captures: handler.captures.clone(),
-                            locals_offset,
-                            handler_count_before,
-                        }),
-                    });
+                        self.frames.truncate(handler.call_frame_idx + 1);
 
-                    self.frames.truncate(handler.call_frame_idx + 1);
+                        let hfi = self.frames.len() - 1;
+                        self.frames[hfi].proto_idx = handler.proto_idx;
+                        self.frames[hfi].captures = handler.captures;
+                        self.frames[hfi].ip = clause_ip;
 
-                    // Restore handler frame context and jump to clause
-                    let hfi = self.frames.len() - 1;
-                    self.frames[hfi].proto_idx = handler.proto_idx;
-                    self.frames[hfi].captures = handler.captures;
-                    self.frames[hfi].ip = clause_ip;
-
-                    // Push payload and continuation for the clause to bind
-                    self.push(payload)?;
-                    self.push(cont)?;
+                        self.push(payload)?;
+                        self.push(cont)?;
+                    } // end perform
                 }
 
                 Op::Resume => {
                     let arg = self.pop()?;
                     let cont_val = self.pop()?;
+
+                    // ── Deep path ─────────────────────────────────
                     let cont_ref = match cont_val {
                         Value::Heap(r) => r,
                         _ => {
@@ -1833,6 +1844,13 @@ mod tests {
         let mut vm = VM::new(compiled);
         vm.run().expect("runtime error");
         vm
+    }
+
+    fn compile_vm(input: &str) -> VM {
+        let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
+        VM::new(compiled)
     }
 
     fn global_int(vm: &VM, name: &str) -> i64 {
@@ -2085,6 +2103,54 @@ mod tests {
                let val _ = perform Put 42
                in perform Get () end)");
         assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    #[test]
+    fn test_effect_resume_direct_large_loop() {
+        // Repeated direct resumes should stay correct for larger workloads,
+        // even before a dedicated tail-resume path lands.
+        let vm = run("effect Ask of Int\n\
+             fun loop n acc =\n\
+               if n = 0 then acc\n\
+               else let val x = perform Ask n\n\
+                    in loop (n - 1) (acc + x) end\n\
+             fun run_effect f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Ask n k => resume k n\n\
+             val result = run_effect (fn () => loop 20000 0)");
+        assert_eq!(global_int(&vm, "result"), 200010000);
+    }
+
+    #[test]
+    fn test_effect_resume_non_tail_pending_application() {
+        // A perform inside a larger expression must restore the pending
+        // application state exactly; this used to corrupt the callee slot.
+        let vm = run("effect Ask of Int\n\
+             fun loop n acc =\n\
+               if n = 0 then acc\n\
+               else step n acc\n\
+             and step n acc =\n\
+               loop (n - 1) (acc + perform Ask n)\n\
+             fun run_effect f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Ask n k => resume k n\n\
+             val result = run_effect (fn () => loop 500 0)");
+        assert_eq!(global_int(&vm, "result"), 125250);
+    }
+
+    #[test]
+    fn test_resume_blocked_invalid_continuation_errors() {
+        let mut vm = compile_vm("val _ = ()");
+        let bogus = vm
+            .heap
+            .alloc(HeapObject::String("not a continuation".into()));
+        vm.blocked_continuation = Some(bogus);
+
+        let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
+        assert_eq!(err.message, "resume_blocked: expected continuation");
+        assert!(vm.blocked_continuation.is_none());
     }
 
     // ── Capability / builder tests ───────────────────────────────────

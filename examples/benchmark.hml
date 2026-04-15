@@ -26,9 +26,7 @@ and walk dir results count = process dir (list_dir dir) results count
 fun with_fs f =
   handle f ()
   with return x => x
-     | ReadBytes path k =>
-         let val bytes = read_file_bytes path
-         in with_fs (fn () => resume k bytes) end
+     | ReadBytes path k => resume k (read_file_bytes path)
 
 fun print_lines ls = case ls of
     [] => ()
