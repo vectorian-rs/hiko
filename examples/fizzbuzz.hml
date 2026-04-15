@@ -6,7 +6,7 @@ fun fizzbuzz n =
 
 fun loop i max =
   if i > max then ()
-  else let val _ = println (fizzbuzz i)
+  else let val _ = println ((int_to_string i) ^ " : " ^ (fizzbuzz i))
        in loop (i + 1) max end
 
 val _ = loop 1 100
