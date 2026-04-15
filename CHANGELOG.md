@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+### Runtime and Tooling
+
+- **Streaming output**: `print` and `println` now write to a runtime output sink immediately in `hiko-cli` and generated policy VMs instead of buffering until process exit.
+- **Opt-in output capture**: VM output buffering is now disabled by default to avoid unbounded memory growth in long-running services, while runtime helpers and the harness enable capture explicitly when they need it.
+- **Generated VM support**: policy-generated binaries now install the streaming stdout sink by default so tools like `tools/run_all.hml` emit progress incrementally.
+
 ## 0.5.0
 
 ### Runtime and Concurrency

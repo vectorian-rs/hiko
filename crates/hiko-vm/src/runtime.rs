@@ -55,7 +55,8 @@ impl Runtime {
     /// Returns the Pid.
     pub fn spawn_root(&mut self, program: CompiledProgram) -> Pid {
         let pid = self.new_pid();
-        let vm = VM::new(program);
+        let mut vm = VM::new(program);
+        vm.enable_output_capture();
         let process = Process::new(pid, vm, None);
         self.processes.insert(pid, process);
         self.scheduler.enqueue(pid);

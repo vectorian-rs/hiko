@@ -131,6 +131,7 @@ impl ToolRegistry {
             .map_err(|e| format!("tool compile error: {e:?}"))?;
 
         let mut vm = VM::new(compiled);
+        vm.enable_output_capture();
         vm.run()
             .map_err(|e| format!("tool runtime error: {}", e.message))?;
 

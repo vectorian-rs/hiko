@@ -1,14 +1,14 @@
 [package]
 name = "hiko-vm"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT"
 description = "hiko-vm: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
-hiko-compile = { version = "0.5.0", path = "../hiko-compile" }
-hiko-syntax = { version = "0.5.0", path = "../hiko-syntax" }
+hiko-compile = { version = "0.5.1", path = "../hiko-compile" }
+hiko-syntax = { version = "0.5.1", path = "../hiko-syntax" }
 dashmap = "6"
 dryoc = { version = "0.7", default-features = false }
 glob = "0.3"

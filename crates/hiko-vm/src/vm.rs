@@ -1,6 +1,6 @@
 use smallvec::smallvec;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::op::Op;
@@ -80,6 +80,26 @@ struct HandlerFrame {
     captures: Arc<[Value]>,
 }
 
+pub trait OutputSink: Send + Sync {
+    fn write(&self, text: &str) -> std::io::Result<()>;
+}
+
+#[derive(Default)]
+pub struct StdoutOutputSink {
+    lock: Mutex<()>,
+}
+
+impl OutputSink for StdoutOutputSink {
+    fn write(&self, text: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(text.as_bytes())?;
+        stdout.flush()
+    }
+}
+
 pub struct VM {
     pub heap: Heap,
     pub stack: Vec<Value>,
@@ -88,7 +108,7 @@ pub struct VM {
     global_names: HashMap<String, usize>,
     protos: Vec<hiko_compile::chunk::FunctionProto>,
     main_chunk: Chunk,
-    output: Vec<String>,
+    output: Option<Vec<String>>,
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
@@ -125,6 +145,7 @@ pub struct VM {
     pub blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
     pub cancelled: bool,
+    output_sink: Option<Arc<dyn OutputSink>>,
 }
 
 /// A request from a builtin to the runtime.
@@ -217,7 +238,7 @@ impl VM {
             effect_metadata: program.effects.clone(),
             protos: program.functions,
             main_chunk: program.main,
-            output: Vec::new(),
+            output: None,
             builtins: Vec::new(),
             handlers: Vec::new(),
             string_cache: HashMap::new(),
@@ -245,6 +266,7 @@ impl VM {
             pending_runtime_request: None,
             blocked_continuation: None,
             cancelled: false,
+            output_sink: None,
         }
     }
 
@@ -356,6 +378,12 @@ impl VM {
         child.set_exec_timeout(self.exec_timeout);
         child.set_fs_root(self.fs_root.clone());
         child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
+        if self.output.is_some() {
+            child.enable_output_capture();
+        }
+        if let Some(sink) = &self.output_sink {
+            child.set_output_sink(sink.clone());
+        }
         // Copy fuel budget
         if let Some(remaining) = self.max_fuel_remaining {
             child.max_fuel_remaining = Some(remaining);
@@ -682,7 +710,25 @@ impl VM {
     }
 
     pub fn get_output(&self) -> &[String] {
-        &self.output
+        self.output.as_deref().unwrap_or(&[])
+    }
+
+    pub fn enable_output_capture(&mut self) {
+        if self.output.is_none() {
+            self.output = Some(Vec::new());
+        }
+    }
+
+    pub fn disable_output_capture(&mut self) {
+        self.output = None;
+    }
+
+    pub fn set_output_sink(&mut self, sink: Arc<dyn OutputSink>) {
+        self.output_sink = Some(sink);
+    }
+
+    pub fn clear_output_sink(&mut self) {
+        self.output_sink = None;
     }
 
     pub fn heap_live_count(&self) -> usize {
@@ -922,7 +968,14 @@ impl VM {
             } else {
                 self.display_value(&first_arg)
             };
-            self.output.push(displayed);
+            if let Some(output) = &mut self.output {
+                output.push(displayed.clone());
+            }
+            if let Some(sink) = &self.output_sink {
+                sink.write(&displayed).map_err(|e| RuntimeError {
+                    message: format!("stdout: {e}"),
+                })?;
+            }
             self.push(Value::Unit)?;
         } else {
             self.push(result)?;
@@ -1822,7 +1875,23 @@ mod tests {
     use hiko_syntax::parser::Parser;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct CaptureOutputSink {
+        text: Mutex<String>,
+    }
+
+    impl OutputSink for CaptureOutputSink {
+        fn write(&self, text: &str) -> std::io::Result<()> {
+            self.text
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str(text);
+            Ok(())
+        }
+    }
 
     fn run(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
@@ -2160,6 +2229,20 @@ mod tests {
         let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
         assert_eq!(err.message, "resume_blocked: expected continuation");
         assert!(vm.blocked_continuation.is_none());
+    }
+
+    #[test]
+    fn test_output_sink_streams_print_and_println() {
+        let sink = Arc::new(CaptureOutputSink::default());
+        let mut vm = compile_vm("val _ = print \"a\" val _ = println \"b\"");
+        vm.enable_output_capture();
+        vm.set_output_sink(sink.clone());
+
+        vm.run().unwrap();
+
+        let streamed = sink.text.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(streamed, "ab\n");
+        assert_eq!(vm.get_output().concat(), "ab\n");
     }
 
     // ── Capability / builder tests ───────────────────────────────────

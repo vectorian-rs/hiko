@@ -120,6 +120,7 @@ impl ThreadedRuntime {
     pub fn spawn_root(&self, program: CompiledProgram) -> Pid {
         let pid = self.new_pid();
         let mut vm = VM::new(program);
+        vm.enable_output_capture();
         vm.async_io = true;
         let process = Process::new(pid, vm, None);
         self.table.insert(process);
@@ -478,12 +479,25 @@ mod tests {
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn compile(source: &str) -> CompiledProgram {
         let tokens = Lexer::new(source, 0).tokenize().unwrap();
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
         compiled
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hiko-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
     #[test]
@@ -586,12 +600,14 @@ mod tests {
     #[test]
     fn test_async_read_file() {
         // read_file should work asynchronously in threaded runtime
-        let program = compile(
-            "val _ = write_file (\"/tmp/hiko_async_test.txt\", \"hello async\")\n\
-             val contents = read_file \"/tmp/hiko_async_test.txt\"\n\
+        let path = temp_path("async-read-file");
+        let path_str = path.to_string_lossy();
+        let program = compile(&format!(
+            "val _ = write_file (\"{path_str}\", \"hello async\")\n\
+             val contents = read_file \"{path_str}\"\n\
              val _ = println contents\n\
-             val _ = remove_file \"/tmp/hiko_async_test.txt\"",
-        );
+             val _ = remove_file \"{path_str}\"",
+        ));
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -625,28 +641,32 @@ mod tests {
     #[test]
     fn test_async_read_file_with_fs_root() {
         // Async read_file should use the validated path, not the raw input
-        let program = compile(
-            "val _ = write_file (\"/tmp/hiko_root_test/data.txt\", \"rooted\")\n\
+        let root = temp_path("async-root-test");
+        let data = root.join("data.txt");
+        let data_str = data.to_string_lossy();
+        let root_str = root.to_string_lossy();
+        let program = compile(&format!(
+            "val _ = write_file (\"{data_str}\", \"rooted\")\n\
              val contents = read_file \"data.txt\"\n\
              val _ = println contents\n\
-             val _ = remove_file \"/tmp/hiko_root_test/data.txt\"",
-        );
+             val _ = remove_file \"{data_str}\"",
+        ));
         // Set up the directory
-        let _ = std::fs::create_dir_all("/tmp/hiko_root_test");
-        let _ = std::fs::write("/tmp/hiko_root_test/data.txt", "rooted");
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::fs::write(&data, "rooted");
 
         let runtime = ThreadedRuntime::new(1);
         // We need to set fs_root on the VM after spawn_root
         let pid = runtime.spawn_root(program);
         // Set fs_root on the spawned process's VM
         if let Some(mut process) = runtime.table.processes.get_mut(&pid) {
-            process.vm.set_fs_root("/tmp/hiko_root_test".to_string());
+            process.vm.set_fs_root(root_str.to_string());
         }
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["rooted\n"]);
 
-        let _ = std::fs::remove_dir_all("/tmp/hiko_root_test");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
