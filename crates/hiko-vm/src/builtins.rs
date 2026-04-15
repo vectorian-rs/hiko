@@ -328,7 +328,12 @@ pub(crate) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
 pub(crate) fn file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Bool(std::path::Path::new(s.as_str()).exists())),
+            HeapObject::String(s) => {
+                let checked_path = heap
+                    .check_fs_path(s)
+                    .map_err(|e| format!("file_exists: {e}"))?;
+                Ok(Value::Bool(checked_path.exists()))
+            }
             _ => Err("file_exists: expected String".into()),
         },
         _ => Err("file_exists: expected String".into()),
@@ -343,7 +348,10 @@ pub(crate) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         },
         _ => return Err("list_dir: expected String".into()),
     };
-    let entries: Vec<Value> = std::fs::read_dir(&path)
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("list_dir: {e}"))?;
+    let entries: Vec<Value> = std::fs::read_dir(&checked_path)
         .map_err(|e| format!("list_dir: {e}"))?
         .filter_map(|entry| {
             entry.ok().map(|e| {
@@ -361,7 +369,10 @@ pub(crate) fn remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
-                std::fs::remove_file(s.as_str()).map_err(|e| format!("remove_file: {e}"))?;
+                let checked_path = heap
+                    .check_fs_path(s)
+                    .map_err(|e| format!("remove_file: {e}"))?;
+                std::fs::remove_file(&checked_path).map_err(|e| format!("remove_file: {e}"))?;
                 Ok(Value::Unit)
             }
             _ => Err("remove_file: expected String".into()),
@@ -374,7 +385,10 @@ pub(crate) fn create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
-                std::fs::create_dir_all(s.as_str()).map_err(|e| format!("create_dir: {e}"))?;
+                let checked_path = heap
+                    .check_fs_path(s)
+                    .map_err(|e| format!("create_dir: {e}"))?;
+                std::fs::create_dir_all(&checked_path).map_err(|e| format!("create_dir: {e}"))?;
                 Ok(Value::Unit)
             }
             _ => Err("create_dir: expected String".into()),
@@ -386,7 +400,10 @@ pub(crate) fn create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
 pub(crate) fn is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Bool(std::path::Path::new(s.as_str()).is_dir())),
+            HeapObject::String(s) => {
+                let checked_path = heap.check_fs_path(s).map_err(|e| format!("is_dir: {e}"))?;
+                Ok(Value::Bool(checked_path.is_dir()))
+            }
             _ => Err("is_dir: expected String".into()),
         },
         _ => Err("is_dir: expected String".into()),
@@ -396,7 +413,10 @@ pub(crate) fn is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
 pub(crate) fn is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Bool(std::path::Path::new(s.as_str()).is_file())),
+            HeapObject::String(s) => {
+                let checked_path = heap.check_fs_path(s).map_err(|e| format!("is_file: {e}"))?;
+                Ok(Value::Bool(checked_path.is_file()))
+            }
             _ => Err("is_file: expected String".into()),
         },
         _ => Err("is_file: expected String".into()),
@@ -482,7 +502,11 @@ pub(crate) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
-    let content = std::fs::read_to_string(path).map_err(|e| format!("read_file_tagged: {e}"))?;
+    let checked_path = heap
+        .check_fs_path(path)
+        .map_err(|e| format!("read_file_tagged: {e}"))?;
+    let content =
+        std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?;
 
     let lines: Vec<&str> = content.lines().collect();
     let start = if offset > 0 {
@@ -534,7 +558,11 @@ pub(crate) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     };
 
     // Read the file
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("edit_file_tagged: {e}"))?;
+    let content =
+        std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
 
     // Compute hashes for all lines
@@ -645,7 +673,7 @@ pub(crate) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     } else {
         output
     };
-    std::fs::write(&path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    std::fs::write(&checked_path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
 
     let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
     Ok(Value::Heap(heap.alloc(HeapObject::String(msg))))
@@ -660,15 +688,44 @@ pub(crate) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         },
         _ => return Err("glob: expected String".into()),
     };
-    let paths: Vec<Value> = glob::glob(&pattern)
-        .map_err(|e| format!("glob: {e}"))?
-        .filter_map(|entry| {
-            entry.ok().map(|p| {
-                Value::Heap(heap.alloc(HeapObject::String(p.to_string_lossy().to_string())))
-            })
-        })
-        .collect();
+    let sandboxed_pattern =
+        sandbox_glob_pattern(&pattern, heap).map_err(|e| format!("glob: {e}"))?;
+    let mut paths = Vec::new();
+    for entry in glob::glob(&sandboxed_pattern).map_err(|e| format!("glob: {e}"))? {
+        let path = entry.map_err(|e| format!("glob: {e}"))?;
+        let checked = heap
+            .check_fs_path(path.to_string_lossy().as_ref())
+            .map_err(|e| format!("glob: {e}"))?;
+        paths.push(Value::Heap(
+            heap.alloc(HeapObject::String(checked.to_string_lossy().to_string())),
+        ));
+    }
     Ok(alloc_list(heap, paths))
+}
+
+fn sandbox_glob_pattern(pattern: &str, heap: &Heap) -> Result<String, String> {
+    if heap.fs_root.is_empty() {
+        return Ok(pattern.to_string());
+    }
+
+    let anchor = glob_anchor(pattern);
+    heap.check_fs_path(if anchor.is_empty() { "." } else { anchor })?;
+
+    let root = heap.check_fs_path(".")?;
+    if std::path::Path::new(pattern).is_absolute() {
+        Ok(pattern.to_string())
+    } else {
+        Ok(root.join(pattern).to_string_lossy().to_string())
+    }
+}
+
+fn glob_anchor(pattern: &str) -> &str {
+    let meta_index = pattern
+        .char_indices()
+        .find(|(_, ch)| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}'))
+        .map(|(idx, _)| idx)
+        .unwrap_or(pattern.len());
+    &pattern[..meta_index]
 }
 
 /// Recursive directory walk. Takes a directory path, returns all file paths recursively.
@@ -680,21 +737,26 @@ pub(crate) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         },
         _ => return Err("walk_dir: expected String".into()),
     };
-    fn walk(dir: &std::path::Path, out: &mut Vec<String>) -> Result<(), String> {
+    let checked_dir = heap
+        .check_fs_path(&dir)
+        .map_err(|e| format!("walk_dir: {e}"))?;
+    fn walk(dir: &std::path::Path, heap: &Heap, out: &mut Vec<String>) -> Result<(), String> {
         let entries = std::fs::read_dir(dir).map_err(|e| format!("walk_dir: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("walk_dir: {e}"))?;
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out)?;
-            } else {
-                out.push(path.to_string_lossy().to_string());
+            let checked_path = heap
+                .check_fs_path(entry.path().to_string_lossy().as_ref())
+                .map_err(|e| format!("walk_dir: {e}"))?;
+            if checked_path.is_dir() {
+                walk(&checked_path, heap, out)?;
+            } else if checked_path.is_file() {
+                out.push(checked_path.to_string_lossy().to_string());
             }
         }
         Ok(())
     }
     let mut files = Vec::new();
-    walk(std::path::Path::new(&dir), &mut files)?;
+    walk(&checked_dir, heap, &mut files)?;
     let values: Vec<Value> = files
         .into_iter()
         .map(|f| Value::Heap(heap.alloc(HeapObject::String(f))))

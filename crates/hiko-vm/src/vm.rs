@@ -397,26 +397,7 @@ impl VM {
     /// Check if a filesystem path is within the allowed root.
     /// Returns the canonicalized path or an error.
     pub fn check_fs_path(&self, path: &str) -> Result<std::path::PathBuf, String> {
-        if self.fs_root.is_empty() {
-            return Ok(std::path::PathBuf::from(path));
-        }
-        let root = std::fs::canonicalize(&self.fs_root)
-            .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?;
-        let target = if std::path::Path::new(path).is_absolute() {
-            std::fs::canonicalize(path)
-        } else {
-            std::fs::canonicalize(root.join(path))
-        }
-        .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
-
-        if !target.starts_with(&root) {
-            return Err(format!(
-                "path '{}' is outside allowed root '{}'",
-                target.display(),
-                root.display()
-            ));
-        }
-        Ok(target)
+        crate::heap::resolve_fs_path(&self.fs_root, path)
     }
 
     /// Check if a URL's host is in the allowed hosts list.
@@ -901,7 +882,9 @@ impl VM {
                 let checked = self.heap.check_fs_path(&path).map_err(|e| RuntimeError {
                     message: format!("read_file: {e}"),
                 })?;
-                Some(crate::io_backend::IoRequest::ReadFile { path: checked })
+                Some(crate::io_backend::IoRequest::ReadFile {
+                    path: checked.to_string_lossy().to_string(),
+                })
             } else {
                 None
             };
@@ -1833,9 +1816,13 @@ impl VM {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builder::{FilesystemPolicy, VMBuilder};
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn run(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
@@ -1851,6 +1838,28 @@ mod tests {
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
         VM::new(compiled)
+    }
+
+    fn compile_program(input: &str) -> hiko_compile::chunk::CompiledProgram {
+        let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
+        compiled
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "hiko-vm-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     fn global_int(vm: &VM, name: &str) -> i64 {
@@ -2179,7 +2188,7 @@ mod tests {
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
 
-        let mut vm = crate::builder::VMBuilder::new(compiled).with_core().build();
+        let mut vm = VMBuilder::new(compiled).with_core().build();
         vm.run().unwrap();
         match vm.get_global("x") {
             Some(Value::Int(3)) => {}
@@ -2189,5 +2198,95 @@ mod tests {
         assert!(vm.get_global("read_file").is_none());
         assert!(vm.get_global("write_file").is_none());
         assert!(vm.get_global("http_get").is_none());
+    }
+
+    #[test]
+    fn test_fs_root_rejects_list_dir_traversal() {
+        let root = temp_dir("fs-root-list");
+        let program = compile_program("val _ = list_dir \"../\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_fs_root_allows_create_dir_for_missing_nested_child() {
+        let root = temp_dir("fs-root-create");
+        let program = compile_program("val _ = create_dir \"nested/a/b\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: false,
+                allow_write: true,
+                allow_delete: false,
+            })
+            .build();
+
+        vm.run().unwrap();
+        assert!(root.join("nested").join("a").join("b").is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_fs_root_rejects_glob_traversal() {
+        let root = temp_dir("fs-root-glob");
+        let program = compile_program("val _ = glob \"../*\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fs_root_rejects_walk_dir_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let base = temp_dir("fs-root-walk");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        let program = compile_program("val _ = walk_dir \".\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(base);
     }
 }

@@ -1,4 +1,5 @@
 use crate::value::{GcRef, HeapObject};
+use std::path::{Path, PathBuf};
 
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
@@ -34,33 +35,8 @@ impl Heap {
     }
 
     /// Check if a path is within the allowed filesystem root.
-    pub fn check_fs_path(&self, path: &str) -> Result<String, String> {
-        if self.fs_root.is_empty() {
-            return Ok(path.to_string());
-        }
-        let root = std::path::Path::new(&self.fs_root);
-        let target = if std::path::Path::new(path).is_absolute() {
-            std::path::PathBuf::from(path)
-        } else {
-            root.join(path)
-        };
-        // Normalize by resolving .. components
-        let mut normalized = std::path::PathBuf::new();
-        for component in target.components() {
-            match component {
-                std::path::Component::ParentDir => {
-                    normalized.pop();
-                }
-                _ => normalized.push(component),
-            }
-        }
-        if !normalized.starts_with(root) {
-            return Err(format!(
-                "path '{}' is outside allowed root '{}'",
-                path, self.fs_root
-            ));
-        }
-        Ok(normalized.to_string_lossy().to_string())
+    pub fn check_fs_path(&self, path: &str) -> Result<PathBuf, String> {
+        resolve_fs_path(&self.fs_root, path)
     }
 
     /// Check if a URL's host is allowed.
@@ -172,5 +148,123 @@ impl Heap {
 
     pub fn live_count(&self) -> usize {
         self.objects.iter().filter(|o| o.is_some()).count()
+    }
+}
+
+pub(crate) fn resolve_fs_path(fs_root: &str, path: &str) -> Result<PathBuf, String> {
+    if fs_root.is_empty() {
+        return Ok(PathBuf::from(path));
+    }
+
+    let root = std::fs::canonicalize(fs_root)
+        .map_err(|e| format!("cannot resolve fs root '{}': {e}", fs_root))?;
+    let target = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+
+    let resolved = canonicalize_with_missing_tail(&target)
+        .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
+
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "path '{}' is outside allowed root '{}'",
+            resolved.display(),
+            root.display()
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
+    if path.exists() {
+        return std::fs::canonicalize(path);
+    }
+
+    let mut tail = Vec::new();
+    let mut cursor = path;
+
+    loop {
+        if cursor.exists() {
+            let mut resolved = std::fs::canonicalize(cursor)?;
+            for component in tail.iter().rev() {
+                resolved.push(component);
+            }
+            return Ok(resolved);
+        }
+
+        let name = cursor.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no existing ancestor for path",
+            )
+        })?;
+        tail.push(name.to_os_string());
+        cursor = cursor.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no existing ancestor for path",
+            )
+        })?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "hiko-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_resolve_fs_path_rejects_parent_traversal() {
+        let root = temp_dir("fs-traversal-root");
+        let err = resolve_fs_path(root.to_str().unwrap(), "../escape.txt").unwrap_err();
+        assert!(err.contains("outside allowed root"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_resolve_fs_path_allows_missing_child_within_root() {
+        let root = temp_dir("fs-missing-root");
+        let resolved = resolve_fs_path(root.to_str().unwrap(), "nested/new.txt").unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        assert_eq!(resolved, canonical_root.join("nested").join("new.txt"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_fs_path_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let base = temp_dir("fs-symlink-base");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        let err = resolve_fs_path(root.to_str().unwrap(), "link/secret.txt").unwrap_err();
+        assert!(err.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(base);
     }
 }

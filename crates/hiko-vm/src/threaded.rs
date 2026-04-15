@@ -640,7 +640,7 @@ mod tests {
         let pid = runtime.spawn_root(program);
         // Set fs_root on the spawned process's VM
         if let Some(mut process) = runtime.table.processes.get_mut(&pid) {
-            process.vm.heap.fs_root = "/tmp/hiko_root_test".to_string();
+            process.vm.set_fs_root("/tmp/hiko_root_test".to_string());
         }
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
