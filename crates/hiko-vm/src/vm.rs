@@ -10,8 +10,17 @@ use crate::value::{
     BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
 };
 
-const MAX_STACK: usize = 64 * 1024;
-const MAX_FRAMES: usize = 65536;
+/// Default hard limit on the VM value stack, measured in `Value` slots.
+///
+/// This is a fixed runtime guard today; unlike heap and fuel, it is not yet
+/// configurable through `VMBuilder`.
+pub const DEFAULT_MAX_STACK_SLOTS: usize = 64 * 1024;
+
+/// Default hard limit on the VM call-frame stack.
+///
+/// This is a fixed runtime guard today; unlike heap and fuel, it is not yet
+/// configurable through `VMBuilder`.
+pub const DEFAULT_MAX_CALL_FRAMES: usize = 65_536;
 
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
@@ -1436,7 +1445,7 @@ impl VM {
                                     ),
                                 });
                             }
-                            if self.frames.len() >= MAX_FRAMES {
+                            if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
                                 return Err(RuntimeError {
                                     message: "stack overflow".into(),
                                 });
@@ -1516,7 +1525,7 @@ impl VM {
                     let proto = &self.protos[proto_idx];
                     let arity = proto.arity as usize;
                     let arg_start = self.stack.len() - arity;
-                    if self.frames.len() >= MAX_FRAMES {
+                    if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
                         return Err(RuntimeError {
                             message: "stack overflow".into(),
                         });
@@ -1738,7 +1747,7 @@ impl VM {
     // ── Stack helpers ────────────────────────────────────────────────
 
     fn push(&mut self, val: Value) -> Result<(), RuntimeError> {
-        if self.stack.len() >= MAX_STACK {
+        if self.stack.len() >= DEFAULT_MAX_STACK_SLOTS {
             return Err(RuntimeError {
                 message: "stack overflow".into(),
             });

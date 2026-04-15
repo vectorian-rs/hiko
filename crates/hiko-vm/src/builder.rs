@@ -198,12 +198,20 @@ impl VMBuilder {
     }
 
     /// Set maximum heap size (in number of objects).
+    ///
+    /// Separate fixed runtime guards still apply to the VM value stack and
+    /// call-frame stack; see `hiko_vm::DEFAULT_MAX_STACK_SLOTS` and
+    /// `hiko_vm::DEFAULT_MAX_CALL_FRAMES`.
     pub fn max_heap(mut self, objects: usize) -> Self {
         self.max_heap = Some(objects);
         self
     }
 
     /// Set maximum fuel (opcode executions before timeout).
+    ///
+    /// Separate fixed runtime guards still apply to the VM value stack and
+    /// call-frame stack; see `hiko_vm::DEFAULT_MAX_STACK_SLOTS` and
+    /// `hiko_vm::DEFAULT_MAX_CALL_FRAMES`.
     pub fn max_fuel(mut self, fuel: u64) -> Self {
         self.max_fuel = Some(fuel);
         self

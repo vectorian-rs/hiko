@@ -286,6 +286,11 @@ VMBuilder::new(compiled)
     .build()
 ```
 
+Heap size and fuel are configurable. The VM also enforces fixed hard guards of
+`hiko_vm::DEFAULT_MAX_STACK_SLOTS` (`65536` value-stack slots) and
+`hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536` call frames). Those two limits are
+currently runtime constants rather than policy or `VMBuilder` settings.
+
 ## Hashline edit system
 
 Content-hash anchored file editing for LLM agents.

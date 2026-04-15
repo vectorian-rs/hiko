@@ -222,6 +222,8 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 **Tail-Call Optimization.** The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
 
+**Runtime Limits.** Heap size and fuel are configurable through `VMBuilder` or policy files. The VM also has fixed hard limits of `hiko_vm::DEFAULT_MAX_STACK_SLOTS` (`65536` value-stack slots) and `hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536` call frames). These are current runtime guards, not policy knobs.
+
 ## Standard Library
 
 - **`stdlib/list.hml`**: `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`

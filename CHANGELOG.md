@@ -8,6 +8,7 @@
 - **Cheaper process startup**: new VMs start with a much smaller default stack and no eager 4096-slot heap reservation, reducing per-process overhead.
 - **Runtime-backed local runner**: `hiko-vm-hiko-run-all-policy` now executes scripts through `Runtime`, so runtime-managed examples such as `spawn_stress.hml` are exercised by `tools/run_all.hml`.
 - **Root failure reporting**: the local runtime runner now exits nonzero when the root process ends in `Failed(...)` instead of silently succeeding.
+- **Documented VM stack/frame guards**: the fixed value-stack and call-frame limits are now exposed as public constants and documented alongside heap and fuel limits.
 
 ## 0.5.1
 
