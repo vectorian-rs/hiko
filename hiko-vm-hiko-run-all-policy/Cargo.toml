@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "hiko-vm-hiko-run-all-policy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hiko-syntax = "0.5.1"
+hiko-compile = "0.5.1"
+hiko-vm = "0.5.1"
