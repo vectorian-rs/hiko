@@ -347,6 +347,16 @@ fn rt_use_escaped_path() {
     assert_roundtrip(r#"use "dir\\file.hml""#);
 }
 
+#[test]
+fn rt_structure_simple() {
+    assert_roundtrip("structure List = struct\n  fun fold f acc xs = acc\nend");
+}
+
+#[test]
+fn rt_qualified_access() {
+    assert_roundtrip("val sum = List.fold add 0 xs");
+}
+
 // ── Application with unary operators ─────────────────────────────────
 
 #[test]

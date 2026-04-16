@@ -278,6 +278,10 @@ impl<'src> Lexer<'src> {
                 self.pos += 1;
                 TokenKind::Comma
             }
+            b'.' => {
+                self.pos += 1;
+                TokenKind::Dot
+            }
             b';' => {
                 self.pos += 1;
                 TokenKind::Semicolon

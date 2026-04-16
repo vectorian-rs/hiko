@@ -86,6 +86,16 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             buf.push_str("use ");
             write_escaped_string(buf, path);
         }
+        DeclKind::Structure(name, decls) => {
+            write_indent(buf, indent);
+            write!(buf, "structure {} = struct\n", interner.resolve(*name)).unwrap();
+            for d in decls {
+                pretty_decl(buf, d, indent + 2, interner);
+                buf.push('\n');
+            }
+            write_indent(buf, indent);
+            buf.push_str("end");
+        }
         DeclKind::Effect(name, payload) => {
             write_indent(buf, indent);
             write!(buf, "effect {}", interner.resolve(*name)).unwrap();

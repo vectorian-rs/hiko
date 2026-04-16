@@ -399,6 +399,9 @@ impl Compiler {
                 Ok(())
             }
             DeclKind::Use(path) => self.compile_use(path),
+            DeclKind::Structure(_, _) => {
+                unreachable!("structures must be flattened before codegen")
+            }
             DeclKind::Local(locals, body) => {
                 self.begin_scope();
                 for d in locals {
@@ -441,6 +444,9 @@ impl Compiler {
     fn infer_decl_pass(&mut self, decl: &Decl) -> Result<(), CompileError> {
         match &decl.kind {
             DeclKind::Use(path) => self.infer_use(path),
+            DeclKind::Structure(_, _) => {
+                unreachable!("structures must be flattened before inference pass")
+            }
             DeclKind::Local(locals, body) => {
                 for d in locals {
                     self.infer_decl_pass(d)?;

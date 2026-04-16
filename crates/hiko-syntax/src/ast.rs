@@ -102,6 +102,8 @@ pub enum DeclKind {
     Local(Vec<Decl>, Vec<Decl>),
     /// `use "path/to/file.hml"`
     Use(String),
+    /// `structure Name = struct ... end`
+    Structure(Symbol, Vec<Decl>),
     /// `effect Yield of Int`
     Effect(Symbol, Option<TypeExpr>),
 }

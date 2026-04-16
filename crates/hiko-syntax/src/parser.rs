@@ -174,6 +174,43 @@ impl Parser {
         )
     }
 
+    fn can_start_qualified_path(&self) -> bool {
+        matches!(self.peek(), TokenKind::UpperIdent(_))
+            && self.pos + 1 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 1].kind, TokenKind::Dot)
+    }
+
+    fn parse_qualified_symbol(&mut self) -> Result<(Symbol, bool, Span), ParseError> {
+        let start = self.span();
+        let mut parts = Vec::new();
+
+        if !matches!(self.peek(), TokenKind::UpperIdent(_)) {
+            return Err(self.err("expected qualified name"));
+        }
+        parts.push(self.take_symbol());
+
+        while self.eat(&TokenKind::Dot).is_some() {
+            match self.peek() {
+                TokenKind::UpperIdent(_) | TokenKind::Ident(_) => parts.push(self.take_symbol()),
+                _ => return Err(self.err("expected name after '.'")),
+            }
+        }
+
+        let end = self.tokens[self.pos - 1].span;
+        let last_name = self.interner.resolve(*parts.last().unwrap()).to_string();
+        let is_constructor = last_name
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_uppercase());
+        let joined = parts
+            .iter()
+            .map(|sym| self.interner.resolve(*sym))
+            .collect::<Vec<_>>()
+            .join(".");
+        let sym = self.interner.intern(&joined);
+        Ok((sym, is_constructor, start.merge(end)))
+    }
+
     fn can_start_atom_pat(&self) -> bool {
         matches!(
             self.peek(),
@@ -215,10 +252,11 @@ impl Parser {
             TokenKind::Type => self.parse_type_alias_decl(),
             TokenKind::Local => self.parse_local_decl(),
             TokenKind::Use => self.parse_use_decl(),
+            TokenKind::Structure => self.parse_structure_decl(),
             TokenKind::Effect => self.parse_effect_decl(),
             _ => {
                 Err(self
-                    .err("expected declaration (val, fun, datatype, type, local, use, or effect)"))
+                    .err("expected declaration (val, fun, datatype, type, local, use, structure, or effect)"))
             }
         }
     }
@@ -414,6 +452,23 @@ impl Parser {
         } else {
             Err(self.err("expected string literal after 'use'"))
         }
+    }
+
+    fn parse_structure_decl(&mut self) -> Result<Decl, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `structure`
+        let (name, _) = self.expect_upper_ident()?;
+        self.expect(&TokenKind::Eq, "=")?;
+        self.expect(&TokenKind::Struct, "struct")?;
+        let mut decls = Vec::new();
+        while !matches!(self.peek(), TokenKind::End | TokenKind::Eof) {
+            decls.push(self.parse_decl()?);
+        }
+        let end = self.expect(&TokenKind::End, "end")?;
+        Ok(Decl {
+            kind: DeclKind::Structure(name, decls),
+            span: start.merge(end),
+        })
     }
 
     fn parse_effect_decl(&mut self) -> Result<Decl, ParseError> {
@@ -709,11 +764,23 @@ impl Parser {
                 })
             }
             TokenKind::UpperIdent(_) => {
-                let name = self.take_symbol();
-                Ok(Expr {
-                    kind: ExprKind::Constructor(name),
-                    span: start,
-                })
+                if self.can_start_qualified_path() {
+                    let (name, is_constructor, span) = self.parse_qualified_symbol()?;
+                    Ok(Expr {
+                        kind: if is_constructor {
+                            ExprKind::Constructor(name)
+                        } else {
+                            ExprKind::Var(name)
+                        },
+                        span,
+                    })
+                } else {
+                    let name = self.take_symbol();
+                    Ok(Expr {
+                        kind: ExprKind::Constructor(name),
+                        span: start,
+                    })
+                }
             }
             TokenKind::LParen => {
                 self.advance();
@@ -1407,6 +1474,41 @@ mod tests {
     fn test_use_decl() {
         let prog = parse(r#"use "foo.hml""#);
         assert!(matches!(&prog.decls[0].kind, DeclKind::Use(path) if path == "foo.hml"));
+    }
+
+    #[test]
+    fn test_structure_decl() {
+        let prog = parse("structure List = struct fun fold f acc xs = acc end");
+        if let DeclKind::Structure(name, decls) = &prog.decls[0].kind {
+            assert_eq!(prog.interner.resolve(*name), "List");
+            assert_eq!(decls.len(), 1);
+        } else {
+            panic!("expected structure");
+        }
+    }
+
+    #[test]
+    fn test_qualified_access_expr() {
+        let prog = parse("val sum = List.fold add 0 xs");
+        if let DeclKind::Val(_, expr) = &prog.decls[0].kind {
+            match &expr.kind {
+                ExprKind::App(func, _) => match &func.kind {
+                    ExprKind::App(func, _) => match &func.kind {
+                        ExprKind::App(func, _) => match &func.kind {
+                            ExprKind::Var(sym) => {
+                                assert_eq!(prog.interner.resolve(*sym), "List.fold");
+                            }
+                            _ => panic!("expected qualified var"),
+                        },
+                        _ => panic!("expected application chain"),
+                    },
+                    _ => panic!("expected application chain"),
+                },
+                _ => panic!("expected application"),
+            }
+        } else {
+            panic!("expected val");
+        }
     }
 
     #[test]

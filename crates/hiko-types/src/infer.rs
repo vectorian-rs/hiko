@@ -662,6 +662,7 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::Use(_) => Ok(()),
+            DeclKind::Structure(_, _) => unreachable!("structures must be flattened before inference"),
             DeclKind::Effect(sym, payload) => {
                 let name = self.interner.resolve(*sym).to_string();
                 let arg_type = if let Some(ty_expr) = payload {
@@ -1503,6 +1504,29 @@ mod tests {
         let ctx = infer("fun twice f x = f (f x)");
         let scheme = ctx.lookup_type("twice").unwrap();
         assert!(!scheme.vars.is_empty());
+    }
+
+    #[test]
+    fn test_structure_qualified_call() {
+        let ctx = infer(
+            "structure Math = struct
+               fun add x y = x + y
+             end
+             val result = Math.add 1 2",
+        );
+        assert_eq!(type_of(&ctx, "result"), "Int");
+    }
+
+    #[test]
+    fn test_structure_internal_reference() {
+        let ctx = infer(
+            "structure M = struct
+               fun f x = x + 1
+               fun g y = f y
+             end
+             val result = M.g 41",
+        );
+        assert_eq!(type_of(&ctx, "result"), "Int");
     }
 
     // ── Let-polymorphism ─────────────────────────────────────────────
