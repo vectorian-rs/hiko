@@ -16,6 +16,7 @@ pub struct GcRef(pub(crate) u32);
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
     Int(i64),
+    Pid(u64),
     Float(f64),
     Bool(bool),
     Char(char),
@@ -46,7 +47,18 @@ pub enum HeapObject {
     Continuation {
         saved_frames: Vec<SavedFrame>,
         saved_stack: Vec<Value>,
+        /// Handler removed by Perform, for auto-reinstallation by Resume.
+        saved_handler: Option<SavedHandler>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct SavedHandler {
+    pub clauses: Vec<(u16, usize)>,
+    pub proto_idx: usize,
+    pub captures: Arc<[Value]>,
+    pub locals_offset: usize,        // stack_base - handler_frame.base
+    pub handler_count_before: usize, // handler list length before removal
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +87,7 @@ impl HeapObject {
             HeapObject::Continuation {
                 saved_stack,
                 saved_frames,
+                ..
             } => {
                 visit(saved_stack, &mut f);
                 for frame in saved_frames {
@@ -103,6 +116,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
+            Value::Pid(pid) => write!(f, "<pid {pid}>"),
             Value::Float(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Char(c) => write!(f, "{c}"),

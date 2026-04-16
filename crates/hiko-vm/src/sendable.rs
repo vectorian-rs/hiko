@@ -14,6 +14,7 @@ use crate::vm::{TAG_CONS, TAG_NIL};
 #[derive(Debug, Clone)]
 pub enum SendableValue {
     Int(i64),
+    Pid(u64),
     Float(f64),
     Bool(bool),
     Char(char),
@@ -34,6 +35,7 @@ pub enum SendableValue {
 pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
     match value {
         Value::Int(n) => Ok(SendableValue::Int(n)),
+        Value::Pid(pid) => Ok(SendableValue::Pid(pid)),
         Value::Float(f) => Ok(SendableValue::Float(f)),
         Value::Bool(b) => Ok(SendableValue::Bool(b)),
         Value::Char(c) => Ok(SendableValue::Char(c)),
@@ -105,6 +107,7 @@ pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Value {
 
     match msg {
         SendableValue::Int(n) => Value::Int(n),
+        SendableValue::Pid(pid) => Value::Pid(pid),
         SendableValue::Float(f) => Value::Float(f),
         SendableValue::Bool(b) => Value::Bool(b),
         SendableValue::Char(c) => Value::Char(c),
@@ -171,6 +174,15 @@ mod tests {
         match round_trip(Value::Float(3.14), &heap) {
             Value::Float(f) => assert!((f - 3.14).abs() < 1e-10),
             other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pid() {
+        let heap = Heap::new();
+        match round_trip(Value::Pid(42), &heap) {
+            Value::Pid(42) => {}
+            other => panic!("expected Pid(42), got {:?}", other),
         }
     }
 
@@ -369,6 +381,7 @@ mod tests {
         let cont = Value::Heap(heap.alloc(HeapObject::Continuation {
             saved_frames: vec![],
             saved_stack: vec![],
+            saved_handler: None,
         }));
         let result = serialize(cont, &heap);
         assert!(result.is_err());

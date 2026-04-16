@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::process;
+use std::sync::Arc;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label, Severity};
 use codespan_reporting::files::SimpleFiles;
@@ -11,7 +12,7 @@ use hiko_compile::compiler::{CompileError, Compiler};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
-use hiko_vm::vm::VM;
+use hiko_vm::vm::{StdoutOutputSink, VM};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -155,16 +156,10 @@ fn run_file(path: &str) {
     }
 
     let mut vm = VM::new(compiled.program);
+    vm.set_output_sink(Arc::new(StdoutOutputSink::default()));
     match vm.run() {
-        Ok(()) => {
-            for line in vm.get_output() {
-                print!("{line}");
-            }
-        }
+        Ok(()) => {}
         Err(e) => {
-            for line in vm.get_output() {
-                print!("{line}");
-            }
             compiled.ctx.error(&e.message, vm.error_span());
             process::exit(1);
         }

@@ -1,0 +1,43 @@
+(* spawn_stress.hml -- Stress child creation and awaiting.
+ *
+ * This is aimed at the lighter spawn path:
+ * - smaller per-child heap/stack startup
+ * - shared immutable compiled program across children
+ *
+ * Increase `count` for a harder local stress run if needed.
+ * Note: very large counts will hit the current VM MAX_STACK because the
+ * root process builds and traverses one large pid list.
+ *)
+
+use "../stdlib/list.hml"
+
+val count = 6000
+
+fun spawn_many n acc =
+  if n = 0
+  then acc
+  else spawn_many (n - 1) (spawn (fn () => n) :: acc)
+
+fun await_all pids acc =
+  case pids of
+      [] => acc
+    | pid :: rest => await_all rest (acc + await_process pid)
+
+val t0 = monotonic_ms ()
+val pids = spawn_many count []
+val spawn_ms = monotonic_ms () - t0
+val total = await_all pids 0
+val total_ms = monotonic_ms () - t0
+val expected = (count * (count + 1)) / 2
+
+val _ = assert_eq (length pids, count, "spawned child count")
+val _ = assert_eq (total, expected, "spawn stress sum")
+
+val _ =
+  println ("spawn_stress ok: "
+           ^ int_to_string count
+           ^ " children, spawn "
+           ^ int_to_string spawn_ms
+           ^ " ms, total "
+           ^ int_to_string total_ms
+           ^ " ms")

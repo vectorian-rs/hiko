@@ -230,6 +230,13 @@ impl InferCtx {
                     ]),
                 ),
             ),
+            // File I/O (bytes)
+            (
+                "read_file_bytes",
+                Type::arrow(Type::string(), Type::bytes()),
+            ),
+            // Hashing
+            ("blake3", Type::arrow(Type::bytes(), Type::string())),
             // Bytes
             ("bytes_length", Type::arrow(Type::bytes(), Type::int())),
             (
@@ -343,6 +350,8 @@ impl InferCtx {
             ("to_upper", Type::arrow(Type::string(), Type::string())),
             ("to_lower", Type::arrow(Type::string(), Type::string())),
             ("epoch", Type::arrow(Type::unit(), Type::int())),
+            ("epoch_ms", Type::arrow(Type::unit(), Type::int())),
+            ("monotonic_ms", Type::arrow(Type::unit(), Type::int())),
             ("sleep", Type::arrow(Type::int(), Type::unit())),
             (
                 "string_join",
@@ -360,15 +369,15 @@ impl InferCtx {
                 ),
             ),
             // System
-            // Process operations (spawn returns Int pid, await takes Int pid)
+            // Process operations
             (
                 "spawn",
-                Type::arrow(Type::arrow(Type::unit(), a.clone()), Type::int()),
+                Type::arrow(Type::arrow(Type::unit(), a.clone()), Type::pid()),
             ),
-            ("await_process", Type::arrow(Type::int(), a.clone())),
+            ("await_process", Type::arrow(Type::pid(), a.clone())),
             (
                 "send_message",
-                Type::arrow(Type::Tuple(vec![Type::int(), a.clone()]), Type::unit()),
+                Type::arrow(Type::Tuple(vec![Type::pid(), a.clone()]), Type::unit()),
             ),
             ("receive_message", Type::arrow(Type::unit(), a.clone())),
             ("exit", Type::arrow(Type::int(), Type::unit())),
@@ -1223,6 +1232,7 @@ impl InferCtx {
                     "String" => return Ok(Type::string()),
                     "Char" => return Ok(Type::char()),
                     "Unit" => return Ok(Type::unit()),
+                    "Pid" => return Ok(Type::pid()),
                     _ => {}
                 }
                 // Check type aliases (0-arg)
@@ -1811,6 +1821,18 @@ mod tests {
     fn test_builtin_int_to_string() {
         let ctx = infer("val s = int_to_string 42");
         assert_eq!(type_of(&ctx, "s"), "String");
+    }
+
+    #[test]
+    fn test_spawn_returns_pid() {
+        let ctx = infer("val child = spawn (fn () => 42)");
+        assert_eq!(type_of(&ctx, "child"), "Pid");
+    }
+
+    #[test]
+    fn test_await_process_rejects_int() {
+        let msg = infer_err("val x = await_process 123");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
     }
 
     // ── Exhaustiveness checking ──────────────────────────────────────

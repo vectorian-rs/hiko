@@ -1,15 +1,15 @@
 [package]
 name = "hiko-harness"
-version = "0.4.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT"
 description = "hiko-harness: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
-hiko-syntax = { version = "0.4.0", path = "../hiko-syntax" }
-hiko-compile = { version = "0.4.0", path = "../hiko-compile" }
-hiko-vm = { version = "0.4.0", path = "../hiko-vm" }
+hiko-syntax = { version = "0.5.1", path = "../hiko-syntax" }
+hiko-compile = { version = "0.5.1", path = "../hiko-compile" }
+hiko-vm = { version = "0.5.1", path = "../hiko-vm" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

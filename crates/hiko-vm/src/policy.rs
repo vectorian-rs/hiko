@@ -185,16 +185,12 @@ impl Policy {
         }
 
         s.push_str("        .build();\n");
+        s.push_str(
+            "    vm.set_output_sink(std::sync::Arc::new(hiko_vm::vm::StdoutOutputSink::default()));\n",
+        );
         s.push_str("    match vm.run() {\n");
-        s.push_str("        Ok(()) => {\n");
-        s.push_str("            for line in vm.get_output() {\n");
-        s.push_str("                print!(\"{line}\");\n");
-        s.push_str("            }\n");
-        s.push_str("        }\n");
+        s.push_str("        Ok(()) => {}\n");
         s.push_str("        Err(e) => {\n");
-        s.push_str("            for line in vm.get_output() {\n");
-        s.push_str("                print!(\"{line}\");\n");
-        s.push_str("            }\n");
         s.push_str("            eprintln!(\"error: {}\", e.message);\n");
         s.push_str("            std::process::exit(1);\n");
         s.push_str("        }\n");

@@ -19,15 +19,21 @@ pub struct Runtime {
     waiters: HashMap<Pid, Vec<Pid>>,
 }
 
-impl Runtime {
-    /// Create a new runtime with the default FIFO scheduler.
-    pub fn new() -> Self {
+impl Default for Runtime {
+    fn default() -> Self {
         Self {
             next_pid: AtomicU64::new(1),
             processes: HashMap::new(),
             scheduler: Box::new(FifoScheduler::new(1000)),
             waiters: HashMap::new(),
         }
+    }
+}
+
+impl Runtime {
+    /// Create a new runtime with the default FIFO scheduler.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Create a runtime with a custom scheduler.
@@ -48,9 +54,14 @@ impl Runtime {
     /// Spawn a root process from a compiled program.
     /// Returns the Pid.
     pub fn spawn_root(&mut self, program: CompiledProgram) -> Pid {
+        self.spawn_root_vm(VM::new(program))
+    }
+
+    /// Spawn a root process from an already-configured VM.
+    /// Returns the Pid.
+    pub fn spawn_root_vm(&mut self, mut vm: VM) -> Pid {
         let pid = self.new_pid();
-        let mut vm = VM::new(program);
-        crate::runtime_ops::register_runtime_effects(&mut vm);
+        vm.enable_output_capture();
         let process = Process::new(pid, vm, None);
         self.processes.insert(pid, process);
         self.scheduler.enqueue(pid);
@@ -60,12 +71,7 @@ impl Runtime {
     /// Run all processes to completion (single-threaded).
     /// Returns the root process's output lines.
     pub fn run_to_completion(&mut self) -> Result<Vec<String>, String> {
-        loop {
-            let pid = match self.try_dequeue() {
-                Some(pid) => pid,
-                None => break,
-            };
-
+        while let Some(pid) = self.try_dequeue() {
             let reductions = self.scheduler.reductions(pid);
 
             let result = {
@@ -76,16 +82,20 @@ impl Runtime {
             match result {
                 RunResult::Done => {
                     let process = self.processes.get_mut(&pid).unwrap();
-                    // Serialize result once on completion
-                    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    match serialize(val, &process.vm.heap) {
-                        Ok(sv) => process.result = Some(sv),
-                        Err(e) => {
-                            process.status =
-                                ProcessStatus::Failed(format!("child result not sendable: {e}"));
-                            self.scheduler.remove(pid);
-                            self.wake_and_deliver_results(pid);
-                            continue;
+                    if process.parent.is_some() {
+                        // Child results cross a process boundary when awaited, so they must be
+                        // sendable. Root processes run in-place and may finish with local values.
+                        let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+                        match serialize(val, &process.vm.heap) {
+                            Ok(sv) => process.result = Some(sv),
+                            Err(e) => {
+                                process.status = ProcessStatus::Failed(format!(
+                                    "child result not sendable: {e}"
+                                ));
+                                self.scheduler.remove(pid);
+                                self.wake_and_deliver_results(pid);
+                                continue;
+                            }
                         }
                     }
                     process.status = ProcessStatus::Done;
@@ -110,7 +120,7 @@ impl Runtime {
                     let process = self.processes.get_mut(&pid).unwrap();
                     // Replace the Unit placeholder with the actual Pid
                     process.vm.stack.pop();
-                    process.vm.push_value(Value::Int(child_pid.0 as i64));
+                    process.vm.push_value(Value::Pid(child_pid.0));
                     self.scheduler.enqueue(pid);
                 }
                 RunResult::Await(child_pid_val) => {
@@ -127,11 +137,6 @@ impl Runtime {
                     let process = self.processes.get_mut(&pid).unwrap();
                     process.status =
                         ProcessStatus::Failed("async I/O requires ThreadedRuntime".into());
-                }
-                RunResult::RuntimeEffect { .. } => {
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    process.status =
-                        ProcessStatus::Failed("runtime effects require ThreadedRuntime".into());
                 }
                 RunResult::Cancelled => {
                     let process = self.processes.get_mut(&pid).unwrap();
@@ -215,11 +220,15 @@ impl Runtime {
                 let val = deserialize(sendable, &mut parent.vm.heap);
                 parent.vm.push_value(val);
                 self.scheduler.enqueue(parent_pid);
+                self.processes.remove(&child_pid);
+                self.waiters.remove(&child_pid);
             }
             ChildState::Failed(msg) => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
                 self.scheduler.remove(parent_pid);
+                self.processes.remove(&child_pid);
+                self.waiters.remove(&child_pid);
             }
             ChildState::Running => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
@@ -329,6 +338,8 @@ impl Runtime {
                 }
             }
         }
+
+        self.processes.remove(&finished_pid);
     }
 
     /// Try to dequeue a runnable process without blocking.
@@ -345,6 +356,11 @@ impl Runtime {
             .unwrap_or_default()
     }
 
+    /// Get the current lifecycle status of a process.
+    pub fn get_status(&self, pid: Pid) -> Option<&ProcessStatus> {
+        self.processes.get(&pid).map(|p| &p.status)
+    }
+
     /// Get the number of processes.
     pub fn process_count(&self) -> usize {
         self.processes.len()
@@ -357,11 +373,20 @@ mod tests {
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::path::Path;
 
     fn compile(source: &str) -> CompiledProgram {
         let tokens = Lexer::new(source, 0).tokenize().unwrap();
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
+        compiled
+    }
+
+    fn compile_example(path: &Path) -> CompiledProgram {
+        let source = std::fs::read_to_string(path).unwrap();
+        let tokens = Lexer::new(&source, 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let (compiled, _) = Compiler::compile_file(program, path).unwrap();
         compiled
     }
 
@@ -545,7 +570,11 @@ mod tests {
 
     #[test]
     fn test_send_to_dead_process() {
-        let program = compile("val _ = send_message (999, 42)");
+        let program = compile(
+            "val child = spawn (fn () => 0)\n\
+             val _ = await_process child\n\
+             val _ = send_message (child, 42)",
+        );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -553,5 +582,58 @@ mod tests {
             ProcessStatus::Failed(msg) => assert!(msg.contains("unknown process")),
             other => panic!("expected Failed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_spawn_stress_example() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/spawn_stress.hml");
+        let program = compile_example(&path);
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        let output = runtime.get_output(pid).join("");
+        assert!(output.contains("spawn_stress ok: 6000 children"));
+    }
+
+    #[test]
+    fn test_root_process_may_finish_with_non_sendable_value() {
+        let program = compile("val f = fn () => 1");
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        assert!(matches!(runtime.get_status(pid), Some(ProcessStatus::Done)));
+    }
+
+    #[test]
+    fn test_reaps_finished_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.process_count(), 1);
+        assert!(runtime.get_status(pid).is_some());
+    }
+
+    #[test]
+    fn test_reaps_failed_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => panic \"boom\")\n\
+             val _ = await_process child",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.process_count(), 1);
+        assert!(matches!(
+            runtime.get_status(pid),
+            Some(ProcessStatus::Failed(_))
+        ));
     }
 }

@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::heap::Heap;
 use crate::value::{BuiltinFn, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL, values_equal};
@@ -17,16 +19,16 @@ fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Value {
     list
 }
 
-pub(crate) fn bi_print(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn print(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     // Return a marker; the VM handles display
     Ok(args[0]) // VM will display this value
 }
 
-pub(crate) fn bi_println(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn println(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Ok(args[0])
 }
 
-pub(crate) fn bi_read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let mut line = String::new();
     std::io::stdin()
         .read_line(&mut line)
@@ -37,21 +39,21 @@ pub(crate) fn bi_read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, St
     Ok(Value::Heap(heap.alloc(HeapObject::String(line))))
 }
 
-pub(crate) fn bi_int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Heap(heap.alloc(HeapObject::String(n.to_string())))),
         _ => Err("int_to_string: expected Int".into()),
     }
 }
 
-pub(crate) fn bi_float_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn float_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Heap(heap.alloc(HeapObject::String(f.to_string())))),
         _ => Err("float_to_string: expected Float".into()),
     }
 }
 
-pub(crate) fn bi_string_to_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn string_to_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s
@@ -65,14 +67,14 @@ pub(crate) fn bi_string_to_int(args: &[Value], heap: &mut Heap) -> Result<Value,
     }
 }
 
-pub(crate) fn bi_char_to_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn char_to_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Char(c) => Ok(Value::Int(*c as i64)),
         _ => Err("char_to_int: expected Char".into()),
     }
 }
 
-pub(crate) fn bi_int_to_char(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn int_to_char(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) => char::from_u32(*n as u32)
             .map(Value::Char)
@@ -81,14 +83,14 @@ pub(crate) fn bi_int_to_char(args: &[Value], _heap: &mut Heap) -> Result<Value, 
     }
 }
 
-pub(crate) fn bi_int_to_float(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn int_to_float(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Float(*n as f64)),
         _ => Err("int_to_float: expected Int".into()),
     }
 }
 
-pub(crate) fn bi_string_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn string_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(Value::Int(s.chars().count() as i64)),
@@ -98,7 +100,7 @@ pub(crate) fn bi_string_length(args: &[Value], heap: &mut Heap) -> Result<Value,
     }
 }
 
-pub(crate) fn bi_substring(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn substring(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) => (t[0], t[1], t[2]),
@@ -129,7 +131,7 @@ pub(crate) fn bi_substring(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     }
 }
 
-pub(crate) fn bi_string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) => (t[0], t[1]),
@@ -154,7 +156,7 @@ pub(crate) fn bi_string_contains(args: &[Value], heap: &mut Heap) -> Result<Valu
     Ok(Value::Bool(a.contains(b)))
 }
 
-pub(crate) fn bi_trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(Value::Heap(
@@ -166,7 +168,7 @@ pub(crate) fn bi_trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
     }
 }
 
-pub(crate) fn bi_split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) => (t[0], t[1]),
@@ -196,7 +198,7 @@ pub(crate) fn bi_split(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     Ok(list)
 }
 
-pub(crate) fn bi_string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -229,42 +231,42 @@ pub(crate) fn bi_string_replace(args: &[Value], heap: &mut Heap) -> Result<Value
     Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
 }
 
-pub(crate) fn bi_sqrt(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn sqrt(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Float(f.sqrt())),
         _ => Err("sqrt: expected Float".into()),
     }
 }
 
-pub(crate) fn bi_abs_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn abs_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Int(n.abs())),
         _ => Err("abs_int: expected Int".into()),
     }
 }
 
-pub(crate) fn bi_abs_float(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn abs_float(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Float(f.abs())),
         _ => Err("abs_float: expected Float".into()),
     }
 }
 
-pub(crate) fn bi_floor(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn floor(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Int(f.floor() as i64)),
         _ => Err("floor: expected Float".into()),
     }
 }
 
-pub(crate) fn bi_ceil(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn ceil(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Int(f.ceil() as i64)),
         _ => Err("ceil: expected Float".into()),
     }
 }
 
-pub(crate) fn bi_read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -279,7 +281,22 @@ pub(crate) fn bi_read_file(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     Ok(Value::Heap(heap.alloc(HeapObject::String(contents))))
 }
 
-pub(crate) fn bi_write_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let path = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("read_file_bytes: expected String".into()),
+        },
+        _ => return Err("read_file_bytes: expected String".into()),
+    };
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("read_file_bytes: {e}"))?;
+    let contents = std::fs::read(&checked_path).map_err(|e| format!("read_file_bytes: {e}"))?;
+    Ok(Value::Heap(heap.alloc(HeapObject::Bytes(contents))))
+}
+
+pub(crate) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) => (t[0], t[1]),
@@ -308,17 +325,22 @@ pub(crate) fn bi_write_file(args: &[Value], heap: &mut Heap) -> Result<Value, St
     Ok(Value::Unit)
 }
 
-pub(crate) fn bi_file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Bool(std::path::Path::new(s.as_str()).exists())),
+            HeapObject::String(s) => {
+                let checked_path = heap
+                    .check_fs_path(s)
+                    .map_err(|e| format!("file_exists: {e}"))?;
+                Ok(Value::Bool(checked_path.exists()))
+            }
             _ => Err("file_exists: expected String".into()),
         },
         _ => Err("file_exists: expected String".into()),
     }
 }
 
-pub(crate) fn bi_list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -326,7 +348,10 @@ pub(crate) fn bi_list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         },
         _ => return Err("list_dir: expected String".into()),
     };
-    let entries: Vec<Value> = std::fs::read_dir(&path)
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("list_dir: {e}"))?;
+    let entries: Vec<Value> = std::fs::read_dir(&checked_path)
         .map_err(|e| format!("list_dir: {e}"))?
         .filter_map(|entry| {
             entry.ok().map(|e| {
@@ -340,11 +365,14 @@ pub(crate) fn bi_list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     Ok(list)
 }
 
-pub(crate) fn bi_remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
-                std::fs::remove_file(s.as_str()).map_err(|e| format!("remove_file: {e}"))?;
+                let checked_path = heap
+                    .check_fs_path(s)
+                    .map_err(|e| format!("remove_file: {e}"))?;
+                std::fs::remove_file(&checked_path).map_err(|e| format!("remove_file: {e}"))?;
                 Ok(Value::Unit)
             }
             _ => Err("remove_file: expected String".into()),
@@ -353,11 +381,14 @@ pub(crate) fn bi_remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, S
     }
 }
 
-pub(crate) fn bi_create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
-                std::fs::create_dir_all(s.as_str()).map_err(|e| format!("create_dir: {e}"))?;
+                let checked_path = heap
+                    .check_fs_path(s)
+                    .map_err(|e| format!("create_dir: {e}"))?;
+                std::fs::create_dir_all(&checked_path).map_err(|e| format!("create_dir: {e}"))?;
                 Ok(Value::Unit)
             }
             _ => Err("create_dir: expected String".into()),
@@ -366,27 +397,33 @@ pub(crate) fn bi_create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, St
     }
 }
 
-pub(crate) fn bi_is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Bool(std::path::Path::new(s.as_str()).is_dir())),
+            HeapObject::String(s) => {
+                let checked_path = heap.check_fs_path(s).map_err(|e| format!("is_dir: {e}"))?;
+                Ok(Value::Bool(checked_path.is_dir()))
+            }
             _ => Err("is_dir: expected String".into()),
         },
         _ => Err("is_dir: expected String".into()),
     }
 }
 
-pub(crate) fn bi_is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Bool(std::path::Path::new(s.as_str()).is_file())),
+            HeapObject::String(s) => {
+                let checked_path = heap.check_fs_path(s).map_err(|e| format!("is_file: {e}"))?;
+                Ok(Value::Bool(checked_path.is_file()))
+            }
             _ => Err("is_file: expected String".into()),
         },
         _ => Err("is_file: expected String".into()),
     }
 }
 
-pub(crate) fn bi_path_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn path_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) => (t[0], t[1]),
@@ -431,7 +468,7 @@ fn fnv1a_tag(line: &str) -> [u8; 2] {
 /// Read a file with hashline tags. Takes (String, Int, Int) -> String.
 /// (path, offset, limit) — offset 0 and limit 0 means read all.
 /// Returns lines formatted as "lineno:hash\tcontent\n".
-pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v_path, v_offset, v_limit) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -465,7 +502,11 @@ pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
-    let content = std::fs::read_to_string(path).map_err(|e| format!("read_file_tagged: {e}"))?;
+    let checked_path = heap
+        .check_fs_path(path)
+        .map_err(|e| format!("read_file_tagged: {e}"))?;
+    let content =
+        std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?;
 
     let lines: Vec<&str> = content.lines().collect();
     let start = if offset > 0 {
@@ -493,7 +534,7 @@ pub(crate) fn bi_read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
 /// Each edit line: ACTION LINE:HASH CONTENT
 /// Actions: R (replace), I (insert after), D (delete)
 /// Verifies hashes before applying. Returns status message.
-pub(crate) fn bi_edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v_path, v_edits) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -517,7 +558,11 @@ pub(crate) fn bi_edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
     };
 
     // Read the file
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    let checked_path = heap
+        .check_fs_path(&path)
+        .map_err(|e| format!("edit_file_tagged: {e}"))?;
+    let content =
+        std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
 
     // Compute hashes for all lines
@@ -628,14 +673,14 @@ pub(crate) fn bi_edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Val
     } else {
         output
     };
-    std::fs::write(&path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    std::fs::write(&checked_path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
 
     let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
     Ok(Value::Heap(heap.alloc(HeapObject::String(msg))))
 }
 
 /// Glob file search. Takes a pattern string, returns a list of matching paths.
-pub(crate) fn bi_glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let pattern = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -643,19 +688,48 @@ pub(crate) fn bi_glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
         },
         _ => return Err("glob: expected String".into()),
     };
-    let paths: Vec<Value> = glob::glob(&pattern)
-        .map_err(|e| format!("glob: {e}"))?
-        .filter_map(|entry| {
-            entry.ok().map(|p| {
-                Value::Heap(heap.alloc(HeapObject::String(p.to_string_lossy().to_string())))
-            })
-        })
-        .collect();
+    let sandboxed_pattern =
+        sandbox_glob_pattern(&pattern, heap).map_err(|e| format!("glob: {e}"))?;
+    let mut paths = Vec::new();
+    for entry in glob::glob(&sandboxed_pattern).map_err(|e| format!("glob: {e}"))? {
+        let path = entry.map_err(|e| format!("glob: {e}"))?;
+        let checked = heap
+            .check_fs_path(path.to_string_lossy().as_ref())
+            .map_err(|e| format!("glob: {e}"))?;
+        paths.push(Value::Heap(
+            heap.alloc(HeapObject::String(checked.to_string_lossy().to_string())),
+        ));
+    }
     Ok(alloc_list(heap, paths))
 }
 
+fn sandbox_glob_pattern(pattern: &str, heap: &Heap) -> Result<String, String> {
+    if heap.fs_root.is_empty() {
+        return Ok(pattern.to_string());
+    }
+
+    let anchor = glob_anchor(pattern);
+    heap.check_fs_path(if anchor.is_empty() { "." } else { anchor })?;
+
+    let root = heap.check_fs_path(".")?;
+    if std::path::Path::new(pattern).is_absolute() {
+        Ok(pattern.to_string())
+    } else {
+        Ok(root.join(pattern).to_string_lossy().to_string())
+    }
+}
+
+fn glob_anchor(pattern: &str) -> &str {
+    let meta_index = pattern
+        .char_indices()
+        .find(|(_, ch)| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}'))
+        .map(|(idx, _)| idx)
+        .unwrap_or(pattern.len());
+    &pattern[..meta_index]
+}
+
 /// Recursive directory walk. Takes a directory path, returns all file paths recursively.
-pub(crate) fn bi_walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let dir = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -663,21 +737,26 @@ pub(crate) fn bi_walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         },
         _ => return Err("walk_dir: expected String".into()),
     };
-    fn walk(dir: &std::path::Path, out: &mut Vec<String>) -> Result<(), String> {
+    let checked_dir = heap
+        .check_fs_path(&dir)
+        .map_err(|e| format!("walk_dir: {e}"))?;
+    fn walk(dir: &std::path::Path, heap: &Heap, out: &mut Vec<String>) -> Result<(), String> {
         let entries = std::fs::read_dir(dir).map_err(|e| format!("walk_dir: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("walk_dir: {e}"))?;
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out)?;
-            } else {
-                out.push(path.to_string_lossy().to_string());
+            let checked_path = heap
+                .check_fs_path(entry.path().to_string_lossy().as_ref())
+                .map_err(|e| format!("walk_dir: {e}"))?;
+            if checked_path.is_dir() {
+                walk(&checked_path, heap, out)?;
+            } else if checked_path.is_file() {
+                out.push(checked_path.to_string_lossy().to_string());
             }
         }
         Ok(())
     }
     let mut files = Vec::new();
-    walk(std::path::Path::new(&dir), &mut files)?;
+    walk(&checked_dir, heap, &mut files)?;
     let values: Vec<Value> = files
         .into_iter()
         .map(|f| Value::Heap(heap.alloc(HeapObject::String(f))))
@@ -686,7 +765,7 @@ pub(crate) fn bi_walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
 }
 
 /// Regex match. Takes (string, pattern), returns Bool.
-pub(crate) fn bi_regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -713,7 +792,7 @@ pub(crate) fn bi_regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, S
 }
 
 /// Regex replace. Takes (string, pattern, replacement), returns String.
-pub(crate) fn bi_regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -928,7 +1007,7 @@ fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, String> {
 }
 
 /// Parse a JSON string into a hiko json datatype. Takes String -> json.
-pub(crate) fn bi_json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_str(),
@@ -942,7 +1021,7 @@ pub(crate) fn bi_json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, St
 }
 
 /// Serialize a hiko json value back to a JSON string. Takes json -> String.
-pub(crate) fn bi_json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let result = hiko_to_json_string(args[0], heap)?;
     Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
 }
@@ -950,7 +1029,7 @@ pub(crate) fn bi_json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value
 /// Parse a JSON string and get a value by key or path.
 /// Takes (json_string, key_or_path) -> String.
 /// Path supports dot notation: "foo.bar.baz" or array indexing: "items.0.name"
-pub(crate) fn bi_json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -995,7 +1074,7 @@ pub(crate) fn bi_json_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
 }
 
 /// Get all keys from a JSON object. Takes json_string -> String list.
-pub(crate) fn bi_json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_str(),
@@ -1019,7 +1098,7 @@ pub(crate) fn bi_json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, Str
 }
 
 /// Get the length of a JSON array. Takes json_string -> Int.
-pub(crate) fn bi_json_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn json_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_str(),
@@ -1042,7 +1121,11 @@ pub(crate) fn bi_json_length(args: &[Value], heap: &mut Heap) -> Result<Value, S
 }
 
 /// Extract a string argument from args[0].
-fn extract_string_arg(args: &[Value], heap: &Heap, name: &str) -> Result<String, String> {
+pub(crate) fn extract_string_arg(
+    args: &[Value],
+    heap: &Heap,
+    name: &str,
+) -> Result<String, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(s.clone()),
@@ -1055,9 +1138,9 @@ fn extract_string_arg(args: &[Value], heap: &Heap, name: &str) -> Result<String,
 /// Collect headers from an http::HeaderMap into a hiko list of (String, String) tuples.
 fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value {
     let mut header_values: Vec<Value> = Vec::new();
-    for (name, val) in header_map.iter() {
-        let k = Value::Heap(heap.alloc(HeapObject::String(name.to_string())));
-        let v = Value::Heap(heap.alloc(HeapObject::String(val.to_str().unwrap_or("").to_string())));
+    for (k, v) in crate::io_backend::extract_headers(header_map) {
+        let k = Value::Heap(heap.alloc(HeapObject::String(k)));
+        let v = Value::Heap(heap.alloc(HeapObject::String(v)));
         let pair = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![k, v])));
         header_values.push(pair);
     }
@@ -1065,18 +1148,11 @@ fn collect_headers(header_map: &ureq::http::HeaderMap, heap: &mut Heap) -> Value
 }
 
 /// Convenience: HTTP GET, returns (status, headers, body_string).
-pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let url = extract_string_arg(args, heap, "http_get")?;
-    heap.check_http_host(&url)
-        .map_err(|e| format!("http_get: {e}"))?;
-    let response = ureq::get(&url)
-        .call()
-        .map_err(|e| format!("http_get: {e}"))?;
-    let status = Value::Int(response.status().as_u16() as i64);
-    let headers = collect_headers(response.headers(), heap);
-    let body_str = response
-        .into_body()
-        .read_to_string()
+    let (status, headers, mut reader) = do_http_request("GET", &url, &[], "", "http_get", heap)?;
+    let mut body_str = String::new();
+    std::io::Read::read_to_string(&mut reader, &mut body_str)
         .map_err(|e| format!("http_get: {e}"))?;
     let body = Value::Heap(heap.alloc(HeapObject::String(body_str)));
     Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
@@ -1084,12 +1160,14 @@ pub(crate) fn bi_http_get(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     ]))))
 }
 
+type HttpArgs = (String, String, Vec<(String, String)>, String);
+
 /// Extract (method, url, request_headers, body) from a 4-tuple argument.
-fn extract_http_args(
+pub(crate) fn extract_http_args(
     args: &[Value],
     heap: &Heap,
     name: &str,
-) -> Result<(String, String, Vec<(String, String)>, String), String> {
+) -> Result<HttpArgs, String> {
     let (v0, v1, v2, v3) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 4 => (t[0], t[1], t[2], t[3]),
@@ -1168,36 +1246,8 @@ fn do_http_request(
 ) -> Result<(Value, Value, Box<dyn std::io::Read + Send>), String> {
     heap.check_http_host(url)
         .map_err(|e| format!("{name}: {e}"))?;
-    macro_rules! call_no_body {
-        ($req_fn:expr) => {{
-            let mut req = $req_fn(url);
-            for (k, v) in headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            req.call().map_err(|e| format!("{name}: {e}"))
-        }};
-    }
-    macro_rules! call_with_body {
-        ($req_fn:expr) => {{
-            let mut req = $req_fn(url);
-            for (k, v) in headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            req.send(body.as_bytes())
-                .map_err(|e| format!("{name}: {e}"))
-        }};
-    }
-
-    let response = match method.to_uppercase().as_str() {
-        "GET" => call_no_body!(ureq::get),
-        "HEAD" => call_no_body!(ureq::head),
-        "DELETE" => call_no_body!(ureq::delete),
-        "POST" => call_with_body!(ureq::post),
-        "PUT" => call_with_body!(ureq::put),
-        "PATCH" => call_with_body!(ureq::patch),
-        other => return Err(format!("{name}: unsupported method '{other}'")),
-    }?;
-
+    let response = crate::io_backend::dispatch_ureq(method, url, headers, body)
+        .map_err(|e| format!("{name}: {e}"))?;
     let status = Value::Int(response.status().as_u16() as i64);
     let resp_headers = collect_headers(response.headers(), heap);
     let reader = Box::new(response.into_body().into_reader()) as Box<dyn std::io::Read + Send>;
@@ -1205,7 +1255,7 @@ fn do_http_request(
 }
 
 /// General HTTP request. Takes (method, url, headers, body) -> (status, response_headers, body_string).
-pub(crate) fn bi_http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (method, url, req_headers, body) = extract_http_args(args, heap, "http")?;
     let (status, resp_headers, mut reader) =
         do_http_request(&method, &url, &req_headers, &body, "http", heap)?;
@@ -1220,7 +1270,7 @@ pub(crate) fn bi_http(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
 }
 
 /// General HTTP request with JSON response parsing. Returns (status, headers, json).
-pub(crate) fn bi_http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (method, url, req_headers, body) = extract_http_args(args, heap, "http_json")?;
     let (status, resp_headers, mut reader) =
         do_http_request(&method, &url, &req_headers, &body, "http_json", heap)?;
@@ -1238,7 +1288,7 @@ pub(crate) fn bi_http_json(args: &[Value], heap: &mut Heap) -> Result<Value, Str
 }
 
 /// General HTTP request with msgpack response decoding. Returns (status, headers, json).
-pub(crate) fn bi_http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (method, url, req_headers, body) = extract_http_args(args, heap, "http_msgpack")?;
     let (status, resp_headers, reader) =
         do_http_request(&method, &url, &req_headers, &body, "http_msgpack", heap)?;
@@ -1255,7 +1305,22 @@ pub(crate) fn bi_http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, 
 // ── Cryptographic RNG (OS entropy via dryoc) ────────────────────────
 
 /// random_bytes : Int -> Bytes — cryptographically secure random bytes from OS entropy.
-pub(crate) fn bi_random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn blake3(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => {
+                let hash = blake3::hash(b);
+                Ok(Value::Heap(
+                    heap.alloc(HeapObject::String(hash.to_hex().to_string())),
+                ))
+            }
+            _ => Err("blake3: expected Bytes".into()),
+        },
+        _ => Err("blake3: expected Bytes".into()),
+    }
+}
+
+pub(crate) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) if *n >= 0 => {
             let buf = dryoc::rng::randombytes_buf(*n as usize);
@@ -1279,7 +1344,7 @@ fn pcg_next(state: u64, inc: u64) -> (u32, u64) {
 }
 
 /// rng_seed : Bytes -> rng
-pub(crate) fn bi_rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let seed_bytes = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => b.clone(),
@@ -1303,7 +1368,7 @@ pub(crate) fn bi_rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
 }
 
 /// rng_bytes : (rng, Int) -> (Bytes, rng)
-pub(crate) fn bi_rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1341,7 +1406,7 @@ pub(crate) fn bi_rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Str
 }
 
 /// rng_int : (rng, Int) -> (Int, rng)
-pub(crate) fn bi_rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1374,7 +1439,7 @@ pub(crate) fn bi_rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
 
 // ── Bytes builtins ───────────────────────────────────────────────────
 
-pub(crate) fn bi_bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => Ok(Value::Int(b.len() as i64)),
@@ -1384,7 +1449,7 @@ pub(crate) fn bi_bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, 
     }
 }
 
-pub(crate) fn bi_bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => Ok(Value::Heap(
@@ -1396,7 +1461,7 @@ pub(crate) fn bi_bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Valu
     }
 }
 
-pub(crate) fn bi_string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(Value::Heap(
@@ -1408,7 +1473,7 @@ pub(crate) fn bi_string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Valu
     }
 }
 
-pub(crate) fn bi_bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1438,7 +1503,7 @@ pub(crate) fn bi_bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     Ok(Value::Int(bytes[idx] as i64))
 }
 
-pub(crate) fn bi_bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -1471,7 +1536,7 @@ pub(crate) fn bi_bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, S
 }
 
 /// HTTP request returning raw bytes body.
-pub(crate) fn bi_http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (method, url, req_headers, body) = extract_http_args(args, heap, "http_bytes")?;
     let (status, resp_headers, mut reader) =
         do_http_request(&method, &url, &req_headers, &body, "http_bytes", heap)?;
@@ -1487,7 +1552,7 @@ pub(crate) fn bi_http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, St
 
 /// Execute a command directly (no shell). Takes (String, String list) -> (Int, String, String).
 /// The allowed-commands check is done by the VM before calling this.
-pub(crate) fn bi_exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1545,7 +1610,7 @@ pub(crate) fn bi_exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
     ]))))
 }
 
-pub(crate) fn bi_getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let name = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -1559,7 +1624,7 @@ pub(crate) fn bi_getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String
     }
 }
 
-pub(crate) fn bi_starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1584,7 +1649,7 @@ pub(crate) fn bi_starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, S
     Ok(Value::Bool(s.starts_with(prefix)))
 }
 
-pub(crate) fn bi_ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1609,7 +1674,7 @@ pub(crate) fn bi_ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     Ok(Value::Bool(s.ends_with(suffix)))
 }
 
-pub(crate) fn bi_to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(Value::Heap(
@@ -1621,7 +1686,7 @@ pub(crate) fn bi_to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     }
 }
 
-pub(crate) fn bi_to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(Value::Heap(
@@ -1633,7 +1698,7 @@ pub(crate) fn bi_to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     }
 }
 
-pub(crate) fn bi_epoch(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn epoch(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("epoch: {e}"))?
@@ -1641,8 +1706,24 @@ pub(crate) fn bi_epoch(_args: &[Value], _heap: &mut Heap) -> Result<Value, Strin
     Ok(Value::Int(secs as i64))
 }
 
+pub(crate) fn epoch_ms(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("epoch_ms: {e}"))?
+        .as_millis();
+    Ok(Value::Int(ms as i64))
+}
+
+static MONO_ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
+
+pub(crate) fn monotonic_ms(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    let origin = MONO_ORIGIN.get_or_init(std::time::Instant::now);
+    let ms = origin.elapsed().as_millis();
+    Ok(Value::Int(ms as i64))
+}
+
 /// sleep : Int -> Unit — pause execution for N milliseconds.
-pub(crate) fn bi_sleep(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn sleep(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(ms) if *ms >= 0 => {
             std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
@@ -1653,7 +1734,7 @@ pub(crate) fn bi_sleep(args: &[Value], _heap: &mut Heap) -> Result<Value, String
 }
 
 /// string_join : (String list, String) -> String — join list with separator.
-pub(crate) fn bi_string_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn string_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -1683,14 +1764,14 @@ pub(crate) fn bi_string_join(args: &[Value], heap: &mut Heap) -> Result<Value, S
     Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
 }
 
-pub(crate) fn bi_exit(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn exit(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(code) => std::process::exit(*code as i32),
         _ => Err("exit: expected Int".into()),
     }
 }
 
-pub(crate) fn bi_panic(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn panic(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Err(s.clone()),
@@ -1701,26 +1782,26 @@ pub(crate) fn bi_panic(args: &[Value], heap: &mut Heap) -> Result<Value, String>
 }
 
 /// Placeholder — actual spawn logic is in VM::call_builtin.
-pub(crate) fn bi_spawn_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn spawn_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Err("spawn: must be called within a runtime".into())
 }
 
 /// Placeholder — actual await logic is in VM::call_builtin.
-pub(crate) fn bi_await_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn await_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Err("await_process: must be called within a runtime".into())
 }
 
 /// Placeholder — actual send logic is in VM::call_builtin.
-pub(crate) fn bi_send_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn send_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Err("send_message: must be called within a runtime".into())
 }
 
 /// Placeholder — actual receive logic is in VM::call_builtin.
-pub(crate) fn bi_receive_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn receive_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Err("receive_message: must be called within a runtime".into())
 }
 
-pub(crate) fn bi_assert(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn assert(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) => (t[0], t[1]),
@@ -1738,7 +1819,7 @@ pub(crate) fn bi_assert(args: &[Value], heap: &mut Heap) -> Result<Value, String
     }
 }
 
-pub(crate) fn bi_assert_eq(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+pub(crate) fn assert_eq(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -1766,76 +1847,80 @@ pub(crate) fn bi_assert_eq(args: &[Value], heap: &mut Heap) -> Result<Value, Str
 
 pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
     vec![
-        ("print", bi_print),
-        ("println", bi_println),
-        ("read_line", bi_read_line),
-        ("int_to_string", bi_int_to_string),
-        ("float_to_string", bi_float_to_string),
-        ("string_to_int", bi_string_to_int),
-        ("char_to_int", bi_char_to_int),
-        ("int_to_char", bi_int_to_char),
-        ("int_to_float", bi_int_to_float),
-        ("string_length", bi_string_length),
-        ("substring", bi_substring),
-        ("string_contains", bi_string_contains),
-        ("trim", bi_trim),
-        ("split", bi_split),
-        ("string_replace", bi_string_replace),
-        ("sqrt", bi_sqrt),
-        ("abs_int", bi_abs_int),
-        ("abs_float", bi_abs_float),
-        ("floor", bi_floor),
-        ("ceil", bi_ceil),
-        ("read_file", bi_read_file),
-        ("write_file", bi_write_file),
-        ("file_exists", bi_file_exists),
-        ("list_dir", bi_list_dir),
-        ("remove_file", bi_remove_file),
-        ("create_dir", bi_create_dir),
-        ("is_dir", bi_is_dir),
-        ("is_file", bi_is_file),
-        ("path_join", bi_path_join),
-        ("read_file_tagged", bi_read_file_tagged),
-        ("edit_file_tagged", bi_edit_file_tagged),
-        ("glob", bi_glob),
-        ("walk_dir", bi_walk_dir),
-        ("regex_match", bi_regex_match),
-        ("regex_replace", bi_regex_replace),
-        ("json_parse", bi_json_parse),
-        ("json_to_string", bi_json_to_string),
-        ("json_get", bi_json_get),
-        ("json_keys", bi_json_keys),
-        ("json_length", bi_json_length),
-        ("http_get", bi_http_get),
-        ("http", bi_http),
-        ("http_json", bi_http_json),
-        ("http_msgpack", bi_http_msgpack),
-        ("http_bytes", bi_http_bytes),
-        ("bytes_length", bi_bytes_length),
-        ("bytes_to_string", bi_bytes_to_string),
-        ("string_to_bytes", bi_string_to_bytes),
-        ("bytes_get", bi_bytes_get),
-        ("bytes_slice", bi_bytes_slice),
-        ("random_bytes", bi_random_bytes),
-        ("rng_seed", bi_rng_seed),
-        ("rng_bytes", bi_rng_bytes),
-        ("rng_int", bi_rng_int),
-        ("getenv", bi_getenv),
-        ("starts_with", bi_starts_with),
-        ("ends_with", bi_ends_with),
-        ("to_upper", bi_to_upper),
-        ("to_lower", bi_to_lower),
-        ("epoch", bi_epoch),
-        ("exec", bi_exec),
-        ("sleep", bi_sleep),
-        ("string_join", bi_string_join),
-        ("spawn", bi_spawn_placeholder),
-        ("await_process", bi_await_placeholder),
-        ("send_message", bi_send_placeholder),
-        ("receive_message", bi_receive_placeholder),
-        ("exit", bi_exit),
-        ("panic", bi_panic),
-        ("assert", bi_assert),
-        ("assert_eq", bi_assert_eq),
+        ("print", print),
+        ("println", println),
+        ("read_line", read_line),
+        ("int_to_string", int_to_string),
+        ("float_to_string", float_to_string),
+        ("string_to_int", string_to_int),
+        ("char_to_int", char_to_int),
+        ("int_to_char", int_to_char),
+        ("int_to_float", int_to_float),
+        ("string_length", string_length),
+        ("substring", substring),
+        ("string_contains", string_contains),
+        ("trim", trim),
+        ("split", split),
+        ("string_replace", string_replace),
+        ("sqrt", sqrt),
+        ("abs_int", abs_int),
+        ("abs_float", abs_float),
+        ("floor", floor),
+        ("ceil", ceil),
+        ("read_file", read_file),
+        ("read_file_bytes", read_file_bytes),
+        ("blake3", blake3),
+        ("write_file", write_file),
+        ("file_exists", file_exists),
+        ("list_dir", list_dir),
+        ("remove_file", remove_file),
+        ("create_dir", create_dir),
+        ("is_dir", is_dir),
+        ("is_file", is_file),
+        ("path_join", path_join),
+        ("read_file_tagged", read_file_tagged),
+        ("edit_file_tagged", edit_file_tagged),
+        ("glob", glob),
+        ("walk_dir", walk_dir),
+        ("regex_match", regex_match),
+        ("regex_replace", regex_replace),
+        ("json_parse", json_parse),
+        ("json_to_string", json_to_string),
+        ("json_get", json_get),
+        ("json_keys", json_keys),
+        ("json_length", json_length),
+        ("http_get", http_get),
+        ("http", http),
+        ("http_json", http_json),
+        ("http_msgpack", http_msgpack),
+        ("http_bytes", http_bytes),
+        ("bytes_length", bytes_length),
+        ("bytes_to_string", bytes_to_string),
+        ("string_to_bytes", string_to_bytes),
+        ("bytes_get", bytes_get),
+        ("bytes_slice", bytes_slice),
+        ("random_bytes", random_bytes),
+        ("rng_seed", rng_seed),
+        ("rng_bytes", rng_bytes),
+        ("rng_int", rng_int),
+        ("getenv", getenv),
+        ("starts_with", starts_with),
+        ("ends_with", ends_with),
+        ("to_upper", to_upper),
+        ("to_lower", to_lower),
+        ("epoch", epoch),
+        ("epoch_ms", epoch_ms),
+        ("monotonic_ms", monotonic_ms),
+        ("exec", exec),
+        ("sleep", sleep),
+        ("string_join", string_join),
+        ("spawn", spawn_placeholder),
+        ("await_process", await_placeholder),
+        ("send_message", send_placeholder),
+        ("receive_message", receive_placeholder),
+        ("exit", exit),
+        ("panic", panic),
+        ("assert", assert),
+        ("assert_eq", assert_eq),
     ]
 }

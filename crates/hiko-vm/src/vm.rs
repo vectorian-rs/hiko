@@ -1,15 +1,26 @@
 use smallvec::smallvec;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
+use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
-use crate::value::{BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, Value};
+use crate::value::{
+    BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
+};
 
-const MAX_STACK: usize = 64 * 1024;
-const MAX_FRAMES: usize = 65536;
+/// Default hard limit on the VM value stack, measured in `Value` slots.
+///
+/// This is a fixed runtime guard today; unlike heap and fuel, it is not yet
+/// configurable through `VMBuilder`.
+pub const DEFAULT_MAX_STACK_SLOTS: usize = 64 * 1024;
+
+/// Default hard limit on the VM call-frame stack.
+///
+/// This is a fixed runtime guard today; unlike heap and fuel, it is not yet
+/// configurable through `VMBuilder`.
+pub const DEFAULT_MAX_CALL_FRAMES: usize = 65_536;
 
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
@@ -40,11 +51,6 @@ pub enum RunResult {
     Receive,
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
-    /// Process performed an unhandled effect handled by the runtime.
-    RuntimeEffect {
-        tag: u16,
-        payload: crate::sendable::SendableValue,
-    },
     /// Process was cancelled at a suspension point.
     Cancelled,
 }
@@ -77,10 +83,30 @@ struct CallFrame {
 
 struct HandlerFrame {
     call_frame_idx: usize,
-    stack_base: usize,          // stack height when handler was installed
+    stack_base: usize,
     clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
     proto_idx: usize,
     captures: Arc<[Value]>,
+}
+
+pub trait OutputSink: Send + Sync {
+    fn write(&self, text: &str) -> std::io::Result<()>;
+}
+
+#[derive(Default)]
+pub struct StdoutOutputSink {
+    lock: Mutex<()>,
+}
+
+impl OutputSink for StdoutOutputSink {
+    fn write(&self, text: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(text.as_bytes())?;
+        stdout.flush()
+    }
 }
 
 pub struct VM {
@@ -89,9 +115,9 @@ pub struct VM {
     frames: Vec<CallFrame>,
     globals: Vec<Value>,
     global_names: HashMap<String, usize>,
-    protos: Vec<hiko_compile::chunk::FunctionProto>,
-    main_chunk: Chunk,
-    output: Vec<String>,
+    protos: Arc<[FunctionProto]>,
+    main_chunk: Arc<Chunk>,
+    output: Option<Vec<String>>,
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
@@ -111,16 +137,24 @@ pub struct VM {
     await_builtin_id: Option<u16>,
     send_builtin_id: Option<u16>,
     receive_builtin_id: Option<u16>,
+    sleep_builtin_id: Option<u16>,
+    http_get_builtin_id: Option<u16>,
+    http_builtin_id: Option<u16>,
+    http_json_builtin_id: Option<u16>,
+    http_msgpack_builtin_id: Option<u16>,
+    http_bytes_builtin_id: Option<u16>,
+    read_file_builtin_id: Option<u16>,
+    /// When true, I/O builtins suspend via RuntimeRequest::Io instead of blocking.
+    pub async_io: bool,
     /// Pending runtime request from a spawn/await builtin.
     pending_runtime_request: Option<RuntimeRequest>,
-    /// Effect tags handled by the runtime (I/O effects).
-    runtime_effect_tags: std::collections::HashSet<u16>,
     /// Effect metadata from compiled program (name → tag).
-    pub effect_metadata: Vec<hiko_compile::chunk::EffectMeta>,
+    pub effect_metadata: Arc<[EffectMeta]>,
     /// Saved continuation when blocked on runtime I/O. GC root.
     pub blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
     pub cancelled: bool,
+    output_sink: Option<Arc<dyn OutputSink>>,
 }
 
 /// A request from a builtin to the runtime.
@@ -137,17 +171,12 @@ pub enum RuntimeRequest {
     },
     Receive,
     Io(crate::io_backend::IoRequest),
-    /// An unhandled effect that the runtime should handle as I/O.
-    /// The process has saved its continuation in blocked_continuation.
-    RuntimeEffect {
-        tag: u16,
-        payload: crate::sendable::SendableValue,
-    },
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Pid(x), Value::Pid(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,
@@ -194,9 +223,9 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
 
 // Compile-time assertion: VM must be Send for multi-threaded scheduling.
 const _: () = {
-    fn assert_send<T: Send>() {}
-    fn check() {
-        assert_send::<VM>();
+    fn _assert_send<T: Send>() {}
+    fn _check() {
+        _assert_send::<VM>();
     }
 };
 
@@ -212,14 +241,14 @@ impl VM {
     pub fn from_program(program: CompiledProgram) -> Self {
         VM {
             heap: Heap::new(),
-            stack: Vec::with_capacity(256),
+            stack: Vec::with_capacity(32),
             frames: Vec::new(),
             globals: Vec::new(),
             global_names: HashMap::new(),
-            effect_metadata: program.effects.clone(),
+            effect_metadata: program.effects,
             protos: program.functions,
             main_chunk: program.main,
-            output: Vec::new(),
+            output: None,
             builtins: Vec::new(),
             handlers: Vec::new(),
             string_cache: HashMap::new(),
@@ -236,10 +265,18 @@ impl VM {
             await_builtin_id: None,
             send_builtin_id: None,
             receive_builtin_id: None,
+            sleep_builtin_id: None,
+            http_get_builtin_id: None,
+            http_builtin_id: None,
+            http_json_builtin_id: None,
+            http_msgpack_builtin_id: None,
+            http_bytes_builtin_id: None,
+            read_file_builtin_id: None,
+            async_io: false,
             pending_runtime_request: None,
-            runtime_effect_tags: std::collections::HashSet::new(),
             blocked_continuation: None,
             cancelled: false,
+            output_sink: None,
         }
     }
 
@@ -257,26 +294,29 @@ impl VM {
         });
     }
 
-    /// Register an effect tag as runtime-handled (I/O).
-    /// When this effect is performed with no user handler,
-    /// the VM suspends instead of erroring.
-    pub fn register_runtime_effect(&mut self, tag: u16) {
-        self.runtime_effect_tags.insert(tag);
-    }
-
     /// Resume a blocked continuation with a result value.
     /// Used by the runtime after I/O completion.
     /// Restores the saved frames and stack, then pushes the result
     /// as the return value of `perform`.
-    pub fn resume_blocked(&mut self, result: Value) {
+    pub fn resume_blocked(&mut self, result: Value) -> Result<(), RuntimeError> {
         if let Some(cont_ref) = self.blocked_continuation.take() {
             // Get the saved continuation
             let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
                 Ok(HeapObject::Continuation {
                     saved_frames,
                     saved_stack,
+                    ..
                 }) => (saved_frames.clone(), saved_stack.clone()),
-                _ => return, // corrupted continuation — silently fail
+                Ok(_) => {
+                    return Err(RuntimeError {
+                        message: "resume_blocked: expected continuation".into(),
+                    });
+                }
+                Err(e) => {
+                    return Err(RuntimeError {
+                        message: format!("resume_blocked: {e}"),
+                    });
+                }
             };
 
             // Restore saved stack
@@ -322,6 +362,7 @@ impl VM {
             // Push the result as the return value of `perform`
             self.stack.push(result);
         }
+        Ok(())
     }
 
     /// Take a pending runtime request (if any).
@@ -347,14 +388,18 @@ impl VM {
         child.set_exec_timeout(self.exec_timeout);
         child.set_fs_root(self.fs_root.clone());
         child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
+        if self.output.is_some() {
+            child.enable_output_capture();
+        }
+        if let Some(sink) = &self.output_sink {
+            child.set_output_sink(sink.clone());
+        }
         // Copy fuel budget
         if let Some(remaining) = self.max_fuel_remaining {
             child.max_fuel_remaining = Some(remaining);
         }
-        // Copy runtime effect tags
-        for &tag in &self.runtime_effect_tags {
-            child.register_runtime_effect(tag);
-        }
+        // Copy async I/O mode
+        child.async_io = self.async_io;
         child
     }
 
@@ -390,26 +435,7 @@ impl VM {
     /// Check if a filesystem path is within the allowed root.
     /// Returns the canonicalized path or an error.
     pub fn check_fs_path(&self, path: &str) -> Result<std::path::PathBuf, String> {
-        if self.fs_root.is_empty() {
-            return Ok(std::path::PathBuf::from(path));
-        }
-        let root = std::fs::canonicalize(&self.fs_root)
-            .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?;
-        let target = if std::path::Path::new(path).is_absolute() {
-            std::fs::canonicalize(path)
-        } else {
-            std::fs::canonicalize(root.join(path))
-        }
-        .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
-
-        if !target.starts_with(&root) {
-            return Err(format!(
-                "path '{}' is outside allowed root '{}'",
-                target.display(),
-                root.display()
-            ));
-        }
-        Ok(target)
+        crate::heap::resolve_fs_path(&self.fs_root, path)
     }
 
     /// Check if a URL's host is in the allowed hosts list.
@@ -459,6 +485,13 @@ impl VM {
             "await_process" => self.await_builtin_id = Some(idx),
             "send_message" => self.send_builtin_id = Some(idx),
             "receive_message" => self.receive_builtin_id = Some(idx),
+            "sleep" => self.sleep_builtin_id = Some(idx),
+            "http_get" => self.http_get_builtin_id = Some(idx),
+            "http" => self.http_builtin_id = Some(idx),
+            "http_json" => self.http_json_builtin_id = Some(idx),
+            "http_msgpack" => self.http_msgpack_builtin_id = Some(idx),
+            "http_bytes" => self.http_bytes_builtin_id = Some(idx),
+            "read_file" => self.read_file_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -498,7 +531,9 @@ impl VM {
 
     fn alloc(&mut self, obj: HeapObject) -> Value {
         if self.heap.should_collect() {
-            self.gc_collect();
+            let mut extra_roots = Vec::new();
+            obj.for_each_gc_ref(|r| extra_roots.push(r));
+            self.gc_collect_with_extra_roots(extra_roots);
         }
         Value::Heap(self.heap.alloc(obj))
     }
@@ -507,7 +542,7 @@ impl VM {
         self.alloc(HeapObject::String(s))
     }
 
-    fn gc_collect(&mut self) {
+    fn gc_collect_with_extra_roots(&mut self, extra_roots: impl IntoIterator<Item = GcRef>) {
         let roots = self
             .stack
             .iter()
@@ -519,14 +554,22 @@ impl VM {
                 _ => None,
             })
             .chain(self.string_cache.values().copied())
-            .chain(self.blocked_continuation.iter().copied());
+            .chain(self.blocked_continuation.iter().copied())
+            .chain(extra_roots);
         self.heap.collect(roots);
+    }
+
+    fn gc_collect_at_boundary_if_needed(&mut self) {
+        if self.heap.should_collect_at_boundary() {
+            self.gc_collect_with_extra_roots(std::iter::empty());
+        }
     }
 
     /// Format a value for display (print/println).
     fn display_value(&self, v: &Value) -> String {
         match v {
             Value::Builtin(id) => format!("<builtin:{}>", self.builtins[*id as usize].name),
+            Value::Pid(pid) => format!("<pid {pid}>"),
             Value::Heap(r) => match self.heap.get(*r) {
                 Ok(HeapObject::String(s)) => s.clone(),
                 Ok(HeapObject::Tuple(elems)) => {
@@ -614,10 +657,10 @@ impl VM {
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
         // Check persistent fuel budget
-        if let Some(ref remaining) = self.max_fuel_remaining {
-            if *remaining == 0 {
-                return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
-            }
+        if let Some(ref remaining) = self.max_fuel_remaining
+            && *remaining == 0
+        {
+            return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
         }
         // Use the minimum of slice reductions and persistent budget
         let effective = match self.max_fuel_remaining {
@@ -653,6 +696,7 @@ impl VM {
 
         // Check for pending runtime request (spawn/await)
         if let Some(req) = self.pending_runtime_request.take() {
+            self.gc_collect_at_boundary_if_needed();
             return match req {
                 RuntimeRequest::Spawn {
                     proto_idx,
@@ -665,9 +709,6 @@ impl VM {
                 RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
                 RuntimeRequest::Receive => RunResult::Receive,
                 RuntimeRequest::Io(req) => RunResult::Io(req),
-                RuntimeRequest::RuntimeEffect { tag, payload } => {
-                    RunResult::RuntimeEffect { tag, payload }
-                }
             };
         }
 
@@ -677,7 +718,10 @@ impl VM {
                 // Should have been caught by the check above — this is a fallback
                 RunResult::Yielded
             }
-            Err(e) if e.is_fuel_exhausted() => RunResult::Yielded,
+            Err(e) if e.is_fuel_exhausted() => {
+                self.gc_collect_at_boundary_if_needed();
+                RunResult::Yielded
+            }
             Err(e) => RunResult::Failed(e.message),
         }
     }
@@ -687,7 +731,25 @@ impl VM {
     }
 
     pub fn get_output(&self) -> &[String] {
-        &self.output
+        self.output.as_deref().unwrap_or(&[])
+    }
+
+    pub fn enable_output_capture(&mut self) {
+        if self.output.is_none() {
+            self.output = Some(Vec::new());
+        }
+    }
+
+    pub fn disable_output_capture(&mut self) {
+        self.output = None;
+    }
+
+    pub fn set_output_sink(&mut self, sink: Arc<dyn OutputSink>) {
+        self.output_sink = Some(sink);
+    }
+
+    pub fn clear_output_sink(&mut self) {
+        self.output_sink = None;
     }
 
     pub fn heap_live_count(&self) -> usize {
@@ -771,8 +833,8 @@ impl VM {
         if self.await_builtin_id == Some(builtin_id) {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
-                Value::Int(pid) => {
-                    self.pending_runtime_request = Some(RuntimeRequest::Await(pid as u64));
+                Value::Pid(pid) => {
+                    self.pending_runtime_request = Some(RuntimeRequest::Await(pid));
                     self.stack.truncate(callee_pos);
                     self.push(Value::Unit)?;
                     return Err(RuntimeError {
@@ -781,7 +843,7 @@ impl VM {
                 }
                 _ => {
                     return Err(RuntimeError {
-                        message: "await_process: expected Int (pid)".into(),
+                        message: "await_process: expected Pid".into(),
                     });
                 }
             }
@@ -794,21 +856,21 @@ impl VM {
                     Ok(HeapObject::Tuple(t)) if t.len() == 2 => (t[0], t[1]),
                     _ => {
                         return Err(RuntimeError {
-                            message: "send_message: expected (Int, value)".into(),
+                            message: "send_message: expected (Pid, value)".into(),
                         });
                     }
                 },
                 _ => {
                     return Err(RuntimeError {
-                        message: "send_message: expected (Int, value)".into(),
+                        message: "send_message: expected (Pid, value)".into(),
                     });
                 }
             };
             let target_pid = match v_pid {
-                Value::Int(pid) => pid as u64,
+                Value::Pid(pid) => pid,
                 _ => {
                     return Err(RuntimeError {
-                        message: "send_message: first element must be Int (pid)".into(),
+                        message: "send_message: first element must be Pid".into(),
                     });
                 }
             };
@@ -837,6 +899,72 @@ impl VM {
             });
         }
 
+        // I/O builtins: in async mode, suspend instead of blocking
+        if self.async_io {
+            let io_request = if self.sleep_builtin_id == Some(builtin_id) {
+                let ms = match self.stack[callee_pos + 1] {
+                    Value::Int(ms) if ms >= 0 => ms as u64,
+                    _ => {
+                        return Err(RuntimeError {
+                            message: "sleep: expected non-negative Int (milliseconds)".into(),
+                        });
+                    }
+                };
+                Some(crate::io_backend::IoRequest::Sleep(
+                    std::time::Duration::from_millis(ms),
+                ))
+            } else if self.http_get_builtin_id == Some(builtin_id) {
+                let url = crate::builtins::extract_string_arg(
+                    &self.stack[callee_pos + 1..callee_pos + 1 + arity],
+                    &self.heap,
+                    "http_get",
+                )
+                .map_err(|msg| RuntimeError { message: msg })?;
+                self.heap.check_http_host(&url).map_err(|e| RuntimeError {
+                    message: format!("http_get: {e}"),
+                })?;
+                Some(crate::io_backend::IoRequest::HttpGet { url })
+            } else if let Some(format) = self.match_http_builtin(builtin_id) {
+                let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
+                let (method, url, headers, body) =
+                    crate::builtins::extract_http_args(args, &self.heap, "http")
+                        .map_err(|msg| RuntimeError { message: msg })?;
+                self.heap.check_http_host(&url).map_err(|e| RuntimeError {
+                    message: format!("http: {e}"),
+                })?;
+                Some(crate::io_backend::IoRequest::Http {
+                    method,
+                    url,
+                    headers,
+                    body,
+                    format,
+                })
+            } else if self.read_file_builtin_id == Some(builtin_id) {
+                let path = crate::builtins::extract_string_arg(
+                    &self.stack[callee_pos + 1..callee_pos + 1 + arity],
+                    &self.heap,
+                    "read_file",
+                )
+                .map_err(|msg| RuntimeError { message: msg })?;
+                let checked = self.heap.check_fs_path(&path).map_err(|e| RuntimeError {
+                    message: format!("read_file: {e}"),
+                })?;
+                Some(crate::io_backend::IoRequest::ReadFile {
+                    path: checked.to_string_lossy().to_string(),
+                })
+            } else {
+                None
+            };
+            if let Some(request) = io_request {
+                self.pending_runtime_request = Some(RuntimeRequest::Io(request));
+                self.stack.truncate(callee_pos);
+                self.push(Value::Unit)?;
+                return Err(RuntimeError {
+                    message: "runtime request".into(),
+                });
+            }
+        }
+
         // Exec is fully intercepted: whitelist check + timeout
         if self.exec_builtin_id == Some(builtin_id) {
             self.check_exec_allowed(first_arg)?;
@@ -861,12 +989,35 @@ impl VM {
             } else {
                 self.display_value(&first_arg)
             };
-            self.output.push(displayed);
+            if let Some(output) = &mut self.output {
+                output.push(displayed.clone());
+            }
+            if let Some(sink) = &self.output_sink {
+                sink.write(&displayed).map_err(|e| RuntimeError {
+                    message: format!("stdout: {e}"),
+                })?;
+            }
             self.push(Value::Unit)?;
         } else {
             self.push(result)?;
         }
         Ok(())
+    }
+
+    /// Match a builtin ID against the four http_ variants, returning the response format.
+    fn match_http_builtin(&self, builtin_id: u16) -> Option<crate::io_backend::HttpResponseFormat> {
+        use crate::io_backend::HttpResponseFormat;
+        if self.http_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Text)
+        } else if self.http_json_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Json)
+        } else if self.http_msgpack_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Msgpack)
+        } else if self.http_bytes_builtin_id == Some(builtin_id) {
+            Some(HttpResponseFormat::Bytes)
+        } else {
+            None
+        }
     }
 
     /// Check that the command in an exec call is in the allowed list.
@@ -1306,7 +1457,7 @@ impl VM {
                                     ),
                                 });
                             }
-                            if self.frames.len() >= MAX_FRAMES {
+                            if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
                                 return Err(RuntimeError {
                                     message: "stack overflow".into(),
                                 });
@@ -1386,7 +1537,7 @@ impl VM {
                     let proto = &self.protos[proto_idx];
                     let arity = proto.arity as usize;
                     let arg_start = self.stack.len() - arity;
-                    if self.frames.len() >= MAX_FRAMES {
+                    if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
                         return Err(RuntimeError {
                             message: "stack overflow".into(),
                         });
@@ -1467,128 +1618,79 @@ impl VM {
                                 .map(|(_, ip)| (hi, *ip))
                         });
 
-                    // Step 2: if no user handler, check runtime effect table
-                    if user_handler.is_none() && self.runtime_effect_tags.contains(&effect_tag) {
-                        // Capture continuation: save entire stack and frames
-                        // above the bottom frame (frame 0 is the main frame)
-                        let save_from = if self.frames.len() > 1 {
-                            self.frames[1].base
-                        } else {
-                            self.stack.len()
-                        };
-                        let saved_stack = self.stack.split_off(save_from);
-
-                        let mut saved_frames = Vec::new();
-                        for frame in &self.frames[1..] {
-                            saved_frames.push(SavedFrame {
-                                proto_idx: frame.proto_idx,
-                                ip: frame.ip,
-                                base_offset: frame.base.saturating_sub(save_from),
-                                captures: frame.captures.clone(),
-                            });
-                        }
-                        // Also save current frame (frame 0) IP so we can resume
-                        let main_frame = &self.frames[0];
-                        saved_frames.insert(
-                            0,
-                            SavedFrame {
-                                proto_idx: main_frame.proto_idx,
-                                ip: main_frame.ip,
-                                base_offset: 0,
-                                captures: main_frame.captures.clone(),
-                            },
-                        );
-
-                        let cont = self.alloc(HeapObject::Continuation {
-                            saved_frames,
-                            saved_stack,
-                        });
-
-                        // Store continuation in blocked slot
-                        self.blocked_continuation = Some(match cont {
-                            Value::Heap(r) => r,
-                            _ => unreachable!(),
-                        });
-
-                        // Serialize payload for runtime
-                        let payload_sendable = crate::sendable::serialize(payload, &self.heap)
-                            .map_err(|e| RuntimeError {
-                                message: format!("effect payload not sendable: {e}"),
-                            })?;
-
-                        self.pending_runtime_request = Some(RuntimeRequest::RuntimeEffect {
-                            tag: effect_tag,
-                            payload: payload_sendable,
-                        });
-
-                        // Truncate frames to just the main frame
-                        self.frames.truncate(1);
-
-                        return Err(RuntimeError {
-                            message: "runtime request".into(),
-                        });
-                    }
-
-                    // Step 3: no user handler and not runtime-handled → error
+                    // Step 2: no user handler → error
                     let (h_idx, clause_ip) = user_handler.ok_or_else(|| RuntimeError {
                         message: format!("unhandled effect (tag {effect_tag})"),
                     })?;
 
-                    let handler = self.handlers.remove(h_idx);
-                    self.handlers.truncate(h_idx);
+                    {
+                        // ── Unified path: always save deep continuation,
+                        // also park shallow state when possible. ──────────
+                        let handler_count_before = self.handlers.len();
+                        let handler = self.handlers.remove(h_idx);
+                        self.handlers.truncate(h_idx);
 
-                    // Save stack from handler's stack_base (the point where
-                    // InstallHandler ran). The handler frame's pre-existing
-                    // locals below this point stay on the stack.
-                    let save_from = handler.stack_base;
-                    let saved_stack = self.stack.split_off(save_from);
+                        let handler_base = self.frames[handler.call_frame_idx].base;
+                        let save_from = handler.stack_base;
+                        let mut saved_stack = self.stack.split_off(save_from);
 
-                    // Save the handler frame's current IP/state so Resume
-                    // can re-create it. Its base stays on the real stack
-                    // (below save_from), but we record it with base_offset=0
-                    // and restore it specially in Resume.
-                    let hf = &self.frames[handler.call_frame_idx];
-                    let handler_frame = SavedFrame {
-                        proto_idx: hf.proto_idx,
-                        ip: hf.ip,
-                        base_offset: 0, // sentinel, handled specially in Resume
-                        captures: hf.captures.clone(),
-                    };
+                        let handler_locals_count = save_from - handler_base;
+                        if handler_locals_count > 0 {
+                            let mut combined =
+                                Vec::with_capacity(handler_locals_count + saved_stack.len());
+                            combined.extend_from_slice(&self.stack[handler_base..save_from]);
+                            combined.extend_from_slice(&saved_stack);
+                            saved_stack = combined;
+                        }
 
-                    let mut saved_frames = vec![handler_frame];
-                    for frame in &self.frames[handler.call_frame_idx + 1..] {
-                        saved_frames.push(SavedFrame {
-                            proto_idx: frame.proto_idx,
-                            ip: frame.ip,
-                            base_offset: {
-                                debug_assert!(frame.base >= save_from);
-                                frame.base - save_from
-                            },
-                            captures: frame.captures.clone(),
+                        let hf = &self.frames[handler.call_frame_idx];
+                        let handler_frame = SavedFrame {
+                            proto_idx: hf.proto_idx,
+                            ip: hf.ip,
+                            base_offset: 0,
+                            captures: hf.captures.clone(),
+                        };
+
+                        let mut saved_frames = vec![handler_frame];
+                        for frame in &self.frames[handler.call_frame_idx + 1..] {
+                            saved_frames.push(SavedFrame {
+                                proto_idx: frame.proto_idx,
+                                ip: frame.ip,
+                                base_offset: handler_locals_count + (frame.base - save_from),
+                                captures: frame.captures.clone(),
+                            });
+                        }
+
+                        let locals_offset = save_from - handler_base;
+                        let cont = self.alloc(HeapObject::Continuation {
+                            saved_frames,
+                            saved_stack,
+                            saved_handler: Some(SavedHandler {
+                                clauses: handler.clauses.clone(),
+                                proto_idx: handler.proto_idx,
+                                captures: handler.captures.clone(),
+                                locals_offset,
+                                handler_count_before,
+                            }),
                         });
-                    }
 
-                    let cont = self.alloc(HeapObject::Continuation {
-                        saved_frames,
-                        saved_stack,
-                    });
+                        self.frames.truncate(handler.call_frame_idx + 1);
 
-                    self.frames.truncate(handler.call_frame_idx + 1);
+                        let hfi = self.frames.len() - 1;
+                        self.frames[hfi].proto_idx = handler.proto_idx;
+                        self.frames[hfi].captures = handler.captures;
+                        self.frames[hfi].ip = clause_ip;
 
-                    // Restore handler frame context and jump to clause
-                    let hfi = self.frames.len() - 1;
-                    self.frames[hfi].proto_idx = handler.proto_idx;
-                    self.frames[hfi].captures = handler.captures;
-                    self.frames[hfi].ip = clause_ip;
-
-                    // Push payload and continuation for the clause to bind
-                    self.push(payload)?;
-                    self.push(cont)?;
+                        self.push(payload)?;
+                        self.push(cont)?;
+                    } // end perform
                 }
 
                 Op::Resume => {
                     let arg = self.pop()?;
                     let cont_val = self.pop()?;
+
+                    // ── Deep path ─────────────────────────────────
                     let cont_ref = match cont_val {
                         Value::Heap(r) => r,
                         _ => {
@@ -1597,38 +1699,53 @@ impl VM {
                             });
                         }
                     };
-                    let (saved_frames, saved_stack) = match self.heap_get(cont_ref)? {
-                        HeapObject::Continuation {
-                            saved_frames,
-                            saved_stack,
-                            ..
-                        } => (saved_frames.clone(), saved_stack.clone()),
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "resume: expected continuation".into(),
-                            });
-                        }
-                    };
+                    let (saved_frames, saved_stack, saved_handler) =
+                        match self.heap_get(cont_ref)? {
+                            HeapObject::Continuation {
+                                saved_frames,
+                                saved_stack,
+                                saved_handler,
+                            } => (
+                                saved_frames.clone(),
+                                saved_stack.clone(),
+                                saved_handler.clone(),
+                            ),
+                            _ => {
+                                return Err(RuntimeError {
+                                    message: "resume: expected continuation".into(),
+                                });
+                            }
+                        };
 
-                    // Restore saved stack and frames. The handler clause
-                    // frame stays; the resumed computation returns into it.
-                    let handler_base = self.frames.last().unwrap().base;
+                    // Restore saved stack and frames above the clause frame.
                     let stack_base = self.stack.len();
                     self.stack.extend_from_slice(&saved_stack);
 
-                    for (i, sf) in saved_frames.iter().enumerate() {
-                        let frame_base = if i == 0 {
-                            // First saved frame is the handler frame, so its
-                            // base is the same as the clause frame's base
-                            handler_base
-                        } else {
-                            stack_base + sf.base_offset
-                        };
+                    let first_restored_idx = self.frames.len();
+                    for sf in &saved_frames {
+                        let frame_base = stack_base + sf.base_offset;
                         self.frames.push(CallFrame {
                             proto_idx: sf.proto_idx,
                             ip: sf.ip,
                             base: frame_base,
                             captures: sf.captures.clone(),
+                        });
+                    }
+
+                    // Auto-reinstall handler if the clause didn't reinstall
+                    // it manually (via recursive wrapper). This eliminates the
+                    // need for `with_handler (fn () => resume k v)` and prevents
+                    // recursive frame accumulation.
+                    if let Some(sh) = saved_handler
+                        && self.handlers.len() < sh.handler_count_before
+                    {
+                        let handler_frame_base = self.frames[first_restored_idx].base;
+                        self.handlers.push(HandlerFrame {
+                            call_frame_idx: first_restored_idx,
+                            stack_base: handler_frame_base + sh.locals_offset,
+                            clauses: sh.clauses,
+                            proto_idx: sh.proto_idx,
+                            captures: sh.captures,
                         });
                     }
 
@@ -1642,7 +1759,7 @@ impl VM {
     // ── Stack helpers ────────────────────────────────────────────────
 
     fn push(&mut self, val: Value) -> Result<(), RuntimeError> {
-        if self.stack.len() >= MAX_STACK {
+        if self.stack.len() >= DEFAULT_MAX_STACK_SLOTS {
             return Err(RuntimeError {
                 message: "stack overflow".into(),
             });
@@ -1773,9 +1890,29 @@ impl VM {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builder::{FilesystemPolicy, VMBuilder};
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct CaptureOutputSink {
+        text: Mutex<String>,
+    }
+
+    impl OutputSink for CaptureOutputSink {
+        fn write(&self, text: &str) -> std::io::Result<()> {
+            self.text
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str(text);
+            Ok(())
+        }
+    }
 
     fn run(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
@@ -1786,10 +1923,49 @@ mod tests {
         vm
     }
 
+    fn compile_vm(input: &str) -> VM {
+        let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
+        VM::new(compiled)
+    }
+
+    fn compile_program(input: &str) -> hiko_compile::chunk::CompiledProgram {
+        let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
+        compiled
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "hiko-vm-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     fn global_int(vm: &VM, name: &str) -> i64 {
         match vm.get_global(name).expect(&format!("no global: {name}")) {
             Value::Int(n) => *n,
             v => panic!("expected Int for {name}, got {v:?}"),
+        }
+    }
+
+    fn global_str(vm: &VM, name: &str) -> String {
+        match vm.get_global(name).expect(&format!("no global: {name}")) {
+            Value::Heap(r) => match vm.heap.get(*r).unwrap() {
+                HeapObject::String(s) => s.clone(),
+                v => panic!("expected String for {name}, got {v:?}"),
+            },
+            v => panic!("expected String for {name}, got {v:?}"),
         }
     }
 
@@ -1901,6 +2077,28 @@ mod tests {
         assert!(vm.heap_live_count() < 15000); // GC should have collected intermediate values
     }
 
+    #[test]
+    fn test_boundary_gc_runs_before_async_suspend() {
+        let program = compile_program(
+            "fun churn n = if n = 0 then () else let val _ = (n, n) in churn (n - 1) end
+             val _ = churn 600
+             val _ = sleep 1",
+        );
+        let mut vm = VMBuilder::new(program).with_core().build();
+        vm.async_io = true;
+
+        match vm.run_slice(1_000_000) {
+            RunResult::Io(crate::io_backend::IoRequest::Sleep(_)) => {}
+            other => panic!("expected async sleep boundary, got {other:?}"),
+        }
+
+        let live = vm.heap_live_count();
+        assert!(
+            live < 100,
+            "boundary GC should reclaim request-local garbage before suspend, live={live}"
+        );
+    }
+
     // ── Effect handler tests ─────────────────────────────────────────
 
     #[test]
@@ -1939,6 +2137,37 @@ mod tests {
                with return x => x
                   | Double n k => resume k (n * 2)");
         assert_eq!(global_int(&vm, "result"), 42);
+    }
+
+    #[test]
+    fn test_effect_resume_direct_in_function() {
+        // resume k v directly in a handler clause inside a function —
+        // this was crashing due to stack corruption before the fix.
+        let vm = run("effect Fetch of String\n\
+             fun with_mock f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Fetch url k => resume k (\"got:\" ^ url)\n\
+             fun program () = perform Fetch \"test\"\n\
+             val result = with_mock program");
+        assert_eq!(global_str(&vm, "result"), "got:test");
+    }
+
+    #[test]
+    fn test_effect_multiple_performs_reinstalled() {
+        // Multiple performs through a recursively reinstalled handler
+        let vm = run("effect Ask of Int\n\
+             fun with_handler f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Ask n k => with_handler (fn () => resume k (n * 10))\n\
+             fun program () =\n\
+               let val a = perform Ask 1\n\
+                   val b = perform Ask 2\n\
+                   val c = perform Ask 3\n\
+               in a + b + c end\n\
+             val result = with_handler program");
+        assert_eq!(global_int(&vm, "result"), 60); // 10 + 20 + 30
     }
 
     #[test]
@@ -1997,6 +2226,78 @@ mod tests {
         assert_eq!(global_int(&vm, "result"), 42);
     }
 
+    #[test]
+    fn test_effect_resume_direct_large_loop() {
+        // Repeated direct resumes should stay correct for larger workloads,
+        // even before a dedicated tail-resume path lands.
+        let vm = run("effect Ask of Int\n\
+             fun loop n acc =\n\
+               if n = 0 then acc\n\
+               else let val x = perform Ask n\n\
+                    in loop (n - 1) (acc + x) end\n\
+             fun run_effect f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Ask n k => resume k n\n\
+             val result = run_effect (fn () => loop 20000 0)");
+        assert_eq!(global_int(&vm, "result"), 200010000);
+    }
+
+    #[test]
+    fn test_effect_resume_non_tail_pending_application() {
+        // A perform inside a larger expression must restore the pending
+        // application state exactly; this used to corrupt the callee slot.
+        let vm = run("effect Ask of Int\n\
+             fun loop n acc =\n\
+               if n = 0 then acc\n\
+               else step n acc\n\
+             and step n acc =\n\
+               loop (n - 1) (acc + perform Ask n)\n\
+             fun run_effect f =\n\
+               handle f ()\n\
+               with return x => x\n\
+                  | Ask n k => resume k n\n\
+             val result = run_effect (fn () => loop 500 0)");
+        assert_eq!(global_int(&vm, "result"), 125250);
+    }
+
+    #[test]
+    fn test_resume_blocked_invalid_continuation_errors() {
+        let mut vm = compile_vm("val _ = ()");
+        let bogus = vm
+            .heap
+            .alloc(HeapObject::String("not a continuation".into()));
+        vm.blocked_continuation = Some(bogus);
+
+        let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
+        assert_eq!(err.message, "resume_blocked: expected continuation");
+        assert!(vm.blocked_continuation.is_none());
+    }
+
+    #[test]
+    fn test_create_child_shares_compiled_program() {
+        let vm = compile_vm("fun id x = x\nval _ = id 1");
+        let child = vm.create_child();
+
+        assert!(Arc::ptr_eq(&vm.main_chunk, &child.main_chunk));
+        assert!(Arc::ptr_eq(&vm.protos, &child.protos));
+        assert!(Arc::ptr_eq(&vm.effect_metadata, &child.effect_metadata));
+    }
+
+    #[test]
+    fn test_output_sink_streams_print_and_println() {
+        let sink = Arc::new(CaptureOutputSink::default());
+        let mut vm = compile_vm("val _ = print \"a\" val _ = println \"b\"");
+        vm.enable_output_capture();
+        vm.set_output_sink(sink.clone());
+
+        vm.run().unwrap();
+
+        let streamed = sink.text.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(streamed, "ab\n");
+        assert_eq!(vm.get_output().concat(), "ab\n");
+    }
+
     // ── Capability / builder tests ───────────────────────────────────
 
     #[test]
@@ -2023,7 +2324,7 @@ mod tests {
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
 
-        let mut vm = crate::builder::VMBuilder::new(compiled).with_core().build();
+        let mut vm = VMBuilder::new(compiled).with_core().build();
         vm.run().unwrap();
         match vm.get_global("x") {
             Some(Value::Int(3)) => {}
@@ -2033,5 +2334,95 @@ mod tests {
         assert!(vm.get_global("read_file").is_none());
         assert!(vm.get_global("write_file").is_none());
         assert!(vm.get_global("http_get").is_none());
+    }
+
+    #[test]
+    fn test_fs_root_rejects_list_dir_traversal() {
+        let root = temp_dir("fs-root-list");
+        let program = compile_program("val _ = list_dir \"../\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_fs_root_allows_create_dir_for_missing_nested_child() {
+        let root = temp_dir("fs-root-create");
+        let program = compile_program("val _ = create_dir \"nested/a/b\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: false,
+                allow_write: true,
+                allow_delete: false,
+            })
+            .build();
+
+        vm.run().unwrap();
+        assert!(root.join("nested").join("a").join("b").is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_fs_root_rejects_glob_traversal() {
+        let root = temp_dir("fs-root-glob");
+        let program = compile_program("val _ = glob \"../*\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fs_root_rejects_walk_dir_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let base = temp_dir("fs-root-walk");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        let program = compile_program("val _ = walk_dir \".\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(base);
     }
 }

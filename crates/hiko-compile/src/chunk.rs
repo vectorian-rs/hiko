@@ -1,4 +1,5 @@
 use hiko_syntax::span::Span;
+use std::sync::Arc;
 
 use crate::op::Op;
 
@@ -35,10 +36,10 @@ pub struct EffectMeta {
 
 #[derive(Debug, Clone)]
 pub struct CompiledProgram {
-    pub main: Chunk,
-    pub functions: Vec<FunctionProto>,
+    pub main: Arc<Chunk>,
+    pub functions: Arc<[FunctionProto]>,
     /// Effect name → tag mapping for runtime-handled effect resolution.
-    pub effects: Vec<EffectMeta>,
+    pub effects: Arc<[EffectMeta]>,
 }
 
 impl Chunk {

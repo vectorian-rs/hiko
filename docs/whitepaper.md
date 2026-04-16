@@ -1,493 +1,295 @@
-# 📝 Title (working)
+# Local Algebraic Effects on an Isolated-Process Runtime
 
-**Algebraic Effects for Actor-Based Concurrency with Isolated Heaps**
+## Abstract
 
-# 📄 Abstract (≈150–200 words)
+Asynchronous programming is often split between two unsatisfying approaches. Future- and callback-based systems impose function coloring and make direct-style code harder to preserve. Shared-heap effect runtimes recover direct style, but push substantial complexity into scheduling, memory management, and synchronization. Hiko explores a different point in the design space: local algebraic effects for intra-process control flow, combined with an isolated-process runtime with per-process heaps, explicit process-boundary transfer, and host-provided capabilities.
 
-* Problem:
+The central claim is narrow but important: algebraic effects do not require a shared-heap runtime. Effects can remain local to a process, while asynchronous I/O and external capabilities are handled by a fixed runtime suspension protocol. This produces a system with direct-style scripting inside each process, explicit ownership boundaries between processes, local garbage collection, and a runtime model that is easier to reason about for safety-oriented tooling.
 
-  * Async programming requires function coloring (JS, Rust)
-  * Effect systems avoid this but rely on shared-heap runtimes (OCaml Eio)
-* Insight:
+## 1. Introduction
 
-  * Effects can be combined with **actor-style isolation**
-* Contribution:
+Hiko is aimed at scripting and tooling workloads where safety, predictability, and efficiency matter more than user-programmable concurrency semantics. Typical workloads include reading files and HTTP resources, invoking external tools without a shell, orchestrating document pipelines, and eventually integrating native data capabilities such as cloud APIs, databases, or columnar file readers.
 
-  * A runtime with:
+These workloads want direct-style programming, but they also want strong control over authority and resource access. In many existing systems, direct-style asynchronous programming is achieved through a shared-heap concurrency substrate. Hiko instead asks whether direct style can be preserved while keeping scheduling, capability enforcement, and heap ownership fixed in the runtime.
 
-    * isolated processes (per-process heap + GC)
-    * algebraic effects for suspension
-    * message passing with **zero-copy immutable leaves**
-* Result:
+The answer proposed here is yes. Hiko combines:
 
-  * Direct-style async without shared-state complexity
-  * Competitive performance, improved large-payload messaging
-* Implementation:
+- a Core SML-style language foundation
+- local algebraic effects and one-shot continuations
+- isolated processes with per-process heaps
+- explicit process-boundary transfer via `SendableValue`
+- runtime-managed suspension for asynchronous operations
+- host-provided, policy-controlled capabilities
 
-  * Rust VM (Hiko)
-* Key claim:
-
-  * Simpler runtime than shared-heap effect systems
-
-
-# 1. Introduction
-
-### Motivation
-
-* Async programming complexity:
-
-  * function coloring
-  * callback / future composition
-* Existing solutions:
-
-  * Erlang → isolation, but awkward async style
-  * Eio/OCaml → clean async, but complex runtime
-* Gap:
-
-  * no system combining:
-
-    * **direct-style async**
-    * **process isolation**
-    * **simple runtime**
-
-### Thesis
-
-> Algebraic effects can provide direct-style asynchronous programming on top of an Erlang-style isolated process runtime.
+The result is not a programmable scheduler or a general-purpose user-defined concurrency framework. It is a fixed runtime model designed for safe orchestration of external work.
 
 ### Contributions
 
-* Effects + actors design
-* Per-process VM + GC
-* SendableValue model
-* Arc-based zero-copy optimization
-* Modular scheduler + I/O backend
+- A language/runtime design that separates local algebraic effects from runtime-managed asynchronous suspension.
+- An isolated-process execution model with per-process heaps and local garbage collection.
+- A process-boundary transfer model based on `SendableValue`, including shared immutable leaf payloads for strings and bytes.
+- A capability-oriented runtime architecture suitable for safe tooling and agentic coding workloads.
+- A layered formalization strategy that extends Core SML semantics with local effects and an isolated-process runtime model.
 
-# 2. Background
+## 2. Design Goals
 
-## 2.1 Algebraic Effects
+The design is driven by a small set of explicit goals.
 
-* `perform`, `handle`, `resume`
-* continuations as captured computation
-* effects as structured control flow
+### 2.1 Safety
 
-## 2.2 Actor Model (Erlang)
+External authority should remain in the host runtime. Filesystem access, HTTP, process execution, and future native integrations should be exposed as policy-controlled capabilities rather than as user-definable runtime behavior.
 
-* isolated processes
-* message passing
-* per-process GC
+### 2.2 Direct Style
 
-## 2.3 Async/Await and Function Coloring
+Scripts should be able to express multi-step workflows in direct style without forcing every function into a future- or callback-passing discipline.
 
-* propagation problem
-* loss of direct style
+### 2.3 Runtime Predictability
 
-## 2.4 Effect-based Concurrency (Eio)
+Scheduling and suspension semantics should be fixed and auditable. User code may express local control abstractions through effects, but it should not redefine the scheduler or capability semantics.
 
-* fibers + shared heap
-* effect handlers as schedulers
+### 2.4 Many-Core-Friendly Execution
 
+Per-process heaps and local garbage collection should avoid a shared global heap bottleneck and allow process lifetimes to act as natural memory reclamation boundaries.
 
-# 3. Design Overview
+### 2.5 Host Extensibility
 
-High-level architecture:
+The runtime should be easy to extend with native capabilities such as process execution, cloud APIs, databases, parquet readers, or other host integrations without changing the guest concurrency model.
 
-* runtime
-* worker threads
-* processes (isolated VMs)
-* scheduler
-* I/O backend
+## 3. Background
 
-Key design principles:
+### 3.1 Core SML
 
-* isolation over sharing
-* effects are local control flow
-* message passing boundary
-* GC is local
+Hiko is rooted in Core SML: a typed lambda-calculus core with Hindley-Milner polymorphism, algebraic data types, and formal static and dynamic semantics. This provides a strong basis for both implementation and future formal reasoning.
 
+### 3.2 Algebraic Effects
 
-# 4. Process Model
+Algebraic effects provide `perform`, `handle`, and `resume` as structured control-flow operators. In Hiko, their role is intentionally local. Effects are for intra-process abstractions such as error handling, state, generators, and other control patterns that can be expressed through one-shot continuations.
 
-## 4.1 Process Structure
+### 3.3 Shared-Heap Effect Systems
 
-* VM (heap, stack, handlers)
-* mailbox
-* status
+Shared-heap systems demonstrate that effect handlers can support direct-style asynchronous programming. They also highlight the cost of letting concurrency and scheduling semantics live in the same heap and continuation space as ordinary language execution.
 
-## 4.2 Lifecycle
+### 3.4 Isolated-Process Runtimes
 
-* spawn
-* run
-* block
-* resume
-* terminate
+Isolated-process execution offers a different tradeoff: explicit boundaries, local heaps, and local GC in exchange for explicit transfer across process boundaries. Hiko adopts this tradeoff because it fits safety-oriented scripting better than unconstrained sharing.
 
-## 4.3 Isolation Guarantees
+## 4. System Model
 
-* no shared mutable state
-* no cross-process pointers
+The system is organized around isolated processes.
 
+Each process owns:
 
-# 5. Effect Execution Model
+- its own VM instance
+- its own heap
+- its own operand stack and call frames
+- its own handler stack and local continuations
+- optional parent/child linkage and runtime status
 
-## 5.1 Local Effects
+The runtime owns:
 
-* `perform` captures continuation
-* handler resumes locally
+- the process table
+- the scheduler
+- the I/O backend
+- capability policies and host integration points
 
-## 5.2 Separation from Scheduler
+Compiled program data is immutable and may be shared across processes. Mutable execution state is not.
 
-* user effects vs runtime events
+## 5. Local Effects
 
-## 5.3 Async via Effects
+The effect system is process-local by design.
 
-* I/O as effect
-* continuation capture
-* resume on completion
+### 5.1 What Effects Are For
 
-## 5.4 One-shot Continuations
+Effects exist to express structured intra-process control flow. Good fits include:
 
-* design choice
-* implications
+- local error handling
+- state threading
+- generator-like control patterns
+- interpreters and evaluators
+- local instrumentation or context propagation
 
+### 5.2 What Effects Are Not For
 
-# 6. Message Passing
+Effects are not used to define the scheduler, to reimplement I/O semantics, or to bypass host capability enforcement. This is a deliberate design choice. Hiko is a scripting language with a fixed runtime model, not a platform for user-defined concurrency runtimes.
 
-## 6.1 SendableValue
+### 5.3 One-Shot Continuations
 
-Explain:
+Continuations are one-shot. This keeps the implementation simpler, aligns with efficient runtime suspension, and fits the intended workload better than unrestricted multi-shot continuations.
 
-* structural copying
-* immutable leaf sharing
+## 6. Runtime Suspension and I/O
 
-## 6.2 Serialization Boundary
+Asynchronous I/O in Hiko is runtime-driven rather than user-effect-driven.
 
-* `Value → SendableValue`
-* `SendableValue → Value`
+When a capability-bearing builtin would block, the VM emits a runtime suspension request. The runtime records the blocked process, registers the operation with an abstract backend, and resumes the process when the backend reports completion.
 
-## 6.3 Zero-copy Optimization
+This design has several consequences:
 
-* `Arc<str>` / `Arc<[u8]>`
-* comparison with Erlang deep copy
+- authority remains in the host runtime
+- capability checks happen at the runtime boundary
+- backend choice is hidden from guest code
+- scheduling semantics remain fixed
+- scripts still resume in direct style
 
-## 6.4 Safety Invariants
+This differs from designs where I/O itself is modeled as a user-visible effect. Hiko keeps local effects and runtime suspension separate because the language is intended for safe orchestration, not user-programmable scheduler construction.
 
-* no `GcRef`
-* no continuation crossing
-* no mutable sharing
+## 7. Process-Boundary Values
 
+Values crossing process boundaries are reified as `SendableValue`.
 
-# 7. Scheduler
+This representation exists because ordinary VM values may contain heap references that are only meaningful inside one process. `SendableValue` removes those process-local references and preserves only boundary-safe structure.
 
-## 7.1 Model
+Key properties:
 
-* process = scheduling unit
-* reduction counting
+- no `GcRef` crosses a process boundary
+- continuations do not cross process boundaries
+- mutable process-local state does not cross process boundaries
+- immutable string and byte leaves may share backing storage at the boundary
 
-## 7.2 Interface (trait)
+This is not full end-to-end zero-copy transfer. It is explicit boundary transfer with shared immutable leaves where possible.
 
-## 7.3 FIFO Scheduler (v1)
+## 8. Isolated Heaps and Garbage Collection
 
-## 7.4 Future Extensions
+Each process has its own heap and collector. There is no global GC.
 
-* work stealing
-* priority
+This has three important consequences:
 
-## 7.5 Fairness
+- garbage collection remains local to the process that allocated the data
+- allocator and collector contention are reduced
+- short-lived processes can be reclaimed as whole units
 
+Whole-process reclamation is especially important for tooling workloads. A child process may perform a bounded piece of work, return a result, and then be reaped after `await` consumes that result. This gives the system region-like behavior at process granularity without requiring a region-typed language.
 
-# 8. Garbage Collection
+## 9. Process Lifecycle and Reclamation
 
-## 8.1 Per-process heaps
+The runtime process lifecycle is intentionally simple:
 
-* no global GC
+1. spawn a child process
+2. run until completion, failure, suspension, or cancellation
+3. transfer the result across the process boundary if needed
+4. reap the process once the result has been consumed
 
-## 8.2 Root sets
+This matters because isolated heaps only realize their full benefit when completed processes are actually dropped promptly. Hiko now reaps finished child processes after `await_process` consumes their result, allowing the child VM and its entire heap to be reclaimed at once.
 
-## 8.3 Mailbox boundary
+## 10. Safety and Capability Model
 
-## 8.4 Interaction with Arc
+Hiko is designed for workloads where safety matters more than maximum runtime programmability.
 
-* external ownership
-* refcount semantics
+The capability model is therefore host-centric:
 
-## 8.5 Advantages vs shared heap GC
+- the host/runtime decides which external resources exist
+- policies constrain filesystem, network, and process execution
+- scripts compose capabilities but do not redefine them
+- shell-free execution is preferred over stringly command composition
 
+This makes the system a good fit for tooling scenarios such as document pipelines, code generation, infrastructure orchestration, and future native integrations for cloud services or structured data access.
 
-# 9. I/O Integration
+## 11. Implementation
 
-## 9.1 Abstract backend
+Hiko is implemented as a Rust bytecode VM with:
 
-## 9.2 Readiness vs completion models
+- a Core SML-style front end
+- Hindley-Milner type inference
+- algebraic effect handlers
+- isolated processes
+- single-threaded and multi-threaded runtimes
 
-## 9.3 Effect-driven suspension
+The VM owns local execution state. The runtime owns scheduling, I/O, and process management. Immutable compiled program structures are shared between parent and child processes, while heaps, stacks, and handlers remain process-local.
 
-## 9.4 Resumption model
+## 12. Evaluation
 
+The evaluation should be aligned with the design goals rather than with a generic language shootout.
 
-# 10. Implementation
+Important benchmark classes include:
 
-## 10.1 Hiko VM (Rust)
+- `spawn` / `await` microbenchmarks
+- short-lived process workloads
+- async I/O orchestration workloads
+- CPU-bound parallel workloads
+- large payload transfer across process boundaries
 
-## 10.2 Runtime components
+Important metrics include:
 
-* scheduler
-* process table
-* mailbox
+- spawn latency
+- resume latency
+- throughput
+- memory retention
+- boundary transfer cost
+- reclamation behavior for short-lived processes
 
-## 10.3 Closure serialization
+Comparisons should be made carefully. Async Rust is the most relevant fixed-runtime comparison point. Shared-heap effect systems such as Eio are useful as a qualitative contrast in design, not necessarily as a one-number benchmark target.
 
-## 10.4 Key challenges
+## 13. Formalization Strategy
 
-* continuation representation
-* spawn semantics
+The formal story should be explicitly layered.
 
+### 13.1 Core Language Layer
 
-# 11. Evaluation
+Start from Core SML and extend it with:
 
-## 11.1 Benchmarks
+- algebraic effects
+- one-shot continuations
+- handler semantics
 
-* message passing
-* async I/O
-* CPU-bound tasks
+This layer captures the local control-flow story.
 
-## 11.2 Comparisons
+### 13.2 Runtime Layer
 
-* Erlang
-* async Rust
-* Eio (qualitative)
+Add a separate runtime semantics for:
 
-## 11.3 Results
+- isolated processes
+- process-boundary transfer
+- runtime-driven suspension
+- scheduling
 
-Focus especially on:
+This layer captures the concurrency and I/O story.
 
-* large payload messaging
-* latency
-* throughput
+### 13.3 Key Invariants
 
+The most important invariants to state and eventually prove are:
 
-# 12. Discussion
+- process isolation
+- continuation locality
+- boundary safety
+- scheduler safety
+- GC non-interference across processes
 
-## Trade-offs
+This is where the research contribution becomes crisp: not a new primitive in isolation, but a coherent composition of known semantic ingredients into a runtime model with a different tradeoff profile.
 
-### Advantages
+## 14. Trade-offs and Limitations
 
-* simplicity
-* isolation
-* direct-style async
+The design is intentionally opinionated.
 
-### Limitations
+Advantages:
 
-* no shared memory
-* serialization overhead
-* one-shot continuations
-* no selective receive (v1)
+- direct-style programming within a process
+- explicit ownership boundaries
+- local heaps and local GC
+- fixed, auditable runtime behavior
+- strong fit for policy-controlled tooling workloads
 
+Limitations:
 
-# 13. Related Work
+- no arbitrary shared memory
+- boundary transfer has a cost
+- one-shot continuations constrain some abstractions
+- scheduler semantics are not user-programmable
+- some polished library abstractions still want a module system with opaque types
 
-* Erlang / BEAM
-* OCaml Multicore / Eio
-* Eff / Koka
-* async Rust / Tokio
-* actor frameworks
+These are acceptable tradeoffs for the intended use case.
 
+## 15. Future Work
 
-# 14. Future Work
+Natural next steps include:
 
-* work-stealing scheduler
-* effect typing
-* distributed processes
-* selective receive
-* generational GC
+- a minimal module system with opaque abstraction
+- typed process handles instead of raw integers
+- richer scheduling strategies such as work stealing
+- effect typing
+- improved reclamation heuristics for long-lived processes
+- additional host capabilities such as databases, cloud APIs, and columnar data readers
 
-# 15. Conclusion
+The important constraint is that these extensions should preserve the core split: local effects remain local control flow, and the runtime retains authority over suspension, capabilities, and scheduling.
 
-Reinforce:
+## 16. Conclusion
 
-> Effects + actor isolation = simpler async runtime design
-
-
-# Key narrative to maintain
-
-> We achieve the benefits of effect-based direct-style concurrency without the complexity of shared-heap runtimes.
-
----
-
-## Appendix A: Research Context and Formal Foundations
-
-### Positioning
-
-This work is not an invention of entirely new primitives, but a **composition and extension of established research areas**:
-
-* Standard ML (formal semantics)
-* Algebraic effects and handlers
-* Actor model (Erlang-style processes)
-* Per-process garbage collection
-* Delimited continuations
-
-The contribution is a **coherent integration of these components into a unified runtime model**, with both implementation and formalization.
-
----
-
-### Relationship to Standard ML
-
-Standard ML provides:
-
-* A **fully formalized mathematical semantics**
-
-  * Static semantics (typing)
-  * Dynamic semantics (evaluation)
-* A **well-understood sequential core language**
-
-This work **extends**, rather than replaces, that foundation.
-
-Specifically, we add formal semantics for:
-
-* Algebraic effects
-* Continuations (via effect handlers)
-* Concurrent processes
-* Message passing
-* Scheduling
-
-Thus, the system can be viewed as:
-
-> A formally specified concurrent extension of Standard ML with algebraic effects and actor-style execution.
-
----
-
-### Formalization Goals
-
-We aim to define a **precise operational semantics** for the extended language and runtime.
-
-#### Core components to formalize
-
-1. **Extended Syntax**
-
-   * `perform E v`
-   * `handle e with ...`
-   * `spawn e`
-   * `send e1 e2`
-   * `receive ()`
-   * `await e`
-
-2. **Runtime Configuration**
-
-A global state of the form:
-
-```
-⟨ Processes, Scheduler, Mailboxes ⟩
-```
-
-3. **Transition Relation**
-
-A small-step relation:
-
-```
-State → State
-```
-
-capturing:
-
-* process execution
-* effect handling
-* message passing
-* scheduling decisions
-* blocking and wakeup
-
----
-
-### Key Invariants (Targets for Formal Proof)
-
-The following properties are central to the design and are candidates for formal verification:
-
-* **Process Isolation**
-
-  * No pointer from process A's heap can reference process B's heap
-
-* **Continuation Locality**
-
-  * Continuations cannot cross process boundaries
-
-* **Message Safety**
-
-  * Only `SendableValue` may cross processes
-  * Serialization produces no heap-local references
-
-* **Effect Locality**
-
-  * Effect handling and continuation resumption are process-local operations
-
-* **Scheduler Safety**
-
-  * No lost wakeups
-  * Blocked processes are not executed
-  * Runnable processes are eventually scheduled (under fairness assumptions)
-
-* **GC Non-Interference**
-
-  * Garbage collection in one process does not affect other processes
-
----
-
-### Verification Methodology
-
-The verification approach is **multi-layered**, combining formal proof with practical validation:
-
-| Concern                            | Method                          | Tool             |
-| ---------------------------------- | ------------------------------- | ---------------- |
-| Language semantics and invariants  | Formal proof                    | Coq or Lean      |
-| Scheduler correctness and liveness | Model checking                  | TLA+             |
-| Concurrency bugs in implementation | Systematic interleaving testing | Loom             |
-| Runtime vs model agreement         | Differential / property testing | DST / QuickCheck |
-
-This separation reflects the strengths of each approach:
-
-* Proof assistants ensure **mathematical correctness of the model**
-* Model checking ensures **correctness under concurrency**
-* Testing ensures **implementation fidelity**
-
----
-
-### Scope of Formal Verification
-
-We explicitly do **not** attempt to:
-
-* Verify the entire Rust runtime in Coq/Lean
-* Model OS-level primitives (threads, epoll, io_uring)
-* Prove full system performance properties
-
-Instead, we focus on:
-
-> Proving that the **abstract runtime model is sound**, and validating that the implementation faithfully follows that model.
-
----
-
-### Contribution
-
-The contribution of this work is:
-
-1. A **formally defined extension** of SML with:
-
-   * algebraic effects
-   * actor-style concurrency
-
-2. A **runtime architecture** that:
-
-   * preserves process isolation
-   * avoids shared-heap complexity
-   * supports direct-style asynchronous programming
-
-3. A **verification strategy** that connects:
-
-   * formal semantics
-   * model checking
-   * real-world implementation
-
----
-
-### Summary
-
-This work demonstrates that:
-
-> Algebraic effects can be combined with isolated-process concurrency to produce a system that is both **formally tractable** and **practically implementable**, without requiring shared heaps or complex concurrent garbage collection.
-
+Hiko explores a design in which algebraic effects and isolated-process execution are deliberately assigned different responsibilities. Effects provide programmable local control flow. The runtime provides fixed suspension, capability enforcement, scheduling, and process-boundary transfer. This yields a language/runtime architecture that is simpler than shared-heap effect systems, better aligned with safety-oriented tooling, and still rich enough to support direct-style orchestration of asynchronous external work.

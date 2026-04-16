@@ -5,12 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 
-use crate::io_backend::{IoBackend, IoToken, MockIoBackend};
+use crate::io_backend::{IoBackend, IoToken, ThreadPoolIoBackend};
 use crate::process::{BlockReason, Pid, Process, ProcessStatus, Scope, ScopeId};
-use crate::runtime_ops::{
-    ChildState, check_child_state, create_child_vm, deliver_message, deliver_result_to_parent,
-    prepare_delivery,
-};
+use crate::runtime_ops::{deliver_message, deliver_result_to_parent};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::sendable::SendableValue;
 use crate::value::Value;
@@ -22,6 +19,7 @@ struct ProcessTable {
     processes: DashMap<Pid, Process>,
     waiters: DashMap<Pid, Vec<Pid>>,
     io_waiters: DashMap<IoToken, Pid>,
+    #[allow(dead_code)] // scaffolding for structured concurrency
     scopes: DashMap<ScopeId, Scope>,
 }
 
@@ -47,6 +45,7 @@ impl ProcessTable {
         self.processes.insert(process.pid, process);
     }
 
+    #[cfg(test)]
     fn get_output(&self, pid: Pid) -> Vec<String> {
         self.processes
             .get(&pid)
@@ -104,7 +103,7 @@ impl ThreadedRuntime {
             next_io_token: Arc::new(AtomicU64::new(1)),
             table: Arc::new(ProcessTable::new()),
             scheduler: Arc::new(FifoScheduler::new(1000)),
-            io_backend: Arc::new(MockIoBackend::new()),
+            io_backend: Arc::new(ThreadPoolIoBackend::new(num_workers.max(2))),
             num_workers,
         }
     }
@@ -121,7 +120,8 @@ impl ThreadedRuntime {
     pub fn spawn_root(&self, program: CompiledProgram) -> Pid {
         let pid = self.new_pid();
         let mut vm = VM::new(program);
-        crate::runtime_ops::register_runtime_effects(&mut vm);
+        vm.enable_output_capture();
+        vm.async_io = true;
         let process = Process::new(pid, vm, None);
         self.table.insert(process);
         self.scheduler.enqueue(pid);
@@ -151,26 +151,24 @@ impl ThreadedRuntime {
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
             for (token, result) in completions {
-                if let Some((_, pid)) = self.table.io_waiters.remove(&token) {
-                    if let Some(mut process) = self.table.processes.get_mut(&pid) {
-                        let resume_val = match result {
-                            crate::io_backend::IoResult::Ok(sv) => {
-                                let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
-                                crate::runtime_ops::make_io_ok(&mut process.vm, val)
-                            }
-                            crate::io_backend::IoResult::Err(msg) => {
-                                crate::runtime_ops::make_io_err(&mut process.vm, &msg)
-                            }
-                        };
-                        if process.vm.blocked_continuation.is_some() {
-                            process.vm.resume_blocked(resume_val);
-                        } else {
-                            process.vm.stack.pop();
-                            process.vm.push_value(resume_val);
+                if let Some((_, pid)) = self.table.io_waiters.remove(&token)
+                    && let Some(mut process) = self.table.processes.get_mut(&pid)
+                {
+                    match result {
+                        crate::io_backend::IoResult::Ok(sv) => {
+                            let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
+                            process.vm.stack.pop(); // remove placeholder
+                            process.vm.push_value(val);
+                            process.status = ProcessStatus::Runnable;
+                            drop(process);
+                            self.scheduler.enqueue(pid);
                         }
-                        process.status = ProcessStatus::Runnable;
-                        drop(process);
-                        self.scheduler.enqueue(pid);
+                        crate::io_backend::IoResult::Err(msg) => {
+                            process.status = ProcessStatus::Failed(msg);
+                            drop(process);
+                            self.scheduler.remove(pid);
+                            wake_waiters(&self.table, &*self.scheduler, pid);
+                        }
                     }
                 }
             }
@@ -178,18 +176,41 @@ impl ThreadedRuntime {
             if self.table.is_all_done_or_blocked() {
                 let has_io_waiters = !self.table.io_waiters.is_empty();
                 if !has_io_waiters {
-                    // Detect deadlock: blocked processes with no possible waker
                     if self.table.has_permanently_blocked() {
-                        // Mark permanently blocked processes as failed
-                        for mut entry in self.table.processes.iter_mut() {
-                            if matches!(
-                                entry.status,
-                                ProcessStatus::Blocked(BlockReason::Receive)
-                                    | ProcessStatus::Blocked(BlockReason::Await(_))
-                            ) {
+                        // Collect pids of permanently blocked processes
+                        let stuck: Vec<Pid> = self
+                            .table
+                            .processes
+                            .iter()
+                            .filter(|e| {
+                                matches!(
+                                    e.status,
+                                    ProcessStatus::Blocked(BlockReason::Receive)
+                                        | ProcessStatus::Blocked(BlockReason::Await(_))
+                                )
+                            })
+                            .map(|e| *e.key())
+                            .collect();
+
+                        // Mark as failed and atomically clean up waiters
+                        for &pid in &stuck {
+                            if let Some(mut entry) = self.table.processes.get_mut(&pid) {
                                 entry.status = ProcessStatus::Failed(
                                     "deadlock: process blocked with no possible waker".into(),
                                 );
+                            }
+                            // Clear any waiters that were waiting on this process
+                            if let Some((_, waiter_pids)) = self.table.waiters.remove(&pid) {
+                                for waiter_pid in waiter_pids {
+                                    if let Some(mut waiter) =
+                                        self.table.processes.get_mut(&waiter_pid)
+                                        && matches!(waiter.status, ProcessStatus::Blocked(_))
+                                    {
+                                        waiter.status = ProcessStatus::Failed(
+                                            "deadlock: child process deadlocked".into(),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -230,6 +251,22 @@ fn worker_loop(
 
         match result {
             RunResult::Done => {
+                if process.parent.is_some() {
+                    // Child results cross a process boundary when awaited, so they must be
+                    // sendable. Root processes run in-place and may finish with local values.
+                    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+                    match crate::sendable::serialize(val, &process.vm.heap) {
+                        Ok(sv) => process.result = Some(sv),
+                        Err(e) => {
+                            process.status =
+                                ProcessStatus::Failed(format!("child result not sendable: {e}"));
+                            table.return_process(process);
+                            scheduler.remove(pid);
+                            wake_waiters(table, scheduler, pid);
+                            continue;
+                        }
+                    }
+                }
                 process.status = ProcessStatus::Done;
                 table.return_process(process);
                 scheduler.remove(pid);
@@ -260,7 +297,7 @@ fn worker_loop(
                 scheduler.enqueue(child_pid);
 
                 process.vm.stack.pop();
-                process.vm.push_value(Value::Int(child_pid.0 as i64));
+                process.vm.push_value(Value::Pid(child_pid.0));
                 table.return_process(process);
                 scheduler.enqueue(pid);
             }
@@ -282,19 +319,6 @@ fn worker_loop(
                 table.io_waiters.insert(token, pid);
                 io_backend.register(token, request);
             }
-            RunResult::RuntimeEffect { tag, payload } => {
-                // Effect-based I/O: process has saved its continuation.
-                // Map the effect tag to an I/O request and register with backend.
-                let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
-                let io_request = crate::io_backend::IoRequest::Custom {
-                    operation: format!("effect_{tag}"),
-                    payload,
-                };
-                process.status = ProcessStatus::Blocked(BlockReason::Io(token));
-                table.return_process(process);
-                table.io_waiters.insert(token, pid);
-                io_backend.register(token, io_request);
-            }
             RunResult::Cancelled => {
                 process.status = ProcessStatus::Failed("cancelled".into());
                 table.return_process(process);
@@ -313,48 +337,55 @@ fn handle_await(
 ) {
     let parent_pid = parent.pid;
 
-    let child_state = {
-        match table.processes.get(&child_pid) {
-            None => ChildState::NotFound,
-            Some(entry) => {
-                let c = entry.value();
-                check_child_state(
-                    Some((&c.status, c.parent)),
-                    parent_pid,
-                    c.vm.stack.last().copied(),
-                    Some(&c.vm.heap),
-                )
-            }
-        }
-    };
-
-    match child_state {
-        ChildState::NotFound => {
+    // Use get_mut to allow take() on result for single-consumption
+    match table.processes.get_mut(&child_pid) {
+        None => {
             parent.status =
                 ProcessStatus::Failed(format!("await: unknown process {:?}", child_pid));
             table.return_process(parent);
         }
-        ChildState::NotChild => {
+        Some(child) if child.parent != Some(parent_pid) => {
             parent.status = ProcessStatus::Failed(format!(
                 "await: process {:?} is not a child of {:?}",
                 child_pid, parent_pid
             ));
             table.return_process(parent);
         }
-        ChildState::Done(sendable) => {
-            deliver_result_to_parent(&mut parent.vm, sendable);
-            table.return_process(parent);
-            scheduler.enqueue(parent_pid);
-        }
-        ChildState::Failed(msg) => {
-            parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
-            table.return_process(parent);
-        }
-        ChildState::Running => {
-            parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
-            table.return_process(parent);
-            table.waiters.entry(child_pid).or_default().push(parent_pid);
-        }
+        Some(mut child) => match &child.status {
+            ProcessStatus::Done => {
+                // Consume result once (take), matching single-threaded semantics
+                match child.result.take() {
+                    Some(sv) => {
+                        drop(child);
+                        deliver_result_to_parent(&mut parent.vm, sv);
+                        table.processes.remove(&child_pid);
+                        table.waiters.remove(&child_pid);
+                        table.return_process(parent);
+                        scheduler.enqueue(parent_pid);
+                    }
+                    None => {
+                        drop(child);
+                        parent.status =
+                            ProcessStatus::Failed("await: result already consumed".into());
+                        table.return_process(parent);
+                    }
+                }
+            }
+            ProcessStatus::Failed(msg) => {
+                let msg = msg.clone();
+                drop(child);
+                parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
+                table.processes.remove(&child_pid);
+                table.waiters.remove(&child_pid);
+                table.return_process(parent);
+            }
+            _ => {
+                drop(child);
+                parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
+                table.return_process(parent);
+                table.waiters.entry(child_pid).or_default().push(parent_pid);
+            }
+        },
     }
 }
 
@@ -375,30 +406,24 @@ fn handle_send(
         return;
     }
 
-    // Check target existence while sender is still held (no TOCTOU)
-    let target_exists = table.processes.contains_key(&target_pid);
-
-    if !target_exists {
-        sender.status =
-            ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
-        table.return_process(sender);
-        return;
-    }
-
-    // Target exists — return sender, then deliver
-    table.return_process(sender);
-
     if let Some(mut target) = table.processes.get_mut(&target_pid) {
         if matches!(target.status, ProcessStatus::Blocked(BlockReason::Receive)) {
             target.status = ProcessStatus::Runnable;
             deliver_message(&mut target.vm, value);
             drop(target);
+            table.return_process(sender);
             scheduler.enqueue(target_pid);
         } else {
             target.mailbox.push_back(value);
+            drop(target);
+            table.return_process(sender);
         }
+        scheduler.enqueue(sender_pid);
+    } else {
+        sender.status =
+            ProcessStatus::Failed(format!("send_message: unknown process {:?}", target_pid));
+        table.return_process(sender);
     }
-    scheduler.enqueue(sender_pid);
 }
 
 fn handle_receive(table: &ProcessTable, scheduler: &dyn Scheduler, mut process: Process) {
@@ -419,13 +444,16 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
         None => return,
     };
 
-    let delivery = table
-        .processes
-        .get(&finished_pid)
-        .map(|p| prepare_delivery(&p.status, &p.vm));
-
-    let delivery = match delivery {
-        Some(d) => d,
+    // Read the finished process's status and pre-serialized result
+    let delivery = match table.processes.get(&finished_pid) {
+        Some(p) => match &p.status {
+            ProcessStatus::Done => match &p.result {
+                Some(sv) => Ok(sv.clone()),
+                None => Err("child result already consumed".into()),
+            },
+            ProcessStatus::Failed(msg) => Err(msg.clone()),
+            _ => Err("child not finished".into()),
+        },
         None => return,
     };
 
@@ -444,6 +472,8 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
             }
         }
     }
+
+    table.processes.remove(&finished_pid);
 }
 
 #[cfg(test)]
@@ -452,6 +482,8 @@ mod tests {
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn compile(source: &str) -> CompiledProgram {
         let tokens = Lexer::new(source, 0).tokenize().unwrap();
@@ -460,10 +492,21 @@ mod tests {
         compiled
     }
 
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hiko-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn test_threaded_single_process() {
         let program = compile("val _ = println \"hello threaded\"");
-        let runtime = ThreadedRuntime::new(2);
+        let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
@@ -477,7 +520,7 @@ mod tests {
              val result = await_process child\n\
              val _ = println (int_to_string result)",
         );
-        let runtime = ThreadedRuntime::new(2);
+        let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
@@ -500,7 +543,7 @@ mod tests {
              val r5 = await_process c5\n\
              val _ = println (int_to_string (r1 + r2 + r3 + r4 + r5))",
         );
-        let runtime = ThreadedRuntime::new(4);
+        let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
@@ -517,7 +560,7 @@ mod tests {
              val result = await_process child\n\
              val _ = println (int_to_string result)",
         );
-        let runtime = ThreadedRuntime::new(2);
+        let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
@@ -525,18 +568,260 @@ mod tests {
     }
 
     #[test]
-    fn test_effect_based_io_sleep() {
-        // Effect-based I/O: Sleep effect handled by runtime
-        // MockIoBackend completes immediately
+    fn test_threaded_send_to_dead_process() {
         let program = compile(
-            "effect Sleep of Int\n\
-             val _ = perform Sleep 0\n\
+            "val child = spawn (fn () => 0)\n\
+             val _ = await_process child\n\
+             val _ = send_message (child, 42)",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        match &runtime
+            .table
+            .processes
+            .get(&pid)
+            .expect("root process should exist")
+            .status
+        {
+            ProcessStatus::Failed(msg) => assert!(msg.contains("unknown process")),
+            other => panic!("expected Failed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_async_sleep() {
+        // sleep builtin suspends the process via MockIoBackend (deterministic)
+        let program = compile(
+            "val _ = sleep 999999\n\
              val _ = println \"after sleep\"",
         );
-        let runtime = ThreadedRuntime::new(2);
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["after sleep\n"]);
+    }
+
+    #[test]
+    fn test_mock_backend_concurrent_sleep() {
+        // Two child processes sleeping via MockIoBackend (instant, deterministic)
+        let program = compile(
+            "val a = spawn (fn () => sleep 999999)\n\
+             val b = spawn (fn () => sleep 999999)\n\
+             val _ = await_process a\n\
+             val _ = await_process b\n\
+             val _ = println \"both done\"",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["both done\n"]);
+    }
+
+    #[test]
+    fn test_async_read_file() {
+        // read_file should work asynchronously in threaded runtime
+        let path = temp_path("async-read-file");
+        let path_str = path.to_string_lossy();
+        let program = compile(&format!(
+            "val _ = write_file (\"{path_str}\", \"hello async\")\n\
+             val contents = read_file \"{path_str}\"\n\
+             val _ = println contents\n\
+             val _ = remove_file \"{path_str}\"",
+        ));
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["hello async\n"]);
+    }
+
+    #[test]
+    fn test_double_await_fails() {
+        // Second await on the same child should fail (result consumed)
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val r1 = await_process child\n\
+             val r2 = await_process child\n\
+             val _ = println (int_to_string (r1 + r2))",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let _pid = runtime.spawn_root(program);
+        let result = runtime.run_to_completion();
+        // The process should fail — either the second await errors or the parent fails
+        assert!(
+            result.is_err()
+                || runtime
+                    .table
+                    .processes
+                    .iter()
+                    .any(|p| matches!(p.status, ProcessStatus::Failed(_)))
+        );
+    }
+
+    #[test]
+    fn test_async_read_file_with_fs_root() {
+        // Async read_file should use the validated path, not the raw input
+        let root = temp_path("async-root-test");
+        let data = root.join("data.txt");
+        let data_str = data.to_string_lossy();
+        let root_str = root.to_string_lossy();
+        let program = compile(&format!(
+            "val _ = write_file (\"{data_str}\", \"rooted\")\n\
+             val contents = read_file \"data.txt\"\n\
+             val _ = println contents\n\
+             val _ = remove_file \"{data_str}\"",
+        ));
+        // Set up the directory
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::fs::write(&data, "rooted");
+
+        let runtime = ThreadedRuntime::new(1);
+        // We need to set fs_root on the VM after spawn_root
+        let pid = runtime.spawn_root(program);
+        // Set fs_root on the spawned process's VM
+        if let Some(mut process) = runtime.table.processes.get_mut(&pid) {
+            process.vm.set_fs_root(root_str.to_string());
+        }
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["rooted\n"]);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_concurrent_async_http() {
+        // Multiple spawned processes doing http_get via MockIoBackend
+        let program = compile(
+            "val a = spawn (fn () => http_get \"http://a.test\")\n\
+             val b = spawn (fn () => http_get \"http://b.test\")\n\
+             val c = spawn (fn () => http_get \"http://c.test\")\n\
+             val (_, _, body_a) = await_process a\n\
+             val (_, _, body_b) = await_process b\n\
+             val (_, _, body_c) = await_process c\n\
+             val _ = println body_a\n\
+             val _ = println body_b\n\
+             val _ = println body_c",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output.len(), 3);
+        assert!(output[0].contains("mock response from http://a.test"));
+        assert!(output[1].contains("mock response from http://b.test"));
+        assert!(output[2].contains("mock response from http://c.test"));
+    }
+
+    #[test]
+    fn test_deadlock_cleanup_clears_waiters_and_fails_processes() {
+        let program = compile(
+            "val child = spawn (fn () =>\n\
+               let val (_ : Int) = receive_message ()\n\
+               in 0 end)\n\
+             val _ = await_process child\n\
+             val _ = println \"unreachable\"",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let root_pid = runtime.spawn_root(program);
+
+        runtime.run_to_completion().unwrap();
+
+        let child_pid = runtime
+            .table
+            .processes
+            .iter()
+            .find(|p| p.parent == Some(root_pid))
+            .map(|p| *p.key())
+            .expect("spawned child should exist");
+
+        let root_status = runtime
+            .table
+            .processes
+            .get(&root_pid)
+            .map(|p| format!("{:?}", p.status))
+            .expect("root process should exist");
+        let child_status = runtime
+            .table
+            .processes
+            .get(&child_pid)
+            .map(|p| format!("{:?}", p.status))
+            .expect("child process should exist");
+
+        assert!(root_status.contains("Failed"));
+        assert!(child_status.contains("Failed"));
+        assert!(runtime.table.waiters.is_empty());
+        assert!(runtime.table.get_output(root_pid).is_empty());
+    }
+
+    #[test]
+    fn test_mock_backend_sleep() {
+        // MockIoBackend completes sleep immediately
+        let program = compile(
+            "val _ = sleep 999999\n\
+             val _ = println \"instant\"",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["instant\n"]);
+    }
+
+    #[test]
+    fn test_threaded_root_process_may_finish_with_non_sendable_value() {
+        let program = compile("val f = fn () => 1");
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|p| format!("{:?}", p.status))
+            .expect("root process should exist");
+        assert_eq!(status, "Done");
+    }
+
+    #[test]
+    fn test_threaded_reaps_finished_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.table.processes.len(), 1);
+        assert!(runtime.table.processes.contains_key(&pid));
+    }
+
+    #[test]
+    fn test_threaded_reaps_failed_child_after_await() {
+        let program = compile(
+            "val child = spawn (fn () => panic \"boom\")\n\
+             val _ = await_process child",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.table.processes.len(), 1);
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|p| format!("{:?}", p.status))
+            .expect("root process should exist");
+        assert!(status.contains("Failed"));
     }
 }

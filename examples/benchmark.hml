@@ -1,0 +1,39 @@
+(* benchmark.hml — Recursive walk + blake3 hash.
+ *
+ * One walk function, one effect, one handler.
+ * Direct resume — no recursive wrapper needed.
+ *)
+
+effect ReadBytes of String
+
+fun process dir entries results count = case entries of
+    [] => (results, count)
+  | name :: rest =>
+      let val path = path_join (dir, name)
+           in if is_file path
+              then let val bytes = perform ReadBytes path
+                       val hash = blake3 bytes
+                       val line = hash ^ "  " ^ int_to_string (bytes_length bytes) ^ "  " ^ path
+                   in process dir rest (line :: results) (count + 1) end
+              else if is_dir path
+              then let val (sub_results, sub_count) = walk path results count
+                   in process dir rest sub_results sub_count end
+              else process dir rest results count
+           end
+
+and walk dir results count = process dir (list_dir dir) results count
+
+fun with_fs f =
+  handle f ()
+  with return x => x
+     | ReadBytes path k => resume k (read_file_bytes path)
+
+fun print_lines ls = case ls of
+    [] => ()
+  | l :: rest => let val _ = println l in print_lines rest end
+
+val t0 = monotonic_ms ()
+val (results, count) = with_fs (fn () => walk "/Users/l1x/code/home/vectorian-rs/hiko/.git" [] 0)
+val elapsed = monotonic_ms () - t0
+val _ = print_lines results
+val _ = println ("  " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")
