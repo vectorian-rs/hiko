@@ -391,6 +391,20 @@ impl Compiler {
             }
             DeclKind::Datatype(dt) => self.compile_datatype(dt),
             DeclKind::TypeAlias(_) => Ok(()),
+            DeclKind::AbstractType(_) => Ok(()),
+            DeclKind::ExportVal {
+                public_name,
+                internal_name,
+                ..
+            } => {
+                self.compile_expr(&Expr {
+                    kind: ExprKind::Var(*internal_name),
+                    span: decl.span,
+                })?;
+                let name = self.interner.resolve(*public_name).to_string();
+                self.bind_name(&name)?;
+                Ok(())
+            }
             DeclKind::Effect(sym, _) => {
                 let name = self.interner.resolve(*sym).to_string();
                 let tag = self.next_effect_tag;
@@ -453,6 +467,7 @@ impl Compiler {
             DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference pass")
             }
+            DeclKind::AbstractType(_) | DeclKind::ExportVal { .. } => Ok(()),
             DeclKind::Local(locals, body) => {
                 for d in locals {
                     self.infer_decl_pass(d)?;

@@ -641,6 +641,36 @@ impl InferCtx {
             DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings, decl.span),
             DeclKind::Datatype(dt) => self.register_datatype(dt),
             DeclKind::TypeAlias(ta) => self.register_type_alias(ta),
+            DeclKind::AbstractType(dt) => self.register_abstract_type(dt),
+            DeclKind::ExportVal {
+                public_name,
+                internal_name,
+                ty,
+            } => {
+                let internal = self.interner.resolve(*internal_name).to_string();
+                if self.lookup(&internal).is_none() {
+                    return Err(self.err(
+                        &format!("unbound variable: {}", self.interner.resolve(*internal_name)),
+                        decl.span,
+                    ));
+                }
+
+                let mut tyvar_map = HashMap::new();
+                let export_ty = self.resolve_type_expr(ty, &mut tyvar_map)?;
+                let scheme = Scheme {
+                    vars: export_ty.free_vars(),
+                    ty: export_ty,
+                };
+                let public = self.interner.resolve(*public_name).to_string();
+                if self.constructors.contains_key(&public) {
+                    return Err(self.err(
+                        &format!("cannot shadow constructor '{public}' with a value binding"),
+                        decl.span,
+                    ));
+                }
+                self.bind(public, scheme);
+                Ok(())
+            }
             DeclKind::Local(locals, body) => {
                 // locals are in a private scope
                 self.push_scope();
@@ -856,6 +886,34 @@ impl InferCtx {
         self.type_aliases
             .insert(ta_name.clone(), (param_vars, body));
         self.type_arities.insert(ta_name, ta.tyvars.len());
+        Ok(())
+    }
+
+    fn register_abstract_type(&mut self, dt: &AbstractTypeDecl) -> Result<(), TypeError> {
+        let name = self.interner.resolve(dt.name).to_string();
+        if self.type_arities.contains_key(&name) || self.type_aliases.contains_key(&name) {
+            return Err(self.err(&format!("duplicate type name: {name}"), dt.span));
+        }
+
+        if let Some(implementation) = dt.implementation {
+            let impl_name = self.interner.resolve(implementation).to_string();
+            let impl_arity = self
+                .type_arities
+                .get(&impl_name)
+                .copied()
+                .ok_or_else(|| self.err(&format!("unknown type: {impl_name}"), dt.span))?;
+            if impl_arity != dt.tyvars.len() {
+                return Err(self.err(
+                    &format!(
+                        "type {impl_name} expects {impl_arity} argument(s), got {}",
+                        dt.tyvars.len()
+                    ),
+                    dt.span,
+                ));
+            }
+        }
+
+        self.type_arities.insert(name, dt.tyvars.len());
         Ok(())
     }
 
@@ -1560,6 +1618,59 @@ mod tests {
              end",
         );
         assert!(msg.contains("unbound variable: List.fold"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_opaque_ascription_hides_datatype_representation() {
+        let ctx = infer(
+            "signature BOX = sig
+               type t
+               val make : Int -> t
+               val get : t -> Int
+             end
+             structure Box :> BOX = struct
+               datatype t = Box of Int
+               fun make x = Box x
+               fun get (Box x) = x
+             end
+             val result = Box.get (Box.make 41)",
+        );
+        assert_eq!(type_of(&ctx, "result"), "Int");
+    }
+
+    #[test]
+    fn test_opaque_ascription_hides_type_alias_equality() {
+        let msg = infer_err(
+            "signature QUEUE = sig
+               type 'a t
+               val empty : 'a t
+             end
+             structure Queue :> QUEUE = struct
+               type 'a t = 'a list * 'a list
+               val empty = ([], [])
+             end
+             val bad : Int list * Int list = Queue.empty",
+        );
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_opaque_ascription_hides_constructors() {
+        let msg = infer_err(
+            "signature BOX = sig
+               type t
+               val make : Int -> t
+             end
+             structure Box :> BOX = struct
+               datatype t = Box of Int
+               fun make x = Box x
+             end
+             val bad = Box.Box 1",
+        );
+        assert!(
+            msg.contains("unknown constructor: Box.Box"),
+            "got: {msg}"
+        );
     }
 
     // ── Let-polymorphism ─────────────────────────────────────────────

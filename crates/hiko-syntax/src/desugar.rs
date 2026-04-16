@@ -13,12 +13,18 @@ pub fn desugar_program(mut program: Program) -> Program {
             DeclKind::Structure {
                 name,
                 signature,
-                opaque: _,
+                opaque,
                 decls: body,
             } => {
                 let module_name = interner.resolve(name).to_string();
                 let signature = signature.and_then(|sig| signatures.get(&sig));
-                decls.extend(desugar_structure(body, &[module_name], signature, &mut interner));
+                decls.extend(desugar_structure(
+                    body,
+                    &[module_name],
+                    signature,
+                    opaque,
+                    &mut interner,
+                ));
             }
             _ => decls.push(desugar_decl(decl, &mut interner)),
         }
@@ -68,6 +74,16 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
         DeclKind::Structure { .. } => {
             unreachable!("structures are flattened before decl desugaring")
         }
+        DeclKind::AbstractType(dt) => DeclKind::AbstractType(dt),
+        DeclKind::ExportVal {
+            public_name,
+            internal_name,
+            ty,
+        } => DeclKind::ExportVal {
+            public_name,
+            internal_name,
+            ty: rename_type_expr(ty, &ModuleScope::default()),
+        },
         DeclKind::Effect(name, ty) => DeclKind::Effect(name, ty),
     };
     Decl { kind, span }
@@ -85,6 +101,7 @@ fn desugar_structure(
     decls: Vec<Decl>,
     module_path: &[String],
     signature: Option<&SignatureDecl>,
+    opaque: bool,
     interner: &mut StringInterner,
 ) -> Vec<Decl> {
     let scope = collect_module_scope(&decls, module_path, interner, signature.is_some());
@@ -101,7 +118,13 @@ fn desugar_structure(
     }
     let mut out: Vec<Decl> = out.into_iter().map(|decl| desugar_decl(decl, interner)).collect();
     if let Some(signature) = signature {
-        out.extend(signature_assertions(signature, &scope, module_path, interner));
+        out.extend(signature_assertions(
+            signature,
+            &scope,
+            module_path,
+            opaque,
+            interner,
+        ));
     }
     out
 }
@@ -170,6 +193,8 @@ fn collect_decl_exports(
         DeclKind::Signature(_) => {}
         DeclKind::Use(_) => {}
         DeclKind::Structure { .. } => {}
+        DeclKind::AbstractType(_) => {}
+        DeclKind::ExportVal { .. } => {}
         DeclKind::Effect(sym, _) => {
             scope
                 .effects
@@ -199,21 +224,63 @@ fn signature_assertions(
     signature: &SignatureDecl,
     scope: &ModuleScope,
     module_path: &[String],
+    _opaque: bool,
     interner: &mut StringInterner,
 ) -> Vec<Decl> {
     let mut out = Vec::new();
+    let type_specs: HashMap<_, _> = signature
+        .specs
+        .iter()
+        .filter_map(|spec| match spec {
+            SignatureSpec::Type { tyvars, name, span } => Some((
+                *name,
+                (tyvars.clone(), *span),
+            )),
+            SignatureSpec::Val { .. } => None,
+        })
+        .collect();
+
+    for (name, (tyvars, span)) in &type_specs {
+        let public_sym = mangle_symbol(module_path, *name, interner, false);
+        let hidden_sym = mangle_symbol(module_path, *name, interner, true);
+        out.push(Decl {
+            kind: DeclKind::AbstractType(AbstractTypeDecl {
+                tyvars: tyvars.clone(),
+                name: public_sym,
+                implementation: Some(hidden_sym),
+                span: *span,
+            }),
+            span: *span,
+        });
+    }
+
     for spec in &signature.specs {
         match spec {
+            SignatureSpec::Type { .. } => {}
             SignatureSpec::Val { name, ty, span } => {
                 let public_sym = mangle_symbol(module_path, *name, interner, false);
                 let checked_sym = scope.values.get(name).copied().unwrap_or(public_sym);
+                let checked_ty = remap_signature_type_expr(
+                    ty.clone(),
+                    module_path,
+                    interner,
+                    RemapMode::Hidden,
+                    &type_specs,
+                );
+                let public_ty = remap_signature_type_expr(
+                    ty.clone(),
+                    module_path,
+                    interner,
+                    RemapMode::Public,
+                    &type_specs,
+                );
                 let checked_expr = Expr {
                     kind: ExprKind::Ann(
                         Box::new(Expr {
                             kind: ExprKind::Var(checked_sym),
                             span: *span,
                         }),
-                        ty.clone(),
+                        checked_ty,
                     ),
                     span: *span,
                 };
@@ -229,16 +296,11 @@ fn signature_assertions(
                 });
                 if let Some(internal_sym) = scope.values.get(name).copied() {
                     out.push(Decl {
-                        kind: DeclKind::Val(
-                            Pat {
-                                kind: PatKind::Var(public_sym),
-                                span: *span,
-                            },
-                            Expr {
-                                kind: ExprKind::Var(internal_sym),
-                                span: *span,
-                            },
-                        ),
+                        kind: DeclKind::ExportVal {
+                            public_name: public_sym,
+                            internal_name: internal_sym,
+                            ty: public_ty,
+                        },
                         span: *span,
                     });
                 }
@@ -354,6 +416,22 @@ fn rename_module_decl(
             span: decl.span,
         }],
         DeclKind::Signature(_) => vec![],
+        DeclKind::AbstractType(dt) => vec![Decl {
+            kind: DeclKind::AbstractType(dt),
+            span: decl.span,
+        }],
+        DeclKind::ExportVal {
+            public_name,
+            internal_name,
+            ty,
+        } => vec![Decl {
+            kind: DeclKind::ExportVal {
+                public_name,
+                internal_name,
+                ty,
+            },
+            span: decl.span,
+        }],
         DeclKind::Effect(sym, ty) => vec![Decl {
             kind: DeclKind::Effect(
                 if export_names || module_hidden {
@@ -586,6 +664,7 @@ fn rename_pat(pat: Pat, scope: &ModuleScope, export_names: bool) -> Pat {
             },
             Box::new(rename_pat(*pat, scope, export_names)),
         ),
+        PatKind::Paren(pat) => PatKind::Paren(Box::new(rename_pat(*pat, scope, export_names))),
         other => other,
     };
     Pat { kind, span }
@@ -668,6 +747,9 @@ fn local_decl_value_names(decl: &Decl) -> HashSet<Symbol> {
                 out.insert(binding.name);
             }
         }
+        DeclKind::ExportVal { public_name, .. } => {
+            out.insert(*public_name);
+        }
         DeclKind::Local(_, body) => {
             for decl in body {
                 out.extend(local_decl_value_names(decl));
@@ -682,6 +764,85 @@ fn unit_expr(span: Span) -> Expr {
     Expr {
         kind: ExprKind::Unit,
         span,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RemapMode {
+    Public,
+    Hidden,
+}
+
+fn remap_signature_type_expr(
+    ty: TypeExpr,
+    module_path: &[String],
+    interner: &mut StringInterner,
+    mode: RemapMode,
+    type_specs: &HashMap<Symbol, (Vec<Symbol>, Span)>,
+) -> TypeExpr {
+    let span = ty.span;
+    let kind = match ty.kind {
+        TypeExprKind::Named(sym) => TypeExprKind::Named(remap_signature_type_name(
+            sym,
+            module_path,
+            interner,
+            mode,
+            type_specs,
+        )),
+        TypeExprKind::Var(sym) => TypeExprKind::Var(sym),
+        TypeExprKind::App(sym, args) => TypeExprKind::App(
+            remap_signature_type_name(sym, module_path, interner, mode, type_specs),
+            args.into_iter()
+                .map(|arg| remap_signature_type_expr(arg, module_path, interner, mode, type_specs))
+                .collect(),
+        ),
+        TypeExprKind::Arrow(lhs, rhs) => TypeExprKind::Arrow(
+            Box::new(remap_signature_type_expr(
+                *lhs,
+                module_path,
+                interner,
+                mode,
+                type_specs,
+            )),
+            Box::new(remap_signature_type_expr(
+                *rhs,
+                module_path,
+                interner,
+                mode,
+                type_specs,
+            )),
+        ),
+        TypeExprKind::Tuple(elems) => TypeExprKind::Tuple(
+            elems
+                .into_iter()
+                .map(|elem| remap_signature_type_expr(elem, module_path, interner, mode, type_specs))
+                .collect(),
+        ),
+        TypeExprKind::Paren(inner) => TypeExprKind::Paren(Box::new(remap_signature_type_expr(
+            *inner,
+            module_path,
+            interner,
+            mode,
+            type_specs,
+        ))),
+    };
+    TypeExpr { kind, span }
+}
+
+fn remap_signature_type_name(
+    sym: Symbol,
+    module_path: &[String],
+    interner: &mut StringInterner,
+    mode: RemapMode,
+    type_specs: &HashMap<Symbol, (Vec<Symbol>, Span)>,
+) -> Symbol {
+    if type_specs.contains_key(&sym) {
+        match mode {
+            RemapMode::Public => mangle_symbol(module_path, sym, interner, false),
+            RemapMode::Hidden => mangle_symbol(module_path, sym, interner, true),
+        }
+    } else {
+        sym
     }
 }
 

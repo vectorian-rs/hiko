@@ -111,6 +111,14 @@ pub enum DeclKind {
         opaque: bool,
         decls: Vec<Decl>,
     },
+    /// Internal-only: an abstract exported type introduced by opaque module sealing.
+    AbstractType(AbstractTypeDecl),
+    /// Internal-only: bind a public exported name to an internal definition with a sealed type.
+    ExportVal {
+        public_name: Symbol,
+        internal_name: Symbol,
+        ty: TypeExpr,
+    },
     /// `effect Yield of Int`
     Effect(Symbol, Option<TypeExpr>),
 }
@@ -124,11 +132,24 @@ pub struct SignatureDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SignatureSpec {
+    Type {
+        tyvars: Vec<Symbol>,
+        name: Symbol,
+        span: Span,
+    },
     Val {
         name: Symbol,
         ty: TypeExpr,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbstractTypeDecl {
+    pub tyvars: Vec<Symbol>,
+    pub name: Symbol,
+    pub implementation: Option<Symbol>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]

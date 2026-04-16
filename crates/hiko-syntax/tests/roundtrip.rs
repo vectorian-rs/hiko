@@ -353,6 +353,11 @@ fn rt_signature_simple() {
 }
 
 #[test]
+fn rt_signature_with_type_spec() {
+    assert_roundtrip("signature BOX = sig\n  type 'a t\n  val empty : 'a t\nend");
+}
+
+#[test]
 fn rt_structure_simple() {
     assert_roundtrip("structure List = struct\n  fun fold f acc xs = acc\nend");
 }
@@ -370,6 +375,11 @@ fn rt_structure_with_opaque_signature() {
 #[test]
 fn rt_qualified_access() {
     assert_roundtrip("val sum = List.fold add 0 xs");
+}
+
+#[test]
+fn rt_qualified_type_access() {
+    assert_roundtrip("val x = (y : Queue.t)");
 }
 
 // ── Application with unary operators ─────────────────────────────────

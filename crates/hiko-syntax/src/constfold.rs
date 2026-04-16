@@ -42,6 +42,16 @@ fn fold_decl(decl: Decl) -> Decl {
             opaque,
             decls: decls.into_iter().map(fold_decl).collect(),
         },
+        DeclKind::AbstractType(dt) => DeclKind::AbstractType(dt),
+        DeclKind::ExportVal {
+            public_name,
+            internal_name,
+            ty,
+        } => DeclKind::ExportVal {
+            public_name,
+            internal_name,
+            ty,
+        },
         other => other,
     };
     Decl { kind, span }

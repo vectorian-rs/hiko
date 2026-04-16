@@ -479,6 +479,16 @@ impl Parser {
     fn parse_signature_spec(&mut self) -> Result<SignatureSpec, ParseError> {
         let start = self.span();
         match self.peek() {
+            TokenKind::Type => {
+                self.advance();
+                let tyvars = self.parse_tyvar_params()?;
+                let (name, end) = self.expect_name()?;
+                Ok(SignatureSpec::Type {
+                    tyvars,
+                    name,
+                    span: start.merge(end),
+                })
+            }
             TokenKind::Val => {
                 self.advance();
                 let (name, _) = self.expect_ident()?;
@@ -490,7 +500,7 @@ impl Parser {
                     ty,
                 })
             }
-            _ => Err(self.err("expected signature spec (currently only val)")),
+            _ => Err(self.err("expected signature spec (type or val)")),
         }
     }
 
@@ -1292,9 +1302,17 @@ impl Parser {
 
     fn parse_app_type(&mut self) -> Result<TypeExpr, ParseError> {
         let mut ty = self.parse_atom_type()?;
-        while matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_)) {
-            let end = self.span();
-            let name = self.take_symbol();
+        while matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_))
+            || self.can_start_qualified_path()
+        {
+            let (name, end) = if self.can_start_qualified_path() {
+                let (name, _, span) = self.parse_qualified_symbol()?;
+                (name, span)
+            } else {
+                let end = self.span();
+                let name = self.take_symbol();
+                (name, end)
+            };
             let (args, base_span) = match ty.kind {
                 TypeExprKind::Tuple(elems) => (elems, ty.span),
                 _ => {
@@ -1319,6 +1337,13 @@ impl Parser {
                 Ok(TypeExpr {
                     kind: TypeExprKind::Var(name),
                     span: start,
+                })
+            }
+            _ if self.can_start_qualified_path() => {
+                let (name, _, span) = self.parse_qualified_symbol()?;
+                Ok(TypeExpr {
+                    kind: TypeExprKind::Named(name),
+                    span,
                 })
             }
             TokenKind::Ident(_) | TokenKind::UpperIdent(_) => {
@@ -1540,6 +1565,24 @@ mod tests {
     }
 
     #[test]
+    fn test_signature_decl_with_type_spec() {
+        let prog = parse("signature BOX = sig type 'a t val empty : 'a t end");
+        if let DeclKind::Signature(sig) = &prog.decls[0].kind {
+            assert_eq!(prog.interner.resolve(sig.name), "BOX");
+            assert_eq!(sig.specs.len(), 2);
+            match &sig.specs[0] {
+                SignatureSpec::Type { tyvars, name, .. } => {
+                    assert_eq!(tyvars.len(), 1);
+                    assert_eq!(prog.interner.resolve(*name), "t");
+                }
+                _ => panic!("expected type spec"),
+            }
+        } else {
+            panic!("expected signature");
+        }
+    }
+
+    #[test]
     fn test_structure_decl() {
         let prog = parse("structure List = struct fun fold f acc xs = acc end");
         if let DeclKind::Structure {
@@ -1614,6 +1657,27 @@ mod tests {
                     _ => panic!("expected application chain"),
                 },
                 _ => panic!("expected application"),
+            }
+        } else {
+            panic!("expected val");
+        }
+    }
+
+    #[test]
+    fn test_qualified_type_expr() {
+        let prog = parse("val x = (y : Queue.t)");
+        if let DeclKind::Val(_, expr) = &prog.decls[0].kind {
+            match &expr.kind {
+                ExprKind::Paren(inner) => match &inner.kind {
+                    ExprKind::Ann(_, ty) => match &ty.kind {
+                        TypeExprKind::Named(sym) => {
+                            assert_eq!(prog.interner.resolve(*sym), "Queue.t");
+                        }
+                        _ => panic!("expected qualified named type"),
+                    },
+                    _ => panic!("expected annotation inside parens"),
+                },
+                _ => panic!("expected annotation"),
             }
         } else {
             panic!("expected val");

@@ -92,6 +92,11 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             for spec in &sig.specs {
                 write_indent(buf, indent + 2);
                 match spec {
+                    SignatureSpec::Type { tyvars, name, .. } => {
+                        buf.push_str("type ");
+                        pretty_tyvars(buf, tyvars, interner);
+                        buf.push_str(interner.resolve(*name));
+                    }
                     SignatureSpec::Val { name, ty, .. } => {
                         write!(buf, "val {} : ", interner.resolve(*name)).unwrap();
                         pretty_type(buf, ty, interner);
@@ -132,6 +137,37 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
                 buf.push_str(" of ");
                 pretty_type(buf, ty, interner);
             }
+        }
+        DeclKind::AbstractType(dt) => {
+            write_indent(buf, indent);
+            buf.push_str("(* abstract type ");
+            pretty_tyvars(buf, &dt.tyvars, interner);
+            buf.push_str(interner.resolve(dt.name));
+            if let Some(implementation) = dt.implementation {
+                write!(
+                    buf,
+                    " = {}",
+                    interner.resolve(implementation)
+                )
+                .unwrap();
+            }
+            buf.push_str(" *)");
+        }
+        DeclKind::ExportVal {
+            public_name,
+            internal_name,
+            ty,
+        } => {
+            write_indent(buf, indent);
+            write!(
+                buf,
+                "(* export {} = {} : ",
+                interner.resolve(*public_name),
+                interner.resolve(*internal_name)
+            )
+            .unwrap();
+            pretty_type(buf, ty, interner);
+            buf.push_str(" *)");
         }
     }
 }
