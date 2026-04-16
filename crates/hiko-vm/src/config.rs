@@ -1,6 +1,4 @@
-use crate::builder::{
-    ExecPolicy as VmExecPolicy, FilesystemPolicy, HttpPolicy as VmHttpPolicy, VMBuilder,
-};
+use crate::builder::{ExecPolicy as VmExecPolicy, VMBuilder};
 use crate::vm::VM;
 use hiko_compile::chunk::CompiledProgram;
 use serde::Deserialize;
@@ -27,75 +25,404 @@ pub struct Limits {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Capabilities {
+struct EnabledLeaf {
     #[serde(default)]
-    pub core: CorePolicy,
-    pub filesystem: Option<FsPolicy>,
-    pub http: Option<HttpPolicy>,
-    pub exec: Option<ExecPolicy>,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct FolderLeaf {
     #[serde(default)]
-    pub system: SystemPolicy,
+    enabled: bool,
+    #[serde(default)]
+    folders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct HttpLeaf {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CorePolicy {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for CorePolicy {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FsPolicy {
-    #[serde(default = "default_dot")]
-    pub root: String,
+struct ExecLeaf {
     #[serde(default)]
-    pub read: bool,
+    enabled: bool,
     #[serde(default)]
-    pub write: bool,
-    #[serde(default)]
-    pub delete: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HttpPolicy {
-    #[serde(default)]
-    pub allowed_hosts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExecPolicy {
-    #[serde(default)]
-    pub allowed: Vec<String>,
+    allowed_commands: Vec<String>,
     #[serde(default = "default_exec_timeout")]
-    pub timeout: u64,
+    timeout: u64,
+}
+
+impl Default for ExecLeaf {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_commands: Vec::new(),
+            timeout: default_exec_timeout(),
+        }
+    }
 }
 
 fn default_exec_timeout() -> u64 {
     30
 }
 
+macro_rules! enabled_family {
+    ($name:ident { $($field:ident => $builtin:literal),* $(,)? }) => {
+        #[derive(Debug, Clone, Deserialize, Default)]
+        #[serde(deny_unknown_fields)]
+        pub struct $name {
+            $($field: Option<EnabledLeaf>,)*
+        }
+
+        impl $name {
+            fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
+                $(
+                    if self.$field.as_ref().is_some_and(|leaf| leaf.enabled) {
+                        builder = builder.register_builtin_name($builtin);
+                    }
+                )*
+                builder
+            }
+
+            fn emit(&self, out: &mut String) {
+                $(
+                    if self.$field.as_ref().is_some_and(|leaf| leaf.enabled) {
+                        out.push_str(&format!(
+                            "            .register_builtin_name({:?})\n",
+                            $builtin
+                        ));
+                    }
+                )*
+            }
+        }
+    };
+}
+
+macro_rules! folder_family {
+    ($name:ident { $($field:ident => $builtin:literal),* $(,)? }) => {
+        #[derive(Debug, Clone, Deserialize, Default)]
+        #[serde(deny_unknown_fields)]
+        pub struct $name {
+            $($field: Option<FolderLeaf>,)*
+        }
+
+        impl $name {
+            fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
+                $(
+                    if let Some(leaf) = &self.$field
+                        && leaf.enabled
+                    {
+                        builder = builder.allow_filesystem_builtin($builtin, leaf.folders.clone());
+                    }
+                )*
+                builder
+            }
+
+            fn emit(&self, out: &mut String) {
+                $(
+                    if let Some(leaf) = &self.$field
+                        && leaf.enabled
+                    {
+                        out.push_str(&format!(
+                            "            .allow_filesystem_builtin({:?}, vec![{}])\n",
+                            $builtin,
+                            rust_string_vec(&leaf.folders)
+                        ));
+                    }
+                )*
+            }
+        }
+    };
+}
+
+macro_rules! http_family {
+    ($name:ident { $($field:ident => $builtin:literal),* $(,)? }) => {
+        #[derive(Debug, Clone, Deserialize, Default)]
+        #[serde(deny_unknown_fields)]
+        pub struct $name {
+            $($field: Option<HttpLeaf>,)*
+        }
+
+        impl $name {
+            fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
+                $(
+                    if let Some(leaf) = &self.$field
+                        && leaf.enabled
+                    {
+                        builder = builder.allow_http_builtin($builtin, leaf.allowed_hosts.clone());
+                    }
+                )*
+                builder
+            }
+
+            fn emit(&self, out: &mut String) {
+                $(
+                    if let Some(leaf) = &self.$field
+                        && leaf.enabled
+                    {
+                        out.push_str(&format!(
+                            "            .allow_http_builtin({:?}, vec![{}])\n",
+                            $builtin,
+                            rust_string_vec(&leaf.allowed_hosts)
+                        ));
+                    }
+                )*
+            }
+        }
+    };
+}
+
+enabled_family!(StdioCapabilities {
+    print => "print",
+    println => "println",
+    read_line => "read_line",
+});
+
+enabled_family!(ConvertCapabilities {
+    int_to_string => "int_to_string",
+    float_to_string => "float_to_string",
+    string_to_int => "string_to_int",
+    char_to_int => "char_to_int",
+    int_to_char => "int_to_char",
+    int_to_float => "int_to_float",
+});
+
+enabled_family!(StringCapabilities {
+    string_length => "string_length",
+    substring => "substring",
+    string_contains => "string_contains",
+    trim => "trim",
+    split => "split",
+    string_replace => "string_replace",
+    starts_with => "starts_with",
+    ends_with => "ends_with",
+    to_upper => "to_upper",
+    to_lower => "to_lower",
+    string_join => "string_join",
+});
+
+enabled_family!(RegexCapabilities {
+    regex_match => "regex_match",
+    regex_replace => "regex_replace",
+});
+
+enabled_family!(JsonCapabilities {
+    json_parse => "json_parse",
+    json_to_string => "json_to_string",
+    json_get => "json_get",
+    json_keys => "json_keys",
+    json_length => "json_length",
+});
+
+enabled_family!(MathCapabilities {
+    sqrt => "sqrt",
+    abs_int => "abs_int",
+    abs_float => "abs_float",
+    floor => "floor",
+    ceil => "ceil",
+});
+
+enabled_family!(BytesCapabilities {
+    bytes_length => "bytes_length",
+    bytes_to_string => "bytes_to_string",
+    string_to_bytes => "string_to_bytes",
+    bytes_get => "bytes_get",
+    bytes_slice => "bytes_slice",
+});
+
+enabled_family!(HashCapabilities {
+    blake3 => "blake3",
+});
+
+enabled_family!(RandomCapabilities {
+    random_bytes => "random_bytes",
+    rng_seed => "rng_seed",
+    rng_bytes => "rng_bytes",
+    rng_int => "rng_int",
+});
+
+enabled_family!(EnvCapabilities {
+    getenv => "getenv",
+});
+
+enabled_family!(TimeCapabilities {
+    epoch => "epoch",
+    epoch_ms => "epoch_ms",
+    monotonic_ms => "monotonic_ms",
+    sleep => "sleep",
+});
+
+enabled_family!(ProcessCapabilities {
+    spawn => "spawn",
+    await_process => "await_process",
+    send_message => "send_message",
+    receive_message => "receive_message",
+});
+
+folder_family!(FilesystemCapabilities {
+    read_file => "read_file",
+    read_file_bytes => "read_file_bytes",
+    write_file => "write_file",
+    file_exists => "file_exists",
+    list_dir => "list_dir",
+    remove_file => "remove_file",
+    create_dir => "create_dir",
+    is_dir => "is_dir",
+    is_file => "is_file",
+    path_join => "path_join",
+    read_file_tagged => "read_file_tagged",
+    edit_file_tagged => "edit_file_tagged",
+    glob => "glob",
+    walk_dir => "walk_dir",
+});
+
+http_family!(HttpCapabilities {
+    http_get => "http_get",
+    http => "http",
+    http_json => "http_json",
+    http_msgpack => "http_msgpack",
+    http_bytes => "http_bytes",
+});
+
+enabled_family!(SystemCapabilities {
+    exit => "exit",
+});
+
+enabled_family!(TestingCapabilities {
+    panic => "panic",
+    assert => "assert",
+    assert_eq => "assert_eq",
+});
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct SystemPolicy {
+pub struct ExecCapabilities {
+    exec: Option<ExecLeaf>,
+}
+
+impl ExecCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        if let Some(leaf) = &self.exec
+            && leaf.enabled
+        {
+            return builder.with_exec(VmExecPolicy {
+                allowed: leaf.allowed_commands.clone(),
+                timeout: leaf.timeout,
+            });
+        }
+        builder
+    }
+
+    fn emit(&self, out: &mut String) {
+        if let Some(leaf) = &self.exec
+            && leaf.enabled
+        {
+            out.push_str(&format!(
+                "            .with_exec(hiko_vm::builder::ExecPolicy {{\n\
+                 \x20               allowed: vec![{}],\n\
+                 \x20               timeout: {},\n\
+                 \x20           }})\n",
+                rust_string_vec(&leaf.allowed_commands),
+                leaf.timeout
+            ));
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Capabilities {
     #[serde(default)]
-    pub allow_exit: bool,
+    pub stdio: StdioCapabilities,
+    #[serde(default)]
+    pub convert: ConvertCapabilities,
+    #[serde(default)]
+    pub string: StringCapabilities,
+    #[serde(default)]
+    pub regex: RegexCapabilities,
+    #[serde(default)]
+    pub json: JsonCapabilities,
+    #[serde(default)]
+    pub math: MathCapabilities,
+    #[serde(default)]
+    pub bytes: BytesCapabilities,
+    #[serde(default)]
+    pub hash: HashCapabilities,
+    #[serde(default)]
+    pub random: RandomCapabilities,
+    #[serde(default)]
+    pub env: EnvCapabilities,
+    #[serde(default)]
+    pub time: TimeCapabilities,
+    #[serde(default)]
+    pub process: ProcessCapabilities,
+    #[serde(default)]
+    pub filesystem: FilesystemCapabilities,
+    #[serde(default)]
+    pub http: HttpCapabilities,
+    #[serde(default)]
+    pub exec: ExecCapabilities,
+    #[serde(default)]
+    pub system: SystemCapabilities,
+    #[serde(default)]
+    pub testing: TestingCapabilities,
 }
 
-fn default_true() -> bool {
-    true
+impl Capabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        let builder = self.stdio.apply(builder);
+        let builder = self.convert.apply(builder);
+        let builder = self.string.apply(builder);
+        let builder = self.regex.apply(builder);
+        let builder = self.json.apply(builder);
+        let builder = self.math.apply(builder);
+        let builder = self.bytes.apply(builder);
+        let builder = self.hash.apply(builder);
+        let builder = self.random.apply(builder);
+        let builder = self.env.apply(builder);
+        let builder = self.time.apply(builder);
+        let builder = self.process.apply(builder);
+        let builder = self.filesystem.apply(builder);
+        let builder = self.http.apply(builder);
+        let builder = self.exec.apply(builder);
+        let builder = self.system.apply(builder);
+        self.testing.apply(builder)
+    }
+
+    fn emit(&self, out: &mut String) {
+        self.stdio.emit(out);
+        self.convert.emit(out);
+        self.string.emit(out);
+        self.regex.emit(out);
+        self.json.emit(out);
+        self.math.emit(out);
+        self.bytes.emit(out);
+        self.hash.emit(out);
+        self.random.emit(out);
+        self.env.emit(out);
+        self.time.emit(out);
+        self.process.emit(out);
+        self.filesystem.emit(out);
+        self.http.emit(out);
+        self.exec.emit(out);
+        self.system.emit(out);
+        self.testing.emit(out);
+    }
 }
 
-fn default_dot() -> String {
-    ".".to_string()
+fn rust_string_vec(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| format!("{value:?}.into()"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl Default for RunConfig {
@@ -116,36 +443,8 @@ impl RunConfig {
     }
 
     /// Configure a VM builder with this run config.
-    pub fn apply_to_builder(&self, mut builder: VMBuilder) -> VMBuilder {
-        if self.capabilities.core.enabled {
-            builder = builder.with_core();
-        }
-
-        if let Some(fs) = &self.capabilities.filesystem {
-            builder = builder.with_filesystem(FilesystemPolicy {
-                root: fs.root.clone(),
-                allow_read: fs.read,
-                allow_write: fs.write,
-                allow_delete: fs.delete,
-            });
-        }
-
-        if let Some(http) = &self.capabilities.http {
-            builder = builder.with_http(VmHttpPolicy {
-                allowed_hosts: http.allowed_hosts.clone(),
-            });
-        }
-
-        if let Some(exec) = &self.capabilities.exec {
-            builder = builder.with_exec(VmExecPolicy {
-                allowed: exec.allowed.clone(),
-                timeout: exec.timeout,
-            });
-        }
-
-        if self.capabilities.system.allow_exit {
-            builder = builder.with_exit();
-        }
+    pub fn apply_to_builder(&self, builder: VMBuilder) -> VMBuilder {
+        let mut builder = self.capabilities.apply(builder);
 
         if let Some(fuel) = self.limits.max_fuel {
             builder = builder.max_fuel(fuel);
@@ -190,64 +489,13 @@ impl RunConfig {
         );
         s.push_str("    let mut vm = {\n");
         s.push_str("        let builder = VMBuilder::new(compiled)\n");
-
-        if self.capabilities.core.enabled {
-            s.push_str("            .with_core()\n");
-        }
-
-        if let Some(fs) = &self.capabilities.filesystem {
-            s.push_str(&format!(
-                "            .with_filesystem(hiko_vm::builder::FilesystemPolicy {{\n\
-                 \x20               root: \"{}\".into(),\n\
-                 \x20               allow_read: {},\n\
-                 \x20               allow_write: {},\n\
-                 \x20               allow_delete: {},\n\
-                 \x20           }})\n",
-                fs.root, fs.read, fs.write, fs.delete
-            ));
-        }
-
-        if let Some(http) = &self.capabilities.http {
-            let hosts: Vec<String> = http
-                .allowed_hosts
-                .iter()
-                .map(|h| format!("\"{h}\".into()"))
-                .collect();
-            s.push_str(&format!(
-                "            .with_http(hiko_vm::builder::HttpPolicy {{\n\
-                 \x20               allowed_hosts: vec![{}],\n\
-                 \x20           }})\n",
-                hosts.join(", ")
-            ));
-        }
-
-        if let Some(exec) = &self.capabilities.exec {
-            let cmds: Vec<String> = exec
-                .allowed
-                .iter()
-                .map(|c| format!("\"{c}\".into()"))
-                .collect();
-            s.push_str(&format!(
-                "            .with_exec(hiko_vm::builder::ExecPolicy {{\n\
-                 \x20               allowed: vec![{}],\n\
-                 \x20               timeout: {},\n\
-                 \x20           }})\n",
-                cmds.join(", "),
-                exec.timeout
-            ));
-        }
-
-        if self.capabilities.system.allow_exit {
-            s.push_str("            .with_exit()\n");
-        }
-
+        self.capabilities.emit(&mut s);
         if let Some(fuel) = self.limits.max_fuel {
             s.push_str(&format!("            .max_fuel({fuel})\n"));
         }
         if let Some(heap) = self.limits.max_heap {
             s.push_str(&format!("            .max_heap({heap})\n"));
         }
-
         s.push_str("            ;\n");
         s.push_str("        builder.build()\n");
         s.push_str("    };\n");
@@ -269,28 +517,36 @@ impl RunConfig {
 #[cfg(test)]
 mod tests {
     use super::RunConfig;
+    use std::path::Path;
 
     #[test]
-    fn parse_run_config_with_entry_and_filesystem() {
+    fn parse_run_config_with_entry_and_filesystem_leaf() {
         let config = RunConfig::from_toml(
             r#"
 entry = "scripts/read.hml"
 
-[capabilities.filesystem]
-root = "."
-read = true
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
 "#,
         )
         .expect("run config should parse");
 
         assert_eq!(config.entry.as_deref(), Some("scripts/read.hml"));
-        let fs = config
+        let leaf = config
             .capabilities
             .filesystem
-            .expect("filesystem config missing");
-        assert_eq!(fs.root, ".");
-        assert!(fs.read);
-        assert!(!fs.write);
-        assert!(!fs.delete);
+            .read_file
+            .expect("filesystem read_file config missing");
+        assert!(leaf.enabled);
+        assert_eq!(leaf.folders, vec![".".to_string()]);
+    }
+
+    #[test]
+    fn parse_full_builtin_example_config() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/full-builtin-run-config.example.toml");
+        let text = std::fs::read_to_string(path).expect("example config should exist");
+        RunConfig::from_toml(&text).expect("full builtin example config should parse");
     }
 }

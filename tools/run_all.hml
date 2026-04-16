@@ -1,7 +1,7 @@
 (* tool: run_all
  * description: Run all examples and report per-example timing
  *
- * Requires an exec-enabled VM. The checked-in policy at
+ * Requires an exec-enabled VM. The checked-in run config at
  * `policies/test-runner.policy.toml` already allows:
  *
  *   ./target/release/hiko-cli

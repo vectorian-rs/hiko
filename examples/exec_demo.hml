@@ -1,9 +1,9 @@
 (* exec_demo.hml -- Direct command execution
  *
- * Note: exec requires whitelisted commands via policy.
+ * Note: exec requires whitelisted commands via run config.
  * When running with the full CLI (hiko run), exec is available
  * but no commands are whitelisted by default.
- * Use hiko build-vm with an exec policy to enable specific commands.
+ * Use hiko build-vm with an exec-enabled run config to enable specific commands.
  *
  * This example demonstrates the API shape:
  *
@@ -11,8 +11,9 @@
  *   val _ = println stdout
  *
  * To run with exec enabled, build a VM with:
- *   [exec]
- *   allowed = ["/bin/ls", "/usr/bin/git", "/bin/echo"]
+ *   [capabilities.exec.exec]
+ *   enabled = true
+ *   allowed_commands = ["/bin/ls", "/usr/bin/git", "/bin/echo"]
  *)
 
 (* Show the exec type signature *)
@@ -21,5 +22,5 @@ val _ = println ""
 val _ = println "Usage:"
 val _ = println "  val (code, stdout, stderr) = exec (\"/bin/ls\", [\"-la\"])"
 val _ = println ""
-val _ = println "Requires a policy with [exec] allowed commands."
+val _ = println "Requires a run config with [capabilities.exec.exec] allowed commands."
 val _ = println "See examples/agent.policy.toml"

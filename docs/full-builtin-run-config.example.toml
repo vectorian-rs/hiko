@@ -1,0 +1,289 @@
+# Proposed builtin-granular run config.
+#
+# This file is a reference example for the target capability tree shape we
+# discussed. Leaf names correspond to builtins (or to stable public names when
+# we choose to wrap/rename an internal builtin later).
+#
+# General rules:
+# - Each leaf uses `enabled = true|false`.
+# - Filesystem leaves use `folders = [...]`.
+#   Each listed folder grants recursive access to everything below it.
+# - HTTP leaves use `allowed_hosts = [...]`.
+# - Exec leaves use `allowed_commands = [...]` and `timeout = <seconds>`.
+
+entry = "scripts/example.hml"
+
+[limits]
+max_fuel = 100_000_000
+max_heap = 1_000_000
+
+# Standard input/output builtins.
+[capabilities.stdio.print]
+enabled = true
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.stdio.read_line]
+enabled = true
+
+# Conversion builtins.
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.convert.float_to_string]
+enabled = true
+
+[capabilities.convert.string_to_int]
+enabled = true
+
+[capabilities.convert.char_to_int]
+enabled = true
+
+[capabilities.convert.int_to_char]
+enabled = true
+
+[capabilities.convert.int_to_float]
+enabled = true
+
+# String/text builtins.
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.string.string_contains]
+enabled = true
+
+[capabilities.string.trim]
+enabled = true
+
+[capabilities.string.split]
+enabled = true
+
+[capabilities.string.string_replace]
+enabled = true
+
+[capabilities.string.starts_with]
+enabled = true
+
+[capabilities.string.ends_with]
+enabled = true
+
+[capabilities.string.to_upper]
+enabled = true
+
+[capabilities.string.to_lower]
+enabled = true
+
+[capabilities.string.string_join]
+enabled = true
+
+# Regex builtins.
+[capabilities.regex.regex_match]
+enabled = true
+
+[capabilities.regex.regex_replace]
+enabled = true
+
+# JSON builtins.
+[capabilities.json.json_parse]
+enabled = true
+
+[capabilities.json.json_to_string]
+enabled = true
+
+[capabilities.json.json_get]
+enabled = true
+
+[capabilities.json.json_keys]
+enabled = true
+
+[capabilities.json.json_length]
+enabled = true
+
+# Math builtins.
+[capabilities.math.sqrt]
+enabled = true
+
+[capabilities.math.abs_int]
+enabled = true
+
+[capabilities.math.abs_float]
+enabled = true
+
+[capabilities.math.floor]
+enabled = true
+
+[capabilities.math.ceil]
+enabled = true
+
+# Bytes builtins.
+[capabilities.bytes.bytes_length]
+enabled = true
+
+[capabilities.bytes.bytes_to_string]
+enabled = true
+
+[capabilities.bytes.string_to_bytes]
+enabled = true
+
+[capabilities.bytes.bytes_get]
+enabled = true
+
+[capabilities.bytes.bytes_slice]
+enabled = true
+
+# Hash and randomness builtins.
+[capabilities.hash.blake3]
+enabled = true
+
+[capabilities.random.random_bytes]
+enabled = true
+
+[capabilities.random.rng_seed]
+enabled = true
+
+[capabilities.random.rng_bytes]
+enabled = true
+
+[capabilities.random.rng_int]
+enabled = true
+
+# Environment and time builtins.
+[capabilities.env.getenv]
+enabled = true
+
+[capabilities.time.epoch]
+enabled = true
+
+[capabilities.time.epoch_ms]
+enabled = true
+
+[capabilities.time.monotonic_ms]
+enabled = true
+
+[capabilities.time.sleep]
+enabled = true
+
+# Structured concurrency builtins.
+[capabilities.process.spawn]
+enabled = true
+
+[capabilities.process.await_process]
+enabled = true
+
+# These exist in the runtime today but are not part of the default public
+# user model. They are listed here for completeness.
+[capabilities.process.send_message]
+enabled = true
+
+[capabilities.process.receive_message]
+enabled = true
+
+# Filesystem builtins.
+# `folders` are recursive directory allowlists for that builtin.
+
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.read_file_bytes]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.write_file]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.file_exists]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.list_dir]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.remove_file]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.create_dir]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.is_dir]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.is_file]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.path_join]
+enabled = true
+folders = ["./workspace"]
+
+# Hashline-style tagged read builtin.
+[capabilities.filesystem.read_file_tagged]
+enabled = true
+folders = ["./workspace"]
+
+# Hashline edit builtin.
+[capabilities.filesystem.edit_file_tagged]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.glob]
+enabled = true
+folders = ["./workspace"]
+
+[capabilities.filesystem.walk_dir]
+enabled = true
+folders = ["./workspace"]
+
+# HTTP builtins.
+# `allowed_hosts` are host allowlists enforced for each builtin.
+
+[capabilities.http.http_get]
+enabled = true
+allowed_hosts = ["api.example.com"]
+
+[capabilities.http.http]
+enabled = true
+allowed_hosts = ["api.example.com"]
+
+[capabilities.http.http_json]
+enabled = true
+allowed_hosts = ["api.example.com"]
+
+[capabilities.http.http_msgpack]
+enabled = true
+allowed_hosts = ["api.example.com"]
+
+[capabilities.http.http_bytes]
+enabled = true
+allowed_hosts = ["api.example.com"]
+
+# Command execution builtin.
+# `allowed_commands` are the only commands that may be launched.
+# `timeout` is in seconds.
+
+[capabilities.exec.exec]
+enabled = true
+allowed_commands = ["git", "cargo", "terraform"]
+timeout = 30
+
+# System/testing builtins.
+[capabilities.system.exit]
+enabled = true
+
+[capabilities.testing.panic]
+enabled = true
+
+[capabilities.testing.assert]
+enabled = true
+
+[capabilities.testing.assert_eq]
+enabled = true

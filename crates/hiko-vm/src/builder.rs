@@ -2,6 +2,7 @@ use crate::builtins;
 use crate::value::BuiltinFn;
 use crate::vm::VM;
 use hiko_compile::chunk::CompiledProgram;
+use std::collections::HashMap;
 
 /// Policy for filesystem access.
 pub struct FilesystemPolicy {
@@ -30,7 +31,9 @@ pub struct VMBuilder {
     exec_allowed: Vec<String>,
     exec_timeout: u64,
     fs_root: String,
+    fs_builtin_folders: HashMap<String, Vec<String>>,
     http_allowed_hosts: Vec<String>,
+    http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
     max_heap: Option<usize>,
     max_fuel: Option<u64>,
 }
@@ -50,10 +53,49 @@ impl VMBuilder {
             exec_allowed: Vec::new(),
             exec_timeout: 30,
             fs_root: String::new(),
+            fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
+            http_allowed_hosts_by_builtin: HashMap::new(),
             max_heap: None,
             max_fuel: None,
         }
+    }
+
+    fn has_builtin(&self, name: &str) -> bool {
+        self.builtins.iter().any(|(existing, _)| *existing == name)
+    }
+
+    /// Register a builtin by its public name.
+    pub fn register_builtin_name(mut self, name: &'static str) -> Self {
+        if !self.has_builtin(name)
+            && let Some(func) = find_builtin(name)
+        {
+            self.builtins.push((name, func));
+        }
+        self
+    }
+
+    /// Register a filesystem builtin with a per-builtin folder allowlist.
+    pub fn allow_filesystem_builtin(mut self, name: &'static str, folders: Vec<String>) -> Self {
+        if !self.has_builtin(name)
+            && let Some(func) = find_builtin(name)
+        {
+            self.builtins.push((name, func));
+        }
+        self.fs_builtin_folders.insert(name.to_string(), folders);
+        self
+    }
+
+    /// Register an HTTP builtin with a per-builtin host allowlist.
+    pub fn allow_http_builtin(mut self, name: &'static str, allowed_hosts: Vec<String>) -> Self {
+        if !self.has_builtin(name)
+            && let Some(func) = find_builtin(name)
+        {
+            self.builtins.push((name, func));
+        }
+        self.http_allowed_hosts_by_builtin
+            .insert(name.to_string(), allowed_hosts);
+        self
     }
 
     /// Include all builtins with no restrictions (current behavior).
@@ -120,10 +162,8 @@ impl VMBuilder {
             "assert",
             "assert_eq",
         ];
-        for entry in builtins::builtin_entries() {
-            if core_names.contains(&entry.0) {
-                self.builtins.push(entry);
-            }
+        for name in core_names {
+            self = self.register_builtin_name(name);
         }
         self
     }
@@ -133,6 +173,7 @@ impl VMBuilder {
         self.fs_root = policy.root.clone();
         let fs_read = [
             "read_file",
+            "read_file_bytes",
             "file_exists",
             "is_dir",
             "is_file",
@@ -145,12 +186,20 @@ impl VMBuilder {
         let fs_write = ["write_file", "create_dir", "edit_file_tagged"];
         let fs_delete = ["remove_file"];
 
-        for entry in builtins::builtin_entries() {
-            let included = (policy.allow_read && fs_read.contains(&entry.0))
-                || (policy.allow_write && fs_write.contains(&entry.0))
-                || (policy.allow_delete && fs_delete.contains(&entry.0));
-            if included {
-                self.builtins.push(entry);
+        let folders = vec![policy.root.clone()];
+        for name in fs_read {
+            if policy.allow_read {
+                self = self.allow_filesystem_builtin(name, folders.clone());
+            }
+        }
+        for name in fs_write {
+            if policy.allow_write {
+                self = self.allow_filesystem_builtin(name, folders.clone());
+            }
+        }
+        for name in fs_delete {
+            if policy.allow_delete {
+                self = self.allow_filesystem_builtin(name, folders.clone());
             }
         }
         self
@@ -166,30 +215,22 @@ impl VMBuilder {
             "http_msgpack",
             "http_bytes",
         ];
-        for entry in builtins::builtin_entries() {
-            if http_names.contains(&entry.0) {
-                self.builtins.push(entry);
-            }
+        for name in http_names {
+            self = self.allow_http_builtin(name, policy.allowed_hosts.clone());
         }
         self
     }
 
     /// Include the exit builtin.
-    pub fn with_exit(mut self) -> Self {
-        if let Some(f) = find_builtin("exit") {
-            self.builtins.push(("exit", f));
-        }
-        self
+    pub fn with_exit(self) -> Self {
+        self.register_builtin_name("exit")
     }
 
     /// Include exec builtin with whitelisted commands and timeout.
     pub fn with_exec(mut self, policy: ExecPolicy) -> Self {
         self.exec_allowed = policy.allowed;
         self.exec_timeout = policy.timeout;
-        if let Some(f) = find_builtin("exec") {
-            self.builtins.push(("exec", f));
-        }
-        self
+        self.register_builtin_name("exec")
     }
 
     /// Register a custom host function.
@@ -229,7 +270,9 @@ impl VMBuilder {
         vm.set_exec_allowed(self.exec_allowed);
         vm.set_exec_timeout(self.exec_timeout);
         vm.set_fs_root(self.fs_root);
+        vm.set_fs_builtin_folders(self.fs_builtin_folders);
         vm.set_http_allowed_hosts(self.http_allowed_hosts);
+        vm.set_http_allowed_hosts_by_builtin(self.http_allowed_hosts_by_builtin);
 
         if let Some(max) = self.max_heap {
             vm.set_max_heap(max);

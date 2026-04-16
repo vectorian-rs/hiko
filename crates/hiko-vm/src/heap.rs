@@ -1,5 +1,6 @@
 use crate::value::{GcRef, HeapObject};
 use std::path::{Path, PathBuf};
+use std::{collections::HashMap, fs};
 
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
@@ -10,8 +11,12 @@ pub struct Heap {
     max_objects: Option<usize>,
     /// Filesystem root for path enforcement (empty = unrestricted).
     pub fs_root: String,
+    /// Per-builtin filesystem folder allowlists.
+    pub fs_builtin_folders: HashMap<String, Vec<String>>,
     /// Allowed HTTP hosts (empty = unrestricted).
     pub http_allowed_hosts: Vec<String>,
+    /// Per-builtin HTTP host allowlists.
+    pub http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
 }
 
 impl Default for Heap {
@@ -30,13 +35,57 @@ impl Heap {
             gc_threshold: 1024,
             max_objects: None,
             fs_root: String::new(),
+            fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
+            http_allowed_hosts_by_builtin: HashMap::new(),
         }
     }
 
     /// Check if a path is within the allowed filesystem root.
     pub fn check_fs_path(&self, path: &str) -> Result<PathBuf, String> {
         resolve_fs_path(&self.fs_root, path)
+    }
+
+    /// Check if a path is allowed for a specific filesystem builtin.
+    pub fn check_fs_path_for(&self, builtin: &str, path: &str) -> Result<PathBuf, String> {
+        if self.fs_builtin_folders.is_empty() {
+            return resolve_fs_path(&self.fs_root, path);
+        }
+
+        let folders = self
+            .fs_builtin_folders
+            .get(builtin)
+            .ok_or_else(|| format!("builtin '{builtin}' has no filesystem permission"))?;
+        resolve_fs_path_in_folders(folders, path).map_err(|e| format!("{builtin}: {e}"))
+    }
+
+    /// Resolve the configured folder roots for a specific filesystem builtin.
+    pub fn allowed_fs_folders_for(&self, builtin: &str) -> Result<Vec<PathBuf>, String> {
+        if self.fs_builtin_folders.is_empty() {
+            if self.fs_root.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![
+                fs::canonicalize(&self.fs_root)
+                    .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?,
+            ]);
+        }
+
+        let folders = self
+            .fs_builtin_folders
+            .get(builtin)
+            .ok_or_else(|| format!("builtin '{builtin}' has no filesystem permission"))?;
+        if folders.is_empty() {
+            return Err(format!("builtin '{builtin}' has no allowed folders"));
+        }
+
+        folders
+            .iter()
+            .map(|folder| {
+                fs::canonicalize(folder)
+                    .map_err(|e| format!("cannot resolve folder '{}': {e}", folder))
+            })
+            .collect()
     }
 
     /// Check if a URL's host is allowed.
@@ -56,6 +105,28 @@ impl Heap {
             Err(format!(
                 "host '{}' not in allowed hosts: {:?}",
                 host, self.http_allowed_hosts
+            ))
+        }
+    }
+
+    /// Check if a URL's host is allowed for a specific HTTP builtin.
+    pub fn check_http_host_for(&self, builtin: &str, url: &str) -> Result<(), String> {
+        if self.http_allowed_hosts_by_builtin.is_empty() {
+            return self.check_http_host(url);
+        }
+
+        let allowed_hosts = self
+            .http_allowed_hosts_by_builtin
+            .get(builtin)
+            .ok_or_else(|| format!("builtin '{builtin}' has no HTTP permission"))?;
+
+        let host = extract_url_host(url);
+        if allowed_hosts.iter().any(|h| h == &host) {
+            Ok(())
+        } else {
+            Err(format!(
+                "host '{}' not in allowed hosts for '{}': {:?}",
+                host, builtin, allowed_hosts
             ))
         }
     }
@@ -189,6 +260,31 @@ pub(crate) fn resolve_fs_path(fs_root: &str, path: &str) -> Result<PathBuf, Stri
     Ok(resolved)
 }
 
+pub(crate) fn resolve_fs_path_in_folders(folders: &[String], path: &str) -> Result<PathBuf, String> {
+    if folders.is_empty() {
+        return Err("no allowed folders configured".into());
+    }
+
+    let mut last_err = None;
+    for folder in folders {
+        match resolve_fs_path(folder, path) {
+            Ok(resolved) => return Ok(resolved),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| "path is outside allowed folders".into()))
+}
+
+fn extract_url_host(url: &str) -> String {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|host_port| host_port.split(':').next())
+        .unwrap_or("")
+        .to_string()
+}
+
 fn canonicalize_with_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
     if path.exists() {
         return std::fs::canonicalize(path);
@@ -277,5 +373,50 @@ mod tests {
         assert!(err.contains("outside allowed root"));
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn test_check_fs_path_for_uses_builtin_folders() {
+        let base = temp_dir("fs-builtin-folders");
+        let allowed = base.join("allowed");
+        let blocked = base.join("blocked");
+        fs::create_dir_all(&allowed).unwrap();
+        fs::create_dir_all(&blocked).unwrap();
+        fs::write(allowed.join("file.txt"), "ok").unwrap();
+
+        let mut heap = Heap::new();
+        heap.fs_builtin_folders.insert(
+            "read_file".to_string(),
+            vec![allowed.to_string_lossy().to_string()],
+        );
+
+        let resolved = heap
+            .check_fs_path_for("read_file", "file.txt")
+            .expect("file under allowed folder should resolve");
+        assert!(resolved.ends_with("allowed/file.txt"));
+
+        let err = heap
+            .check_fs_path_for("read_file", blocked.join("file.txt").to_string_lossy().as_ref())
+            .unwrap_err();
+        assert!(err.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn test_check_http_host_for_uses_builtin_hosts() {
+        let mut heap = Heap::new();
+        heap.http_allowed_hosts_by_builtin.insert(
+            "http_get".to_string(),
+            vec!["api.example.com".to_string()],
+        );
+
+        heap.check_http_host_for("http_get", "https://api.example.com/v1/ok")
+            .expect("allowed host should pass");
+
+        let err = heap
+            .check_http_host_for("http_get", "https://evil.example.com/nope")
+            .unwrap_err();
+        assert!(err.contains("not in allowed hosts"));
     }
 }

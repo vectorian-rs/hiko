@@ -275,7 +275,7 @@ pub(crate) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String
         _ => return Err("read_file: expected String".into()),
     };
     let checked_path = heap
-        .check_fs_path(&path)
+        .check_fs_path_for("read_file", &path)
         .map_err(|e| format!("read_file: {e}"))?;
     let contents = std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file: {e}"))?;
     Ok(Value::Heap(heap.alloc(HeapObject::String(contents))))
@@ -290,7 +290,7 @@ pub(crate) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
         _ => return Err("read_file_bytes: expected String".into()),
     };
     let checked_path = heap
-        .check_fs_path(&path)
+        .check_fs_path_for("read_file_bytes", &path)
         .map_err(|e| format!("read_file_bytes: {e}"))?;
     let contents = std::fs::read(&checked_path).map_err(|e| format!("read_file_bytes: {e}"))?;
     Ok(Value::Heap(heap.alloc(HeapObject::Bytes(contents))))
@@ -319,7 +319,7 @@ pub(crate) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         _ => return Err("write_file: expected String".into()),
     };
     let checked_path = heap
-        .check_fs_path(&path)
+        .check_fs_path_for("write_file", &path)
         .map_err(|e| format!("write_file: {e}"))?;
     std::fs::write(&checked_path, &contents).map_err(|e| format!("write_file: {e}"))?;
     Ok(Value::Unit)
@@ -330,7 +330,7 @@ pub(crate) fn file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
                 let checked_path = heap
-                    .check_fs_path(s)
+                    .check_fs_path_for("file_exists", s)
                     .map_err(|e| format!("file_exists: {e}"))?;
                 Ok(Value::Bool(checked_path.exists()))
             }
@@ -349,7 +349,7 @@ pub(crate) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         _ => return Err("list_dir: expected String".into()),
     };
     let checked_path = heap
-        .check_fs_path(&path)
+        .check_fs_path_for("list_dir", &path)
         .map_err(|e| format!("list_dir: {e}"))?;
     let entries: Vec<Value> = std::fs::read_dir(&checked_path)
         .map_err(|e| format!("list_dir: {e}"))?
@@ -370,7 +370,7 @@ pub(crate) fn remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
                 let checked_path = heap
-                    .check_fs_path(s)
+                    .check_fs_path_for("remove_file", s)
                     .map_err(|e| format!("remove_file: {e}"))?;
                 std::fs::remove_file(&checked_path).map_err(|e| format!("remove_file: {e}"))?;
                 Ok(Value::Unit)
@@ -386,7 +386,7 @@ pub(crate) fn create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
                 let checked_path = heap
-                    .check_fs_path(s)
+                    .check_fs_path_for("create_dir", s)
                     .map_err(|e| format!("create_dir: {e}"))?;
                 std::fs::create_dir_all(&checked_path).map_err(|e| format!("create_dir: {e}"))?;
                 Ok(Value::Unit)
@@ -401,7 +401,9 @@ pub(crate) fn is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
-                let checked_path = heap.check_fs_path(s).map_err(|e| format!("is_dir: {e}"))?;
+                let checked_path = heap
+                    .check_fs_path_for("is_dir", s)
+                    .map_err(|e| format!("is_dir: {e}"))?;
                 Ok(Value::Bool(checked_path.is_dir()))
             }
             _ => Err("is_dir: expected String".into()),
@@ -414,7 +416,9 @@ pub(crate) fn is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => {
-                let checked_path = heap.check_fs_path(s).map_err(|e| format!("is_file: {e}"))?;
+                let checked_path = heap
+                    .check_fs_path_for("is_file", s)
+                    .map_err(|e| format!("is_file: {e}"))?;
                 Ok(Value::Bool(checked_path.is_file()))
             }
             _ => Err("is_file: expected String".into()),
@@ -503,7 +507,7 @@ pub(crate) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     };
 
     let checked_path = heap
-        .check_fs_path(path)
+        .check_fs_path_for("read_file_tagged", path)
         .map_err(|e| format!("read_file_tagged: {e}"))?;
     let content =
         std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?;
@@ -559,7 +563,7 @@ pub(crate) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
 
     // Read the file
     let checked_path = heap
-        .check_fs_path(&path)
+        .check_fs_path_for("edit_file_tagged", &path)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
     let content =
         std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
@@ -688,44 +692,47 @@ pub(crate) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         },
         _ => return Err("glob: expected String".into()),
     };
-    let sandboxed_pattern =
-        sandbox_glob_pattern(&pattern, heap).map_err(|e| format!("glob: {e}"))?;
+    let mut seen = std::collections::BTreeSet::new();
     let mut paths = Vec::new();
-    for entry in glob::glob(&sandboxed_pattern).map_err(|e| format!("glob: {e}"))? {
-        let path = entry.map_err(|e| format!("glob: {e}"))?;
-        let checked = heap
-            .check_fs_path(path.to_string_lossy().as_ref())
-            .map_err(|e| format!("glob: {e}"))?;
-        paths.push(Value::Heap(
-            heap.alloc(HeapObject::String(checked.to_string_lossy().to_string())),
-        ));
+    let roots = heap
+        .allowed_fs_folders_for("glob")
+        .map_err(|e| format!("glob: {e}"))?;
+
+    if roots.is_empty() {
+        for entry in glob::glob(&pattern).map_err(|e| format!("glob: {e}"))? {
+            let path = entry.map_err(|e| format!("glob: {e}"))?;
+            let text = path.to_string_lossy().to_string();
+            if seen.insert(text.clone()) {
+                paths.push(Value::Heap(heap.alloc(HeapObject::String(text))));
+            }
+        }
+    } else if std::path::Path::new(&pattern).is_absolute() {
+        for entry in glob::glob(&pattern).map_err(|e| format!("glob: {e}"))? {
+            let path = entry.map_err(|e| format!("glob: {e}"))?;
+            let checked = heap
+                .check_fs_path_for("glob", path.to_string_lossy().as_ref())
+                .map_err(|e| format!("glob: {e}"))?;
+            let text = checked.to_string_lossy().to_string();
+            if seen.insert(text.clone()) {
+                paths.push(Value::Heap(heap.alloc(HeapObject::String(text))));
+            }
+        }
+    } else {
+        for root in roots {
+            let rooted_pattern = root.join(&pattern).to_string_lossy().to_string();
+            for entry in glob::glob(&rooted_pattern).map_err(|e| format!("glob: {e}"))? {
+                let path = entry.map_err(|e| format!("glob: {e}"))?;
+                let checked = heap
+                    .check_fs_path_for("glob", path.to_string_lossy().as_ref())
+                    .map_err(|e| format!("glob: {e}"))?;
+                let text = checked.to_string_lossy().to_string();
+                if seen.insert(text.clone()) {
+                    paths.push(Value::Heap(heap.alloc(HeapObject::String(text))));
+                }
+            }
+        }
     }
     Ok(alloc_list(heap, paths))
-}
-
-fn sandbox_glob_pattern(pattern: &str, heap: &Heap) -> Result<String, String> {
-    if heap.fs_root.is_empty() {
-        return Ok(pattern.to_string());
-    }
-
-    let anchor = glob_anchor(pattern);
-    heap.check_fs_path(if anchor.is_empty() { "." } else { anchor })?;
-
-    let root = heap.check_fs_path(".")?;
-    if std::path::Path::new(pattern).is_absolute() {
-        Ok(pattern.to_string())
-    } else {
-        Ok(root.join(pattern).to_string_lossy().to_string())
-    }
-}
-
-fn glob_anchor(pattern: &str) -> &str {
-    let meta_index = pattern
-        .char_indices()
-        .find(|(_, ch)| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}'))
-        .map(|(idx, _)| idx)
-        .unwrap_or(pattern.len());
-    &pattern[..meta_index]
 }
 
 /// Recursive directory walk. Takes a directory path, returns all file paths recursively.
@@ -738,14 +745,14 @@ pub(crate) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         _ => return Err("walk_dir: expected String".into()),
     };
     let checked_dir = heap
-        .check_fs_path(&dir)
+        .check_fs_path_for("walk_dir", &dir)
         .map_err(|e| format!("walk_dir: {e}"))?;
     fn walk(dir: &std::path::Path, heap: &Heap, out: &mut Vec<String>) -> Result<(), String> {
         let entries = std::fs::read_dir(dir).map_err(|e| format!("walk_dir: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("walk_dir: {e}"))?;
             let checked_path = heap
-                .check_fs_path(entry.path().to_string_lossy().as_ref())
+                .check_fs_path_for("walk_dir", entry.path().to_string_lossy().as_ref())
                 .map_err(|e| format!("walk_dir: {e}"))?;
             if checked_path.is_dir() {
                 walk(&checked_path, heap, out)?;
@@ -1244,7 +1251,7 @@ fn do_http_request(
     name: &str,
     heap: &mut Heap,
 ) -> Result<(Value, Value, Box<dyn std::io::Read + Send>), String> {
-    heap.check_http_host(url)
+    heap.check_http_host_for(name, url)
         .map_err(|e| format!("{name}: {e}"))?;
     let response = crate::io_backend::dispatch_ureq(method, url, headers, body)
         .map_err(|e| format!("{name}: {e}"))?;

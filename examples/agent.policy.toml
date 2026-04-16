@@ -1,16 +1,46 @@
-# Policy for a read-only filesystem agent.
-# This agent can read files and do string processing,
-# but CANNOT write, delete, or make HTTP requests.
+# Run config for a read-only filesystem agent.
+# This agent can read files and do basic text processing,
+# but cannot write, delete, or make HTTP requests.
 
 [limits]
 max_fuel = 10_000_000
 max_heap = 100_000
 
-[capabilities.core]
+[capabilities.stdio.println]
 enabled = true
 
-[capabilities.filesystem]
-root = "."
-read = true
-write = false
-delete = false
+[capabilities.string.trim]
+enabled = true
+
+[capabilities.string.split]
+enabled = true
+
+[capabilities.string.string_replace]
+enabled = true
+
+[capabilities.hash.blake3]
+enabled = true
+
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_tagged]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.file_exists]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.list_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.glob]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.walk_dir]
+enabled = true
+folders = ["."]

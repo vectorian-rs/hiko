@@ -128,8 +128,12 @@ pub struct VM {
     exec_timeout: u64,
     /// Filesystem root for path enforcement. Empty means no restriction.
     fs_root: String,
+    /// Per-builtin filesystem folder allowlists.
+    fs_builtin_folders: HashMap<String, Vec<String>>,
     /// Allowed HTTP hosts. Empty means no restriction.
     http_allowed_hosts: Vec<String>,
+    /// Per-builtin HTTP host allowlists.
+    http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
@@ -257,7 +261,9 @@ impl VM {
             exec_allowed: Vec::new(),
             exec_timeout: 30,
             fs_root: String::new(),
+            fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
+            http_allowed_hosts_by_builtin: HashMap::new(),
             exec_builtin_id: None,
             print_builtin_id: None,
             println_builtin_id: None,
@@ -387,7 +393,9 @@ impl VM {
         child.set_exec_allowed(self.exec_allowed.clone());
         child.set_exec_timeout(self.exec_timeout);
         child.set_fs_root(self.fs_root.clone());
+        child.set_fs_builtin_folders(self.fs_builtin_folders.clone());
         child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
+        child.set_http_allowed_hosts_by_builtin(self.http_allowed_hosts_by_builtin.clone());
         if self.output.is_some() {
             child.enable_output_capture();
         }
@@ -426,10 +434,25 @@ impl VM {
         self.heap.fs_root = root;
     }
 
+    /// Set per-builtin filesystem folder allowlists.
+    pub fn set_fs_builtin_folders(&mut self, folders: HashMap<String, Vec<String>>) {
+        self.fs_builtin_folders = folders.clone();
+        self.heap.fs_builtin_folders = folders;
+    }
+
     /// Set allowed HTTP hosts.
     pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
         self.http_allowed_hosts = hosts.clone();
         self.heap.http_allowed_hosts = hosts;
+    }
+
+    /// Set per-builtin HTTP host allowlists.
+    pub fn set_http_allowed_hosts_by_builtin(
+        &mut self,
+        hosts: HashMap<String, Vec<String>>,
+    ) {
+        self.http_allowed_hosts_by_builtin = hosts.clone();
+        self.heap.http_allowed_hosts_by_builtin = hosts;
     }
 
     /// Check if a filesystem path is within the allowed root.
@@ -920,7 +943,7 @@ impl VM {
                     "http_get",
                 )
                 .map_err(|msg| RuntimeError { message: msg })?;
-                self.heap.check_http_host(&url).map_err(|e| RuntimeError {
+                self.heap.check_http_host_for("http_get", &url).map_err(|e| RuntimeError {
                     message: format!("http_get: {e}"),
                 })?;
                 Some(crate::io_backend::IoRequest::HttpGet { url })
@@ -929,8 +952,9 @@ impl VM {
                 let (method, url, headers, body) =
                     crate::builtins::extract_http_args(args, &self.heap, "http")
                         .map_err(|msg| RuntimeError { message: msg })?;
-                self.heap.check_http_host(&url).map_err(|e| RuntimeError {
-                    message: format!("http: {e}"),
+                let builtin_name = self.builtins[builtin_id as usize].name;
+                self.heap.check_http_host_for(builtin_name, &url).map_err(|e| RuntimeError {
+                    message: format!("{builtin_name}: {e}"),
                 })?;
                 Some(crate::io_backend::IoRequest::Http {
                     method,
@@ -946,7 +970,10 @@ impl VM {
                     "read_file",
                 )
                 .map_err(|msg| RuntimeError { message: msg })?;
-                let checked = self.heap.check_fs_path(&path).map_err(|e| RuntimeError {
+                let checked = self
+                    .heap
+                    .check_fs_path_for("read_file", &path)
+                    .map_err(|e| RuntimeError {
                     message: format!("read_file: {e}"),
                 })?;
                 Some(crate::io_backend::IoRequest::ReadFile {

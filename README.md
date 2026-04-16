@@ -274,14 +274,12 @@ cat > reader.toml << 'EOF'
 max_fuel = 10_000_000
 max_heap = 500_000
 
-[capabilities.core]
+[capabilities.stdio.println]
 enabled = true
 
-[capabilities.filesystem]
-root = "."
-read = true
-write = false
-delete = false
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
 EOF
 
 # Generate a config-locked VM binary
@@ -302,20 +300,23 @@ Each run config defines a capability boundary enforced at compile time. Builtins
 max_fuel = 50_000_000
 max_heap = 1_000_000
 
-[capabilities.core]
+[capabilities.stdio.println]
 enabled = true
 
-[capabilities.filesystem]
-root = "/deploy"
-read = true
-write = true
-delete = false
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["/deploy"]
 
-[capabilities.http]
+[capabilities.filesystem.write_file]
+enabled = true
+folders = ["/deploy"]
+
+[capabilities.http.http]
+enabled = true
 allowed_hosts = ["deploy.internal.example.com"]
 
-[capabilities.system]
-allow_exit = true
+[capabilities.system.exit]
+enabled = true
 ```
 
 `hiko build-vm` reads the run config TOML once and generates a standalone Rust crate (`hiko-vm-{config-name}/`) with the config compiled into `src/main.rs` as hardcoded VMBuilder calls. The generated binary has no runtime config files — the config is the code.

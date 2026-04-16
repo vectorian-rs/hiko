@@ -2,15 +2,42 @@
 max_fuel = 100_000_000
 max_heap = 1_000_000
 
-[capabilities.core]
+[capabilities.stdio.println]
 enabled = true
 
-[capabilities.filesystem]
-root = "."
-read = true
-write = false
-delete = false
+[capabilities.convert.int_to_string]
+enabled = true
 
-[capabilities.exec]
-allowed = ["./target/release/hiko-cli"]
+[capabilities.string.starts_with]
+enabled = true
+
+[capabilities.string.ends_with]
+enabled = true
+
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.string.trim]
+enabled = true
+
+[capabilities.env.getenv]
+enabled = true
+
+[capabilities.time.monotonic_ms]
+enabled = true
+
+[capabilities.filesystem.file_exists]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.glob]
+enabled = true
+folders = ["."]
+
+[capabilities.exec.exec]
+enabled = true
+allowed_commands = ["./target/release/hiko-cli", "./target/release/hiko-vm-hiko-run-all-policy"]
 timeout = 30
