@@ -243,20 +243,20 @@ Run configs define VM capabilities at compile time for generated binaries. A con
 max_fuel = 10_000_000
 max_heap = 500_000
 
-[core]
+[capabilities.core]
 enabled = true
 
-[filesystem]
+[capabilities.filesystem]
 root = "."
 read = true
 write = false
 delete = false
 
-[exec]
+[capabilities.exec]
 allowed = ["/usr/bin/mise"]
 timeout = 30
 
-[http]
+[capabilities.http]
 allowed_hosts = ["api.example.com"]
 ```
 

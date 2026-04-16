@@ -2,15 +2,15 @@
 max_fuel = 100_000_000
 max_heap = 1_000_000
 
-[core]
+[capabilities.core]
 enabled = true
 
-[filesystem]
+[capabilities.filesystem]
 root = "."
 read = true
 write = false
 delete = false
 
-[exec]
+[capabilities.exec]
 allowed = ["./target/release/hiko-cli"]
 timeout = 30

@@ -6,10 +6,10 @@
 max_fuel = 10_000_000
 max_heap = 100_000
 
-[core]
+[capabilities.core]
 enabled = true
 
-[filesystem]
+[capabilities.filesystem]
 root = "."
 read = true
 write = false

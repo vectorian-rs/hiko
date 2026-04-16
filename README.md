@@ -274,10 +274,10 @@ cat > reader.toml << 'EOF'
 max_fuel = 10_000_000
 max_heap = 500_000
 
-[core]
+[capabilities.core]
 enabled = true
 
-[filesystem]
+[capabilities.filesystem]
 root = "."
 read = true
 write = false
@@ -302,19 +302,19 @@ Each run config defines a capability boundary enforced at compile time. Builtins
 max_fuel = 50_000_000
 max_heap = 1_000_000
 
-[core]
+[capabilities.core]
 enabled = true
 
-[filesystem]
+[capabilities.filesystem]
 root = "/deploy"
 read = true
 write = true
 delete = false
 
-[http]
+[capabilities.http]
 allowed_hosts = ["deploy.internal.example.com"]
 
-[system]
+[capabilities.system]
 allow_exit = true
 ```
 

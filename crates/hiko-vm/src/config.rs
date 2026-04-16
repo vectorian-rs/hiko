@@ -15,12 +15,7 @@ pub struct RunConfig {
     #[serde(default)]
     pub limits: Limits,
     #[serde(default)]
-    pub core: CorePolicy,
-    pub filesystem: Option<FsPolicy>,
-    pub http: Option<HttpPolicy>,
-    pub exec: Option<ExecPolicy>,
-    #[serde(default)]
-    pub system: SystemPolicy,
+    pub capabilities: Capabilities,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -28,6 +23,18 @@ pub struct RunConfig {
 pub struct Limits {
     pub max_fuel: Option<u64>,
     pub max_heap: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Capabilities {
+    #[serde(default)]
+    pub core: CorePolicy,
+    pub filesystem: Option<FsPolicy>,
+    pub http: Option<HttpPolicy>,
+    pub exec: Option<ExecPolicy>,
+    #[serde(default)]
+    pub system: SystemPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,11 +104,7 @@ impl Default for RunConfig {
         Self {
             entry: None,
             limits: Limits::default(),
-            core: CorePolicy::default(),
-            filesystem: None,
-            http: None,
-            exec: None,
-            system: SystemPolicy::default(),
+            capabilities: Capabilities::default(),
         }
     }
 }
@@ -114,11 +117,11 @@ impl RunConfig {
 
     /// Configure a VM builder with this run config.
     pub fn apply_to_builder(&self, mut builder: VMBuilder) -> VMBuilder {
-        if self.core.enabled {
+        if self.capabilities.core.enabled {
             builder = builder.with_core();
         }
 
-        if let Some(fs) = &self.filesystem {
+        if let Some(fs) = &self.capabilities.filesystem {
             builder = builder.with_filesystem(FilesystemPolicy {
                 root: fs.root.clone(),
                 allow_read: fs.read,
@@ -127,20 +130,20 @@ impl RunConfig {
             });
         }
 
-        if let Some(http) = &self.http {
+        if let Some(http) = &self.capabilities.http {
             builder = builder.with_http(VmHttpPolicy {
                 allowed_hosts: http.allowed_hosts.clone(),
             });
         }
 
-        if let Some(exec) = &self.exec {
+        if let Some(exec) = &self.capabilities.exec {
             builder = builder.with_exec(VmExecPolicy {
                 allowed: exec.allowed.clone(),
                 timeout: exec.timeout,
             });
         }
 
-        if self.system.allow_exit {
+        if self.capabilities.system.allow_exit {
             builder = builder.with_exit();
         }
 
@@ -188,11 +191,11 @@ impl RunConfig {
         s.push_str("    let mut vm = {\n");
         s.push_str("        let builder = VMBuilder::new(compiled)\n");
 
-        if self.core.enabled {
+        if self.capabilities.core.enabled {
             s.push_str("            .with_core()\n");
         }
 
-        if let Some(fs) = &self.filesystem {
+        if let Some(fs) = &self.capabilities.filesystem {
             s.push_str(&format!(
                 "            .with_filesystem(hiko_vm::builder::FilesystemPolicy {{\n\
                  \x20               root: \"{}\".into(),\n\
@@ -204,7 +207,7 @@ impl RunConfig {
             ));
         }
 
-        if let Some(http) = &self.http {
+        if let Some(http) = &self.capabilities.http {
             let hosts: Vec<String> = http
                 .allowed_hosts
                 .iter()
@@ -218,7 +221,7 @@ impl RunConfig {
             ));
         }
 
-        if let Some(exec) = &self.exec {
+        if let Some(exec) = &self.capabilities.exec {
             let cmds: Vec<String> = exec
                 .allowed
                 .iter()
@@ -234,7 +237,7 @@ impl RunConfig {
             ));
         }
 
-        if self.system.allow_exit {
+        if self.capabilities.system.allow_exit {
             s.push_str("            .with_exit()\n");
         }
 
@@ -273,7 +276,7 @@ mod tests {
             r#"
 entry = "scripts/read.hml"
 
-[filesystem]
+[capabilities.filesystem]
 root = "."
 read = true
 "#,
@@ -281,7 +284,10 @@ read = true
         .expect("run config should parse");
 
         assert_eq!(config.entry.as_deref(), Some("scripts/read.hml"));
-        let fs = config.filesystem.expect("filesystem config missing");
+        let fs = config
+            .capabilities
+            .filesystem
+            .expect("filesystem config missing");
         assert_eq!(fs.root, ".");
         assert!(fs.read);
         assert!(!fs.write);
