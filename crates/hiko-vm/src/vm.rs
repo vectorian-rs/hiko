@@ -176,6 +176,7 @@ pub enum RuntimeRequest {
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Pid(x), Value::Pid(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,
@@ -568,6 +569,7 @@ impl VM {
     fn display_value(&self, v: &Value) -> String {
         match v {
             Value::Builtin(id) => format!("<builtin:{}>", self.builtins[*id as usize].name),
+            Value::Pid(pid) => format!("<pid {pid}>"),
             Value::Heap(r) => match self.heap.get(*r) {
                 Ok(HeapObject::String(s)) => s.clone(),
                 Ok(HeapObject::Tuple(elems)) => {
@@ -831,8 +833,8 @@ impl VM {
         if self.await_builtin_id == Some(builtin_id) {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
-                Value::Int(pid) => {
-                    self.pending_runtime_request = Some(RuntimeRequest::Await(pid as u64));
+                Value::Pid(pid) => {
+                    self.pending_runtime_request = Some(RuntimeRequest::Await(pid));
                     self.stack.truncate(callee_pos);
                     self.push(Value::Unit)?;
                     return Err(RuntimeError {
@@ -841,7 +843,7 @@ impl VM {
                 }
                 _ => {
                     return Err(RuntimeError {
-                        message: "await_process: expected Int (pid)".into(),
+                        message: "await_process: expected Pid".into(),
                     });
                 }
             }
@@ -854,21 +856,21 @@ impl VM {
                     Ok(HeapObject::Tuple(t)) if t.len() == 2 => (t[0], t[1]),
                     _ => {
                         return Err(RuntimeError {
-                            message: "send_message: expected (Int, value)".into(),
+                            message: "send_message: expected (Pid, value)".into(),
                         });
                     }
                 },
                 _ => {
                     return Err(RuntimeError {
-                        message: "send_message: expected (Int, value)".into(),
+                        message: "send_message: expected (Pid, value)".into(),
                     });
                 }
             };
             let target_pid = match v_pid {
-                Value::Int(pid) => pid as u64,
+                Value::Pid(pid) => pid,
                 _ => {
                     return Err(RuntimeError {
-                        message: "send_message: first element must be Int (pid)".into(),
+                        message: "send_message: first element must be Pid".into(),
                     });
                 }
             };

@@ -297,7 +297,7 @@ fn worker_loop(
                 scheduler.enqueue(child_pid);
 
                 process.vm.stack.pop();
-                process.vm.push_value(Value::Int(child_pid.0 as i64));
+                process.vm.push_value(Value::Pid(child_pid.0));
                 table.return_process(process);
                 scheduler.enqueue(pid);
             }
@@ -569,7 +569,11 @@ mod tests {
 
     #[test]
     fn test_threaded_send_to_dead_process() {
-        let program = compile("val _ = send_message (999, 42)");
+        let program = compile(
+            "val child = spawn (fn () => 0)\n\
+             val _ = await_process child\n\
+             val _ = send_message (child, 42)",
+        );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();

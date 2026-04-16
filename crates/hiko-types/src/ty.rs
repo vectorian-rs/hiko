@@ -40,6 +40,9 @@ impl Type {
     pub fn unit() -> Type {
         Type::Con("Unit".into())
     }
+    pub fn pid() -> Type {
+        Type::Con("Pid".into())
+    }
     pub fn list(elem: Type) -> Type {
         Type::App("list".into(), vec![elem])
     }
@@ -52,7 +55,7 @@ impl Type {
         match self {
             Type::Con(n) => matches!(
                 n.as_str(),
-                "Int" | "Float" | "Bool" | "String" | "Char" | "Unit" | "Bytes"
+                "Int" | "Float" | "Bool" | "String" | "Char" | "Unit" | "Bytes" | "Pid"
             ),
             Type::Var(_) => true, // allow equality on polymorphic variables
             Type::Tuple(elems) => elems.iter().all(|e| e.is_equality()),

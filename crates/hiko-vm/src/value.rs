@@ -16,6 +16,7 @@ pub struct GcRef(pub(crate) u32);
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
     Int(i64),
+    Pid(u64),
     Float(f64),
     Bool(bool),
     Char(char),
@@ -115,6 +116,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
+            Value::Pid(pid) => write!(f, "<pid {pid}>"),
             Value::Float(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Char(c) => write!(f, "{c}"),

@@ -120,7 +120,7 @@ impl Runtime {
                     let process = self.processes.get_mut(&pid).unwrap();
                     // Replace the Unit placeholder with the actual Pid
                     process.vm.stack.pop();
-                    process.vm.push_value(Value::Int(child_pid.0 as i64));
+                    process.vm.push_value(Value::Pid(child_pid.0));
                     self.scheduler.enqueue(pid);
                 }
                 RunResult::Await(child_pid_val) => {
@@ -570,7 +570,11 @@ mod tests {
 
     #[test]
     fn test_send_to_dead_process() {
-        let program = compile("val _ = send_message (999, 42)");
+        let program = compile(
+            "val child = spawn (fn () => 0)\n\
+             val _ = await_process child\n\
+             val _ = send_message (child, 42)",
+        );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
