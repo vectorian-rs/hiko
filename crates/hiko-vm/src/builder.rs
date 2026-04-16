@@ -105,6 +105,7 @@ impl VMBuilder {
             "string_to_bytes",
             "bytes_get",
             "bytes_slice",
+            "blake3",
             "random_bytes",
             "rng_seed",
             "rng_bytes",

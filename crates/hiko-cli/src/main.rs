@@ -12,7 +12,9 @@ use hiko_compile::compiler::{CompileError, Compiler};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
-use hiko_vm::vm::{StdoutOutputSink, VM};
+use hiko_vm::builder::VMBuilder;
+use hiko_vm::policy::Policy;
+use hiko_vm::vm::StdoutOutputSink;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -20,7 +22,7 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: hiko <command> [args]");
         eprintln!("Commands:");
-        eprintln!("  run <file.hml>         Compile and execute a program");
+        eprintln!("  run [--policy <file.toml>] [file.hml]  Compile and execute a program");
         eprintln!("  check <file.hml>       Type-check without executing");
         eprintln!("  build-vm <policy.toml>  Generate a custom VM from a policy file");
         process::exit(1);
@@ -28,11 +30,8 @@ fn main() {
 
     match args[1].as_str() {
         "run" => {
-            if args.len() < 3 {
-                eprintln!("Usage: hiko run <file.hml>");
-                process::exit(1);
-            }
-            run_file(&args[2]);
+            let (policy_path, script_path) = parse_run_args(&args[2..]);
+            run_file(policy_path.as_deref(), script_path.as_deref());
         }
         "check" => {
             if args.len() < 3 {
@@ -50,7 +49,7 @@ fn main() {
         }
         other => {
             eprintln!("Unknown command: {other}");
-            eprintln!("Try: hiko run <file.hml>");
+            eprintln!("Try: hiko run [--policy <file.toml>] [file.hml]");
             process::exit(1);
         }
     }
@@ -143,10 +142,81 @@ fn compile_source(path: &str) -> Result<Compiled, ()> {
     }
 }
 
+fn load_policy(policy_path: &str) -> Policy {
+    let toml = fs::read_to_string(policy_path).unwrap_or_else(|e| {
+        eprintln!("Cannot read policy file '{policy_path}': {e}");
+        process::exit(1);
+    });
+
+    Policy::from_toml(&toml).unwrap_or_else(|e| {
+        eprintln!("Invalid policy '{policy_path}': {e}");
+        process::exit(1);
+    })
+}
+
+fn parse_run_args(args: &[String]) -> (Option<String>, Option<String>) {
+    let mut policy_path = None;
+    let mut script_path = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--policy" => {
+                let Some(path) = args.get(i + 1) else {
+                    eprintln!("Usage: hiko run [--policy <file.toml>] [file.hml]");
+                    process::exit(1);
+                };
+                policy_path = Some(path.clone());
+                i += 2;
+            }
+            arg if arg.starts_with("--policy=") => {
+                let path = arg.trim_start_matches("--policy=");
+                if path.is_empty() {
+                    eprintln!("Usage: hiko run [--policy <file.toml>] [file.hml]");
+                    process::exit(1);
+                }
+                policy_path = Some(path.to_string());
+                i += 1;
+            }
+            other if other.starts_with('-') => {
+                eprintln!("Unknown run option: {other}");
+                eprintln!("Usage: hiko run [--policy <file.toml>] [file.hml]");
+                process::exit(1);
+            }
+            path => {
+                if script_path.is_some() {
+                    eprintln!("Unexpected extra argument: {path}");
+                    eprintln!("Usage: hiko run [--policy <file.toml>] [file.hml]");
+                    process::exit(1);
+                }
+                script_path = Some(path.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    (policy_path, script_path)
+}
+
+fn resolve_run_target(policy: Option<&Policy>, script_path: Option<&str>) -> String {
+    if let Some(path) = script_path {
+        return path.to_string();
+    }
+    if let Some(policy) = policy
+        && let Some(entry) = &policy.entry
+    {
+        return entry.clone();
+    }
+    eprintln!("Usage: hiko run [--policy <file.toml>] [file.hml]");
+    process::exit(1);
+}
+
 // ── Commands ─────────────────────────────────────────────────────────
 
-fn run_file(path: &str) {
-    let compiled = match compile_source(path) {
+fn run_file(policy_path: Option<&str>, script_path: Option<&str>) {
+    let policy = policy_path.map(load_policy);
+    let path = resolve_run_target(policy.as_ref(), script_path);
+    let compiled = match compile_source(&path) {
         Ok(c) => c,
         Err(()) => process::exit(1),
     };
@@ -155,7 +225,11 @@ fn run_file(path: &str) {
         compiled.ctx.warning(&w.message, Some(w.span));
     }
 
-    let mut vm = VM::new(compiled.program);
+    let mut vm = if let Some(policy) = &policy {
+        policy.build_vm(compiled.program)
+    } else {
+        VMBuilder::new(compiled.program).with_core().build()
+    };
     vm.set_output_sink(Arc::new(StdoutOutputSink::default()));
     match vm.run() {
         Ok(()) => {}
@@ -179,21 +253,7 @@ fn check_file(path: &str) {
 }
 
 fn build_vm(policy_path: &str) {
-    let toml = match fs::read_to_string(policy_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Cannot read policy file '{policy_path}': {e}");
-            process::exit(1);
-        }
-    };
-
-    let policy = match hiko_vm::policy::Policy::from_toml(&toml) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Invalid policy: {e}");
-            process::exit(1);
-        }
-    };
+    let policy = load_policy(policy_path);
 
     let rust_src = policy.to_rust_source();
 
@@ -233,5 +293,80 @@ hiko-vm = "{version}"
     println!("  cd {out_dir} && cargo build --release");
     println!();
     println!("To run a script:");
-    println!("  ./{out_dir}/target/release/{out_dir} script.hml");
+    if policy.entry.is_some() {
+        println!("  ./{out_dir}/target/release/{out_dir}");
+        println!("  ./{out_dir}/target/release/{out_dir} other-script.hml");
+    } else {
+        println!("  ./{out_dir}/target/release/{out_dir} script.hml");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_run_args, resolve_run_target};
+    use hiko_vm::policy::Policy;
+
+    #[test]
+    fn parse_run_args_file_only() {
+        let args = vec!["script.hml".to_string()];
+        assert_eq!(
+            parse_run_args(&args),
+            (None, Some("script.hml".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_run_args_policy_and_file() {
+        let args = vec![
+            "--policy".to_string(),
+            "policies/read.toml".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_run_args(&args),
+            (
+                Some("policies/read.toml".to_string()),
+                Some("tools/read.hml".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn parse_run_args_inline_policy() {
+        let args = vec![
+            "--policy=policies/read.toml".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_run_args(&args),
+            (
+                Some("policies/read.toml".to_string()),
+                Some("tools/read.hml".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_run_target_prefers_cli_script() {
+        let policy = Policy {
+            entry: Some("scripts/default.hml".to_string()),
+            ..Policy::default()
+        };
+        assert_eq!(
+            resolve_run_target(Some(&policy), Some("scripts/override.hml")),
+            "scripts/override.hml"
+        );
+    }
+
+    #[test]
+    fn resolve_run_target_uses_policy_entry() {
+        let policy = Policy {
+            entry: Some("scripts/default.hml".to_string()),
+            ..Policy::default()
+        };
+        assert_eq!(
+            resolve_run_target(Some(&policy), None),
+            "scripts/default.hml"
+        );
+    }
 }
