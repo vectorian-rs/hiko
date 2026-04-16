@@ -23,7 +23,7 @@ hiko/
 │   ├── hiko-syntax/     Lexer, parser, AST, pretty-printer, desugaring
 │   ├── hiko-types/      HM type inference, exhaustiveness checking
 │   ├── hiko-compile/    Bytecode compiler, opcodes, chunk format
-│   ├── hiko-vm/         Stack VM, GC, builtins, policy, builder
+│   ├── hiko-vm/         Stack VM, GC, builtins, config, builder
 │   ├── hiko-cli/        CLI (run, check, build-vm)
 │   └── hiko-harness/    Agentic coding tool (LLM loop, tools, config)
 ├── stdlib/              list.hml, option.hml, either.hml, json.hml
@@ -31,7 +31,7 @@ hiko/
 ├── examples/            48 example programs
 ├── benchmarks/          Manticore-derived benchmarks
 ├── scripts/             release.hml
-├── policies/            Policy TOML files
+├── configs/             Run config TOML files
 └── docs/                bootstrap.md, runtime.md, system.md
 ```
 
@@ -234,9 +234,9 @@ Shallow, one-shot delimited continuations. `Perform` captures the stack and fram
 
 `panic`, `assert`, `assert_eq`
 
-## Policy system
+## Run config system
 
-Policies define VM capabilities at compile time. A policy TOML file is read by `hiko build-vm` and baked into a standalone Rust binary as hardcoded VMBuilder calls.
+Run configs define VM capabilities at compile time for generated binaries. A config TOML file is read by `hiko build-vm` and baked into a standalone Rust binary as hardcoded VMBuilder calls.
 
 ```toml
 [limits]
@@ -263,12 +263,12 @@ allowed_hosts = ["api.example.com"]
 ### build-vm codegen
 
 ```
-policy.toml → hiko build-vm → hiko-vm-{name}/
+config.toml → hiko build-vm → hiko-vm-{name}/
                                 ├── Cargo.toml     (crates.io deps)
-                                └── src/main.rs    (policy baked in)
+                                └── src/main.rs    (config baked in)
 ```
 
-The generated `src/main.rs` is the auditable source of truth. Builtins that the policy doesn't allow are not compiled into the binary — there are no runtime checks to bypass.
+The generated `src/main.rs` is the auditable source of truth. Builtins that the config doesn't allow are not compiled into the binary — there are no runtime checks to bypass.
 
 ## VMBuilder
 
@@ -289,7 +289,7 @@ VMBuilder::new(compiled)
 Heap size and fuel are configurable. The VM also enforces fixed hard guards of
 `hiko_vm::DEFAULT_MAX_STACK_SLOTS` (`65536` value-stack slots) and
 `hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536` call frames). Those two limits are
-currently runtime constants rather than policy or `VMBuilder` settings.
+currently runtime constants rather than config or `VMBuilder` settings.
 
 ## Hashline edit system
 
@@ -448,7 +448,7 @@ Full pipeline (lex → parse → typecheck → compile → VM boot → execute) 
 
 | Crate | Used for |
 |---|---|
-| `serde` + `toml` | Policy TOML parsing |
+| `serde` + `toml` | Run config TOML parsing |
 | `serde_json` | JSON builtins |
 | `rmp-serde` | MessagePack decoding |
 | `ureq` | HTTP client |

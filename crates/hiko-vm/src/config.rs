@@ -1,14 +1,16 @@
-use crate::builder::{ExecPolicy as VmExecPolicy, FilesystemPolicy, HttpPolicy as VmHttpPolicy, VMBuilder};
+use crate::builder::{
+    ExecPolicy as VmExecPolicy, FilesystemPolicy, HttpPolicy as VmHttpPolicy, VMBuilder,
+};
 use crate::vm::VM;
 use hiko_compile::chunk::CompiledProgram;
 use serde::Deserialize;
 
-/// Runtime/loadable policy specification.
-/// This struct describes what a VM can do for a specific invocation.
-/// It can also be embedded into generated artifacts by build tools.
+/// Runtime/loadable run configuration.
+/// This struct describes how a VM should be configured for a specific
+/// invocation. It can also be embedded into generated artifacts by build tools.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Policy {
+pub struct RunConfig {
     pub entry: Option<String>,
     #[serde(default)]
     pub limits: Limits,
@@ -89,7 +91,7 @@ fn default_dot() -> String {
     ".".to_string()
 }
 
-impl Default for Policy {
+impl Default for RunConfig {
     #[allow(clippy::derivable_impls)]
     fn default() -> Self {
         Self {
@@ -104,13 +106,13 @@ impl Default for Policy {
     }
 }
 
-impl Policy {
-    /// Parse a policy from TOML text.
+impl RunConfig {
+    /// Parse a run config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 
-    /// Configure a VM builder with this policy.
+    /// Configure a VM builder with this run config.
     pub fn apply_to_builder(&self, mut builder: VMBuilder) -> VMBuilder {
         if self.core.enabled {
             builder = builder.with_core();
@@ -152,12 +154,12 @@ impl Policy {
         builder
     }
 
-    /// Build a VM for this policy and compiled program.
+    /// Build a VM for this run config and compiled program.
     pub fn build_vm(&self, program: CompiledProgram) -> VM {
         self.apply_to_builder(VMBuilder::new(program)).build()
     }
 
-    /// Generate Rust source code for a main.rs that bakes this policy in.
+    /// Generate Rust source code for a main.rs that bakes this config in.
     pub fn to_rust_source(&self) -> String {
         let mut s = String::new();
         s.push_str("use hiko_vm::builder::VMBuilder;\n");
@@ -263,11 +265,11 @@ impl Policy {
 
 #[cfg(test)]
 mod tests {
-    use super::Policy;
+    use super::RunConfig;
 
     #[test]
-    fn parse_policy_with_entry_and_filesystem() {
-        let policy = Policy::from_toml(
+    fn parse_run_config_with_entry_and_filesystem() {
+        let config = RunConfig::from_toml(
             r#"
 entry = "scripts/read.hml"
 
@@ -276,10 +278,10 @@ root = "."
 read = true
 "#,
         )
-        .expect("policy should parse");
+        .expect("run config should parse");
 
-        assert_eq!(policy.entry.as_deref(), Some("scripts/read.hml"));
-        let fs = policy.filesystem.expect("filesystem policy missing");
+        assert_eq!(config.entry.as_deref(), Some("scripts/read.hml"));
+        let fs = config.filesystem.expect("filesystem config missing");
         assert_eq!(fs.root, ".");
         assert!(fs.read);
         assert!(!fs.write);

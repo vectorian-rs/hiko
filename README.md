@@ -222,7 +222,7 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 **Tail-Call Optimization.** The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
 
-**Runtime Limits.** Heap size and fuel are configurable through `VMBuilder` or policy files. The VM also has fixed hard limits of `hiko_vm::DEFAULT_MAX_STACK_SLOTS` (`65536` value-stack slots) and `hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536` call frames). These are current runtime guards, not policy knobs.
+**Runtime Limits.** Heap size and fuel are configurable through `VMBuilder` or run config files. The VM also has fixed hard limits of `hiko_vm::DEFAULT_MAX_STACK_SLOTS` (`65536` value-stack slots) and `hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536` call frames). These are current runtime guards, not config knobs.
 
 ## Standard Library
 
@@ -253,7 +253,7 @@ The `examples/` directory includes programs demonstrating:
 
 ## Agent Workflow
 
-Hiko is designed for building sandboxed agent scripts with least-privilege policies. The typical setup uses an AI agent as the orchestrator, [mise](https://mise.jdx.dev/) as the task runner, and hiko as the execution engine.
+Hiko is designed for building sandboxed agent scripts with least-privilege run configs. The typical setup uses an AI agent as the orchestrator, [mise](https://mise.jdx.dev/) as the task runner, and hiko as the execution engine.
 
 ```
 Agent (Claude, etc.)
@@ -268,8 +268,8 @@ Agent (Claude, etc.)
 # Install hiko
 cargo install hiko-cli
 
-# Write a policy — defines what the VM can do
-cat > reader.policy.toml << 'EOF'
+# Write a run config — defines what the VM can do
+cat > reader.toml << 'EOF'
 [limits]
 max_fuel = 10_000_000
 max_heap = 500_000
@@ -284,20 +284,20 @@ write = false
 delete = false
 EOF
 
-# Generate a policy-locked VM binary
-hiko build-vm reader.policy.toml
+# Generate a config-locked VM binary
+hiko build-vm reader.toml
 cd hiko-vm-reader && cargo build --release
 
 # Run scripts with it
 ./target/release/hiko-vm-reader my_script.hml
 ```
 
-### Policy Files
+### Run Config Files
 
-Each policy defines a capability boundary enforced at compile time. Builtins that the policy doesn't allow are not compiled into the binary — there are no runtime checks to bypass.
+Each run config defines a capability boundary enforced at compile time. Builtins that the config doesn't allow are not compiled into the binary — there are no runtime checks to bypass.
 
 ```toml
-# infra-prod-deploy.policy.toml
+# infra-prod-deploy.toml
 [limits]
 max_fuel = 50_000_000
 max_heap = 1_000_000
@@ -318,21 +318,21 @@ allowed_hosts = ["deploy.internal.example.com"]
 allow_exit = true
 ```
 
-`hiko build-vm` reads the policy TOML once and generates a standalone Rust crate (`hiko-vm-{policy-name}/`) with the policy compiled into `src/main.rs` as hardcoded VMBuilder calls. The generated binary has no config files — the policy is the code.
+`hiko build-vm` reads the run config TOML once and generates a standalone Rust crate (`hiko-vm-{config-name}/`) with the config compiled into `src/main.rs` as hardcoded VMBuilder calls. The generated binary has no runtime config files — the config is the code.
 
 ```
-policies/reader.policy.toml     ← human writes this
+configs/reader.toml             ← human writes this
     │
     ▼  hiko build-vm
 hiko-vm-reader/
 ├── Cargo.toml                  ← pulls hiko crates from crates.io
-└── src/main.rs                 ← policy baked in as Rust code
+└── src/main.rs                 ← config baked in as Rust code
     │
     ▼  cargo build --release
-hiko-vm-reader/target/release/  ← single binary, policy-locked
+hiko-vm-reader/target/release/  ← single binary, config-locked
 ```
 
-The generated `src/main.rs` is the auditable source of truth for what the VM can do. Commit it alongside your policy TOML — reviewers can see exactly which builtins are registered, which commands are whitelisted, and what limits are enforced, without running any tools. The `target/` directory is gitignored.
+The generated `src/main.rs` is the auditable source of truth for what the VM can do. Commit it alongside your run config TOML — reviewers can see exactly which builtins are registered, which commands are whitelisted, and what limits are enforced, without running any tools. The `target/` directory is gitignored.
 
 ### Orchestration with mise
 
@@ -341,25 +341,25 @@ The generated `src/main.rs` is the auditable source of truth for what the VM can
 ```toml
 # mise.toml
 [tasks.build]
-description = "Build a policy-locked VM binary"
+description = "Build a config-locked VM binary"
 run = """
 set -e
-policy="policies/${1}.policy.toml"
-hiko build-vm "$policy"
+config="configs/${1}.toml"
+hiko build-vm "$config"
 cargo build --release --manifest-path "hiko-vm-${1}/Cargo.toml"
 mkdir -p dist
 cp "hiko-vm-${1}/target/release/hiko-vm-${1}" "dist/${1}"
 """
 
 [tasks.run]
-description = "Run an agent script with its policy-locked VM"
+description = "Run an agent script with its config-locked VM"
 run = """
 agent="$1"; shift; script="$1"; shift
 "dist/${agent}" "$script" "$@"
 """
 
 [tasks.dev]
-description = "Run a script with the full CLI (no policy)"
+description = "Run a script with the full CLI (core only unless --config is provided)"
 run = "hiko run \"$@\""
 
 [tasks.check]
@@ -367,10 +367,10 @@ description = "Type-check a script without running it"
 run = "hiko check \"$@\""
 
 [tasks.build-all]
-description = "Build all policy VMs"
+description = "Build all config VMs"
 run = """
-for policy in policies/*.policy.toml; do
-  name=$(basename "$policy" .policy.toml)
+for config in configs/*.toml; do
+  name=$(basename "$config" .toml)
   mise run build "$name"
 done
 """
@@ -379,9 +379,9 @@ done
 ```bash
 mise run build reader          # Build the reader VM
 mise run run reader analyze.hml # Run a script sandboxed
-mise run dev analyze.hml        # Quick iteration, no sandbox
+mise run dev analyze.hml        # Quick iteration, core only by default
 mise run check analyze.hml      # Type-check only
-mise run build-all              # Build all policy VMs
+mise run build-all              # Build all config VMs
 ```
 
 ## Testing
