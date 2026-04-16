@@ -399,7 +399,10 @@ impl Compiler {
                 Ok(())
             }
             DeclKind::Use(path) => self.compile_use(path),
-            DeclKind::Structure(_, _) => {
+            DeclKind::Signature(_) => {
+                unreachable!("signatures must be removed before codegen")
+            }
+            DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before codegen")
             }
             DeclKind::Local(locals, body) => {
@@ -444,7 +447,10 @@ impl Compiler {
     fn infer_decl_pass(&mut self, decl: &Decl) -> Result<(), CompileError> {
         match &decl.kind {
             DeclKind::Use(path) => self.infer_use(path),
-            DeclKind::Structure(_, _) => {
+            DeclKind::Signature(_) => {
+                unreachable!("signatures must be removed before inference pass")
+            }
+            DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference pass")
             }
             DeclKind::Local(locals, body) => {

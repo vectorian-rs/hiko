@@ -252,11 +252,12 @@ impl Parser {
             TokenKind::Type => self.parse_type_alias_decl(),
             TokenKind::Local => self.parse_local_decl(),
             TokenKind::Use => self.parse_use_decl(),
+            TokenKind::Signature => self.parse_signature_decl(),
             TokenKind::Structure => self.parse_structure_decl(),
             TokenKind::Effect => self.parse_effect_decl(),
             _ => {
                 Err(self
-                    .err("expected declaration (val, fun, datatype, type, local, use, structure, or effect)"))
+                    .err("expected declaration (val, fun, datatype, type, local, use, signature, structure, or effect)"))
             }
         }
     }
@@ -454,10 +455,56 @@ impl Parser {
         }
     }
 
+    fn parse_signature_decl(&mut self) -> Result<Decl, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `signature`
+        let (name, _) = self.expect_upper_ident()?;
+        self.expect(&TokenKind::Eq, "=")?;
+        self.expect(&TokenKind::Sig, "sig")?;
+        let mut specs = Vec::new();
+        while !matches!(self.peek(), TokenKind::End | TokenKind::Eof) {
+            specs.push(self.parse_signature_spec()?);
+        }
+        let end = self.expect(&TokenKind::End, "end")?;
+        Ok(Decl {
+            kind: DeclKind::Signature(SignatureDecl {
+                name,
+                specs,
+                span: start.merge(end),
+            }),
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_signature_spec(&mut self) -> Result<SignatureSpec, ParseError> {
+        let start = self.span();
+        match self.peek() {
+            TokenKind::Val => {
+                self.advance();
+                let (name, _) = self.expect_ident()?;
+                self.expect(&TokenKind::Colon, ":")?;
+                let ty = self.parse_type_expr()?;
+                Ok(SignatureSpec::Val {
+                    name,
+                    span: start.merge(ty.span),
+                    ty,
+                })
+            }
+            _ => Err(self.err("expected signature spec (currently only val)")),
+        }
+    }
+
     fn parse_structure_decl(&mut self) -> Result<Decl, ParseError> {
         let start = self.span();
         self.advance(); // consume `structure`
         let (name, _) = self.expect_upper_ident()?;
+        let (signature, opaque) = if self.eat(&TokenKind::ColonGt).is_some() {
+            (Some(self.expect_upper_ident()?.0), true)
+        } else if self.eat(&TokenKind::Colon).is_some() {
+            (Some(self.expect_upper_ident()?.0), false)
+        } else {
+            (None, false)
+        };
         self.expect(&TokenKind::Eq, "=")?;
         self.expect(&TokenKind::Struct, "struct")?;
         let mut decls = Vec::new();
@@ -466,7 +513,12 @@ impl Parser {
         }
         let end = self.expect(&TokenKind::End, "end")?;
         Ok(Decl {
-            kind: DeclKind::Structure(name, decls),
+            kind: DeclKind::Structure {
+                name,
+                signature,
+                opaque,
+                decls,
+            },
             span: start.merge(end),
         })
     }
@@ -1477,10 +1529,67 @@ mod tests {
     }
 
     #[test]
+    fn test_signature_decl() {
+        let prog = parse("signature LIST = sig val fold : Int -> Int end");
+        if let DeclKind::Signature(sig) = &prog.decls[0].kind {
+            assert_eq!(prog.interner.resolve(sig.name), "LIST");
+            assert_eq!(sig.specs.len(), 1);
+        } else {
+            panic!("expected signature");
+        }
+    }
+
+    #[test]
     fn test_structure_decl() {
         let prog = parse("structure List = struct fun fold f acc xs = acc end");
-        if let DeclKind::Structure(name, decls) = &prog.decls[0].kind {
+        if let DeclKind::Structure {
+            name,
+            signature,
+            opaque,
+            decls,
+        } = &prog.decls[0].kind
+        {
             assert_eq!(prog.interner.resolve(*name), "List");
+            assert!(signature.is_none());
+            assert!(!opaque);
+            assert_eq!(decls.len(), 1);
+        } else {
+            panic!("expected structure");
+        }
+    }
+
+    #[test]
+    fn test_structure_decl_with_signature() {
+        let prog = parse("structure List : LIST = struct fun fold f acc xs = acc end");
+        if let DeclKind::Structure {
+            name,
+            signature,
+            opaque,
+            decls,
+        } = &prog.decls[0].kind
+        {
+            assert_eq!(prog.interner.resolve(*name), "List");
+            assert_eq!(signature.map(|sym| prog.interner.resolve(sym)), Some("LIST"));
+            assert!(!opaque);
+            assert_eq!(decls.len(), 1);
+        } else {
+            panic!("expected structure");
+        }
+    }
+
+    #[test]
+    fn test_structure_decl_with_opaque_signature() {
+        let prog = parse("structure List :> LIST = struct fun fold f acc xs = acc end");
+        if let DeclKind::Structure {
+            name,
+            signature,
+            opaque,
+            decls,
+        } = &prog.decls[0].kind
+        {
+            assert_eq!(prog.interner.resolve(*name), "List");
+            assert_eq!(signature.map(|sym| prog.interner.resolve(sym)), Some("LIST"));
+            assert!(*opaque);
             assert_eq!(decls.len(), 1);
         } else {
             panic!("expected structure");

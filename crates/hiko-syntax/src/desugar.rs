@@ -5,27 +5,37 @@ use std::collections::{HashMap, HashSet};
 
 pub fn desugar_program(mut program: Program) -> Program {
     let mut interner = std::mem::take(&mut program.interner);
-    program.decls = desugar_decl_list(program.decls, &mut interner);
+    let signatures = collect_signatures(&program.decls);
+    let mut decls = Vec::new();
+    for decl in program.decls {
+        match decl.kind {
+            DeclKind::Signature(_) => {}
+            DeclKind::Structure {
+                name,
+                signature,
+                opaque: _,
+                decls: body,
+            } => {
+                let module_name = interner.resolve(name).to_string();
+                let signature = signature.and_then(|sig| signatures.get(&sig));
+                decls.extend(desugar_structure(body, &[module_name], signature, &mut interner));
+            }
+            _ => decls.push(desugar_decl(decl, &mut interner)),
+        }
+    }
+    program.decls = decls;
     program.interner = interner;
     program
 }
 
-fn desugar_decl_list(decls: Vec<Decl>, interner: &mut StringInterner) -> Vec<Decl> {
-    let mut out = Vec::new();
+fn collect_signatures(decls: &[Decl]) -> HashMap<Symbol, SignatureDecl> {
+    let mut signatures = HashMap::new();
     for decl in decls {
-        out.extend(desugar_decl_out(decl, interner));
-    }
-    out
-}
-
-fn desugar_decl_out(decl: Decl, interner: &mut StringInterner) -> Vec<Decl> {
-    match decl.kind {
-        DeclKind::Structure(name, decls) => {
-            let module_name = interner.resolve(name).to_string();
-            desugar_structure(decls, &[module_name], interner)
+        if let DeclKind::Signature(sig) = &decl.kind {
+            signatures.insert(sig.name, sig.clone());
         }
-        _ => vec![desugar_decl(decl, interner)],
     }
+    signatures
 }
 
 pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
@@ -45,11 +55,19 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
         DeclKind::Datatype(dt) => DeclKind::Datatype(dt),
         DeclKind::TypeAlias(ta) => DeclKind::TypeAlias(ta),
         DeclKind::Local(locals, body) => DeclKind::Local(
-            desugar_decl_list(locals, interner),
-            desugar_decl_list(body, interner),
+            locals
+                .into_iter()
+                .map(|decl| desugar_decl(decl, interner))
+                .collect(),
+            body.into_iter()
+                .map(|decl| desugar_decl(decl, interner))
+                .collect(),
         ),
         DeclKind::Use(path) => DeclKind::Use(path),
-        DeclKind::Structure(_, _) => unreachable!("structures are flattened before decl desugaring"),
+        DeclKind::Signature(_) => unreachable!("signatures are removed before decl desugaring"),
+        DeclKind::Structure { .. } => {
+            unreachable!("structures are flattened before decl desugaring")
+        }
         DeclKind::Effect(name, ty) => DeclKind::Effect(name, ty),
     };
     Decl { kind, span }
@@ -66,9 +84,10 @@ struct ModuleScope {
 fn desugar_structure(
     decls: Vec<Decl>,
     module_path: &[String],
+    signature: Option<&SignatureDecl>,
     interner: &mut StringInterner,
 ) -> Vec<Decl> {
-    let scope = collect_module_scope(&decls, module_path, interner);
+    let scope = collect_module_scope(&decls, module_path, interner, signature.is_some());
     let mut out = Vec::new();
     let empty_values = HashSet::new();
     for decl in decls {
@@ -76,22 +95,26 @@ fn desugar_structure(
             decl,
             &scope,
             &empty_values,
-            module_path,
-            interner,
-            true,
+            signature.is_some(),
+            !signature.is_some(),
         ));
     }
-    out.into_iter().map(|decl| desugar_decl(decl, interner)).collect()
+    let mut out: Vec<Decl> = out.into_iter().map(|decl| desugar_decl(decl, interner)).collect();
+    if let Some(signature) = signature {
+        out.extend(signature_assertions(signature, &scope, module_path, interner));
+    }
+    out
 }
 
 fn collect_module_scope(
     decls: &[Decl],
     module_path: &[String],
     interner: &mut StringInterner,
+    hide_exports: bool,
 ) -> ModuleScope {
     let mut scope = ModuleScope::default();
     for decl in decls {
-        collect_decl_exports(decl, &mut scope, module_path, interner);
+        collect_decl_exports(decl, &mut scope, module_path, interner, hide_exports);
     }
     scope
 }
@@ -101,95 +124,154 @@ fn collect_decl_exports(
     scope: &mut ModuleScope,
     module_path: &[String],
     interner: &mut StringInterner,
+    hide_exports: bool,
 ) {
     match &decl.kind {
         DeclKind::Val(pat, _) => {
             for sym in pat_bound_names(pat) {
-                scope.values.insert(sym, mangle_symbol(module_path, sym, interner));
+                scope.values
+                    .insert(sym, mangle_symbol(module_path, sym, interner, hide_exports));
             }
         }
         DeclKind::ValRec(sym, _) => {
             scope
                 .values
-                .insert(*sym, mangle_symbol(module_path, *sym, interner));
+                .insert(*sym, mangle_symbol(module_path, *sym, interner, hide_exports));
         }
         DeclKind::Fun(bindings) => {
             for binding in bindings {
                 scope.values.insert(
                     binding.name,
-                    mangle_symbol(module_path, binding.name, interner),
+                    mangle_symbol(module_path, binding.name, interner, hide_exports),
                 );
             }
         }
         DeclKind::Datatype(dt) => {
             scope
                 .types
-                .insert(dt.name, mangle_symbol(module_path, dt.name, interner));
+                .insert(dt.name, mangle_symbol(module_path, dt.name, interner, hide_exports));
             for con in &dt.constructors {
                 scope.constructors.insert(
                     con.name,
-                    mangle_symbol(module_path, con.name, interner),
+                    mangle_symbol(module_path, con.name, interner, hide_exports),
                 );
             }
         }
         DeclKind::TypeAlias(ta) => {
             scope
                 .types
-                .insert(ta.name, mangle_symbol(module_path, ta.name, interner));
+                .insert(ta.name, mangle_symbol(module_path, ta.name, interner, hide_exports));
         }
         DeclKind::Local(_, body) => {
             for decl in body {
-                collect_decl_exports(decl, scope, module_path, interner);
+                collect_decl_exports(decl, scope, module_path, interner, hide_exports);
             }
         }
+        DeclKind::Signature(_) => {}
         DeclKind::Use(_) => {}
-        DeclKind::Structure(_, _) => {}
+        DeclKind::Structure { .. } => {}
         DeclKind::Effect(sym, _) => {
             scope
                 .effects
-                .insert(*sym, mangle_symbol(module_path, *sym, interner));
+                .insert(*sym, mangle_symbol(module_path, *sym, interner, hide_exports));
         }
     }
 }
 
-fn mangle_symbol(module_path: &[String], sym: Symbol, interner: &mut StringInterner) -> Symbol {
+fn mangle_symbol(
+    module_path: &[String],
+    sym: Symbol,
+    interner: &mut StringInterner,
+    hidden: bool,
+) -> Symbol {
     let mut qualified = module_path.join(".");
     if !qualified.is_empty() {
         qualified.push('.');
     }
+    if hidden {
+        qualified.push('$');
+    }
     qualified.push_str(interner.resolve(sym));
     interner.intern(&qualified)
+}
+
+fn signature_assertions(
+    signature: &SignatureDecl,
+    scope: &ModuleScope,
+    module_path: &[String],
+    interner: &mut StringInterner,
+) -> Vec<Decl> {
+    let mut out = Vec::new();
+    for spec in &signature.specs {
+        match spec {
+            SignatureSpec::Val { name, ty, span } => {
+                let public_sym = mangle_symbol(module_path, *name, interner, false);
+                let checked_sym = scope.values.get(name).copied().unwrap_or(public_sym);
+                let checked_expr = Expr {
+                    kind: ExprKind::Ann(
+                        Box::new(Expr {
+                            kind: ExprKind::Var(checked_sym),
+                            span: *span,
+                        }),
+                        ty.clone(),
+                    ),
+                    span: *span,
+                };
+                out.push(Decl {
+                    kind: DeclKind::Val(
+                        Pat {
+                            kind: PatKind::Wildcard,
+                            span: *span,
+                        },
+                        checked_expr,
+                    ),
+                    span: *span,
+                });
+                if let Some(internal_sym) = scope.values.get(name).copied() {
+                    out.push(Decl {
+                        kind: DeclKind::Val(
+                            Pat {
+                                kind: PatKind::Var(public_sym),
+                                span: *span,
+                            },
+                            Expr {
+                                kind: ExprKind::Var(internal_sym),
+                                span: *span,
+                            },
+                        ),
+                        span: *span,
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 fn rename_module_decl(
     decl: Decl,
     scope: &ModuleScope,
     local_values: &HashSet<Symbol>,
-    module_path: &[String],
-    interner: &mut StringInterner,
+    module_hidden: bool,
     export_names: bool,
 ) -> Vec<Decl> {
     match decl.kind {
-        DeclKind::Structure(name, decls) => {
-            let mut nested = module_path.to_vec();
-            nested.push(interner.resolve(name).to_string());
-            desugar_structure(decls, &nested, interner)
-        }
+            DeclKind::Structure { .. } => unreachable!("nested structures are not supported yet"),
         DeclKind::Val(pat, expr) => vec![Decl {
             kind: DeclKind::Val(
-                rename_pat(pat, scope, export_names),
+                rename_pat(pat, scope, export_names || module_hidden),
                 rename_expr(expr, scope, local_values),
             ),
             span: decl.span,
         }],
         DeclKind::ValRec(sym, expr) => {
             let mut env = local_values.clone();
-            if !export_names {
+            if !export_names && !module_hidden {
                 env.insert(sym);
             }
             vec![Decl {
                 kind: DeclKind::ValRec(
-                    if export_names {
+                    if export_names || module_hidden {
                         *scope.values.get(&sym).unwrap_or(&sym)
                     } else {
                         sym
@@ -200,7 +282,7 @@ fn rename_module_decl(
             }]
         }
         DeclKind::Fun(bindings) => {
-            let recursive_values = if export_names {
+            let recursive_values = if export_names || module_hidden {
                 HashSet::new()
             } else {
                 bindings.iter().map(|binding| binding.name).collect()
@@ -208,7 +290,13 @@ fn rename_module_decl(
             let bindings = bindings
                 .into_iter()
                 .map(|binding| {
-                    rename_fun_binding(binding, scope, local_values, &recursive_values, export_names)
+                    rename_fun_binding(
+                        binding,
+                        scope,
+                        local_values,
+                        &recursive_values,
+                        export_names || module_hidden,
+                    )
                 })
                 .collect();
             vec![Decl {
@@ -217,7 +305,7 @@ fn rename_module_decl(
             }]
         }
         DeclKind::Datatype(mut dt) => {
-            if export_names {
+            if export_names || module_hidden {
                 dt.name = *scope.types.get(&dt.name).unwrap_or(&dt.name);
                 for con in &mut dt.constructors {
                     con.name = *scope.constructors.get(&con.name).unwrap_or(&con.name);
@@ -238,7 +326,7 @@ fn rename_module_decl(
             }]
         }
         DeclKind::TypeAlias(mut ta) => {
-            if export_names {
+            if export_names || module_hidden {
                 ta.name = *scope.types.get(&ta.name).unwrap_or(&ta.name);
             }
             ta.ty = rename_type_expr(ta.ty, scope);
@@ -248,11 +336,13 @@ fn rename_module_decl(
             }]
         }
         DeclKind::Local(locals, body) => {
-            let locals = rename_local_decl_seq(locals, scope, local_values, interner);
+            let locals = rename_local_decl_seq(locals, scope, local_values);
             let body = if export_names {
-                rename_export_decl_seq(body, scope, local_values, module_path, interner)
+                rename_export_decl_seq(body, scope, local_values, false, true)
+            } else if module_hidden {
+                rename_export_decl_seq(body, scope, local_values, true, false)
             } else {
-                rename_local_decl_seq(body, scope, local_values, interner)
+                rename_local_decl_seq(body, scope, local_values)
             };
             vec![Decl {
                 kind: DeclKind::Local(locals, body),
@@ -263,9 +353,10 @@ fn rename_module_decl(
             kind: DeclKind::Use(path),
             span: decl.span,
         }],
+        DeclKind::Signature(_) => vec![],
         DeclKind::Effect(sym, ty) => vec![Decl {
             kind: DeclKind::Effect(
-                if export_names {
+                if export_names || module_hidden {
                     *scope.effects.get(&sym).unwrap_or(&sym)
                 } else {
                     sym
@@ -281,8 +372,8 @@ fn rename_export_decl_seq(
     decls: Vec<Decl>,
     scope: &ModuleScope,
     local_values: &HashSet<Symbol>,
-    module_path: &[String],
-    interner: &mut StringInterner,
+    module_hidden: bool,
+    export_names: bool,
 ) -> Vec<Decl> {
     let mut out = Vec::new();
     for decl in decls {
@@ -290,9 +381,8 @@ fn rename_export_decl_seq(
             decl,
             scope,
             local_values,
-            module_path,
-            interner,
-            true,
+            module_hidden,
+            export_names,
         ));
     }
     out
@@ -302,20 +392,12 @@ fn rename_local_decl_seq(
     decls: Vec<Decl>,
     scope: &ModuleScope,
     local_values: &HashSet<Symbol>,
-    interner: &mut StringInterner,
 ) -> Vec<Decl> {
     let mut out = Vec::new();
     let mut env = local_values.clone();
     for decl in decls {
         let bound = local_decl_value_names(&decl);
-        out.extend(rename_module_decl(
-            decl,
-            scope,
-            &env,
-            &[],
-            interner,
-            false,
-        ));
+        out.extend(rename_module_decl(decl, scope, &env, false, false));
         env.extend(bound);
     }
     out
@@ -404,7 +486,7 @@ fn rename_expr(expr: Expr, scope: &ModuleScope, local_values: &HashSet<Symbol>) 
             Box::new(rename_expr(*else_br, scope, local_values)),
         ),
         ExprKind::Let(decls, body) => {
-            let decls = rename_local_decl_seq(decls, scope, local_values, &mut StringInterner::new());
+            let decls = rename_local_decl_seq(decls, scope, local_values);
             let mut env = local_values.clone();
             for decl in &decls {
                 env.extend(local_decl_value_names(decl));
@@ -667,7 +749,10 @@ fn desugar_expr(expr: Expr, interner: &mut StringInterner) -> Expr {
             Box::new(desugar_expr(*e, interner)),
         ),
         ExprKind::Let(decls, body) => ExprKind::Let(
-            desugar_decl_list(decls, interner),
+            decls
+                .into_iter()
+                .map(|decl| desugar_decl(decl, interner))
+                .collect(),
             Box::new(desugar_expr(*body, interner)),
         ),
         ExprKind::Case(scrutinee, arms) => ExprKind::Case(

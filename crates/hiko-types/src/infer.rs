@@ -662,7 +662,10 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::Use(_) => Ok(()),
-            DeclKind::Structure(_, _) => unreachable!("structures must be flattened before inference"),
+            DeclKind::Signature(_) => unreachable!("signatures must be removed before inference"),
+            DeclKind::Structure { .. } => {
+                unreachable!("structures must be flattened before inference")
+            }
             DeclKind::Effect(sym, payload) => {
                 let name = self.interner.resolve(*sym).to_string();
                 let arg_type = if let Some(ty_expr) = payload {
@@ -1527,6 +1530,36 @@ mod tests {
              val result = M.g 41",
         );
         assert_eq!(type_of(&ctx, "result"), "Int");
+    }
+
+    #[test]
+    fn test_structure_signature_checked() {
+        let ctx = infer(
+            "signature LIST = sig
+               val fold : (Int * Int -> Int) -> Int -> Int list -> Int
+             end
+             structure List : LIST = struct
+               fun fold f acc xs =
+                 case xs of
+                     [] => acc
+                   | x :: rest => fold f (f (x, acc)) rest
+             end
+             val result = List.fold (fn (x, acc) => x + acc) 0 [1, 2, 3]",
+        );
+        assert_eq!(type_of(&ctx, "result"), "Int");
+    }
+
+    #[test]
+    fn test_structure_signature_missing_export_rejected() {
+        let msg = infer_err(
+            "signature LIST = sig
+               val fold : Int -> Int
+             end
+             structure List : LIST = struct
+               fun map x = x
+             end",
+        );
+        assert!(msg.contains("unbound variable: List.fold"), "got: {msg}");
     }
 
     // ── Let-polymorphism ─────────────────────────────────────────────

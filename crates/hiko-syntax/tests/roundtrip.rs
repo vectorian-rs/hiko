@@ -348,8 +348,23 @@ fn rt_use_escaped_path() {
 }
 
 #[test]
+fn rt_signature_simple() {
+    assert_roundtrip("signature LIST = sig\n  val fold : ('a * 'b -> 'b) -> 'b -> 'a list -> 'b\nend");
+}
+
+#[test]
 fn rt_structure_simple() {
     assert_roundtrip("structure List = struct\n  fun fold f acc xs = acc\nend");
+}
+
+#[test]
+fn rt_structure_with_signature() {
+    assert_roundtrip("structure List : LIST = struct\n  fun fold f acc xs = acc\nend");
+}
+
+#[test]
+fn rt_structure_with_opaque_signature() {
+    assert_roundtrip("structure List :> LIST = struct\n  fun fold f acc xs = acc\nend");
 }
 
 #[test]

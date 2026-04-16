@@ -86,9 +86,38 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             buf.push_str("use ");
             write_escaped_string(buf, path);
         }
-        DeclKind::Structure(name, decls) => {
+        DeclKind::Signature(sig) => {
             write_indent(buf, indent);
-            write!(buf, "structure {} = struct\n", interner.resolve(*name)).unwrap();
+            write!(buf, "signature {} = sig\n", interner.resolve(sig.name)).unwrap();
+            for spec in &sig.specs {
+                write_indent(buf, indent + 2);
+                match spec {
+                    SignatureSpec::Val { name, ty, .. } => {
+                        write!(buf, "val {} : ", interner.resolve(*name)).unwrap();
+                        pretty_type(buf, ty, interner);
+                    }
+                }
+                buf.push('\n');
+            }
+            write_indent(buf, indent);
+            buf.push_str("end");
+        }
+        DeclKind::Structure {
+            name,
+            signature,
+            opaque,
+            decls,
+        } => {
+            write_indent(buf, indent);
+            write!(buf, "structure {}", interner.resolve(*name)).unwrap();
+            if let Some(signature) = signature {
+                if *opaque {
+                    write!(buf, " :> {}", interner.resolve(*signature)).unwrap();
+                } else {
+                    write!(buf, " : {}", interner.resolve(*signature)).unwrap();
+                }
+            }
+            buf.push_str(" = struct\n");
             for d in decls {
                 pretty_decl(buf, d, indent + 2, interner);
                 buf.push('\n');

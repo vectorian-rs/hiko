@@ -102,10 +102,33 @@ pub enum DeclKind {
     Local(Vec<Decl>, Vec<Decl>),
     /// `use "path/to/file.hml"`
     Use(String),
-    /// `structure Name = struct ... end`
-    Structure(Symbol, Vec<Decl>),
+    /// `signature NAME = sig val x : t ... end`
+    Signature(SignatureDecl),
+    /// `structure Name [: SIG] = struct ... end`
+    Structure {
+        name: Symbol,
+        signature: Option<Symbol>,
+        opaque: bool,
+        decls: Vec<Decl>,
+    },
     /// `effect Yield of Int`
     Effect(Symbol, Option<TypeExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignatureDecl {
+    pub name: Symbol,
+    pub specs: Vec<SignatureSpec>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignatureSpec {
+    Val {
+        name: Symbol,
+        ty: TypeExpr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

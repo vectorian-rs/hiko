@@ -30,9 +30,18 @@ fn fold_decl(decl: Decl) -> Decl {
             locals.into_iter().map(fold_decl).collect(),
             body.into_iter().map(fold_decl).collect(),
         ),
-        DeclKind::Structure(name, decls) => {
-            DeclKind::Structure(name, decls.into_iter().map(fold_decl).collect())
-        }
+        DeclKind::Signature(sig) => DeclKind::Signature(sig),
+        DeclKind::Structure {
+            name,
+            signature,
+            opaque,
+            decls,
+        } => DeclKind::Structure {
+            name,
+            signature,
+            opaque,
+            decls: decls.into_iter().map(fold_decl).collect(),
+        },
         other => other,
     };
     Decl { kind, span }

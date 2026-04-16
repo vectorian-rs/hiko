@@ -308,6 +308,9 @@ impl<'src> Lexer<'src> {
                 if self.peek() == Some(b':') {
                     self.pos += 1;
                     TokenKind::ColonColon
+                } else if self.peek() == Some(b'>') {
+                    self.pos += 1;
+                    TokenKind::ColonGt
                 } else {
                     TokenKind::Colon
                 }

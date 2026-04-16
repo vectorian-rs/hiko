@@ -37,6 +37,8 @@ pub enum TokenKind {
     And,
     Rec,
     Use,
+    Signature,
+    Sig,
     Structure,
     Struct,
     True,
@@ -99,6 +101,7 @@ pub enum TokenKind {
     Comma,      // ,
     Dot,        // .
     Colon,      // :
+    ColonGt,    // :>
     Semicolon,  // ;
     Underscore, // _
     Hash,       // #
@@ -127,6 +130,8 @@ impl TokenKind {
             "and" => Some(TokenKind::And),
             "rec" => Some(TokenKind::Rec),
             "use" => Some(TokenKind::Use),
+            "signature" => Some(TokenKind::Signature),
+            "sig" => Some(TokenKind::Sig),
             "structure" => Some(TokenKind::Structure),
             "struct" => Some(TokenKind::Struct),
             "true" => Some(TokenKind::True),
