@@ -81,6 +81,10 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             write_indent(buf, indent);
             buf.push_str("end");
         }
+        DeclKind::Import(name) => {
+            write_indent(buf, indent);
+            write!(buf, "import {}", interner.resolve(*name)).unwrap();
+        }
         DeclKind::Use(path) => {
             write_indent(buf, indent);
             buf.push_str("use ");

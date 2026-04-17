@@ -412,11 +412,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hiko-common"
+version = "0.6.0"
+dependencies = [
+ "blake3",
+ "ureq",
+]
+
+[[package]]
 name = "hiko-compile"
 version = "0.6.0"
 dependencies = [
+ "hiko-common",
  "hiko-syntax",
  "hiko-types",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -448,11 +459,11 @@ dependencies = [
 name = "hiko-vm"
 version = "0.6.0"
 dependencies = [
- "blake3",
  "dashmap",
  "dryoc",
  "glob",
  "hiko-builtin-meta",
+ "hiko-common",
  "hiko-compile",
  "hiko-syntax",
  "regex",

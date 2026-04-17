@@ -100,6 +100,8 @@ pub enum DeclKind {
     TypeAlias(TypeAliasDecl),
     /// `local d1 in d2 end`
     Local(Vec<Decl>, Vec<Decl>),
+    /// `import Foo.Bar`
+    Import(Symbol),
     /// `use "path/to/file.hml"`
     Use(String),
     /// `signature NAME = sig val x : t ... end`

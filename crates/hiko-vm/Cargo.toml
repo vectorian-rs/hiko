@@ -8,6 +8,7 @@ repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
 hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta" }
+hiko-common = { version = "0.6.0", path = "../hiko-common" }
 hiko-compile = { version = "0.6.0", path = "../hiko-compile" }
 hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
 dashmap = "6"
@@ -20,6 +21,5 @@ regex = "1"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 ureq = "3"
-blake3 = "1"
 
 [dev-dependencies]

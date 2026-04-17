@@ -702,7 +702,7 @@ impl InferCtx {
                 }
                 Ok(())
             }
-            DeclKind::Use(_) => Ok(()),
+            DeclKind::Import(_) | DeclKind::Use(_) => Ok(()),
             DeclKind::Signature(_) => unreachable!("signatures must be removed before inference"),
             DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference")

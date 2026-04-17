@@ -251,13 +251,14 @@ impl Parser {
             TokenKind::Datatype => self.parse_datatype_decl(),
             TokenKind::Type => self.parse_type_alias_decl(),
             TokenKind::Local => self.parse_local_decl(),
+            TokenKind::Import => self.parse_import_decl(),
             TokenKind::Use => self.parse_use_decl(),
             TokenKind::Signature => self.parse_signature_decl(),
             TokenKind::Structure => self.parse_structure_decl(),
             TokenKind::Effect => self.parse_effect_decl(),
             _ => {
                 Err(self
-                    .err("expected declaration (val, fun, datatype, type, local, use, signature, structure, or effect)"))
+                    .err("expected declaration (val, fun, datatype, type, local, import, use, signature, structure, or effect)"))
             }
         }
     }
@@ -445,6 +446,11 @@ impl Parser {
         if matches!(self.peek(), TokenKind::StringLit(_)) {
             let end = self.span();
             let path = self.take_string_lit();
+            if !(path.starts_with("./") || path.starts_with("../")) {
+                return Err(
+                    self.err("use expects an explicit relative path beginning with './' or '../'")
+                );
+            }
             let span = start.merge(end);
             Ok(Decl {
                 kind: DeclKind::Use(path),
@@ -453,6 +459,26 @@ impl Parser {
         } else {
             Err(self.err("expected string literal after 'use'"))
         }
+    }
+
+    fn parse_import_decl(&mut self) -> Result<Decl, ParseError> {
+        let start = self.span();
+        self.advance(); // consume `import`
+        let (package, _) = self.expect_upper_ident()?;
+        self.expect(&TokenKind::Dot, ".")?;
+        let (module, end) = self.expect_upper_ident()?;
+        if matches!(self.peek(), TokenKind::Dot) {
+            return Err(self.err("import expects exactly two segments: Package.Module"));
+        }
+        let name = self.interner.intern(&format!(
+            "{}.{}",
+            self.interner.resolve(package),
+            self.interner.resolve(module)
+        ));
+        Ok(Decl {
+            kind: DeclKind::Import(name),
+            span: start.merge(end),
+        })
     }
 
     fn parse_signature_decl(&mut self) -> Result<Decl, ParseError> {
@@ -1549,8 +1575,28 @@ mod tests {
 
     #[test]
     fn test_use_decl() {
-        let prog = parse(r#"use "foo.hml""#);
-        assert!(matches!(&prog.decls[0].kind, DeclKind::Use(path) if path == "foo.hml"));
+        let prog = parse(r#"use "./foo.hml""#);
+        assert!(matches!(&prog.decls[0].kind, DeclKind::Use(path) if path == "./foo.hml"));
+    }
+
+    #[test]
+    fn test_import_decl() {
+        let prog = parse("import Std.List");
+        assert!(
+            matches!(&prog.decls[0].kind, DeclKind::Import(name) if prog.interner.resolve(*name) == "Std.List")
+        );
+    }
+
+    #[test]
+    fn test_import_decl_rejects_deep_names() {
+        let err = parse_err("import Std.List.Extras");
+        assert!(err.contains("exactly two segments"));
+    }
+
+    #[test]
+    fn test_use_decl_requires_explicit_relative_path() {
+        let err = parse_err(r#"use "foo.hml""#);
+        assert!(err.contains("explicit relative path"));
     }
 
     #[test]

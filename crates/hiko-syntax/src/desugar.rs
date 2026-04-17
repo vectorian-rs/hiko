@@ -67,6 +67,7 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
                 .map(|decl| desugar_decl(decl, interner))
                 .collect(),
         ),
+        DeclKind::Import(name) => DeclKind::Import(name),
         DeclKind::Use(path) => DeclKind::Use(path),
         DeclKind::Signature(_) => unreachable!("signatures are removed before decl desugaring"),
         DeclKind::Structure { .. } => {
@@ -196,6 +197,7 @@ fn collect_decl_exports(
             }
         }
         DeclKind::Signature(_) => {}
+        DeclKind::Import(_) => {}
         DeclKind::Use(_) => {}
         DeclKind::Structure { .. } => {}
         DeclKind::AbstractType(_) => {}
@@ -414,6 +416,10 @@ fn rename_module_decl(
                 span: decl.span,
             }]
         }
+        DeclKind::Import(name) => vec![Decl {
+            kind: DeclKind::Import(name),
+            span: decl.span,
+        }],
         DeclKind::Use(path) => vec![Decl {
             kind: DeclKind::Use(path),
             span: decl.span,

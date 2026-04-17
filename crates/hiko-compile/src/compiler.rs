@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hiko_common::{blake3_hex, http_get_text};
 use hiko_syntax::ast::*;
-use hiko_syntax::intern::StringInterner;
+use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_types::infer::{InferCtx, TypeError};
+use serde::Deserialize;
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use crate::op::Op;
@@ -29,6 +31,141 @@ impl CompileError {
     }
 }
 
+fn discover_import_loader(
+    entry_file: &Path,
+) -> Result<(Option<ImportLockfile>, Option<PathBuf>), CompileError> {
+    let Some(lockfile_path) = find_lockfile_path(entry_file) else {
+        return Ok((None, None));
+    };
+    let lockfile_text = std::fs::read_to_string(&lockfile_path).map_err(|e| {
+        CompileError::codegen(format!(
+            "cannot read module lockfile '{}': {e}",
+            lockfile_path.display()
+        ))
+    })?;
+    let lockfile: ImportLockfile = toml::from_str(&lockfile_text).map_err(|e| {
+        CompileError::codegen(format!(
+            "invalid module lockfile '{}': {e}",
+            lockfile_path.display()
+        ))
+    })?;
+    validate_lockfile(&lockfile, &lockfile_path)?;
+    let cache_dir = default_module_cache_dir()?;
+    Ok((Some(lockfile), Some(cache_dir)))
+}
+
+fn find_lockfile_path(entry_file: &Path) -> Option<PathBuf> {
+    let mut dir = entry_file.parent();
+    while let Some(current) = dir {
+        let candidate = current.join("hiko.lock.toml");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        dir = current.parent();
+    }
+    None
+}
+
+fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
+    if let Ok(home) = std::env::var("HOME") {
+        return Ok(PathBuf::from(home).join(".hiko").join("lib-cache"));
+    }
+    Err(CompileError::codegen(
+        "cannot determine module cache directory; HOME is not set",
+    ))
+}
+
+fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileError> {
+    http_get_text(url).map_err(|e| {
+        CompileError::codegen(format!(
+            "cannot fetch named import '{module_name}' from '{url}': {e}"
+        ))
+    })
+}
+
+fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), CompileError> {
+    let actual = blake3_hex(bytes);
+    if actual == expected_hash {
+        Ok(())
+    } else {
+        Err(CompileError::codegen(format!(
+            "{label} failed BLAKE3 verification: expected {expected_hash}, got {actual}"
+        )))
+    }
+}
+
+fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), CompileError> {
+    if lockfile.schema_version != 1 {
+        return Err(CompileError::codegen(format!(
+            "unsupported module lockfile schema_version {} in '{}'; expected 1",
+            lockfile.schema_version,
+            path.display()
+        )));
+    }
+    for (package_name, package) in &lockfile.packages {
+        if package_name.trim().is_empty() {
+            return Err(CompileError::codegen(format!(
+                "package entry in '{}' has an empty name",
+                path.display()
+            )));
+        }
+        if package.version.trim().is_empty() {
+            return Err(CompileError::codegen(format!(
+                "package '{package_name}' in '{}' is missing version",
+                path.display()
+            )));
+        }
+        if package.base_url.trim().is_empty() {
+            return Err(CompileError::codegen(format!(
+                "package '{package_name}' in '{}' is missing base_url",
+                path.display()
+            )));
+        }
+        for (module_name, hash) in &package.modules {
+            if module_name.trim().is_empty() {
+                return Err(CompileError::codegen(format!(
+                    "package '{package_name}' in '{}' contains an empty module name",
+                    path.display()
+                )));
+            }
+            if module_name.contains('.') {
+                return Err(CompileError::codegen(format!(
+                    "module '{package_name}.{module_name}' in '{}' must be a single identifier",
+                    path.display()
+                )));
+            }
+            if hash.trim().is_empty() {
+                return Err(CompileError::codegen(format!(
+                    "module '{package_name}.{module_name}' in '{}' is missing a BLAKE3 hash",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
+    let Some((package, module)) = module_name.split_once('.') else {
+        return Err(CompileError::codegen(format!(
+            "named import '{module_name}' must use the shape Package.Module"
+        )));
+    };
+    if module.contains('.') {
+        return Err(CompileError::codegen(format!(
+            "named import '{module_name}' must use the shape Package.Module"
+        )));
+    }
+    Ok((package, module))
+}
+
+fn normalize_blake3(hash: &str) -> String {
+    hash.trim()
+        .strip_prefix("blake3:")
+        .unwrap_or(hash.trim())
+        .to_ascii_lowercase()
+}
+
 struct Local {
     name: String,
     depth: u32,
@@ -48,6 +185,23 @@ struct FuncCtx {
     name: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportLockfile {
+    schema_version: u32,
+    #[serde(default)]
+    packages: HashMap<String, LockedPackage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LockedPackage {
+    version: String,
+    base_url: String,
+    #[serde(default)]
+    modules: HashMap<String, String>,
+}
+
 pub struct Compiler {
     functions: Vec<FunctionProto>,
     func_stack: Vec<FuncCtx>,
@@ -56,7 +210,7 @@ pub struct Compiler {
     /// Effect name -> tag for effect handler dispatch.
     effect_tags: HashMap<String, u16>,
     next_effect_tag: u16,
-    /// Base directory for resolving relative imports.
+    /// Base directory for resolving relative local file includes via `use`.
     base_dir: PathBuf,
     /// Files currently being loaded (for cycle detection).
     loading_files: HashSet<PathBuf>,
@@ -66,6 +220,10 @@ pub struct Compiler {
     compiled_files: HashSet<PathBuf>,
     /// Cached desugared programs for imported files (used between passes).
     imported_programs: HashMap<PathBuf, Vec<Decl>>,
+    /// Named module lockfile discovered from the entry program.
+    import_lockfile: Option<ImportLockfile>,
+    /// Cache directory for fetched remote modules.
+    module_cache_dir: Option<PathBuf>,
     /// Global function name -> proto_idx (for direct calls).
     global_protos: HashMap<String, u16>,
     /// Shared type inference context (imports add to the same environment).
@@ -84,22 +242,31 @@ impl Compiler {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+        let (import_lockfile, module_cache_dir) = discover_import_loader(&canonical)?;
         let mut loading = HashSet::new();
         loading.insert(canonical);
-        Self::compile_with_ctx(program, base_dir, loading)
+        Self::compile_with_ctx(
+            program,
+            base_dir,
+            loading,
+            import_lockfile,
+            module_cache_dir,
+        )
     }
 
     /// Compile a program without a file context (e.g., from a string).
     pub fn compile(
         program: Program,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        Self::compile_with_ctx(program, PathBuf::from("."), HashSet::new())
+        Self::compile_with_ctx(program, PathBuf::from("."), HashSet::new(), None, None)
     }
 
     fn compile_with_ctx(
         program: Program,
         base_dir: PathBuf,
         loading_files: HashSet<PathBuf>,
+        import_lockfile: Option<ImportLockfile>,
+        module_cache_dir: Option<PathBuf>,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         // Desugar and constant-fold
         let program = hiko_syntax::desugar::desugar_program(program);
@@ -126,6 +293,8 @@ impl Compiler {
             inferred_files: HashSet::new(),
             compiled_files: HashSet::new(),
             imported_programs: HashMap::new(),
+            import_lockfile,
+            module_cache_dir,
             global_protos: HashMap::new(),
             infer_ctx: InferCtx::new(),
             interner,
@@ -412,6 +581,7 @@ impl Compiler {
                 self.effect_tags.insert(name, tag);
                 Ok(())
             }
+            DeclKind::Import(name) => self.compile_named_import(*name),
             DeclKind::Use(path) => self.compile_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before codegen")
@@ -445,21 +615,94 @@ impl Compiler {
         }
     }
 
-    // ── Two-pass import handling ────────────────────────────────────
+    // ── Local and named import handling ─────────────────────────────
 
-    fn resolve_import(&self, path: &str) -> Result<PathBuf, CompileError> {
+    fn resolve_local_use(&self, path: &str) -> Result<PathBuf, CompileError> {
         let resolved = self.base_dir.join(path);
         std::fs::canonicalize(&resolved).map_err(|e| {
             CompileError::codegen(format!(
-                "cannot resolve import '{}': {e}",
+                "cannot resolve local use '{}': {e}",
                 resolved.display()
             ))
         })
     }
 
+    fn resolve_named_import(&self, module_name: &str) -> Result<PathBuf, CompileError> {
+        let lockfile = self.import_lockfile.as_ref().ok_or_else(|| {
+            CompileError::codegen(format!(
+                "named import '{module_name}' requires hiko.lock.toml alongside the entry file"
+            ))
+        })?;
+        let (package_name, leaf_module) = split_import_name(module_name)?;
+        let package = lockfile.packages.get(package_name).ok_or_else(|| {
+            CompileError::codegen(format!(
+                "package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
+            ))
+        })?;
+        let expected_hash = package.modules.get(leaf_module).ok_or_else(|| {
+            CompileError::codegen(format!(
+                "module '{leaf_module}' in package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
+            ))
+        })?;
+        let cache_dir = self.module_cache_dir.as_ref().ok_or_else(|| {
+            CompileError::codegen(format!(
+                "named import '{module_name}' has no configured module cache directory"
+            ))
+        })?;
+
+        std::fs::create_dir_all(cache_dir).map_err(|e| {
+            CompileError::codegen(format!(
+                "cannot create module cache '{}': {e}",
+                cache_dir.display()
+            ))
+        })?;
+
+        let module_url = format!(
+            "{}/modules/{leaf_module}.hml",
+            package.base_url.trim_end_matches('/')
+        );
+        let url_hash = blake3_hex(module_url.as_bytes());
+        let expected_hash = normalize_blake3(expected_hash);
+        let cache_path = cache_dir.join(format!("{url_hash}-{expected_hash}.hml"));
+
+        if cache_path.exists() {
+            let cached = std::fs::read_to_string(&cache_path).map_err(|e| {
+                CompileError::codegen(format!(
+                    "cannot read cached module '{}': {e}",
+                    cache_path.display()
+                ))
+            })?;
+            if verify_blake3(
+                cached.as_bytes(),
+                &expected_hash,
+                &format!("cached named import '{module_name}'"),
+            )
+            .is_ok()
+            {
+                return Ok(cache_path);
+            }
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        let source = fetch_remote_module(&module_url, module_name)?;
+        verify_blake3(
+            source.as_bytes(),
+            &expected_hash,
+            &format!("named import '{module_name}'"),
+        )?;
+        std::fs::write(&cache_path, source).map_err(|e| {
+            CompileError::codegen(format!(
+                "cannot write cached module '{}': {e}",
+                cache_path.display()
+            ))
+        })?;
+        Ok(cache_path)
+    }
+
     /// Pass 1: type-check a single declaration (handles `use` recursively)
     fn infer_decl_pass(&mut self, decl: &Decl) -> Result<(), CompileError> {
         match &decl.kind {
+            DeclKind::Import(name) => self.infer_named_import(*name),
             DeclKind::Use(path) => self.infer_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before inference pass")
@@ -484,14 +727,15 @@ impl Compiler {
         }
     }
 
-    /// Pass 1 for imports: load, parse, desugar, infer, and cache
-    fn infer_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let canonical = self.resolve_import(path)?;
-
+    /// Pass 1 for imported source: load, parse, desugar, infer, and cache.
+    fn infer_import_source(
+        &mut self,
+        canonical: PathBuf,
+        display_name: &str,
+    ) -> Result<(), CompileError> {
         if self.loading_files.contains(&canonical) {
             return Err(CompileError::codegen(format!(
-                "circular import detected: '{}'",
-                canonical.display()
+                "circular import detected while loading '{display_name}'"
             )));
         }
 
@@ -502,15 +746,15 @@ impl Compiler {
         let source = std::fs::read_to_string(&canonical).map_err(|e| {
             CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
         })?;
-        let tokens = Lexer::new(&source, 0)
-            .tokenize()
-            .map_err(|e| CompileError::codegen(format!("lex error in '{path}': {}", e.message)))?;
+        let tokens = Lexer::new(&source, 0).tokenize().map_err(|e| {
+            CompileError::codegen(format!("lex error in '{display_name}': {}", e.message))
+        })?;
         // Use the same interner for import parsing so symbols are shared
         let import_interner = std::mem::take(&mut self.interner);
         let program = Parser::with_interner(tokens, import_interner)
             .parse_program()
             .map_err(|e| {
-                CompileError::codegen(format!("parse error in '{path}': {}", e.message))
+                CompileError::codegen(format!("parse error in '{display_name}': {}", e.message))
             })?;
 
         let program = hiko_syntax::desugar::desugar_program(program);
@@ -534,10 +778,19 @@ impl Compiler {
         Ok(())
     }
 
-    /// Pass 2 for imports: compile from cached desugared AST
-    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let canonical = self.resolve_import(path)?;
+    fn infer_use(&mut self, path: &str) -> Result<(), CompileError> {
+        let canonical = self.resolve_local_use(path)?;
+        self.infer_import_source(canonical, path)
+    }
 
+    fn infer_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
+        let module_name = self.interner.resolve(module_name).to_string();
+        let canonical = self.resolve_named_import(&module_name)?;
+        self.infer_import_source(canonical, &module_name)
+    }
+
+    /// Pass 2 for imported source: compile from cached desugared AST.
+    fn compile_import_source(&mut self, canonical: PathBuf) -> Result<(), CompileError> {
         if self.compiled_files.contains(&canonical) {
             return Ok(());
         }
@@ -555,6 +808,17 @@ impl Compiler {
         self.base_dir = old_base;
         self.compiled_files.insert(canonical);
         Ok(())
+    }
+
+    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
+        let canonical = self.resolve_local_use(path)?;
+        self.compile_import_source(canonical)
+    }
+
+    fn compile_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
+        let module_name = self.interner.resolve(module_name).to_string();
+        let canonical = self.resolve_named_import(&module_name)?;
+        self.compile_import_source(canonical)
     }
 
     fn compile_binding_pattern(&mut self, pat: &Pat) -> Result<(), CompileError> {
@@ -1256,5 +1520,279 @@ fn binop_to_op(op: BinOp) -> Op {
         BinOp::Eq => Op::Eq,
         BinOp::Ne => Op::Ne,
         BinOp::Andalso | BinOp::Orelse => unreachable!("short-circuit ops handled separately"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn parse_program(source: &str) -> Program {
+        let tokens = Lexer::new(source, 0).tokenize().expect("lex");
+        Parser::new(tokens).parse_program().expect("parse")
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "hiko-compile-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir parents");
+        }
+        std::fs::write(path, contents).expect("write file");
+    }
+
+    fn cached_module_path(url: &str, hash: &str) -> PathBuf {
+        default_module_cache_dir()
+            .expect("default cache dir")
+            .join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
+    }
+
+    fn spawn_response_server(
+        expected_path: &'static str,
+        body: String,
+        request_count: usize,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind server");
+        let addr = listener.local_addr().expect("server addr");
+        let handle = thread::spawn(move || {
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).expect("read request");
+                let request = String::from_utf8_lossy(&request[..count]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let (status, response_body) = if path == expected_path {
+                    ("200 OK", body.clone())
+                } else {
+                    ("404 Not Found", "not found".to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+        (format!("http://{addr}{expected_path}"), handle)
+    }
+
+    fn spawn_single_response_server(
+        expected_path: &'static str,
+        body: String,
+    ) -> (String, thread::JoinHandle<()>) {
+        spawn_response_server(expected_path, body, 1)
+    }
+
+    fn compile_path(
+        path: &Path,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        let source = std::fs::read_to_string(path).expect("read source");
+        Compiler::compile_file(parse_program(&source), path)
+    }
+
+    #[test]
+    fn named_import_fetches_over_http_and_reuses_cache() {
+        let project_dir = unique_temp_dir("named-import-ok");
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "structure List = struct\n  val forty_two = 42\nend\n".to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (list_url, server) = spawn_single_response_server("/modules/List.hml", module_source);
+        let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
+        let cache_path = cached_module_path(&format!("{base_url}/modules/List.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Std.List\nval answer = List.forty_two\n",
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+
+        let first = compile_path(&entry_path);
+        server.join().expect("join server");
+        assert!(first.is_ok(), "first compile should fetch remote module");
+
+        let second = compile_path(&entry_path);
+        assert!(second.is_ok(), "second compile should reuse cached module");
+        assert!(
+            cache_path.is_file(),
+            "expected fetched module in default cache"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_bad_blake3() {
+        let project_dir = unique_temp_dir("named-import-bad-hash");
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "val remote_answer = 42\n".to_string();
+        let (answer_url, server) =
+            spawn_single_response_server("/modules/Answer.hml", module_source);
+        let base_url = answer_url
+            .trim_end_matches("/modules/Answer.hml")
+            .to_string();
+        let cache_path = cached_module_path(&format!("{base_url}/modules/Answer.hml"), "deadbeef");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:deadbeef\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Test.Answer\nval result = remote_answer\n",
+        );
+        let _ = std::fs::remove_file(&cache_path);
+
+        let result = compile_path(&entry_path);
+        server.join().expect("join server");
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("failed BLAKE3 verification"));
+            }
+            other => panic!("expected BLAKE3 verification failure, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_revalidates_cached_file_on_later_load() {
+        let project_dir = unique_temp_dir("named-import-revalidate");
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "structure Cache = struct\n  val value = 7\nend\n".to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (cache_url, server) =
+            spawn_response_server("/modules/Cache.hml", module_source.clone(), 2);
+        let base_url = cache_url.trim_end_matches("/modules/Cache.hml").to_string();
+        let cache_path = cached_module_path(&format!("{base_url}/modules/Cache.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nCache = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(&entry_path, "import Test.Cache\nval answer = Cache.value\n");
+        let _ = std::fs::remove_file(&cache_path);
+
+        assert!(
+            compile_path(&entry_path).is_ok(),
+            "initial compile should fetch"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&cache_path).expect("cached source"),
+            module_source
+        );
+
+        std::fs::write(&cache_path, "structure Cache = struct val value = 0 end\n")
+            .expect("poison cache");
+
+        assert!(
+            compile_path(&entry_path).is_ok(),
+            "second compile should refetch after cache verification fails"
+        );
+        server.join().expect("join server");
+        assert_eq!(
+            std::fs::read_to_string(&cache_path).expect("repaired cache"),
+            module_source
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_missing_package_in_lockfile() {
+        let project_dir = unique_temp_dir("named-import-missing-package");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            r#"schema_version = 1
+
+[packages.Other]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Other-v0.1.0"
+
+[packages.Other.modules]
+List = "blake3:deadbeef"
+"#,
+        );
+        write_file(&entry_path, "import Std.List\nval answer = 1\n");
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("package 'Std'"));
+                assert!(message.contains("not found"));
+            }
+            other => panic!("expected missing package failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_missing_module_in_lockfile() {
+        let project_dir = unique_temp_dir("named-import-missing-module");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            r#"schema_version = 1
+
+[packages.Std]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Std-v0.1.0"
+
+[packages.Std.modules]
+Prelude = "blake3:deadbeef"
+"#,
+        );
+        write_file(&entry_path, "import Std.List\nval answer = 1\n");
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("module 'List'"));
+                assert!(message.contains("package 'Std'"));
+                assert!(message.contains("not found"));
+            }
+            other => panic!("expected missing module failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
     }
 }

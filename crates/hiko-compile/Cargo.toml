@@ -7,5 +7,8 @@ description = "hiko-compile: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
+hiko-common = { version = "0.6.0", path = "../hiko-common" }
 hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
 hiko-types = { version = "0.6.0", path = "../hiko-types" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

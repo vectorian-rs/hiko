@@ -1,0 +1,11 @@
+[package]
+name = "hiko-common"
+version = "0.6.0"
+edition = "2024"
+license = "MIT"
+description = "hiko-common: shared raw helpers for hiko"
+repository = "https://github.com/vectorian-rs/hiko"
+
+[dependencies]
+blake3 = "1"
+ureq = "3"
