@@ -1,11 +1,11 @@
 [package]
 name = "hiko-compile"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "hiko-compile: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
-hiko-syntax = { version = "0.5.1", path = "../hiko-syntax" }
-hiko-types = { version = "0.5.1", path = "../hiko-types" }
+hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
+hiko-types = { version = "0.6.0", path = "../hiko-types" }

@@ -88,7 +88,7 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
         }
         DeclKind::Signature(sig) => {
             write_indent(buf, indent);
-            write!(buf, "signature {} = sig\n", interner.resolve(sig.name)).unwrap();
+            writeln!(buf, "signature {} = sig", interner.resolve(sig.name)).unwrap();
             for spec in &sig.specs {
                 write_indent(buf, indent + 2);
                 match spec {
@@ -144,12 +144,7 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             pretty_tyvars(buf, &dt.tyvars, interner);
             buf.push_str(interner.resolve(dt.name));
             if let Some(implementation) = dt.implementation {
-                write!(
-                    buf,
-                    " = {}",
-                    interner.resolve(implementation)
-                )
-                .unwrap();
+                write!(buf, " = {}", interner.resolve(implementation)).unwrap();
             }
             buf.push_str(" *)");
         }

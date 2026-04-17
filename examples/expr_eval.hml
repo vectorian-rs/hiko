@@ -1,7 +1,7 @@
 (* A small expression evaluator *)
 
 datatype expr =
-    Num of Int
+    Num of int
   | Add of expr * expr
   | Mul of expr * expr
 

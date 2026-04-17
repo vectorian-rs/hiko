@@ -1,4 +1,4 @@
-(* String operations *)
+(* string operations *)
 
 val s = "  Hello, World!  "
 val trimmed = trim s

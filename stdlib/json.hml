@@ -4,9 +4,9 @@
  *)
 
 datatype json = JNull
-              | JBool of Bool
-              | JInt of Int
-              | JFloat of Float
-              | JStr of String
+              | JBool of bool
+              | JInt of int
+              | JFloat of float
+              | JStr of string
               | JArray of json list
-              | JObject of (String * json) list
+              | JObject of (string * json) list

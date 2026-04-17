@@ -17,7 +17,7 @@
  *)
 
 (* Show the exec type signature *)
-val _ = println "exec : (String, String list) -> (Int, String, String)"
+val _ = println "exec : (string, string list) -> (int, string, string)"
 val _ = println ""
 val _ = println "Usage:"
 val _ = println "  val (code, stdout, stderr) = exec (\"/bin/ls\", [\"-la\"])"

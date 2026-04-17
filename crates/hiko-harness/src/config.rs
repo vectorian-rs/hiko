@@ -9,6 +9,8 @@ use std::path::Path;
 pub struct Config {
     pub default: DefaultConfig,
     #[serde(default)]
+    pub hiko: HikoConfig,
+    #[serde(default)]
     pub providers: HashMap<String, Provider>,
     #[serde(default)]
     pub models: HashMap<String, ModelAlias>,
@@ -25,6 +27,17 @@ pub struct DefaultConfig {
     pub max_tokens: u32,
     #[serde(default = "default_max_turns")]
     pub max_turns: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct HikoConfig {
+    #[serde(default = "default_hiko_bin")]
+    pub bin: String,
+    #[serde(default = "default_hiko_config")]
+    pub config: String,
+    #[serde(default = "default_hiko_strict")]
+    pub strict: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +60,25 @@ fn default_max_tokens() -> u32 {
 }
 fn default_max_turns() -> usize {
     50
+}
+fn default_hiko_bin() -> String {
+    "hiko-cli".to_string()
+}
+fn default_hiko_config() -> String {
+    "policies/harness-tools.policy.toml".to_string()
+}
+fn default_hiko_strict() -> bool {
+    true
+}
+
+impl Default for HikoConfig {
+    fn default() -> Self {
+        Self {
+            bin: default_hiko_bin(),
+            config: default_hiko_config(),
+            strict: default_hiko_strict(),
+        }
+    }
 }
 impl Config {
     /// Load config from a TOML file.

@@ -1500,7 +1500,7 @@ mod tests {
 
     #[test]
     fn test_datatype_simple() {
-        let prog = parse("datatype shape = Circle of Float | Rect of Float * Float");
+        let prog = parse("datatype shape = Circle of float | Rect of float * float");
         if let DeclKind::Datatype(dt) = &prog.decls[0].kind {
             assert_eq!(prog.interner.resolve(dt.name), "shape");
             assert_eq!(dt.tyvars.len(), 0);
@@ -1543,7 +1543,7 @@ mod tests {
 
     #[test]
     fn test_type_alias() {
-        let prog = parse("type point = Float * Float");
+        let prog = parse("type point = float * float");
         assert!(matches!(&prog.decls[0].kind, DeclKind::TypeAlias(_)));
     }
 
@@ -1555,7 +1555,7 @@ mod tests {
 
     #[test]
     fn test_signature_decl() {
-        let prog = parse("signature LIST = sig val fold : Int -> Int end");
+        let prog = parse("signature LIST = sig val fold : int -> int end");
         if let DeclKind::Signature(sig) = &prog.decls[0].kind {
             assert_eq!(prog.interner.resolve(sig.name), "LIST");
             assert_eq!(sig.specs.len(), 1);
@@ -1612,7 +1612,10 @@ mod tests {
         } = &prog.decls[0].kind
         {
             assert_eq!(prog.interner.resolve(*name), "List");
-            assert_eq!(signature.map(|sym| prog.interner.resolve(sym)), Some("LIST"));
+            assert_eq!(
+                signature.map(|sym| prog.interner.resolve(sym)),
+                Some("LIST")
+            );
             assert!(!opaque);
             assert_eq!(decls.len(), 1);
         } else {
@@ -1631,7 +1634,10 @@ mod tests {
         } = &prog.decls[0].kind
         {
             assert_eq!(prog.interner.resolve(*name), "List");
-            assert_eq!(signature.map(|sym| prog.interner.resolve(sym)), Some("LIST"));
+            assert_eq!(
+                signature.map(|sym| prog.interner.resolve(sym)),
+                Some("LIST")
+            );
             assert!(*opaque);
             assert_eq!(decls.len(), 1);
         } else {
@@ -1761,10 +1767,10 @@ mod tests {
     #[test]
     fn test_pattern_cons() {
         let prog = parse("val (x :: xs) = [1, 2]");
-        if let DeclKind::Val(ref pat, _) = prog.decls[0].kind {
-            if let PatKind::Paren(ref inner) = pat.kind {
-                assert!(matches!(&inner.kind, PatKind::Cons(_, _)));
-            }
+        if let DeclKind::Val(ref pat, _) = prog.decls[0].kind
+            && let PatKind::Paren(ref inner) = pat.kind
+        {
+            assert!(matches!(&inner.kind, PatKind::Cons(_, _)));
         }
     }
 
@@ -1778,13 +1784,13 @@ mod tests {
 
     #[test]
     fn test_type_annotation() {
-        let prog = parse("val x = (42 : Int)");
+        let prog = parse("val x = (42 : int)");
         assert!(matches!(&prog.decls[0].kind, DeclKind::Val(_, _)));
     }
 
     #[test]
     fn test_arrow_type() {
-        let prog = parse("type f = Int -> Bool");
+        let prog = parse("type f = int -> bool");
         if let DeclKind::TypeAlias(ref ta) = prog.decls[0].kind {
             assert!(matches!(&ta.ty.kind, TypeExprKind::Arrow(_, _)));
         }
@@ -1792,7 +1798,7 @@ mod tests {
 
     #[test]
     fn test_type_app() {
-        let prog = parse("type xs = Int list");
+        let prog = parse("type xs = int list");
         if let DeclKind::TypeAlias(ref ta) = prog.decls[0].kind {
             if let TypeExprKind::App(sym, _) = &ta.ty.kind {
                 assert_eq!(prog.interner.resolve(*sym), "list");
@@ -1811,23 +1817,23 @@ mod tests {
     #[test]
     fn test_negative_pattern() {
         let prog = parse("fun f ~1 = true | f _ = false");
-        if let DeclKind::Fun(ref bindings) = prog.decls[0].kind {
-            if let PatKind::IntLit(n) = &bindings[0].clauses[0].pats[0].kind {
-                assert_eq!(*n, -1);
-            }
+        if let DeclKind::Fun(ref bindings) = prog.decls[0].kind
+            && let PatKind::IntLit(n) = &bindings[0].clauses[0].pats[0].kind
+        {
+            assert_eq!(*n, -1);
         }
     }
 
     #[test]
     fn test_as_pattern() {
         let prog = parse("val (x as Some _) = y");
-        if let DeclKind::Val(ref pat, _) = prog.decls[0].kind {
-            if let PatKind::Paren(ref inner) = pat.kind {
-                if let PatKind::As(sym, _) = &inner.kind {
-                    assert_eq!(prog.interner.resolve(*sym), "x");
-                } else {
-                    panic!("expected As");
-                }
+        if let DeclKind::Val(ref pat, _) = prog.decls[0].kind
+            && let PatKind::Paren(ref inner) = pat.kind
+        {
+            if let PatKind::As(sym, _) = &inner.kind {
+                assert_eq!(prog.interner.resolve(*sym), "x");
+            } else {
+                panic!("expected As");
             }
         }
     }

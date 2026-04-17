@@ -42,13 +42,6 @@ pub enum RunResult {
     },
     /// Process requested to await a child result.
     Await(u64),
-    /// Process requested to send a message.
-    Send {
-        target_pid: u64,
-        value: crate::sendable::SendableValue,
-    },
-    /// Process requested to receive a message.
-    Receive,
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
     /// Process was cancelled at a suspension point.
@@ -139,8 +132,6 @@ pub struct VM {
     println_builtin_id: Option<u16>,
     spawn_builtin_id: Option<u16>,
     await_builtin_id: Option<u16>,
-    send_builtin_id: Option<u16>,
-    receive_builtin_id: Option<u16>,
     sleep_builtin_id: Option<u16>,
     http_get_builtin_id: Option<u16>,
     http_builtin_id: Option<u16>,
@@ -169,11 +160,6 @@ pub enum RuntimeRequest {
         captures: Vec<crate::sendable::SendableValue>,
     },
     Await(u64),
-    Send {
-        target_pid: u64,
-        value: crate::sendable::SendableValue,
-    },
-    Receive,
     Io(crate::io_backend::IoRequest),
 }
 
@@ -269,8 +255,6 @@ impl VM {
             println_builtin_id: None,
             spawn_builtin_id: None,
             await_builtin_id: None,
-            send_builtin_id: None,
-            receive_builtin_id: None,
             sleep_builtin_id: None,
             http_get_builtin_id: None,
             http_builtin_id: None,
@@ -447,10 +431,7 @@ impl VM {
     }
 
     /// Set per-builtin HTTP host allowlists.
-    pub fn set_http_allowed_hosts_by_builtin(
-        &mut self,
-        hosts: HashMap<String, Vec<String>>,
-    ) {
+    pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
         self.http_allowed_hosts_by_builtin = hosts.clone();
         self.heap.http_allowed_hosts_by_builtin = hosts;
     }
@@ -506,8 +487,6 @@ impl VM {
             "exec" => self.exec_builtin_id = Some(idx),
             "spawn" => self.spawn_builtin_id = Some(idx),
             "await_process" => self.await_builtin_id = Some(idx),
-            "send_message" => self.send_builtin_id = Some(idx),
-            "receive_message" => self.receive_builtin_id = Some(idx),
             "sleep" => self.sleep_builtin_id = Some(idx),
             "http_get" => self.http_get_builtin_id = Some(idx),
             "http" => self.http_builtin_id = Some(idx),
@@ -729,8 +708,6 @@ impl VM {
                     captures,
                 },
                 RuntimeRequest::Await(pid) => RunResult::Await(pid),
-                RuntimeRequest::Send { target_pid, value } => RunResult::Send { target_pid, value },
-                RuntimeRequest::Receive => RunResult::Receive,
                 RuntimeRequest::Io(req) => RunResult::Io(req),
             };
         }
@@ -761,6 +738,11 @@ impl VM {
         if self.output.is_none() {
             self.output = Some(Vec::new());
         }
+    }
+
+    /// Inject stdin content for embedders running the VM in-process.
+    pub fn set_stdin_override(&mut self, input: String) {
+        self.heap.set_stdin_override(input);
     }
 
     pub fn disable_output_capture(&mut self) {
@@ -872,56 +854,6 @@ impl VM {
             }
         }
 
-        // Send: serialize value and signal runtime
-        if self.send_builtin_id == Some(builtin_id) {
-            let (v_pid, v_val) = match first_arg {
-                Value::Heap(r) => match self.heap.get(r) {
-                    Ok(HeapObject::Tuple(t)) if t.len() == 2 => (t[0], t[1]),
-                    _ => {
-                        return Err(RuntimeError {
-                            message: "send_message: expected (Pid, value)".into(),
-                        });
-                    }
-                },
-                _ => {
-                    return Err(RuntimeError {
-                        message: "send_message: expected (Pid, value)".into(),
-                    });
-                }
-            };
-            let target_pid = match v_pid {
-                Value::Pid(pid) => pid,
-                _ => {
-                    return Err(RuntimeError {
-                        message: "send_message: first element must be Pid".into(),
-                    });
-                }
-            };
-            let sendable =
-                crate::sendable::serialize(v_val, &self.heap).map_err(|e| RuntimeError {
-                    message: format!("send_message: {e}"),
-                })?;
-            self.pending_runtime_request = Some(RuntimeRequest::Send {
-                target_pid,
-                value: sendable,
-            });
-            self.stack.truncate(callee_pos);
-            self.push(Value::Unit)?;
-            return Err(RuntimeError {
-                message: "runtime request".into(),
-            });
-        }
-
-        // Receive: signal runtime to pop from mailbox
-        if self.receive_builtin_id == Some(builtin_id) {
-            self.pending_runtime_request = Some(RuntimeRequest::Receive);
-            self.stack.truncate(callee_pos);
-            self.push(Value::Unit)?;
-            return Err(RuntimeError {
-                message: "runtime request".into(),
-            });
-        }
-
         // I/O builtins: in async mode, suspend instead of blocking
         if self.async_io {
             let io_request = if self.sleep_builtin_id == Some(builtin_id) {
@@ -943,9 +875,11 @@ impl VM {
                     "http_get",
                 )
                 .map_err(|msg| RuntimeError { message: msg })?;
-                self.heap.check_http_host_for("http_get", &url).map_err(|e| RuntimeError {
-                    message: format!("http_get: {e}"),
-                })?;
+                self.heap
+                    .check_http_host_for("http_get", &url)
+                    .map_err(|e| RuntimeError {
+                        message: format!("http_get: {e}"),
+                    })?;
                 Some(crate::io_backend::IoRequest::HttpGet { url })
             } else if let Some(format) = self.match_http_builtin(builtin_id) {
                 let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
@@ -953,9 +887,11 @@ impl VM {
                     crate::builtins::extract_http_args(args, &self.heap, "http")
                         .map_err(|msg| RuntimeError { message: msg })?;
                 let builtin_name = self.builtins[builtin_id as usize].name;
-                self.heap.check_http_host_for(builtin_name, &url).map_err(|e| RuntimeError {
-                    message: format!("{builtin_name}: {e}"),
-                })?;
+                self.heap
+                    .check_http_host_for(builtin_name, &url)
+                    .map_err(|e| RuntimeError {
+                        message: format!("{builtin_name}: {e}"),
+                    })?;
                 Some(crate::io_backend::IoRequest::Http {
                     method,
                     url,
@@ -974,8 +910,8 @@ impl VM {
                     .heap
                     .check_fs_path_for("read_file", &path)
                     .map_err(|e| RuntimeError {
-                    message: format!("read_file: {e}"),
-                })?;
+                        message: format!("read_file: {e}"),
+                    })?;
                 Some(crate::io_backend::IoRequest::ReadFile {
                     path: checked.to_string_lossy().to_string(),
                 })
@@ -994,8 +930,8 @@ impl VM {
 
         // Exec is fully intercepted: whitelist check + timeout
         if self.exec_builtin_id == Some(builtin_id) {
-            self.check_exec_allowed(first_arg)?;
             let exec_arg = self.stack[callee_pos + 1];
+            self.check_exec_allowed(exec_arg)?;
             let result = self
                 .run_exec(exec_arg)
                 .map_err(|msg| RuntimeError { message: msg })?;
@@ -1980,14 +1916,20 @@ mod tests {
     }
 
     fn global_int(vm: &VM, name: &str) -> i64 {
-        match vm.get_global(name).expect(&format!("no global: {name}")) {
+        match vm
+            .get_global(name)
+            .unwrap_or_else(|| panic!("no global: {name}"))
+        {
             Value::Int(n) => *n,
             v => panic!("expected Int for {name}, got {v:?}"),
         }
     }
 
     fn global_str(vm: &VM, name: &str) -> String {
-        match vm.get_global(name).expect(&format!("no global: {name}")) {
+        match vm
+            .get_global(name)
+            .unwrap_or_else(|| panic!("no global: {name}"))
+        {
             Value::Heap(r) => match vm.heap.get(*r).unwrap() {
                 HeapObject::String(s) => s.clone(),
                 v => panic!("expected String for {name}, got {v:?}"),
@@ -1997,7 +1939,10 @@ mod tests {
     }
 
     fn global_bool(vm: &VM, name: &str) -> bool {
-        match vm.get_global(name).expect(&format!("no global: {name}")) {
+        match vm
+            .get_global(name)
+            .unwrap_or_else(|| panic!("no global: {name}"))
+        {
             Value::Bool(b) => *b,
             v => panic!("expected Bool for {name}, got {v:?}"),
         }
@@ -2131,7 +2076,7 @@ mod tests {
     #[test]
     fn test_effect_handle_no_perform() {
         // Body returns normally, goes through return clause
-        let vm = run("effect Ask of Unit
+        let vm = run("effect Ask of unit
              val result = handle 42 with return x => x + 1");
         assert_eq!(global_int(&vm, "result"), 43);
     }
@@ -2139,7 +2084,7 @@ mod tests {
     #[test]
     fn test_effect_perform_simple() {
         // Perform an effect, handler returns a value without resuming
-        let vm = run("effect Ask of Unit
+        let vm = run("effect Ask of unit
              val result = handle perform Ask ()
                with return x => x
                   | Ask _ k => 99");
@@ -2149,7 +2094,7 @@ mod tests {
     #[test]
     fn test_effect_perform_with_resume() {
         // Perform + resume: the continuation returns the resumed value
-        let vm = run("effect Ask of Unit
+        let vm = run("effect Ask of unit
              val result = handle 1 + perform Ask ()
                with return x => x
                   | Ask _ k => resume k 41");
@@ -2159,7 +2104,7 @@ mod tests {
     #[test]
     fn test_effect_perform_payload() {
         // Effect carries a payload
-        let vm = run("effect Double of Int
+        let vm = run("effect Double of int
              val result = handle perform Double 21
                with return x => x
                   | Double n k => resume k (n * 2)");
@@ -2170,7 +2115,7 @@ mod tests {
     fn test_effect_resume_direct_in_function() {
         // resume k v directly in a handler clause inside a function —
         // this was crashing due to stack corruption before the fix.
-        let vm = run("effect Fetch of String\n\
+        let vm = run("effect Fetch of string\n\
              fun with_mock f =\n\
                handle f ()\n\
                with return x => x\n\
@@ -2183,7 +2128,7 @@ mod tests {
     #[test]
     fn test_effect_multiple_performs_reinstalled() {
         // Multiple performs through a recursively reinstalled handler
-        let vm = run("effect Ask of Int\n\
+        let vm = run("effect Ask of int\n\
              fun with_handler f =\n\
                handle f ()\n\
                with return x => x\n\
@@ -2199,7 +2144,7 @@ mod tests {
 
     #[test]
     fn test_effect_generator() {
-        let vm = run("effect Yield of Int
+        let vm = run("effect Yield of int
              fun run_gen f = handle f ()
                with return _ => 0
                   | Yield n k => n + run_gen (fn _ => resume k ())
@@ -2215,7 +2160,7 @@ mod tests {
     #[test]
     fn test_effect_no_resume() {
         // Handler does not resume, so it aborts the computation
-        let vm = run("effect Abort of Int
+        let vm = run("effect Abort of int
              fun f () = let val _ = perform Abort 42 in 0 end
              val result = handle f ()
                with return x => x
@@ -2226,8 +2171,8 @@ mod tests {
     #[test]
     fn test_effect_nested_handlers() {
         // Nested handle blocks with different effects
-        let vm = run("effect A of Unit
-             effect B of Unit
+        let vm = run("effect A of unit
+             effect B of unit
              val result = handle
                handle 1 + perform A () + perform B ()
                with return x => x
@@ -2240,8 +2185,8 @@ mod tests {
     #[test]
     fn test_effect_state() {
         // State effect: get/put pattern
-        let vm = run("effect Get of Unit
-             effect Put of Int
+        let vm = run("effect Get of unit
+             effect Put of int
              fun run_state init f =
                handle f ()
                with return x => x
@@ -2257,7 +2202,7 @@ mod tests {
     fn test_effect_resume_direct_large_loop() {
         // Repeated direct resumes should stay correct for larger workloads,
         // even before a dedicated tail-resume path lands.
-        let vm = run("effect Ask of Int\n\
+        let vm = run("effect Ask of int\n\
              fun loop n acc =\n\
                if n = 0 then acc\n\
                else let val x = perform Ask n\n\
@@ -2274,7 +2219,7 @@ mod tests {
     fn test_effect_resume_non_tail_pending_application() {
         // A perform inside a larger expression must restore the pending
         // application state exactly; this used to corrupt the callee slot.
-        let vm = run("effect Ask of Int\n\
+        let vm = run("effect Ask of int\n\
              fun loop n acc =\n\
                if n = 0 then acc\n\
                else step n acc\n\
@@ -2323,6 +2268,17 @@ mod tests {
         let streamed = sink.text.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(streamed, "ab\n");
         assert_eq!(vm.get_output().concat(), "ab\n");
+    }
+
+    #[test]
+    fn test_read_stdin_uses_injected_buffer_once() {
+        let mut vm = compile_vm("val first = read_stdin () val second = read_stdin ()");
+        vm.set_stdin_override("{\"path\":\"src/main.rs\"}".to_string());
+
+        vm.run().unwrap();
+
+        assert_eq!(global_str(&vm, "first"), "{\"path\":\"src/main.rs\"}");
+        assert_eq!(global_str(&vm, "second"), "");
     }
 
     // ── Capability / builder tests ───────────────────────────────────

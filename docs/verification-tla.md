@@ -6,7 +6,7 @@
 ### `ProcessLifecycle.tla` — intended semantics
 
 Models **what should happen**: FIFO scheduler, spawn/await with single-consumption
-result delivery, send/receive with FIFO mailboxes, I/O blocking/completion,
+result delivery, I/O blocking/completion,
 failure propagation, and deadlock detection. No worker threads — the scheduler
 picks from the front of the queue. Smaller state space, stronger invariants.
 
@@ -200,7 +200,7 @@ Also checked for `ThreadedSchedulerImpl` via `ThreadedSchedulerImplLive.cfg`:
 ```
 ProcessLifecycle.tla      safety   MaxProcesses=2 MaxSteps=8   PASSED (1533 states)
 ProcessLifecycle.tla      liveness MaxProcesses=2 MaxSteps=8   PASSED (0 non-trivial SCCs)
-ThreadedSchedulerImpl.tla safety   MaxProcesses=4 MaxSteps=10  PASSED (461 states)
+ThreadedSchedulerImpl.tla safety   MaxProcesses=4 MaxSteps=10  PASSED (2502 states)
 ThreadedSchedulerImpl.tla liveness MaxProcesses=2 MaxSteps=8   PASSED (0 non-trivial SCCs)
 ```
 

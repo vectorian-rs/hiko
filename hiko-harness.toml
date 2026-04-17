@@ -7,6 +7,13 @@ provider = "openai"
 max_tokens = 8192
 max_turns = 50
 
+[hiko]
+# Use an installed hiko-cli by default. For local repo development you can
+# point this at ./target/debug/hiko-cli after building the binary.
+bin = "hiko-cli"
+config = "policies/harness-tools.policy.toml"
+strict = true
+
 # ── Providers ─────────────────────────────────────────────────────────
 # All providers use the OpenAI chat completions API format.
 # For Anthropic Claude, use an OpenAI-compatible proxy or gateway.

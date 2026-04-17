@@ -3,9 +3,9 @@
  * modeled with a Fail effect and a result type.
  *)
 
-datatype 'a result = Ok of 'a | Err of String
+datatype 'a result = Ok of 'a | Err of string
 
-effect Fail of String
+effect Fail of string
 
 fun run_safe f =
   handle f ()

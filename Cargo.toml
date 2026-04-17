@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/hiko-builtin-meta",
     "crates/hiko-syntax",
     "crates/hiko-types",
     "crates/hiko-compile",

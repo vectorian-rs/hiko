@@ -4,7 +4,7 @@
  * Direct resume — no recursive wrapper needed.
  *)
 
-effect ReadBytes of String
+effect ReadBytes of string
 
 fun process dir entries results count = case entries of
     [] => (results, count)

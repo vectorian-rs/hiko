@@ -171,8 +171,9 @@ mod tests {
     #[test]
     fn test_float() {
         let heap = Heap::new();
-        match round_trip(Value::Float(3.14), &heap) {
-            Value::Float(f) => assert!((f - 3.14).abs() < 1e-10),
+        let value = 314.0_f64 / 100.0;
+        match round_trip(Value::Float(value), &heap) {
+            Value::Float(f) => assert!((f - value).abs() < 1e-10),
             other => panic!("expected Float, got {:?}", other),
         }
     }

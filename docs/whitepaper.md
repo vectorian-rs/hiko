@@ -12,6 +12,8 @@ Hiko is aimed at scripting and tooling workloads where safety, predictability, a
 
 These workloads want direct-style programming, but they also want strong control over authority and resource access. In many existing systems, direct-style asynchronous programming is achieved through a shared-heap concurrency substrate. Hiko instead asks whether direct style can be preserved while keeping scheduling, capability enforcement, and heap ownership fixed in the runtime.
 
+Hiko is rooted in the SML tradition, but it is not intended as a bug-for-bug reproduction of SML'97. Where the SML specification is historically ambiguous, under-specified, or unnecessarily complex for Hiko's goals, Hiko prefers explicit simplification. Examples include a simplified recursive-binding surface, omission of `abstype`, a deliberately minimal module system, lowercase primitive type names in source syntax, and a general preference for one documented parse over inherited grammar ambiguity.
+
 The answer proposed here is yes. Hiko combines:
 
 - a Core SML-style language foundation
@@ -60,6 +62,8 @@ The runtime should be easy to extend with native capabilities such as process ex
 ### 3.1 Core SML
 
 Hiko is rooted in Core SML: a typed lambda-calculus core with Hindley-Milner polymorphism, algebraic data types, and formal static and dynamic semantics. This provides a strong basis for both implementation and future formal reasoning.
+
+However, Hiko should be understood as **SML-derived, not SML-obedient**. The point of using Core SML as a foundation is to inherit a strong semantic base, not to inherit every historical defect or specification gray area of SML'97. In practice, this means Hiko keeps the robust parts of the core language while explicitly repairing, simplifying, or omitting features that are known to be awkward in the SML definition.
 
 ### 3.2 Algebraic Effects
 

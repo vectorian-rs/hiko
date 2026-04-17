@@ -1,6 +1,7 @@
 use crate::builtins;
 use crate::value::BuiltinFn;
 use crate::vm::VM;
+use hiko_builtin_meta::core_builtin_names;
 use hiko_compile::chunk::CompiledProgram;
 use std::collections::HashMap;
 
@@ -106,63 +107,7 @@ impl VMBuilder {
 
     /// Include core builtins (I/O, string ops, math, env, time).
     pub fn with_core(mut self) -> Self {
-        let core_names = [
-            "print",
-            "println",
-            "read_line",
-            "int_to_string",
-            "float_to_string",
-            "string_to_int",
-            "char_to_int",
-            "int_to_char",
-            "int_to_float",
-            "string_length",
-            "substring",
-            "string_contains",
-            "trim",
-            "split",
-            "string_replace",
-            "regex_match",
-            "regex_replace",
-            "json_parse",
-            "json_to_string",
-            "json_get",
-            "json_keys",
-            "json_length",
-            "sqrt",
-            "abs_int",
-            "abs_float",
-            "floor",
-            "ceil",
-            "getenv",
-            "starts_with",
-            "ends_with",
-            "to_upper",
-            "to_lower",
-            "epoch",
-            "epoch_ms",
-            "monotonic_ms",
-            "bytes_length",
-            "bytes_to_string",
-            "string_to_bytes",
-            "bytes_get",
-            "bytes_slice",
-            "blake3",
-            "random_bytes",
-            "rng_seed",
-            "rng_bytes",
-            "rng_int",
-            "sleep",
-            "string_join",
-            "spawn",
-            "await_process",
-            // send_message and receive_message removed from user model (v1)
-            // structured concurrency via spawn/await only
-            "panic",
-            "assert",
-            "assert_eq",
-        ];
-        for name in core_names {
+        for name in core_builtin_names() {
             self = self.register_builtin_name(name);
         }
         self

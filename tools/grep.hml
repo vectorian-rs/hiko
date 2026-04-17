@@ -6,8 +6,9 @@
 
 use "../stdlib/list.hml"
 
-val pattern = getenv "HIKO_ARG_PATTERN"
-val path = getenv "HIKO_ARG_PATH"
+val input = read_stdin ()
+val pattern = json_get (input, "pattern")
+val path = json_get (input, "path")
 
 fun search_file file_path =
   let

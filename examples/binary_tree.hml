@@ -1,6 +1,6 @@
 (* Binary search tree with insert, search, and in-order traversal *)
 
-datatype tree = Leaf | Node of tree * Int * tree
+datatype tree = Leaf | Node of tree * int * tree
 
 fun insert t v = case t of
     Leaf => Node (Leaf, v, Leaf)

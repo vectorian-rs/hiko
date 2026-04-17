@@ -41,13 +41,6 @@ pub fn deliver_result_to_parent(parent_vm: &mut VM, sendable: SendableValue) {
     parent_vm.push_value(val);
 }
 
-/// Deliver a message to a process (either from mailbox or direct delivery).
-pub fn deliver_message(vm: &mut VM, msg: SendableValue) {
-    vm.stack.pop(); // remove placeholder
-    let val = deserialize(msg, &mut vm.heap);
-    vm.push_value(val);
-}
-
 /// Create a child VM that inherits capabilities from the parent VM.
 pub fn create_child_vm_from_parent(
     parent_vm: &VM,

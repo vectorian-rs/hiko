@@ -1,7 +1,10 @@
 use crate::builder::{ExecPolicy as VmExecPolicy, VMBuilder};
 use crate::vm::VM;
+use hiko_builtin_meta::capability_path_for_builtin as meta_capability_path_for_builtin;
 use hiko_compile::chunk::CompiledProgram;
 use serde::Deserialize;
+use std::collections::BTreeSet;
+use std::path::{Component, Path};
 
 /// Runtime/loadable run configuration.
 /// This struct describes how a VM should be configured for a specific
@@ -91,6 +94,14 @@ macro_rules! enabled_family {
                 builder
             }
 
+            fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+                $(
+                    if self.$field.as_ref().is_some_and(|leaf| leaf.enabled) {
+                        out.insert($builtin);
+                    }
+                )*
+            }
+
             fn emit(&self, out: &mut String) {
                 $(
                     if self.$field.as_ref().is_some_and(|leaf| leaf.enabled) {
@@ -123,6 +134,16 @@ macro_rules! folder_family {
                     }
                 )*
                 builder
+            }
+
+            fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+                $(
+                    if let Some(leaf) = &self.$field
+                        && leaf.enabled
+                    {
+                        out.insert($builtin);
+                    }
+                )*
             }
 
             fn emit(&self, out: &mut String) {
@@ -162,6 +183,16 @@ macro_rules! http_family {
                 builder
             }
 
+            fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+                $(
+                    if let Some(leaf) = &self.$field
+                        && leaf.enabled
+                    {
+                        out.insert($builtin);
+                    }
+                )*
+            }
+
             fn emit(&self, out: &mut String) {
                 $(
                     if let Some(leaf) = &self.$field
@@ -183,6 +214,7 @@ enabled_family!(StdioCapabilities {
     print => "print",
     println => "println",
     read_line => "read_line",
+    read_stdin => "read_stdin",
 });
 
 enabled_family!(ConvertCapabilities {
@@ -262,8 +294,10 @@ enabled_family!(TimeCapabilities {
 enabled_family!(ProcessCapabilities {
     spawn => "spawn",
     await_process => "await_process",
-    send_message => "send_message",
-    receive_message => "receive_message",
+});
+
+enabled_family!(PathCapabilities {
+    path_join => "path_join",
 });
 
 folder_family!(FilesystemCapabilities {
@@ -276,7 +310,6 @@ folder_family!(FilesystemCapabilities {
     create_dir => "create_dir",
     is_dir => "is_dir",
     is_file => "is_file",
-    path_join => "path_join",
     read_file_tagged => "read_file_tagged",
     edit_file_tagged => "edit_file_tagged",
     glob => "glob",
@@ -334,6 +367,14 @@ impl ExecCapabilities {
             ));
         }
     }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        if let Some(leaf) = &self.exec
+            && leaf.enabled
+        {
+            out.insert("exec");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -364,6 +405,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub process: ProcessCapabilities,
     #[serde(default)]
+    pub path: PathCapabilities,
+    #[serde(default)]
     pub filesystem: FilesystemCapabilities,
     #[serde(default)]
     pub http: HttpCapabilities,
@@ -389,6 +432,7 @@ impl Capabilities {
         let builder = self.env.apply(builder);
         let builder = self.time.apply(builder);
         let builder = self.process.apply(builder);
+        let builder = self.path.apply(builder);
         let builder = self.filesystem.apply(builder);
         let builder = self.http.apply(builder);
         let builder = self.exec.apply(builder);
@@ -409,11 +453,35 @@ impl Capabilities {
         self.env.emit(out);
         self.time.emit(out);
         self.process.emit(out);
+        self.path.emit(out);
         self.filesystem.emit(out);
         self.http.emit(out);
         self.exec.emit(out);
         self.system.emit(out);
         self.testing.emit(out);
+    }
+
+    fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
+        let mut out = BTreeSet::new();
+        self.stdio.extend_enabled(&mut out);
+        self.convert.extend_enabled(&mut out);
+        self.string.extend_enabled(&mut out);
+        self.regex.extend_enabled(&mut out);
+        self.json.extend_enabled(&mut out);
+        self.math.extend_enabled(&mut out);
+        self.bytes.extend_enabled(&mut out);
+        self.hash.extend_enabled(&mut out);
+        self.random.extend_enabled(&mut out);
+        self.env.extend_enabled(&mut out);
+        self.time.extend_enabled(&mut out);
+        self.process.extend_enabled(&mut out);
+        self.path.extend_enabled(&mut out);
+        self.filesystem.extend_enabled(&mut out);
+        self.http.extend_enabled(&mut out);
+        self.exec.extend_enabled(&mut out);
+        self.system.extend_enabled(&mut out);
+        self.testing.extend_enabled(&mut out);
+        out
     }
 }
 
@@ -423,6 +491,50 @@ fn rust_string_vec(values: &[String]) -> String {
         .map(|value| format!("{value:?}.into()"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn path_uses_parent_dir(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn validate_config_paths(config: &RunConfig) -> Result<(), String> {
+    if let Some(entry) = &config.entry
+        && path_uses_parent_dir(entry)
+    {
+        return Err(format!(
+            "entry path must not contain '..': {entry:?} (use a cwd-relative './...' path or an absolute path)"
+        ));
+    }
+
+    let filesystem_families = [
+        config.capabilities.filesystem.read_file.as_ref(),
+        config.capabilities.filesystem.read_file_bytes.as_ref(),
+        config.capabilities.filesystem.write_file.as_ref(),
+        config.capabilities.filesystem.file_exists.as_ref(),
+        config.capabilities.filesystem.list_dir.as_ref(),
+        config.capabilities.filesystem.remove_file.as_ref(),
+        config.capabilities.filesystem.create_dir.as_ref(),
+        config.capabilities.filesystem.is_dir.as_ref(),
+        config.capabilities.filesystem.is_file.as_ref(),
+        config.capabilities.filesystem.read_file_tagged.as_ref(),
+        config.capabilities.filesystem.edit_file_tagged.as_ref(),
+        config.capabilities.filesystem.glob.as_ref(),
+        config.capabilities.filesystem.walk_dir.as_ref(),
+    ];
+
+    for leaf in filesystem_families.into_iter().flatten() {
+        for folder in &leaf.folders {
+            if path_uses_parent_dir(folder) {
+                return Err(format!(
+                    "filesystem folder paths must not contain '..': {folder:?} (use a cwd-relative './...' path or an absolute path)"
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl Default for RunConfig {
@@ -439,7 +551,9 @@ impl Default for RunConfig {
 impl RunConfig {
     /// Parse a run config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, String> {
-        toml::from_str(text).map_err(|e| e.to_string())
+        let config: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        validate_config_paths(&config)?;
+        Ok(config)
     }
 
     /// Configure a VM builder with this run config.
@@ -459,6 +573,17 @@ impl RunConfig {
     /// Build a VM for this run config and compiled program.
     pub fn build_vm(&self, program: CompiledProgram) -> VM {
         self.apply_to_builder(VMBuilder::new(program)).build()
+    }
+
+    /// Return the public builtin names enabled by this run config.
+    pub fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
+        self.capabilities.enabled_builtin_names()
+    }
+
+    /// Return the config leaf path that enables a builtin, if it is modeled
+    /// as a capability leaf in the run config surface.
+    pub fn capability_path_for_builtin(name: &str) -> Option<&'static str> {
+        meta_capability_path_for_builtin(name)
     }
 
     /// Generate Rust source code for a main.rs that bakes this config in.
@@ -544,9 +669,33 @@ folders = ["."]
 
     #[test]
     fn parse_full_builtin_example_config() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/full-builtin-run-config.example.toml");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/full-builtin-run-config.example.toml");
         let text = std::fs::read_to_string(path).expect("example config should exist");
         RunConfig::from_toml(&text).expect("full builtin example config should parse");
+    }
+
+    #[test]
+    fn reject_entry_with_parent_dir_component() {
+        let err = RunConfig::from_toml(
+            r#"
+entry = "../scripts/read.hml"
+"#,
+        )
+        .expect_err("parent dir entry should be rejected");
+        assert!(err.contains("must not contain '..'"));
+    }
+
+    #[test]
+    fn reject_filesystem_folder_with_parent_dir_component() {
+        let err = RunConfig::from_toml(
+            r#"
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["../content"]
+"#,
+        )
+        .expect_err("parent dir folders should be rejected");
+        assert!(err.contains("must not contain '..'"));
     }
 }

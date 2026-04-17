@@ -10,7 +10,7 @@
  *   - Business logic doesn't know which handler is installed
  *)
 
-effect HttpGet of String
+effect HttpGet of string
 
 (* ── Business logic ────────────────────────────────────────── *)
 

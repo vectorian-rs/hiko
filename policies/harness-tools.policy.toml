@@ -1,0 +1,113 @@
+# Default run config for hiko-harness bundled tools.
+# This keeps tool execution on the public hiko-cli runner path instead of
+# embedding a separate VM inside the harness process.
+
+[limits]
+max_fuel = 50_000_000
+max_heap = 500_000
+
+[capabilities.stdio.print]
+enabled = true
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.stdio.read_stdin]
+enabled = true
+
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.convert.string_to_int]
+enabled = true
+
+[capabilities.string.split]
+enabled = true
+
+[capabilities.path.path_join]
+enabled = true
+
+[capabilities.regex.regex_match]
+enabled = true
+
+[capabilities.json.json_get]
+enabled = true
+
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.write_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.file_exists]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.list_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.is_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.is_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_tagged]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.edit_file_tagged]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.glob]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.walk_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.exec.exec]
+enabled = true
+allowed_commands = [
+  "awk",
+  "bash",
+  "bun",
+  "cargo",
+  "cat",
+  "cp",
+  "curl",
+  "cut",
+  "find",
+  "gh",
+  "git",
+  "grep",
+  "head",
+  "jq",
+  "ls",
+  "mkdir",
+  "mise",
+  "mv",
+  "node",
+  "npm",
+  "python",
+  "python3",
+  "rg",
+  "rm",
+  "sed",
+  "sh",
+  "sort",
+  "tail",
+  "touch",
+  "tr",
+  "uniq",
+  "wc",
+  "xargs",
+]
+timeout = 30

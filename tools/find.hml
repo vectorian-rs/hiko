@@ -5,6 +5,7 @@
 
 use "../stdlib/list.hml"
 
-val pattern = getenv "HIKO_ARG_PATTERN"
+val input = read_stdin ()
+val pattern = json_get (input, "pattern")
 val files = glob pattern
 val _ = map println files

@@ -47,9 +47,7 @@ fn collect_signatures(decls: &[Decl]) -> HashMap<Symbol, SignatureDecl> {
 pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
     let span = decl.span;
     let kind = match decl.kind {
-        DeclKind::Val(pat, expr) => {
-            DeclKind::Val(desugar_pat(pat), desugar_expr(expr, interner))
-        }
+        DeclKind::Val(pat, expr) => DeclKind::Val(desugar_pat(pat), desugar_expr(expr, interner)),
         DeclKind::ValRec(name, expr) => DeclKind::ValRec(name, desugar_expr(expr, interner)),
         DeclKind::Fun(bindings) => {
             let bindings = bindings
@@ -113,10 +111,13 @@ fn desugar_structure(
             &scope,
             &empty_values,
             signature.is_some(),
-            !signature.is_some(),
+            signature.is_none(),
         ));
     }
-    let mut out: Vec<Decl> = out.into_iter().map(|decl| desugar_decl(decl, interner)).collect();
+    let mut out: Vec<Decl> = out
+        .into_iter()
+        .map(|decl| desugar_decl(decl, interner))
+        .collect();
     if let Some(signature) = signature {
         out.extend(signature_assertions(
             signature,
@@ -152,14 +153,16 @@ fn collect_decl_exports(
     match &decl.kind {
         DeclKind::Val(pat, _) => {
             for sym in pat_bound_names(pat) {
-                scope.values
+                scope
+                    .values
                     .insert(sym, mangle_symbol(module_path, sym, interner, hide_exports));
             }
         }
         DeclKind::ValRec(sym, _) => {
-            scope
-                .values
-                .insert(*sym, mangle_symbol(module_path, *sym, interner, hide_exports));
+            scope.values.insert(
+                *sym,
+                mangle_symbol(module_path, *sym, interner, hide_exports),
+            );
         }
         DeclKind::Fun(bindings) => {
             for binding in bindings {
@@ -170,9 +173,10 @@ fn collect_decl_exports(
             }
         }
         DeclKind::Datatype(dt) => {
-            scope
-                .types
-                .insert(dt.name, mangle_symbol(module_path, dt.name, interner, hide_exports));
+            scope.types.insert(
+                dt.name,
+                mangle_symbol(module_path, dt.name, interner, hide_exports),
+            );
             for con in &dt.constructors {
                 scope.constructors.insert(
                     con.name,
@@ -181,9 +185,10 @@ fn collect_decl_exports(
             }
         }
         DeclKind::TypeAlias(ta) => {
-            scope
-                .types
-                .insert(ta.name, mangle_symbol(module_path, ta.name, interner, hide_exports));
+            scope.types.insert(
+                ta.name,
+                mangle_symbol(module_path, ta.name, interner, hide_exports),
+            );
         }
         DeclKind::Local(_, body) => {
             for decl in body {
@@ -196,9 +201,10 @@ fn collect_decl_exports(
         DeclKind::AbstractType(_) => {}
         DeclKind::ExportVal { .. } => {}
         DeclKind::Effect(sym, _) => {
-            scope
-                .effects
-                .insert(*sym, mangle_symbol(module_path, *sym, interner, hide_exports));
+            scope.effects.insert(
+                *sym,
+                mangle_symbol(module_path, *sym, interner, hide_exports),
+            );
         }
     }
 }
@@ -232,10 +238,7 @@ fn signature_assertions(
         .specs
         .iter()
         .filter_map(|spec| match spec {
-            SignatureSpec::Type { tyvars, name, span } => Some((
-                *name,
-                (tyvars.clone(), *span),
-            )),
+            SignatureSpec::Type { tyvars, name, span } => Some((*name, (tyvars.clone(), *span))),
             SignatureSpec::Val { .. } => None,
         })
         .collect();
@@ -318,7 +321,7 @@ fn rename_module_decl(
     export_names: bool,
 ) -> Vec<Decl> {
     match decl.kind {
-            DeclKind::Structure { .. } => unreachable!("nested structures are not supported yet"),
+        DeclKind::Structure { .. } => unreachable!("nested structures are not supported yet"),
         DeclKind::Val(pat, expr) => vec![Decl {
             kind: DeclKind::Val(
                 rename_pat(pat, scope, export_names || module_hidden),
@@ -577,13 +580,17 @@ fn rename_expr(expr: Expr, scope: &ModuleScope, local_values: &HashSet<Symbol>) 
                 .map(|(pat, body)| {
                     let mut env = local_values.clone();
                     env.extend(pat_bound_names(&pat));
-                    (rename_pat(pat, scope, false), rename_expr(body, scope, &env))
+                    (
+                        rename_pat(pat, scope, false),
+                        rename_expr(body, scope, &env),
+                    )
                 })
                 .collect(),
         ),
-        ExprKind::Ann(expr, ty) => {
-            ExprKind::Ann(Box::new(rename_expr(*expr, scope, local_values)), rename_type_expr(ty, scope))
-        }
+        ExprKind::Ann(expr, ty) => ExprKind::Ann(
+            Box::new(rename_expr(*expr, scope, local_values)),
+            rename_type_expr(ty, scope),
+        ),
         ExprKind::Perform(sym, arg) => ExprKind::Perform(
             *scope.effects.get(&sym).unwrap_or(&sym),
             Box::new(rename_expr(*arg, scope, local_values)),
@@ -638,9 +645,11 @@ fn rename_pat(pat: Pat, scope: &ModuleScope, export_names: bool) -> Pat {
         } else {
             sym
         }),
-        PatKind::Tuple(pats) => {
-            PatKind::Tuple(pats.into_iter().map(|pat| rename_pat(pat, scope, export_names)).collect())
-        }
+        PatKind::Tuple(pats) => PatKind::Tuple(
+            pats.into_iter()
+                .map(|pat| rename_pat(pat, scope, export_names))
+                .collect(),
+        ),
         PatKind::Constructor(sym, payload) => PatKind::Constructor(
             *scope.constructors.get(&sym).unwrap_or(&sym),
             payload.map(|payload| Box::new(rename_pat(*payload, scope, false))),
@@ -649,9 +658,11 @@ fn rename_pat(pat: Pat, scope: &ModuleScope, export_names: bool) -> Pat {
             Box::new(rename_pat(*hd, scope, export_names)),
             Box::new(rename_pat(*tl, scope, export_names)),
         ),
-        PatKind::List(pats) => {
-            PatKind::List(pats.into_iter().map(|pat| rename_pat(pat, scope, export_names)).collect())
-        }
+        PatKind::List(pats) => PatKind::List(
+            pats.into_iter()
+                .map(|pat| rename_pat(pat, scope, export_names))
+                .collect(),
+        ),
         PatKind::Ann(pat, ty) => PatKind::Ann(
             Box::new(rename_pat(*pat, scope, export_names)),
             rename_type_expr(ty, scope),
@@ -677,14 +688,19 @@ fn rename_type_expr(ty: TypeExpr, scope: &ModuleScope) -> TypeExpr {
         TypeExprKind::Var(sym) => TypeExprKind::Var(sym),
         TypeExprKind::App(sym, args) => TypeExprKind::App(
             *scope.types.get(&sym).unwrap_or(&sym),
-            args.into_iter().map(|arg| rename_type_expr(arg, scope)).collect(),
+            args.into_iter()
+                .map(|arg| rename_type_expr(arg, scope))
+                .collect(),
         ),
         TypeExprKind::Arrow(lhs, rhs) => TypeExprKind::Arrow(
             Box::new(rename_type_expr(*lhs, scope)),
             Box::new(rename_type_expr(*rhs, scope)),
         ),
         TypeExprKind::Tuple(elems) => TypeExprKind::Tuple(
-            elems.into_iter().map(|arg| rename_type_expr(arg, scope)).collect(),
+            elems
+                .into_iter()
+                .map(|arg| rename_type_expr(arg, scope))
+                .collect(),
         ),
         TypeExprKind::Paren(inner) => {
             TypeExprKind::Paren(Box::new(rename_type_expr(*inner, scope)))
@@ -717,11 +733,8 @@ fn collect_pat_bound_names(pat: &Pat, out: &mut HashSet<Symbol>) {
                 collect_pat_bound_names(pat, out);
             }
         }
-        PatKind::Constructor(_, payload) => {
-            if let Some(payload) = payload {
-                collect_pat_bound_names(payload, out);
-            }
-        }
+        PatKind::Constructor(_, Some(payload)) => collect_pat_bound_names(payload, out),
+        PatKind::Constructor(_, None) => {}
         PatKind::Cons(hd, tl) => {
             collect_pat_bound_names(hd, out);
             collect_pat_bound_names(tl, out);
@@ -815,7 +828,9 @@ fn remap_signature_type_expr(
         TypeExprKind::Tuple(elems) => TypeExprKind::Tuple(
             elems
                 .into_iter()
-                .map(|elem| remap_signature_type_expr(elem, module_path, interner, mode, type_specs))
+                .map(|elem| {
+                    remap_signature_type_expr(elem, module_path, interner, mode, type_specs)
+                })
                 .collect(),
         ),
         TypeExprKind::Paren(inner) => TypeExprKind::Paren(Box::new(remap_signature_type_expr(
@@ -900,10 +915,9 @@ fn desugar_expr(expr: Expr, interner: &mut StringInterner) -> Expr {
             Box::new(desugar_expr(*f, interner)),
             Box::new(desugar_expr(*arg, interner)),
         ),
-        ExprKind::Fn(pat, body) => ExprKind::Fn(
-            desugar_pat(pat),
-            Box::new(desugar_expr(*body, interner)),
-        ),
+        ExprKind::Fn(pat, body) => {
+            ExprKind::Fn(desugar_pat(pat), Box::new(desugar_expr(*body, interner)))
+        }
         ExprKind::If(c, t, e) => ExprKind::If(
             Box::new(desugar_expr(*c, interner)),
             Box::new(desugar_expr(*t, interner)),

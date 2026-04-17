@@ -1,6 +1,6 @@
 (* Generator pattern using algebraic effect handlers *)
 
-effect Yield of Int
+effect Yield of int
 
 fun run_gen f = handle f ()
   with return _ => []

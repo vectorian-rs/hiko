@@ -7,6 +7,18 @@ use hiko_syntax::span::Span;
 use crate::exhaustive::{self, TypeInfo};
 use crate::ty::{Scheme, Type};
 
+const UPPERCASE_PRIMITIVE_ALIASES: &[(&str, &str)] = &[
+    ("Int", "int"),
+    ("Float", "float"),
+    ("Bool", "bool"),
+    ("String", "string"),
+    ("Char", "char"),
+    ("Unit", "unit"),
+    ("Bytes", "bytes"),
+    ("Rng", "rng"),
+    ("Pid", "pid"),
+];
+
 // ── Errors ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -80,6 +92,7 @@ impl InferCtx {
             ("print", Type::arrow(Type::string(), Type::unit())),
             ("println", Type::arrow(Type::string(), Type::unit())),
             ("read_line", Type::arrow(Type::unit(), Type::string())),
+            ("read_stdin", Type::arrow(Type::unit(), Type::string())),
             // Conversions
             ("int_to_string", Type::arrow(Type::int(), Type::string())),
             (
@@ -90,7 +103,7 @@ impl InferCtx {
             ("char_to_int", Type::arrow(Type::char(), Type::int())),
             ("int_to_char", Type::arrow(Type::int(), Type::char())),
             ("int_to_float", Type::arrow(Type::int(), Type::float())),
-            // String ops
+            // string ops
             ("string_length", Type::arrow(Type::string(), Type::int())),
             (
                 "substring",
@@ -237,7 +250,7 @@ impl InferCtx {
             ),
             // Hashing
             ("blake3", Type::arrow(Type::bytes(), Type::string())),
-            // Bytes
+            // bytes
             ("bytes_length", Type::arrow(Type::bytes(), Type::int())),
             (
                 "bytes_to_string",
@@ -375,11 +388,6 @@ impl InferCtx {
                 Type::arrow(Type::arrow(Type::unit(), a.clone()), Type::pid()),
             ),
             ("await_process", Type::arrow(Type::pid(), a.clone())),
-            (
-                "send_message",
-                Type::arrow(Type::Tuple(vec![Type::pid(), a.clone()]), Type::unit()),
-            ),
-            ("receive_message", Type::arrow(Type::unit(), a.clone())),
             ("exit", Type::arrow(Type::int(), Type::unit())),
             ("panic", Type::arrow(Type::string(), a.clone())),
             // Testing
@@ -650,7 +658,10 @@ impl InferCtx {
                 let internal = self.interner.resolve(*internal_name).to_string();
                 if self.lookup(&internal).is_none() {
                     return Err(self.err(
-                        &format!("unbound variable: {}", self.interner.resolve(*internal_name)),
+                        &format!(
+                            "unbound variable: {}",
+                            self.interner.resolve(*internal_name)
+                        ),
                         decl.span,
                     ));
                 }
@@ -978,10 +989,10 @@ impl InferCtx {
                         Ok(ty)
                     }
                     Type::Var(_) => {
-                        Err(self.err("~ requires Int or Float, but type is unconstrained", e.span))
+                        Err(self.err("~ requires int or float, but type is unconstrained", e.span))
                     }
                     _ => Err(self.err(
-                        &format!("~ requires Int or Float, found {}", self.display(&resolved)),
+                        &format!("~ requires int or float, found {}", self.display(&resolved)),
                         e.span,
                     )),
                 }
@@ -1288,14 +1299,27 @@ impl InferCtx {
                 let name = self.interner.resolve(*sym);
                 // Check built-in types
                 match name {
-                    "Int" => return Ok(Type::int()),
-                    "Float" => return Ok(Type::float()),
-                    "Bool" => return Ok(Type::bool()),
-                    "String" => return Ok(Type::string()),
-                    "Char" => return Ok(Type::char()),
-                    "Unit" => return Ok(Type::unit()),
-                    "Pid" => return Ok(Type::pid()),
+                    "int" => return Ok(Type::int()),
+                    "float" => return Ok(Type::float()),
+                    "bool" => return Ok(Type::bool()),
+                    "string" => return Ok(Type::string()),
+                    "char" => return Ok(Type::char()),
+                    "unit" => return Ok(Type::unit()),
+                    "bytes" => return Ok(Type::bytes()),
+                    "rng" => return Ok(Type::rng()),
+                    "pid" => return Ok(Type::pid()),
                     _ => {}
+                }
+                if let Some((_, lowercase)) = UPPERCASE_PRIMITIVE_ALIASES
+                    .iter()
+                    .find(|(uppercase, _)| *uppercase == name)
+                {
+                    return Err(self.err(
+                        &format!(
+                            "primitive type '{name}' is no longer supported; use '{lowercase}'"
+                        ),
+                        ty_expr.span,
+                    ));
                 }
                 // Check type aliases (0-arg)
                 if let Some((params, body)) = self.type_aliases.get(name).cloned() {
@@ -1486,6 +1510,7 @@ fn is_syntactic_value(expr: &Expr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hiko_builtin_meta::builtins;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
 
@@ -1508,8 +1533,22 @@ mod tests {
         ctx.infer_program(&program).unwrap_err().message
     }
 
+    #[test]
+    fn infer_ctx_contains_all_metadata_builtins() {
+        let ctx = InferCtx::new();
+        for meta in builtins() {
+            assert!(
+                ctx.lookup_type(meta.name).is_some(),
+                "missing builtin in InferCtx: {}",
+                meta.name
+            );
+        }
+    }
+
     fn type_of(ctx: &InferCtx, name: &str) -> String {
-        let scheme = ctx.lookup_type(name).expect(&format!("no binding: {name}"));
+        let scheme = ctx
+            .lookup_type(name)
+            .unwrap_or_else(|| panic!("no binding: {name}"));
         format!("{}", scheme.ty)
     }
 
@@ -1518,31 +1557,31 @@ mod tests {
     #[test]
     fn test_int_lit() {
         let ctx = infer("val x = 42");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
     fn test_float_lit() {
         let ctx = infer("val x = 3.14");
-        assert_eq!(type_of(&ctx, "x"), "Float");
+        assert_eq!(type_of(&ctx, "x"), "float");
     }
 
     #[test]
     fn test_string_lit() {
         let ctx = infer(r#"val x = "hello""#);
-        assert_eq!(type_of(&ctx, "x"), "String");
+        assert_eq!(type_of(&ctx, "x"), "string");
     }
 
     #[test]
     fn test_bool_lit() {
         let ctx = infer("val x = true");
-        assert_eq!(type_of(&ctx, "x"), "Bool");
+        assert_eq!(type_of(&ctx, "x"), "bool");
     }
 
     #[test]
     fn test_unit() {
         let ctx = infer("val x = ()");
-        assert_eq!(type_of(&ctx, "x"), "Unit");
+        assert_eq!(type_of(&ctx, "x"), "unit");
     }
 
     // ── Functions ────────────────────────────────────────────────────
@@ -1557,7 +1596,7 @@ mod tests {
     #[test]
     fn test_const_fn() {
         let ctx = infer("fun f x y = x + y");
-        assert_eq!(type_of(&ctx, "f"), "Int -> Int -> Int");
+        assert_eq!(type_of(&ctx, "f"), "int -> int -> int");
     }
 
     #[test]
@@ -1575,7 +1614,7 @@ mod tests {
              end
              val result = Math.add 1 2",
         );
-        assert_eq!(type_of(&ctx, "result"), "Int");
+        assert_eq!(type_of(&ctx, "result"), "int");
     }
 
     #[test]
@@ -1587,14 +1626,14 @@ mod tests {
              end
              val result = M.g 41",
         );
-        assert_eq!(type_of(&ctx, "result"), "Int");
+        assert_eq!(type_of(&ctx, "result"), "int");
     }
 
     #[test]
     fn test_structure_signature_checked() {
         let ctx = infer(
             "signature LIST = sig
-               val fold : (Int * Int -> Int) -> Int -> Int list -> Int
+               val fold : (int * int -> int) -> int -> int list -> int
              end
              structure List : LIST = struct
                fun fold f acc xs =
@@ -1604,14 +1643,14 @@ mod tests {
              end
              val result = List.fold (fn (x, acc) => x + acc) 0 [1, 2, 3]",
         );
-        assert_eq!(type_of(&ctx, "result"), "Int");
+        assert_eq!(type_of(&ctx, "result"), "int");
     }
 
     #[test]
     fn test_structure_signature_missing_export_rejected() {
         let msg = infer_err(
             "signature LIST = sig
-               val fold : Int -> Int
+               val fold : int -> int
              end
              structure List : LIST = struct
                fun map x = x
@@ -1625,17 +1664,17 @@ mod tests {
         let ctx = infer(
             "signature BOX = sig
                type t
-               val make : Int -> t
-               val get : t -> Int
+               val make : int -> t
+               val get : t -> int
              end
              structure Box :> BOX = struct
-               datatype t = Box of Int
+               datatype t = Box of int
                fun make x = Box x
                fun get (Box x) = x
              end
              val result = Box.get (Box.make 41)",
         );
-        assert_eq!(type_of(&ctx, "result"), "Int");
+        assert_eq!(type_of(&ctx, "result"), "int");
     }
 
     #[test]
@@ -1649,7 +1688,7 @@ mod tests {
                type 'a t = 'a list * 'a list
                val empty = ([], [])
              end
-             val bad : Int list * Int list = Queue.empty",
+             val bad : int list * int list = Queue.empty",
         );
         assert!(msg.contains("type mismatch"), "got: {msg}");
     }
@@ -1659,18 +1698,15 @@ mod tests {
         let msg = infer_err(
             "signature BOX = sig
                type t
-               val make : Int -> t
+               val make : int -> t
              end
              structure Box :> BOX = struct
-               datatype t = Box of Int
+               datatype t = Box of int
                fun make x = Box x
              end
              val bad = Box.Box 1",
         );
-        assert!(
-            msg.contains("unknown constructor: Box.Box"),
-            "got: {msg}"
-        );
+        assert!(msg.contains("unknown constructor: Box.Box"), "got: {msg}");
     }
 
     // ── Let-polymorphism ─────────────────────────────────────────────
@@ -1678,7 +1714,7 @@ mod tests {
     #[test]
     fn test_let_poly() {
         let ctx = infer("val r = let val id = fn x => x in (id 42, id true) end");
-        assert_eq!(type_of(&ctx, "r"), "Int * Bool");
+        assert_eq!(type_of(&ctx, "r"), "int * bool");
     }
 
     // ── Value restriction ────────────────────────────────────────────
@@ -1686,8 +1722,8 @@ mod tests {
     #[test]
     fn test_value_restriction() {
         let ctx = infer("val f = fn x => x val r = f 42");
-        // f is polymorphic, r is Int
-        assert_eq!(type_of(&ctx, "r"), "Int");
+        // f is polymorphic, r is int
+        assert_eq!(type_of(&ctx, "r"), "int");
     }
 
     // ── Datatypes ────────────────────────────────────────────────────
@@ -1695,7 +1731,7 @@ mod tests {
     #[test]
     fn test_option() {
         let ctx = infer("datatype 'a option = None | Some of 'a val x = Some 42");
-        assert_eq!(type_of(&ctx, "x"), "Int option");
+        assert_eq!(type_of(&ctx, "x"), "int option");
     }
 
     #[test]
@@ -1720,8 +1756,8 @@ mod tests {
     #[test]
     fn test_pattern_tuple() {
         let ctx = infer("val (x, y) = (1, true)");
-        assert_eq!(type_of(&ctx, "x"), "Int");
-        assert_eq!(type_of(&ctx, "y"), "Bool");
+        assert_eq!(type_of(&ctx, "x"), "int");
+        assert_eq!(type_of(&ctx, "y"), "bool");
     }
 
     // ── Lists ────────────────────────────────────────────────────────
@@ -1729,18 +1765,18 @@ mod tests {
     #[test]
     fn test_list_literal() {
         let ctx = infer("val xs = [1, 2, 3]");
-        assert_eq!(type_of(&ctx, "xs"), "Int list");
+        assert_eq!(type_of(&ctx, "xs"), "int list");
     }
 
     #[test]
     fn test_cons() {
         let ctx = infer("val xs = 1 :: [2, 3]");
-        assert_eq!(type_of(&ctx, "xs"), "Int list");
+        assert_eq!(type_of(&ctx, "xs"), "int list");
     }
 
     #[test]
     fn test_list_pattern() {
-        // Note: hd returns 0 for empty list, so type is Int list -> Int
+        // Note: hd returns 0 for empty list, so type is int list -> int
         let ctx = infer("fun hd (x :: _) = x | hd [] = 0");
         assert!(ctx.lookup_type("hd").is_some());
     }
@@ -1750,25 +1786,25 @@ mod tests {
     #[test]
     fn test_int_arith() {
         let ctx = infer("val x = 1 + 2 * 3");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
     fn test_float_arith() {
         let ctx = infer("val x = 1.0 +. 2.0");
-        assert_eq!(type_of(&ctx, "x"), "Float");
+        assert_eq!(type_of(&ctx, "x"), "float");
     }
 
     #[test]
     fn test_comparison() {
         let ctx = infer("val b = 1 < 2");
-        assert_eq!(type_of(&ctx, "b"), "Bool");
+        assert_eq!(type_of(&ctx, "b"), "bool");
     }
 
     #[test]
     fn test_equality() {
         let ctx = infer("val b = 42 = 42");
-        assert_eq!(type_of(&ctx, "b"), "Bool");
+        assert_eq!(type_of(&ctx, "b"), "bool");
     }
 
     // ── Type errors ──────────────────────────────────────────────────
@@ -1802,7 +1838,7 @@ mod tests {
     #[test]
     fn test_if() {
         let ctx = infer("val x = if true then 1 else 2");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
@@ -1819,22 +1855,31 @@ mod tests {
             "fun is_even 0 = true | is_even n = is_odd (n - 1)
              and is_odd 0 = false | is_odd n = is_even (n - 1)",
         );
-        assert_eq!(type_of(&ctx, "is_even"), "Int -> Bool");
-        assert_eq!(type_of(&ctx, "is_odd"), "Int -> Bool");
+        assert_eq!(type_of(&ctx, "is_even"), "int -> bool");
+        assert_eq!(type_of(&ctx, "is_odd"), "int -> bool");
     }
 
     // ── Type annotations ─────────────────────────────────────────────
 
     #[test]
     fn test_annotation() {
-        let ctx = infer("val x = (42 : Int)");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        let ctx = infer("val x = (42 : int)");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
     fn test_annotation_mismatch() {
-        let msg = infer_err("val x = (42 : Bool)");
+        let msg = infer_err("val x = (42 : bool)");
         assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_uppercase_primitive_annotation_rejected() {
+        let msg = infer_err("val x = (42 : Int)");
+        assert!(
+            msg.contains("primitive type 'Int' is no longer supported; use 'int'"),
+            "got: {msg}"
+        );
     }
 
     // ── Val rec ──────────────────────────────────────────────────────
@@ -1842,7 +1887,7 @@ mod tests {
     #[test]
     fn test_val_rec() {
         let ctx = infer("val rec f = fn n => if n = 0 then 1 else n * f (n - 1)");
-        assert_eq!(type_of(&ctx, "f"), "Int -> Int");
+        assert_eq!(type_of(&ctx, "f"), "int -> int");
     }
 
     // ── Complex programs ─────────────────────────────────────────────
@@ -1862,14 +1907,14 @@ mod tests {
              fun map_opt f opt = case opt of None => None | Some x => Some (f x)
              val result = map_opt (fn x => x + 1) (Some 42)",
         );
-        assert_eq!(type_of(&ctx, "result"), "Int option");
+        assert_eq!(type_of(&ctx, "result"), "int option");
     }
 
     // ── Constructor shadowing ────────────────────────────────────────
 
     #[test]
     fn test_constructor_pattern_type_mismatch() {
-        // `val Red = 42` where Red is a constructor pattern of type color, not Int
+        // `val Red = 42` where Red is a constructor pattern of type color, not int
         let msg = infer_err("datatype color = Red | Blue val Red = 42");
         assert!(msg.contains("type mismatch"), "got: {msg}");
     }
@@ -1880,8 +1925,8 @@ mod tests {
     fn test_equality_polymorphic_allowed() {
         let ctx = infer("fun f x y = x = y");
         let ty = type_of(&ctx, "f");
-        // Type variable names vary; check the shape: 'X -> 'X -> Bool
-        assert!(ty.ends_with("-> Bool"), "got: {ty}");
+        // Type variable names vary; check the shape: 'X -> 'X -> bool
+        assert!(ty.ends_with("-> bool"), "got: {ty}");
     }
 
     #[test]
@@ -1899,9 +1944,9 @@ mod tests {
     fn test_type_alias_param() {
         let ctx = infer(
             "type 'a pair = 'a * 'a
-             val x = (1, 2) : Int pair",
+             val x = (1, 2) : int pair",
         );
-        assert_eq!(type_of(&ctx, "x"), "Int * Int");
+        assert_eq!(type_of(&ctx, "x"), "int * int");
     }
 
     // ── Unary neg ────────────────────────────────────────────────────
@@ -1909,19 +1954,19 @@ mod tests {
     #[test]
     fn test_neg_int() {
         let ctx = infer("val x = ~42");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
     fn test_neg_float() {
         let ctx = infer("val x = ~3.14");
-        assert_eq!(type_of(&ctx, "x"), "Float");
+        assert_eq!(type_of(&ctx, "x"), "float");
     }
 
     #[test]
     fn test_neg_bool_rejected() {
         let msg = infer_err("val x = ~true");
-        assert!(msg.contains("Int or Float"), "got: {msg}");
+        assert!(msg.contains("int or float"), "got: {msg}");
     }
 
     // ── Local exports body bindings ──────────────────────────────────
@@ -1929,7 +1974,7 @@ mod tests {
     #[test]
     fn test_local_exports_body() {
         let ctx = infer("local val x = 1 in val y = x end val z = y");
-        assert_eq!(type_of(&ctx, "z"), "Int");
+        assert_eq!(type_of(&ctx, "z"), "int");
     }
 
     #[test]
@@ -1962,7 +2007,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_type_name() {
-        let msg = infer_err("datatype color = Red type color = Int");
+        let msg = infer_err("datatype color = Red type color = int");
         assert!(msg.contains("duplicate type"), "got: {msg}");
     }
 
@@ -1971,8 +2016,8 @@ mod tests {
     #[test]
     fn test_val_rec_polymorphic() {
         let ctx = infer("val rec id = fn x => x val a = id 1 val b = id true");
-        assert_eq!(type_of(&ctx, "a"), "Int");
-        assert_eq!(type_of(&ctx, "b"), "Bool");
+        assert_eq!(type_of(&ctx, "a"), "int");
+        assert_eq!(type_of(&ctx, "b"), "bool");
     }
 
     // ── Duplicate pattern variables rejected ─────────────────────────
@@ -1988,13 +2033,13 @@ mod tests {
     #[test]
     fn test_builtin_int_to_string() {
         let ctx = infer("val s = int_to_string 42");
-        assert_eq!(type_of(&ctx, "s"), "String");
+        assert_eq!(type_of(&ctx, "s"), "string");
     }
 
     #[test]
     fn test_spawn_returns_pid() {
         let ctx = infer("val child = spawn (fn () => 42)");
-        assert_eq!(type_of(&ctx, "child"), "Pid");
+        assert_eq!(type_of(&ctx, "child"), "pid");
     }
 
     #[test]
@@ -2020,7 +2065,7 @@ mod tests {
     #[test]
     fn test_exhaustive_bool() {
         let ctx = infer("val x = case true of true => 1 | false => 0");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
@@ -2034,7 +2079,7 @@ mod tests {
     #[test]
     fn test_exhaustive_wildcard() {
         let ctx = infer("val x = case 42 of _ => 1");
-        assert_eq!(type_of(&ctx, "x"), "Int");
+        assert_eq!(type_of(&ctx, "x"), "int");
     }
 
     #[test]
@@ -2051,7 +2096,7 @@ mod tests {
     #[test]
     fn test_exhaustive_3way_adt() {
         let _ctx = infer(
-            "datatype expr = Num of Int | Add of expr * expr | Mul of expr * expr
+            "datatype expr = Num of int | Add of expr * expr | Mul of expr * expr
              fun eval e = case e of Num n => n | Add (a, b) => eval a + eval b | Mul (a, b) => eval a * eval b
              val result = eval (Add (Num 1, Mul (Num 2, Num 3)))",
         );

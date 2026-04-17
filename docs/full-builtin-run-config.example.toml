@@ -27,6 +27,9 @@ enabled = true
 [capabilities.stdio.read_line]
 enabled = true
 
+[capabilities.stdio.read_stdin]
+enabled = true
+
 # Conversion builtins.
 [capabilities.convert.int_to_string]
 enabled = true
@@ -174,12 +177,8 @@ enabled = true
 [capabilities.process.await_process]
 enabled = true
 
-# These exist in the runtime today but are not part of the default public
-# user model. They are listed here for completeness.
-[capabilities.process.send_message]
-enabled = true
-
-[capabilities.process.receive_message]
+# Pure path helper builtin.
+[capabilities.path.path_join]
 enabled = true
 
 # Filesystem builtins.
@@ -218,10 +217,6 @@ enabled = true
 folders = ["./workspace"]
 
 [capabilities.filesystem.is_file]
-enabled = true
-folders = ["./workspace"]
-
-[capabilities.filesystem.path_join]
 enabled = true
 folders = ["./workspace"]
 

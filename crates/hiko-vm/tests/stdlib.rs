@@ -1,7 +1,7 @@
 use std::path::Path;
 
 fn run_hiko_file(path: &str) {
-    let source = std::fs::read_to_string(path).expect(&format!("cannot read {path}"));
+    let source = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("cannot read {path}"));
     let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
         .tokenize()
         .expect("lex error");
@@ -15,7 +15,8 @@ fn run_hiko_file(path: &str) {
         eprintln!("Warning: {}", w.message);
     }
     let mut vm = hiko_vm::vm::VM::new(compiled);
-    vm.run().expect(&format!("runtime error in {path}"));
+    vm.run()
+        .unwrap_or_else(|_| panic!("runtime error in {path}"));
 }
 
 #[test]

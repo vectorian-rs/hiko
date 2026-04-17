@@ -1,0 +1,9 @@
+[package]
+name = "hiko-builtin-meta"
+version = "0.6.0"
+edition = "2024"
+license = "MIT"
+description = "Shared builtin metadata for hiko"
+repository = "https://github.com/vectorian-rs/hiko"
+
+[dependencies]

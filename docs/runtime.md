@@ -1,4 +1,3 @@
-
 # Hiko Runtime: Effect-Based Async with Isolated Processes
 
 ## Overview
@@ -9,12 +8,10 @@ The system exposes **effect-based async I/O with structured concurrency (`spawn`
 
 This design combines:
 
-* **Algebraic effects** for direct-style async
-* **Process isolation** for safety and simple GC
-* **Per-process heaps and GC**
-* **Arc-shared immutable leaves** for efficient data transfer at process boundaries
-
----
+- **Algebraic effects** for direct-style async
+- **Process isolation** for safety and simple GC
+- **Per-process heaps and GC**
+- **Arc-shared immutable leaves** for efficient data transfer at process boundaries
 
 ## Comparison with alternatives
 
@@ -31,8 +28,6 @@ We borrow from Eio: direct-style async via effects.
 We borrow from Erlang: isolated processes and per-process GC.
 We **do not adopt the actor/message-passing programming model**.
 
----
-
 ## Architecture
 
 ```
@@ -40,8 +35,6 @@ We **do not adopt the actor/message-passing programming model**.
 ```
 
 Processes are scheduled onto a pool of worker threads. A process may move between threads; ownership of heap and state is always with the process.
-
----
 
 ## Process
 
@@ -58,13 +51,11 @@ struct Process {
 
 Each process owns:
 
-* VM (heap, stack, frames, handlers)
-* its continuation when suspended
-* its execution lifecycle
+- VM (heap, stack, frames, handlers)
+- its continuation when suspended
+- its execution lifecycle
 
-There is **no mailbox** and no general inter-process messaging in the user model.
-
----
+There is **no mailbox** and no general inter-process messaging.
 
 ## Process boundaries and values
 
@@ -113,8 +104,8 @@ val content = read_file "data.txt"
 
 The same source code works in both runtimes:
 
-* **Single-threaded runtime**: builtins block the thread
-* **Threaded runtime**: builtins suspend the process via `RuntimeRequest::Io`, the I/O backend handles the operation, and the process resumes when complete
+- **Single-threaded runtime**: builtins block the thread
+- **Threaded runtime**: builtins suspend the process via `RuntimeRequest::Io`, the I/O backend handles the operation, and the process resumes when complete
 
 No function coloring. No `perform`. No effect declarations for I/O.
 
@@ -128,8 +119,8 @@ Use a mock I/O backend (`MockIoBackend`) for deterministic testing. The backend 
 
 ### One-shot continuations
 
-* Continuations are resumed **exactly once**
-* No multi-shot continuations in v1
+- Continuations are resumed **exactly once**
+- No multi-shot continuations in v1
 
 ### Error handling
 
@@ -177,9 +168,9 @@ loop:
 
 The scheduler only observes:
 
-* Yield (fuel exhaustion)
-* Block (I/O, await)
-* Done
+- Yield (fuel exhaustion)
+- Block (I/O, await)
+- Done
 
 ---
 
@@ -187,18 +178,18 @@ The scheduler only observes:
 
 ### Per-process
 
-* Each process has its own heap
-* GC pauses only that process
-* No global stop-the-world
+- Each process has its own heap
+- GC pauses only that process
+- No global stop-the-world
 
 ### Root set
 
 Includes:
 
-* stack
-* frames
-* handlers
-* **blocked_continuation**
+- stack
+- frames
+- handlers
+- **blocked_continuation**
 
 ### Invariant
 
@@ -217,9 +208,9 @@ val res = await pid
 
 ### Semantics
 
-* `spawn` creates a new isolated process
-* `await` blocks until completion
-* result is delivered exactly once
+- `spawn` creates a new isolated process
+- `await` blocks until completion
+- result is delivered exactly once
 
 ---
 
@@ -227,13 +218,13 @@ val res = await pid
 
 ### Await
 
-* Only parent may await child
-* Result consumed once
+- Only parent may await child
+- Result consumed once
 
 ### Spawn
 
-* Closures are serialized via captured values
-* Non-sendable captures → runtime error
+- Closures are serialized via captured values
+- Non-sendable captures → runtime error
 
 ---
 
@@ -251,15 +242,15 @@ val res = await pid
 
 ### Enforced by Rust
 
-* No shared mutable state
-* `SendableValue` cannot contain `GcRef`
-* `Arc` ensures safe immutable sharing
+- No shared mutable state
+- `SendableValue` cannot contain `GcRef`
+- `Arc` ensures safe immutable sharing
 
 ### Cannot happen
 
-* Data races
-* Cross-process pointer corruption
-* Concurrent GC bugs
+- Data races
+- Cross-process pointer corruption
+- Concurrent GC bugs
 
 ---
 
@@ -277,4 +268,3 @@ val res = await pid
 ## Summary
 
 > Hiko provides effect-based asynchronous programming with isolated processes, enabling direct-style concurrency without shared memory, function coloring, or complex global GC.
-

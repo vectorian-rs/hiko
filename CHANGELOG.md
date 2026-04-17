@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+### Language and Surface Syntax
+
+- **Lowercase builtin type names**: source-level builtin types now use lowercase spellings such as `int`, `float`, `bool`, `string`, `char`, `unit`, `bytes`, `rng`, and `pid`. Uppercase aliases like `Int` are rejected with a migration error.
+- **SML-style source cleanup**: stdlib modules, examples, tests, and builtin reference docs now consistently use lowercase builtin type names in source snippets and signatures.
 
 ### Runtime and Process Execution
 
@@ -10,7 +15,8 @@
 - **Root failure reporting**: the local runtime runner now exits nonzero when the root process ends in `Failed(...)` instead of silently succeeding.
 - **Documented VM stack/frame guards**: the fixed value-stack and call-frame limits are now exposed as public constants and documented alongside heap and fuel limits.
 - **Boundary-triggered local GC**: long-lived processes now opportunistically collect at suspension boundaries after moderate allocation bursts, reclaiming request-local garbage sooner without introducing any global collector.
-- **Typed process handles**: `spawn` now returns `Pid` instead of `Int`, and process operations use first-class `Pid` values instead of raw integers.
+- **Typed process handles**: `spawn` now returns `pid` instead of `int`, and process operations use first-class `pid` values instead of raw integers.
+- **Removed mailbox messaging**: deleted the old `send_message` / `receive_message` mailbox path so the runtime matches the current `spawn` / `await_process` process model.
 
 ## 0.5.1
 

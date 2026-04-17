@@ -12,9 +12,9 @@ use "../stdlib/list.hml"
 
 (* ── Effect: safe error handling around I/O ─────────────── *)
 
-datatype 'a result = Ok of 'a | Err of String
+datatype 'a result = Ok of 'a | Err of string
 
-effect Fail of String
+effect Fail of string
 
 fun try f =
   handle f ()
@@ -49,7 +49,7 @@ val _ = remove_file "/tmp/hiko_demo_empty.txt"
 
 (* ── Effect: accumulate log entries while doing I/O ─────── *)
 
-effect Log of String
+effect Log of string
 
 fun with_log f =
   let val logs = handle f ()
@@ -80,8 +80,8 @@ val _ = print_logs logs
 
 (* ── Effect: state tracking across I/O operations ────────── *)
 
-effect Get of Unit
-effect Put of Int
+effect Get of unit
+effect Put of int
 
 fun run_state init f =
   handle f ()

@@ -313,8 +313,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 
 [[package]]
+name = "hiko-builtin-meta"
+version = "0.6.0"
+
+[[package]]
 name = "hiko-compile"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "hiko-syntax",
  "hiko-types",
@@ -322,23 +326,25 @@ dependencies = [
 
 [[package]]
 name = "hiko-syntax"
-version = "0.5.1"
+version = "0.6.0"
 
 [[package]]
 name = "hiko-types"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
+ "hiko-builtin-meta",
  "hiko-syntax",
 ]
 
 [[package]]
 name = "hiko-vm"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "dashmap",
  "dryoc",
  "glob",
+ "hiko-builtin-meta",
  "hiko-compile",
  "hiko-syntax",
  "regex",

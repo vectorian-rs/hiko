@@ -1,7 +1,5 @@
 //! Hiko process: an isolated VM execution unit.
 
-use std::collections::VecDeque;
-
 use crate::sendable::SendableValue;
 use crate::vm::VM;
 
@@ -24,8 +22,6 @@ pub struct Scope {
 /// Why a process is blocked.
 #[derive(Debug)]
 pub enum BlockReason {
-    /// Waiting for a message in the mailbox.
-    Receive,
     /// Waiting for a child process to complete.
     Await(Pid),
     /// Waiting for an I/O operation to complete.
@@ -49,7 +45,6 @@ pub enum ProcessStatus {
 pub struct Process {
     pub pid: Pid,
     pub vm: VM,
-    pub mailbox: VecDeque<SendableValue>,
     pub status: ProcessStatus,
     pub parent: Option<Pid>,
     /// The process's return value (set when Done).
@@ -65,7 +60,6 @@ impl Process {
         Self {
             pid,
             vm,
-            mailbox: VecDeque::new(),
             status: ProcessStatus::Runnable,
             parent,
             result: None,
@@ -78,7 +72,6 @@ impl Process {
         Self {
             pid,
             vm,
-            mailbox: VecDeque::new(),
             status: ProcessStatus::Runnable,
             parent,
             result: None,

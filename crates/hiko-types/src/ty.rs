@@ -69,6 +69,21 @@ impl Type {
         vars
     }
 
+    fn display_name(name: &str) -> &str {
+        match name {
+            "Int" => "int",
+            "Float" => "float",
+            "Bool" => "bool",
+            "String" => "string",
+            "Char" => "char",
+            "Unit" => "unit",
+            "Bytes" => "bytes",
+            "Rng" => "rng",
+            "Pid" => "pid",
+            _ => name,
+        }
+    }
+
     fn collect_free_vars(&self, vars: &mut Vec<u32>) {
         match self {
             Type::Var(v) => {
@@ -99,7 +114,7 @@ impl Scheme {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Con(name) => write!(f, "{name}"),
+            Type::Con(name) => write!(f, "{}", Type::display_name(name)),
             Type::Var(v) => {
                 let c = (b'a' + (*v % 26) as u8) as char;
                 let suffix = if *v >= 26 {
@@ -129,9 +144,9 @@ impl fmt::Display for Type {
                 if args.len() == 1 {
                     match &args[0] {
                         Type::Arrow(_, _) | Type::Tuple(_) | Type::App(_, _) => {
-                            write!(f, "({}) {name}", args[0])
+                            write!(f, "({}) {}", args[0], Type::display_name(name))
                         }
-                        _ => write!(f, "{} {name}", args[0]),
+                        _ => write!(f, "{} {}", args[0], Type::display_name(name)),
                     }
                 } else {
                     write!(f, "(")?;
@@ -141,7 +156,7 @@ impl fmt::Display for Type {
                         }
                         write!(f, "{a}")?;
                     }
-                    write!(f, ") {name}")
+                    write!(f, ") {}", Type::display_name(name))
                 }
             }
         }

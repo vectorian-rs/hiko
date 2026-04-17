@@ -4,8 +4,8 @@
  * without mutable variables — pure functional state machine.
  *)
 
-effect Get of Unit
-effect Put of Int
+effect Get of unit
+effect Put of int
 
 (* Simple state runner — returns final result, discards state *)
 fun run_state init f =

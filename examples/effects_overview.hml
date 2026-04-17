@@ -11,9 +11,9 @@
 
 (* ── 1. Error handling ─────────────────────────────────────── *)
 
-datatype 'a result = Ok of 'a | Err of String
+datatype 'a result = Ok of 'a | Err of string
 
-effect Fail of String
+effect Fail of string
 
 fun run_safe f =
   handle f ()
@@ -38,7 +38,7 @@ val _ = case bad of
 
 (* ── 2. Generators ─────────────────────────────────────────── *)
 
-effect Yield of Int
+effect Yield of int
 
 fun collect f = handle f ()
   with return _ => []
@@ -67,8 +67,8 @@ val _ = show_list fibs
 
 (* ── 3. Mutable state ──────────────────────────────────────── *)
 
-effect Get of Unit
-effect Put of Int
+effect Get of unit
+effect Put of int
 
 fun run_state init f =
   handle f ()

@@ -15,7 +15,7 @@ v0 implements the functional nucleus of Core SML first. Some Core SML features (
 
 v0 prioritizes semantic correctness over Basis compatibility, optimization, and advanced abstraction mechanisms.
 
----
+Hiko is SML-derived, but not bug-for-bug compatible with SML'97. Known SML defect clusters are triaged explicitly in [sml-deltas.md](./sml-deltas.md), and Hiko prefers documented simplification over inheriting historical ambiguity.
 
 ## 2. Core SML Feature Status
 
@@ -25,9 +25,9 @@ v0 prioritizes semantic correctness over Basis compatibility, optimization, and 
 | ----------------------------------------------------------------------------------------------------- | ------------------ |
 | Call-by-value evaluation, strict left-to-right                                                        | §6                 |
 | Hindley–Milner type inference (Algorithm W implementation strategy)                                   | §4.5–4.7           |
-| Value restriction (only syntactic values generalized)                                                  | §4.7               |
+| Value restriction (only syntactic values generalized)                                                 | §4.7               |
 | Algebraic datatypes, single-datatype recursion                                                        | §2.4, §4.2         |
-| Pattern matching (left-to-right, first-match, exhaustiveness **error**, redundant clause **warning**)   | §2.6, §6.7         |
+| Pattern matching (left-to-right, first-match, exhaustiveness **error**, redundant clause **warning**) | §2.6, §6.7         |
 | Let-polymorphism                                                                                      | §4.6               |
 | Lexical scoping and closures                                                                          | §6                 |
 | Recursive bindings (`fun`, `val rec`), mutual recursion via `and`                                     | §2.9               |
@@ -61,25 +61,25 @@ These are part of Core SML but excluded from v0. Each is a deliberate staging de
 
 These are deliberate deviations from Core SML.
 
-| Divergence                | SML behavior                                            | Hiko v0 behavior                                                     | Justification                                         |
-| ------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------- |
-| **Operator names**        | `+`, `*`, etc. are overloaded across int/real/word      | Monomorphic: `+` (int), `+.` (float), `^` (string concat)            | Avoids ad-hoc overloading machinery                   |
-| **Exhaustiveness policy** | Non-exhaustive match is a warning in most SML compilers | Non-exhaustive match is a **compile-time error**                     | Stronger guarantee; avoids runtime `Match` failures   |
-| **Import mechanism**      | No import in Core SML (modules handle composition)      | `use "file.hml"` loads a file and imports its top-level bindings      | Practical replacement for deferred modules            |
-| **Equality**              | Polymorphic `=` with equality type tracking             | `=` restricted to scalar types only in v0                            | Avoids a partial `eqtype` system                      |
-| **Comparison operators**  | `<`, `<=`, etc. are polymorphic across numeric types    | Monomorphic: `<`, `>`, `<=`, `>=` for Int; `<.`, `>.`, `<=.`, `>=.` for Float | Keeps operator design consistent with arithmetic      |
-| **Type shadowing**        | Allowed; later type bindings shadow earlier ones         | Disallowed in v0; redefining a type name in the same scope is an error   | Simplifies type environment handling               |
-| **Constructor shadowing** | Constructors can be shadowed by value bindings          | Constructors cannot be shadowed by value bindings                    | Prevents confusing pattern matching interactions      |
-| **Surface syntax**        | Standard SML syntax                                     | Minor syntax preferences and implementation-oriented simplifications | Semantics matter more than full source-level fidelity |
+| Divergence                | SML behavior                                            | Hiko v0 behavior                                                                  | Justification                                         |
+| ------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| **Operator names**        | `+`, `*`, etc. are overloaded across int/real/word      | Monomorphic: `+` (int), `+.` (float), `^` (string concat)                         | Avoids ad-hoc overloading machinery                   |
+| **Exhaustiveness policy** | Non-exhaustive match is a warning in most SML compilers | Non-exhaustive match is a **compile-time error**                                  | Stronger guarantee; avoids runtime `Match` failures   |
+| **Import mechanism**      | No import in Core SML (modules handle composition)      | `use "file.hml"` loads a file and imports its top-level bindings                  | Practical replacement for deferred modules            |
+| **Equality**              | Polymorphic `=` with equality type tracking             | `=` restricted to scalar types only in v0                                         | Avoids a partial `eqtype` system                      |
+| **Comparison operators**  | `<`, `<=`, etc. are polymorphic across numeric types    | Monomorphic: `<`, `>`, `<=`, `>=` for `int`; `<.`, `>.`, `<=.`, `>=.` for `float` | Keeps operator design consistent with arithmetic      |
+| **Type shadowing**        | Allowed; later type bindings shadow earlier ones        | Disallowed in v0; redefining a type name in the same scope is an error            | Simplifies type environment handling                  |
+| **Constructor shadowing** | Constructors can be shadowed by value bindings          | Constructors cannot be shadowed by value bindings                                 | Prevents confusing pattern matching interactions      |
+| **Surface syntax**        | Standard SML syntax                                     | Minor syntax preferences and implementation-oriented simplifications              | Semantics matter more than full source-level fidelity |
 
 ### 2.4 Module language (excluded entirely)
 
 Everything from the Definition's module language (chapters 3, 5, 7):
 
-* `structure`, `signature`, `functor`
-* `open`, sharing, `where type`
-* Opaque/transparent ascription
-* Derived forms that depend on modules
+- `structure`, `signature`, `functor`
+- `open`, sharing, `where type`
+- Opaque/transparent ascription
+- Derived forms that depend on modules
 
 This is the primary scope boundary. The module language is absent, not simplified.
 
@@ -89,31 +89,31 @@ This is the primary scope boundary. The module language is absent, not simplifie
 
 ### 3.0 Lexical conventions
 
-* **Comments:** `(* ... *)`, nestable.
-* **Identifiers:** alphanumeric starting with a lowercase letter or `_`. Constructor names start with an uppercase letter.
-* **Keywords:** `val`, `fun`, `fn`, `let`, `in`, `end`, `if`, `then`, `else`, `case`, `of`, `datatype`, `type`, `local`, `and`, `rec`, `use`, `true`, `false`, `not`, `andalso`, `orelse`, `mod`, `as`.
-* **Int literals:** decimal digits. Literals are always unsigned in the lexer; `~42` is parsed as unary negation applied to `42`.
-* **Float literals:** must contain `.` or exponent notation (`e`/`E`) to distinguish from Int. Examples: `3.14`, `1.0e10`, `2.5E-3`, `0.0`.
-* **String literals:** `"..."` with `\n`, `\t`, `\\`, `\"` escapes.
-* **Char literals:** `#"c"`.
+- **Comments:** `(* ... *)`, nestable.
+- **Identifiers:** alphanumeric starting with a lowercase letter or `_`. Constructor names start with an uppercase letter.
+- **Keywords:** `val`, `fun`, `fn`, `let`, `in`, `end`, `if`, `then`, `else`, `case`, `of`, `datatype`, `type`, `local`, `and`, `rec`, `use`, `true`, `false`, `not`, `andalso`, `orelse`, `mod`, `as`.
+- **Int literals:** decimal digits. Literals are always unsigned in the lexer; `~42` is parsed as unary negation applied to `42`.
+- **Float literals:** must contain `.` or exponent notation (`e`/`E`) to distinguish from Int. Examples: `3.14`, `1.0e10`, `2.5E-3`, `0.0`.
+- **String literals:** `"..."` with `\n`, `\t`, `\\`, `\"` escapes.
+- **Char literals:** `#"c"`.
 
 ### 3.1 Types
 
 **Built-in types:**
 
-* `Int`: 64-bit signed integer
-* `Float`: 64-bit IEEE float (literals support decimal and exponent notation: `3.14`, `1.0e10`, `2.5E-3`)
-* `Bool`: `true`, `false`
-* `String`: UTF-8 immutable string
-* `Char`: Unicode scalar value
-* `Unit`: the type `()` with single value `()`
+- `int`: 64-bit signed integer
+- `float`: 64-bit IEEE float (literals support decimal and exponent notation: `3.14`, `1.0e10`, `2.5E-3`)
+- `bool`: `true`, `false`
+- `string`: UTF-8 immutable string
+- `char`: Unicode scalar value
+- `unit`: the type `()` with single value `()`
 
 **Type constructors:**
 
-* `a * b * c`: tuple types (2+ elements)
-* `'a list`: homogeneous list
-* `a -> b`: function type
-* User-defined datatypes (possibly parameterized)
+- `a * b * c`: tuple types (2+ elements)
+- `'a list`: homogeneous list
+- `a -> b`: function type
+- User-defined datatypes (possibly parameterized)
 
 **Type variables:** `'a`, `'b`, etc. (SML-style)
 
@@ -177,7 +177,7 @@ and g y = ... f ...
 ```sml
 datatype 'a option = None | Some of 'a
 datatype ('a, 'b) either = Left of 'a | Right of 'b
-datatype shape = Circle of Float | Rect of Float * Float
+datatype shape = Circle of float | Rect of float * float
 ```
 
 **Type alias syntax uses the same parameter binder style as `datatype`:**
@@ -227,25 +227,25 @@ This is not textual inclusion.
 
 Hiko follows the Standard ML split between **type-level names** and **value-level names**.
 
-* **Type names** live in a separate namespace from **value names**.
-* **Constructors** live in the **value namespace**. Constructor names cannot be shadowed by value bindings. This is stricter than SML but prevents confusing interactions between pattern matching and local bindings. Implementation note: the environment must track constructor bindings distinctly from ordinary value bindings so this rule can be enforced during name resolution and reported clearly in diagnostics.
-* A value binding may shadow an earlier value binding in a nested lexical scope.
-* A type alias or datatype declaration may not redefine an existing type name in the same scope.
-* At top level within a single file, duplicate definitions in the same namespace are compile-time errors.
-* Imported duplicate names in the same namespace are compile-time errors.
+- **Type names** live in a separate namespace from **value names**.
+- **Constructors** live in the **value namespace**. Constructor names cannot be shadowed by value bindings. This is stricter than SML but prevents confusing interactions between pattern matching and local bindings. Implementation note: the environment must track constructor bindings distinctly from ordinary value bindings so this rule can be enforced during name resolution and reported clearly in diagnostics.
+- A value binding may shadow an earlier value binding in a nested lexical scope.
+- A type alias or datatype declaration may not redefine an existing type name in the same scope.
+- At top level within a single file, duplicate definitions in the same namespace are compile-time errors.
+- Imported duplicate names in the same namespace are compile-time errors.
 
 ### 3.7 Operator precedence (highest to lowest)
 
-| Precedence | Operators                       | Associativity |
-| ---------- | ------------------------------- | ------------- |
-| 7          | function application            | left          |
-| 6          | `~`, `not`                      | prefix        |
-| 5          | `*`, `/`, `*.`, `/.`, `mod`     | left          |
-| 4          | `+`, `-`, `+.`, `-.`, `^`       | left          |
-| 3          | `::`                            | right         |
+| Precedence | Operators                                                 | Associativity |
+| ---------- | --------------------------------------------------------- | ------------- |
+| 7          | function application                                      | left          |
+| 6          | `~`, `not`                                                | prefix        |
+| 5          | `*`, `/`, `*.`, `/.`, `mod`                               | left          |
+| 4          | `+`, `-`, `+.`, `-.`, `^`                                 | left          |
+| 3          | `::`                                                      | right         |
 | 2          | `=`, `<>`, `<`, `>`, `<=`, `>=`, `<.`, `>.`, `<=.`, `>=.` | non-assoc     |
-| 1          | `andalso`                       | right         |
-| 0          | `orelse`                        | right         |
+| 1          | `andalso`                                                 | right         |
+| 0          | `orelse`                                                  | right         |
 
 ---
 
@@ -377,18 +377,18 @@ Every AST node carries a `Span { file_id, start, end }`. Errors are structured d
 
 Supported:
 
-* `Int`
-* `Float`
-* `Bool`
-* `Char`
-* `String`
+- `int`
+- `float`
+- `bool`
+- `char`
+- `string`
 
 Not supported:
 
-* Tuples
-* Lists
-* ADT values
-* Functions
+- Tuples
+- Lists
+- ADT values
+- Functions
 
 Attempting to use `=` on an unsupported type is a **type error**.
 
@@ -424,12 +424,12 @@ v ::= literal
 
 Examples:
 
-* `fn x => x` → value, may generalize
-* `Some (fn x => x)` → value, may generalize
-* `(1, fn x => x)` → value, may generalize
-* `f x` → not a value
-* `if c then e1 else e2` → not a value
-* `case e of ...` → not a value
+- `fn x => x` → value, may generalize
+- `Some (fn x => x)` → value, may generalize
+- `(1, fn x => x)` → value, may generalize
+- `f x` → not a value
+- `if c then e1 else e2` → not a value
+- `case e of ...` → not a value
 
 This is the rule used by the type checker, not an informal guideline.
 
@@ -441,19 +441,19 @@ This is the rule used by the type checker, not an informal guideline.
 
 Success criteria:
 
-* `cargo build`
-* `cargo test`
-* `cargo clippy`
-* CI on push
+- `cargo build`
+- `cargo test`
+- `cargo clippy`
+- CI on push
 
 ### Phase 1: Lexer + Parser + AST
 
 Success criteria:
 
-* Parse all surface syntax from §3
-* Round-trip parse/pretty/parse
-* Golden tests
-* Useful syntax diagnostics
+- Parse all surface syntax from §3
+- Round-trip parse/pretty/parse
+- Golden tests
+- Useful syntax diagnostics
 
 Representative test: `fun map f xs = case xs of [] => [] | x :: xs => f x :: map f xs` parses and pretty-prints correctly.
 
@@ -463,11 +463,11 @@ Main risk: operator precedence for `::` vs arithmetic, solved by a precedence-cl
 
 Success criteria:
 
-* HM inference for all v0 forms
-* Let-polymorphism and value restriction
-* Datatype constructor typing
-* Equality restriction enforced
-* Good unification errors
+- HM inference for all v0 forms
+- Let-polymorphism and value restriction
+- Datatype constructor typing
+- Equality restriction enforced
+- Good unification errors
 
 Representative test: `let val id = fn x => x in (id 42, id true) end` infers `Int * Bool`.
 
@@ -477,10 +477,10 @@ Main risk: getting generalization/instantiation right at `let` boundaries.
 
 Success criteria:
 
-* Functions, closures, recursion, arithmetic, let-bindings
-* Correct immutable flat closure capture
-* Safe stack overflow handling
-* Tail-call optimization is optional in the first working VM; if implemented initially, self-tail-calls are sufficient
+- Functions, closures, recursion, arithmetic, let-bindings
+- Correct immutable flat closure capture
+- Safe stack overflow handling
+- Tail-call optimization is optional in the first working VM; if implemented initially, self-tail-calls are sufficient
 
 Representative test: `fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)`. `fib 30` returns `832040`.
 
@@ -490,10 +490,10 @@ Main risk: closure capture correctness when closures escape their defining scope
 
 Success criteria:
 
-* Runtime ADT construction and matching
-* Exhaustiveness as compile-time error
-* Redundancy as warning
-* Decision-tree compilation
+- Runtime ADT construction and matching
+- Exhaustiveness as compile-time error
+- Redundancy as warning
+- Decision-tree compilation
 
 Representative test: `datatype expr = Num of Int | Add of expr * expr` with a recursive `eval` function.
 
@@ -503,9 +503,9 @@ Main risk: Maranget's algorithm is well-documented but tricky to implement corre
 
 Success criteria:
 
-* `use` works with cycle detection and duplicate-name checking
-* REPL with persistent environments
-* Minimal stdlib
+- `use` works with cycle detection and duplicate-name checking
+- REPL with persistent environments
+- Minimal stdlib
 
 Runtime builtins (implemented in Rust, always available): `print`, `println`, `int_to_string`, `float_to_string`, `string_length`, `panic`. Stdlib functions (written in Hiko, loaded from `stdlib/`): `map`, `filter`, `foldl`, and other list utilities.
 
@@ -634,8 +634,8 @@ pub struct FunctionProto {
 
 `GetField` is used for both tuples and ADT payloads:
 
-* tuple field `i` means the `i`th tuple element
-* ADT field `i` means the `i`th payload slot of the constructor
+- tuple field `i` means the `i`th tuple element
+- ADT field `i` means the `i`th payload slot of the constructor
 
 Both are stored in order and accessed by zero-based runtime index.
 
@@ -690,8 +690,8 @@ pub struct Closure {
 
 The compiler pre-registers a built-in `list` datatype:
 
-* `Nil`: tag 0, arity 0
-* `Cons`: tag 1, arity 2
+- `Nil`: tag 0, arity 0
+- `Cons`: tag 1, arity 2
 
 List literals desugar to nested `Cons(..., Nil)` and compile through normal ADT machinery. `Nil` and `Cons` are internal runtime tags; surface syntax uses `[]` and `::` exclusively.
 
@@ -750,11 +750,11 @@ pub struct Scheme {
 
 Implementation choices:
 
-* substitution as `HashMap<TyVar, Type>`
-* occurs-checking unification
-* generalization at `let`
-* value restriction as defined in §7 (Value Restriction)
-* expression annotations unify inferred and declared type
+- substitution as `HashMap<TyVar, Type>`
+- occurs-checking unification
+- generalization at `let`
+- value restriction as defined in §7 (Value Restriction)
+- expression annotations unify inferred and declared type
 
 ### 12.3 Datatype Handling
 
@@ -777,16 +777,16 @@ Use Maranget's matrix-based usefulness algorithm.
 
 Supported in v0:
 
-* constructors (including nested)
-* wildcards / variables
-* literals
-* tuples
-* built-in list patterns
+- constructors (including nested)
+- wildcards / variables
+- literals
+- tuples
+- built-in list patterns
 
 Literal exhaustiveness rules:
 
-* `Bool` and `Unit` are finite literal domains. The checker recognizes exhaustive coverage (e.g., `true | false` is complete).
-* `Int`, `Float`, `Char`, and `String` are open-ended. A wildcard or variable fallback is always required for exhaustive coverage.
+- `bool` and `unit` are finite literal domains. The checker recognizes exhaustive coverage (e.g., `true | false` is complete).
+- `int`, `float`, `char`, and `string` are open-ended. A wildcard or variable fallback is always required for exhaustive coverage.
 
 **Non-exhaustive match:** compile-time error
 **Redundant clause:** warning
@@ -823,9 +823,9 @@ This makes exhaustiveness and redundancy checking precise and uniform.
 
 The REPL maintains persistent type and value environments across inputs.
 
-* Later REPL bindings may shadow earlier value bindings.
-* Redefining a type name in the same REPL session is a compile-time error.
-* Imported duplicate names remain errors.
+- Later REPL bindings may shadow earlier value bindings.
+- Redefining a type name in the same REPL session is a compile-time error.
+- Imported duplicate names remain errors.
 
 ---
 
@@ -833,23 +833,23 @@ The REPL maintains persistent type and value environments across inputs.
 
 Test categories:
 
-* parser golden tests
-* parser round-trip tests
-* type inference tests
-* runtime execution tests
-* error snapshot tests
-* exhaustiveness/redundancy tests
+- parser golden tests
+- parser round-trip tests
+- type inference tests
+- runtime execution tests
+- error snapshot tests
+- exhaustiveness/redundancy tests
 
 Key areas:
 
-* literals and arithmetic
-* let-polymorphism and value restriction
-* closures
-* tuples and lists
-* parameterized datatypes
-* pattern matching
-* equality restriction
-* imports and collision behavior
+- literals and arithmetic
+- let-polymorphism and value restriction
+- closures
+- tuples and lists
+- parameterized datatypes
+- pattern matching
+- equality restriction
+- imports and collision behavior
 
 ---
 
@@ -865,13 +865,12 @@ Build in this order:
 
 Key design bets:
 
-* hand-written parser
-* typed AST as first IR
-* immutable flat closures
-* index-based GC
-* lists as built-in ADT
-* scalar-only equality
-* non-exhaustive match as error
+- hand-written parser
+- typed AST as first IR
+- immutable flat closures
+- index-based GC
+- lists as built-in ADT
+- scalar-only equality
+- non-exhaustive match as error
 
 **Start here:** create the workspace and implement the lexer and parser first. The first milestone is parsing a complete `.hml` file into an AST and pretty-printing it back without losing structure.
-

@@ -10,6 +10,7 @@ mod config;
 mod llm;
 mod tools;
 
+use std::ffi::OsString;
 use std::path::Path;
 
 fn main() {
@@ -112,7 +113,8 @@ fn main() {
     // Load tools
     let tools_path = Path::new(&tools_dir);
     let registry = if tools_path.exists() {
-        tools::ToolRegistry::load(tools_path).unwrap_or_else(|e| {
+        let runner = resolve_tool_runner(&cfg);
+        tools::ToolRegistry::load(tools_path, runner).unwrap_or_else(|e| {
             eprintln!("Cannot load tools from '{}': {e}", tools_dir);
             std::process::exit(1);
         })
@@ -142,6 +144,22 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn resolve_tool_runner(cfg: &config::Config) -> tools::ToolRunner {
+    tools::ToolRunner {
+        bin: resolve_hiko_bin(&cfg.hiko),
+        config_path: resolve_hiko_run_config(&cfg.hiko),
+        strict: cfg.hiko.strict,
+    }
+}
+
+fn resolve_hiko_bin(hiko: &config::HikoConfig) -> OsString {
+    OsString::from(&hiko.bin)
+}
+
+fn resolve_hiko_run_config(hiko: &config::HikoConfig) -> std::path::PathBuf {
+    std::path::PathBuf::from(&hiko.config)
 }
 
 fn require_arg(args: &[String], i: usize, flag: &str) -> String {
@@ -180,6 +198,7 @@ Options:
   -h, --help              Show this help
 
 Config file (hiko-harness.toml):
+  [hiko]                  Configure the external hiko-cli tool runner
   [providers.<name>]      Define LLM providers with api_url and api_key_env
   [models.<alias>]        Map short names to provider + model ID
   [roles.<name>]          Assign models to roles (default, fast, reasoning)

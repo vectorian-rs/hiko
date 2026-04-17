@@ -1,13 +1,19 @@
-//! Tool registry: loads .hml tool scripts and runs them in the hiko VM.
+//! Tool registry: loads .hml tool scripts and runs them through hiko-cli.
 
 use crate::llm::{FunctionDef, ToolDef};
-use hiko_compile::compiler::Compiler;
-use hiko_syntax::lexer::Lexer;
-use hiko_syntax::parser::Parser;
-use hiko_vm::vm::VM;
 use serde_json::json;
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+#[derive(Debug, Clone)]
+pub struct ToolRunner {
+    pub bin: OsString,
+    pub config_path: PathBuf,
+    pub strict: bool,
+}
 
 /// A tool backed by a hiko script.
 pub struct Tool {
@@ -20,6 +26,7 @@ pub struct Tool {
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Tool>,
+    runner: ToolRunner,
 }
 
 impl ToolRegistry {
@@ -27,13 +34,25 @@ impl ToolRegistry {
     pub fn empty() -> Self {
         Self {
             tools: HashMap::new(),
+            runner: ToolRunner {
+                bin: OsString::from("hiko-cli"),
+                config_path: PathBuf::from("policies/harness-tools.policy.toml"),
+                strict: true,
+            },
         }
     }
 
     /// Load all .hml files from a tools directory.
     /// Each file's name (without .hml) becomes the tool name.
     /// The first comment block is parsed for metadata.
-    pub fn load(tools_dir: &Path) -> Result<Self, String> {
+    pub fn load(tools_dir: &Path, runner: ToolRunner) -> Result<Self, String> {
+        if !runner.config_path.exists() {
+            return Err(format!(
+                "hiko runner config not found: {}",
+                runner.config_path.display()
+            ));
+        }
+
         let mut tools = HashMap::new();
 
         let entries = std::fs::read_dir(tools_dir)
@@ -68,7 +87,7 @@ impl ToolRegistry {
             );
         }
 
-        Ok(Self { tools })
+        Ok(Self { tools, runner })
     }
 
     /// Get tool definitions for the LLM API.
@@ -87,64 +106,63 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name with the given JSON arguments.
-    /// Sets arguments as environment variables for the script.
+    /// Injects the JSON argument object as stdin for the script.
     pub fn execute(&self, name: &str, args_json: &str) -> Result<String, String> {
         let tool = self
             .tools
             .get(name)
             .ok_or_else(|| format!("unknown tool: {name}"))?;
 
-        // Parse arguments and set as env vars so the script can read them via getenv
+        // Parse arguments once so invalid payloads fail before the tool starts.
         let args: serde_json::Value =
             serde_json::from_str(args_json).map_err(|e| format!("invalid tool args: {e}"))?;
+        let stdin_json =
+            serde_json::to_string(&args).map_err(|e| format!("invalid tool args: {e}"))?;
 
-        // Prefix all args with HIKO_ARG_ to avoid clobbering real env vars (e.g. PATH)
-        let mut env_keys = Vec::new();
-        if let Some(obj) = args.as_object() {
-            for (key, value) in obj {
-                let env_key = format!("HIKO_ARG_{}", key.to_uppercase());
-                let val_str = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    other => other.to_string(),
-                };
-                // SAFETY: hiko-harness is single-threaded; no concurrent env access.
-                unsafe { std::env::set_var(&env_key, &val_str) };
-                env_keys.push(env_key);
+        let mut command = Command::new(&self.runner.bin);
+        command.arg("run");
+        if self.runner.strict {
+            command.arg("--strict");
+        }
+        command
+            .arg("--config")
+            .arg(&self.runner.config_path)
+            .arg(&tool.script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = command.spawn().map_err(|e| {
+            format!(
+                "cannot launch hiko runner '{}': {e}",
+                Path::new(&self.runner.bin).display()
+            )
+        })?;
+
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "runner stdin was not piped".to_string())?
+            .write_all(stdin_json.as_bytes())
+            .map_err(|e| format!("cannot send tool input to runner: {e}"))?;
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("cannot wait for hiko runner: {e}"))?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !stderr.is_empty() {
+                Err(stderr)
+            } else if !stdout.is_empty() {
+                Err(stdout)
+            } else {
+                Err(format!("tool exited with status {}", output.status))
             }
         }
-
-        // Compile and run the script
-        let source = std::fs::read_to_string(&tool.script_path)
-            .map_err(|e| format!("cannot read tool script: {e}"))?;
-
-        let tokens = Lexer::new(&source, 0)
-            .tokenize()
-            .map_err(|e| format!("tool lex error: {}", e.message))?;
-
-        let program = Parser::new(tokens)
-            .parse_program()
-            .map_err(|e| format!("tool parse error: {}", e.message))?;
-
-        let (compiled, _) = Compiler::compile_file(program, &tool.script_path)
-            .map_err(|e| format!("tool compile error: {e:?}"))?;
-
-        let mut vm = VM::new(compiled);
-        vm.enable_output_capture();
-        vm.run()
-            .map_err(|e| format!("tool runtime error: {}", e.message))?;
-
-        // Collect output
-        let output = vm.get_output().join("");
-
-        // Clean up env vars set for this tool invocation
-        for key in &env_keys {
-            // SAFETY: single-threaded, cleanup after tool execution.
-            unsafe { std::env::remove_var(key) };
-        }
-
-        Ok(output)
     }
 }
 
@@ -207,4 +225,82 @@ fn parse_tool_metadata(source: &str, default_name: &str) -> (String, serde_json:
     });
 
     (description, params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolRegistry, ToolRunner};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_tools_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "hiko-harness-tools-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_passes_json_args_via_hiko_runner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_tools_dir("stdin");
+        let script = dir.join("echo_path.hml");
+        let runner = dir.join("fake-hiko-cli.sh");
+        let runner_config = dir.join("tool.policy.toml");
+        fs::write(
+            &script,
+            "(* tool: echo_path\n\
+             * description: Echo a path from structured input\n\
+             * param path: string - Path to echo\n\
+             *)\n\
+             val _ = ()\n",
+        )
+        .unwrap();
+        fs::write(
+            &runner,
+            "#!/bin/sh\n\
+             mode=\"$1\"\n\
+             strict=\"$2\"\n\
+             config_flag=\"$3\"\n\
+             config_path=\"$4\"\n\
+             script_path=\"$5\"\n\
+             input=$(cat)\n\
+             printf 'mode=%s\\nstrict=%s\\nconfig_flag=%s\\nconfig=%s\\nscript=%s\\ninput=%s\\n' \"$mode\" \"$strict\" \"$config_flag\" \"$config_path\" \"$script_path\" \"$input\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(&runner_config, "[limits]\nmax_fuel = 1\n").unwrap();
+
+        let registry = ToolRegistry::load(
+            &dir,
+            ToolRunner {
+                bin: runner.as_os_str().to_os_string(),
+                config_path: runner_config.clone(),
+                strict: true,
+            },
+        )
+        .unwrap();
+        let output = registry
+            .execute("echo_path", r#"{"path":"src/main.rs"}"#)
+            .unwrap();
+
+        assert!(output.contains("mode=run"));
+        assert!(output.contains("strict=--strict"));
+        assert!(output.contains(&format!("config={}", runner_config.display())));
+        assert!(output.contains(&format!("script={}", script.display())));
+        assert!(output.contains(r#"input={"path":"src/main.rs"}"#));
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

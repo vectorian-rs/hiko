@@ -2,7 +2,7 @@
 
 A strict, statically typed, ML-family scripting language implemented in Rust with a bytecode VM.
 
-Hiko's semantics are anchored in Core SML (Standard ML of New Jersey), with Hindley-Milner type inference, algebraic data types, exhaustive pattern matching, and OCaml 5-style algebraic effect handlers for structured concurrency.
+Hiko's semantics are anchored in Core SML (Standard ML), with Hindley-Milner type inference, algebraic data types, exhaustive pattern matching, and OCaml 5-style algebraic effect handlers for structured concurrency. Hiko is SML-derived, but it deliberately repairs or omits several historically messy parts of the SML specification; see [docs/sml-deltas.md](docs/sml-deltas.md).
 
 ## Quick Start
 
@@ -59,8 +59,8 @@ and odd 0 = false
 ```sml
 datatype 'a option = None | Some of 'a
 
-datatype shape = Circle of Float
-               | Rect of Float * Float
+datatype shape = Circle of float
+               | Rect of float * float
 
 fun area s = case s of
     Circle r => 3.14159 *. r *. r
@@ -84,7 +84,7 @@ OCaml 5 / Eio-inspired shallow effect handlers with delimited continuations:
 
 ```sml
 (* Declare an effect *)
-effect Yield of Int
+effect Yield of int
 
 (* Generator: yields values *)
 fun gen () =
@@ -104,8 +104,8 @@ val result = run_gen gen   (* result = 6 *)
 **State effect** (get/put pattern):
 
 ```sml
-effect Get of Unit
-effect Put of Int
+effect Get of unit
+effect Put of int
 
 fun run_state init f =
   handle f ()
@@ -128,12 +128,12 @@ fun compose f g = fn x => f (g x)
 (* compose : ('a -> 'b) -> ('c -> 'a) -> 'c -> 'b *)
 
 (* Type annotations supported *)
-val x : Int = 42
+val x : int = 42
 
 (* Monomorphic operators, SML-97 style *)
-val sum = 1 + 2          (* Int arithmetic: + - * / mod *)
-val avg = 1.0 +. 2.0     (* Float arithmetic: +. -. *. /. *)
-val msg = "a" ^ "b"      (* String concatenation: ^ *)
+val sum = 1 + 2          (* int arithmetic: + - * / mod *)
+val avg = 1.0 +. 2.0     (* float arithmetic: +. -. *. /. *)
+val msg = "a" ^ "b"      (* string concatenation: ^ *)
 ```
 
 ### Imports
@@ -149,16 +149,16 @@ val xs = map (fn x => x * 2) [1, 2, 3]
 
 | Function | Type | Description |
 |---|---|---|
-| `print` / `println` | `'a -> Unit` | Output to stdout |
-| `int_to_string` | `Int -> String` | Convert int to string |
-| `float_to_string` | `Float -> String` | Convert float to string |
-| `string_to_int` | `String -> Int` | Parse string to int |
-| `string_length` | `String -> Int` | Character count |
-| `substring` | `(String, Int, Int) -> String` | Extract substring |
-| `split` | `(String, String) -> String list` | Split by delimiter |
-| `trim` | `String -> String` | Trim whitespace |
+| `print` / `println` | `'a -> unit` | Output to stdout |
+| `int_to_string` | `int -> string` | Convert int to string |
+| `float_to_string` | `float -> string` | Convert float to string |
+| `string_to_int` | `string -> int` | Parse string to int |
+| `string_length` | `string -> int` | Character count |
+| `substring` | `(string, int, int) -> string` | Extract substring |
+| `split` | `(string, string) -> string list` | Split by delimiter |
+| `trim` | `string -> string` | Trim whitespace |
 | `read_file` / `write_file` | File I/O | Read/write file contents |
-| `http_get` | `String -> String` | Synchronous HTTP GET |
+| `http_get` | `string -> string` | Synchronous HTTP GET |
 | `assert` / `assert_eq` | Testing helpers | Runtime assertions |
 
 ## Architecture
@@ -245,8 +245,8 @@ The `examples/` directory includes programs demonstrating:
 | `either.hml` | Sum types for error handling |
 | `error_handling.hml` | Error handling via algebraic effects |
 | `expr_eval.hml` | Recursive expression evaluator |
-| `math.hml` | Float arithmetic, sqrt |
-| `string_ops.hml` | String manipulation builtins |
+| `math.hml` | float arithmetic, sqrt |
+| `string_ops.hml` | string manipulation builtins |
 | `file_io.hml` | File read/write |
 | `http_fetch.hml` | HTTP GET request |
 | `import_test.hml` | Module imports |
@@ -292,7 +292,15 @@ cd hiko-vm-reader && cargo build --release
 
 ### Run Config Files
 
-Each run config defines a capability boundary enforced at compile time. Builtins that the config doesn't allow are not compiled into the binary — there are no runtime checks to bypass.
+Each run config defines a capability boundary.
+- `hiko run --config ...` loads the config at runtime and only registers the allowed builtins for that invocation.
+- `hiko build-vm ...` bakes the same config into a generated binary, so disallowed builtins are not compiled into that artifact.
+
+Path rules:
+- relative `entry` and filesystem `folders` are resolved from the current working directory
+- absolute paths are allowed
+- `..` is rejected in run config paths; the intended workflow is to run from the repo root and use `./...` paths
+- direct CLI script arguments are separate from run config paths and may still use `..` for one-off invocations
 
 ```toml
 # infra-prod-deploy.toml

@@ -13,7 +13,7 @@
 
 (* ── Define the user-level effect ──────────────────────────── *)
 
-effect HttpGet of String
+effect HttpGet of string
 
 (* ── Business logic uses the effect, not the builtin ───────── *)
 

@@ -39,6 +39,11 @@ pub(crate) fn read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     Ok(Value::Heap(heap.alloc(HeapObject::String(line))))
 }
 
+pub(crate) fn read_stdin(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let input = heap.read_stdin()?;
+    Ok(Value::Heap(heap.alloc(HeapObject::String(input))))
+}
+
 pub(crate) fn int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Heap(heap.alloc(HeapObject::String(n.to_string())))),
@@ -1798,16 +1803,6 @@ pub(crate) fn await_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Val
     Err("await_process: must be called within a runtime".into())
 }
 
-/// Placeholder — actual send logic is in VM::call_builtin.
-pub(crate) fn send_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
-    Err("send_message: must be called within a runtime".into())
-}
-
-/// Placeholder — actual receive logic is in VM::call_builtin.
-pub(crate) fn receive_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
-    Err("receive_message: must be called within a runtime".into())
-}
-
 pub(crate) fn assert(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
@@ -1857,6 +1852,7 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("print", print),
         ("println", println),
         ("read_line", read_line),
+        ("read_stdin", read_stdin),
         ("int_to_string", int_to_string),
         ("float_to_string", float_to_string),
         ("string_to_int", string_to_int),
@@ -1923,8 +1919,6 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("string_join", string_join),
         ("spawn", spawn_placeholder),
         ("await_process", await_placeholder),
-        ("send_message", send_placeholder),
-        ("receive_message", receive_placeholder),
         ("exit", exit),
         ("panic", panic),
         ("assert", assert),

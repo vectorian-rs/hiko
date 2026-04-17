@@ -92,14 +92,14 @@ Hindley-Milner with the SML-97 value restriction.
 
 | Type | Representation | Size |
 |---|---|---|
-| `Int` | 64-bit signed | 8 bytes |
-| `Float` | 64-bit IEEE 754 | 8 bytes |
-| `Bool` | boolean | 1 byte |
-| `Char` | Unicode scalar | 4 bytes |
-| `String` | UTF-8 immutable | heap-allocated |
-| `Bytes` | raw byte sequence | heap-allocated |
-| `Rng` | opaque PRNG state | heap-allocated |
-| `Unit` | singleton `()` | 0 bytes |
+| `int` | 64-bit signed | 8 bytes |
+| `float` | 64-bit IEEE 754 | 8 bytes |
+| `bool` | boolean | 1 byte |
+| `char` | Unicode scalar | 4 bytes |
+| `string` | UTF-8 immutable | heap-allocated |
+| `bytes` | raw byte sequence | heap-allocated |
+| `rng` | opaque PRNG state | heap-allocated |
+| `unit` | singleton `()` | 0 bytes |
 
 ### Type constructors
 
@@ -110,11 +110,11 @@ Hindley-Milner with the SML-97 value restriction.
 
 ### Equality types
 
-`=` and `<>` work on: `Int`, `Float`, `Bool`, `String`, `Char`, `Unit`, `Bytes`, type variables, and tuples of equality types.
+`=` and `<>` work on: `int`, `float`, `bool`, `string`, `char`, `unit`, `bytes`, type variables, and tuples of equality types.
 
 ### Polymorphism
 
-Generalization at `val` bindings of syntactic values only. Type annotations supported. No overloading — monomorphic operators (`+` for Int, `+.` for Float, `^` for String).
+Generalization at `val` bindings of syntactic values only. Type annotations supported. No overloading — monomorphic operators (`+` for `int`, `+.` for `float`, `^` for `string`).
 
 ## Runtime representation
 
@@ -188,11 +188,11 @@ The `TailCall` opcode reuses the current call frame. Propagated through `if`/`ca
 
 Shallow, one-shot delimited continuations. `Perform` captures the stack and frames between the perform site and the nearest matching handler. `Resume` restores the captured continuation. Supports nested handlers, recursive handlers, and the generator/state/error patterns.
 
-## Builtins (67)
+## Builtins (74)
 
 ### String (15)
 
-`print`, `println`, `read_line`, `string_length`, `substring`, `string_contains`, `split`, `trim`, `string_replace`, `starts_with`, `ends_with`, `to_upper`, `to_lower`, `string_join`, `regex_match`, `regex_replace`
+`print`, `println`, `read_line`, `read_stdin`, `string_length`, `substring`, `string_contains`, `split`, `trim`, `string_replace`, `starts_with`, `ends_with`, `to_upper`, `to_lower`, `string_join`, `regex_match`, `regex_replace`
 
 ### Conversion (6)
 
@@ -206,9 +206,13 @@ Shallow, one-shot delimited continuations. `Perform` captures the stack and fram
 
 `json_parse` (String → json ADT via serde_json), `json_to_string` (json ADT → String), `json_get`, `json_keys`, `json_length` (string-based convenience)
 
-### Filesystem (11)
+### Filesystem (13)
 
-`read_file`, `write_file`, `file_exists`, `list_dir`, `remove_file`, `create_dir`, `is_dir`, `is_file`, `path_join`, `glob`, `walk_dir`
+`read_file`, `read_file_bytes`, `write_file`, `file_exists`, `list_dir`, `remove_file`, `create_dir`, `is_dir`, `is_file`, `glob`, `walk_dir`
+
+### Path (1)
+
+`path_join`
 
 ### Hashline (2)
 
@@ -328,8 +332,8 @@ Agent loop (agent.rs)
 Tool registry (tools.rs)
     │ loads .hml scripts
     ▼
-Hiko VM (per invocation)
-    │ sandboxed execution
+hiko-cli runner (per invocation)
+    │ run config + sandboxed execution
     ▼
 Tool result → back to LLM
 ```
@@ -342,6 +346,11 @@ Tool result → back to LLM
 [default]
 model = "gpt-4o"
 provider = "openai"
+
+[hiko]
+bin = "hiko-cli"
+config = "policies/harness-tools.policy.toml"
+strict = true
 
 [providers.openai]
 api_url = "https://api.openai.com/v1"
@@ -390,7 +399,7 @@ Tool metadata parsed from comment headers:
 | `list.hml` | `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find` |
 | `option.hml` | `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option` |
 | `either.hml` | `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right` |
-| `json.hml` | `datatype json = JNull \| JBool \| JInt \| JFloat \| JStr \| JArray \| JObject` |
+| `json.hml` | `datatype json = JNull \| JBool of bool \| JInt of int \| JFloat of float \| JStr of string \| JArray \| JObject` |
 
 ## JSON support
 

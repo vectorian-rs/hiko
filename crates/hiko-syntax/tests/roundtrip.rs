@@ -80,7 +80,7 @@ fn rt_fun_mutual() {
 
 #[test]
 fn rt_datatype_simple() {
-    assert_roundtrip("datatype shape = Circle of Float | Rect of Float * Float");
+    assert_roundtrip("datatype shape = Circle of float | Rect of float * float");
 }
 
 #[test]
@@ -97,17 +97,17 @@ fn rt_datatype_multi_param() {
 
 #[test]
 fn rt_type_alias() {
-    assert_roundtrip("type point = Float * Float");
+    assert_roundtrip("type point = float * float");
 }
 
 #[test]
 fn rt_type_arrow() {
-    assert_roundtrip("type f = Int -> Bool");
+    assert_roundtrip("type f = int -> bool");
 }
 
 #[test]
 fn rt_type_app() {
-    assert_roundtrip("type xs = Int list");
+    assert_roundtrip("type xs = int list");
 }
 
 // ── Expressions ──────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ fn rt_pattern_as() {
 
 #[test]
 fn rt_pattern_annotated() {
-    assert_roundtrip("val (x : Int) = 42");
+    assert_roundtrip("val (x : int) = 42");
 }
 
 #[test]
@@ -349,7 +349,9 @@ fn rt_use_escaped_path() {
 
 #[test]
 fn rt_signature_simple() {
-    assert_roundtrip("signature LIST = sig\n  val fold : ('a * 'b -> 'b) -> 'b -> 'a list -> 'b\nend");
+    assert_roundtrip(
+        "signature LIST = sig\n  val fold : ('a * 'b -> 'b) -> 'b -> 'a list -> 'b\nend",
+    );
 }
 
 #[test]
@@ -403,22 +405,22 @@ fn rt_constructor_unary_neg() {
 
 #[test]
 fn rt_type_nested_arrow() {
-    assert_roundtrip("type f = Int -> Bool -> String");
+    assert_roundtrip("type f = int -> bool -> string");
 }
 
 #[test]
 fn rt_type_arrow_parens() {
-    assert_roundtrip("type f = (Int -> Bool) -> String");
+    assert_roundtrip("type f = (int -> bool) -> string");
 }
 
 #[test]
 fn rt_type_nested_app() {
-    assert_roundtrip("type xs = Int list list");
+    assert_roundtrip("type xs = int list list");
 }
 
 #[test]
 fn rt_type_tuple_in_arrow() {
-    assert_roundtrip("type f = Int * Bool -> String");
+    assert_roundtrip("type f = int * bool -> string");
 }
 
 #[test]
@@ -430,7 +432,7 @@ fn rt_type_tyvar() {
 
 #[test]
 fn rt_annotation() {
-    assert_roundtrip("val x = (42 : Int)");
+    assert_roundtrip("val x = (42 : int)");
 }
 
 #[test]

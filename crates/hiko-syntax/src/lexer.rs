@@ -543,7 +543,10 @@ mod tests {
 
     #[test]
     fn test_float_literals() {
-        assert_eq!(lex("3.14"), vec![TokenKind::FloatLit(3.14), TokenKind::Eof]);
+        assert_eq!(
+            lex("3.14"),
+            vec![TokenKind::FloatLit(314.0 / 100.0), TokenKind::Eof]
+        );
         assert_eq!(
             lex("1.0e10"),
             vec![TokenKind::FloatLit(1.0e10), TokenKind::Eof]

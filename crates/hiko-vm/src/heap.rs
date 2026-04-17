@@ -1,6 +1,6 @@
 use crate::value::{GcRef, HeapObject};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::{collections::HashMap, fs};
 
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
@@ -17,6 +17,9 @@ pub struct Heap {
     pub http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
     pub http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    /// Optional injected stdin content for embedded runtimes.
+    stdin_override: Option<String>,
+    stdin_override_consumed: bool,
 }
 
 impl Default for Heap {
@@ -38,7 +41,32 @@ impl Heap {
             fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
+            stdin_override: None,
+            stdin_override_consumed: false,
         }
+    }
+
+    pub fn set_stdin_override(&mut self, input: String) {
+        self.stdin_override = Some(input);
+        self.stdin_override_consumed = false;
+    }
+
+    pub fn read_stdin(&mut self) -> Result<String, String> {
+        if let Some(input) = self.stdin_override.take() {
+            self.stdin_override_consumed = true;
+            return Ok(input);
+        }
+        if self.stdin_override_consumed {
+            return Ok(String::new());
+        }
+
+        use std::io::Read as _;
+
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("read_stdin: {e}"))?;
+        Ok(buf)
     }
 
     /// Check if a path is within the allowed filesystem root.
@@ -66,7 +94,7 @@ impl Heap {
                 return Ok(Vec::new());
             }
             return Ok(vec![
-                fs::canonicalize(&self.fs_root)
+                canonicalize_with_missing_tail(Path::new(&self.fs_root))
                     .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?,
             ]);
         }
@@ -82,7 +110,7 @@ impl Heap {
         folders
             .iter()
             .map(|folder| {
-                fs::canonicalize(folder)
+                canonicalize_with_missing_tail(Path::new(folder))
                     .map_err(|e| format!("cannot resolve folder '{}': {e}", folder))
             })
             .collect()
@@ -260,7 +288,10 @@ pub(crate) fn resolve_fs_path(fs_root: &str, path: &str) -> Result<PathBuf, Stri
     Ok(resolved)
 }
 
-pub(crate) fn resolve_fs_path_in_folders(folders: &[String], path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_fs_path_in_folders(
+    folders: &[String],
+    path: &str,
+) -> Result<PathBuf, String> {
     if folders.is_empty() {
         return Err("no allowed folders configured".into());
     }
@@ -396,7 +427,10 @@ mod tests {
         assert!(resolved.ends_with("allowed/file.txt"));
 
         let err = heap
-            .check_fs_path_for("read_file", blocked.join("file.txt").to_string_lossy().as_ref())
+            .check_fs_path_for(
+                "read_file",
+                blocked.join("file.txt").to_string_lossy().as_ref(),
+            )
             .unwrap_err();
         assert!(err.contains("outside allowed root"));
 
@@ -406,10 +440,8 @@ mod tests {
     #[test]
     fn test_check_http_host_for_uses_builtin_hosts() {
         let mut heap = Heap::new();
-        heap.http_allowed_hosts_by_builtin.insert(
-            "http_get".to_string(),
-            vec!["api.example.com".to_string()],
-        );
+        heap.http_allowed_hosts_by_builtin
+            .insert("http_get".to_string(), vec!["api.example.com".to_string()]);
 
         heap.check_http_host_for("http_get", "https://api.example.com/v1/ok")
             .expect("allowed host should pass");
@@ -418,5 +450,25 @@ mod tests {
             .check_http_host_for("http_get", "https://evil.example.com/nope")
             .unwrap_err();
         assert!(err.contains("not in allowed hosts"));
+    }
+
+    #[test]
+    fn test_allowed_fs_folders_for_allows_missing_configured_folder() {
+        let base = temp_dir("fs-allowed-missing-folder");
+        let missing = base.join("build").join("nested");
+
+        let mut heap = Heap::new();
+        heap.fs_builtin_folders.insert(
+            "create_dir".to_string(),
+            vec![missing.to_string_lossy().to_string()],
+        );
+
+        let folders = heap
+            .allowed_fs_folders_for("create_dir")
+            .expect("missing configured folder should still resolve");
+        assert_eq!(folders.len(), 1);
+        assert!(folders[0].ends_with("build/nested"));
+
+        let _ = fs::remove_dir_all(base);
     }
 }

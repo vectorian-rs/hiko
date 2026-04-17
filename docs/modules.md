@@ -82,6 +82,47 @@ It is **not** full SML modules.
 
 That omission is intentional. Hiko is a scripting/tooling language first. The goal is to get the useful abstraction boundary without importing the entire complexity of mature ML module systems in one step.
 
+It is also consistent with Hiko's broader SML policy: adopt the strong parts of the language, but avoid known defect clusters where they do not buy much. See [sml-deltas.md](./sml-deltas.md) for the larger triage.
+
+### Why functors are out of scope
+
+The main traditional motivation for functors is library generators such as:
+
+```sml
+functor MakeSet (Ord : ORDERED) = ...
+functor MakeMap (Ord : ORDERED) = ...
+```
+
+Hiko does not need functors to cover the practical version of that use case.
+
+For Hiko, the simpler alternative is:
+
+- ordinary modules for namespacing and abstraction
+- opaque types for representation hiding
+- explicit comparator-passing at the value level
+
+That means a useful set or map API can look like this instead:
+
+```sml
+signature SET = sig
+  type 'a t
+  val empty : ('a * 'a -> int) -> 'a t
+  val insert : 'a -> 'a t -> 'a t
+  val member : 'a -> 'a t -> bool
+end
+```
+
+Internally, the set simply stores the comparison function alongside its tree or table representation.
+
+That is not as elegant as `MakeSet(Ord)`, but it is much cheaper in language complexity:
+
+- no module-level functions
+- no higher-order module elaboration
+- no functor generativity story
+- no additional signature-matching machinery
+
+So the rejection reason is practical, not ideological: **Hiko can get useful `Set`/`Map` abstractions without functors, and functors import a large amount of module complexity that Hiko does not currently need**.
+
 ## Proposed Syntax
 
 ### Structure definition
@@ -236,7 +277,7 @@ The SML/NJ overview describes the core idea well: structures are modules, signat
 
 For the formal language background:
 
-- *The Definition of Standard ML (Revised)*, Milner, Tofte, Harper, MacQueen, 1997
+- _The Definition of Standard ML (Revised)_, Milner, Tofte, Harper, MacQueen, 1997
 
 ## Comparison with OCaml
 
@@ -276,12 +317,12 @@ Xavier Leroy's 1994 paper explains why OCaml went in this direction: explicit op
 
 Reference:
 
-- Leroy, *Manifest types, modules, and separate compilation*, POPL 1994  
+- Leroy, _Manifest types, modules, and separate compilation_, POPL 1994  
   <https://people.mpi-sws.org/~dreyer/courses/modules/leroy94.pdf>
 
 Modern retrospective work also notes that OCaml modules are highly useful but can become irregular in advanced cases. See:
 
-- Clément Blaudeau, *Retrofitting the ML module system*, 2024  
+- Clément Blaudeau, _Retrofitting the ML module system_, 2024  
   <https://clement.blaudeau.net/thesis.html>
 
 That supports Hiko's choice to start small rather than re-create the full OCaml module surface immediately.
@@ -401,18 +442,18 @@ That keeps the feature aligned with Hiko's current philosophy:
 
 ### Standard ML
 
-- Milner, Tofte, Harper, MacQueen. *The Definition of Standard ML (Revised)*, 1997.
+- Milner, Tofte, Harper, MacQueen. _The Definition of Standard ML (Revised)_, 1997.
 - SML/NJ overview: <https://smlnj.org/sml.html>
 
 ### OCaml
 
 - OCaml manual, modules chapter: <https://ocaml.org/manual/modules.html>
-- Leroy, *Manifest types, modules, and separate compilation*, POPL 1994:  
+- Leroy, _Manifest types, modules, and separate compilation_, POPL 1994:  
   <https://people.mpi-sws.org/~dreyer/courses/modules/leroy94.pdf>
-- Blaudeau, *Retrofitting the ML module system*, 2024:  
+- Blaudeau, _Retrofitting the ML module system_, 2024:  
   <https://clement.blaudeau.net/thesis.html>
 
 ### Haskell
 
-- *Haskell 2010 Language Report*, Chapter 5 (Modules):  
+- _Haskell 2010 Language Report_, Chapter 5 (Modules):  
   <https://www.haskell.org/definition/haskell2010.pdf>

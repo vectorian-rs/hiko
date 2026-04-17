@@ -1,7 +1,7 @@
 (* Mutable state via algebraic effect handlers *)
 
-effect Get of Unit
-effect Put of Int
+effect Get of unit
+effect Put of int
 
 fun run_state init f =
   handle f ()

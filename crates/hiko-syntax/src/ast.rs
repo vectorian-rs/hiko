@@ -119,7 +119,7 @@ pub enum DeclKind {
         internal_name: Symbol,
         ty: TypeExpr,
     },
-    /// `effect Yield of Int`
+    /// `effect Yield of int`
     Effect(Symbol, Option<TypeExpr>),
 }
 
@@ -235,7 +235,7 @@ pub struct TypeExpr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExprKind {
-    /// A named type: `Int`, `Bool`, `option`, etc.
+    /// A named type: `int`, `bool`, `option`, etc.
     Named(Symbol),
     /// A type variable: `'a`
     Var(Symbol),

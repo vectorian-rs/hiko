@@ -1,4 +1,4 @@
-(* testing.hml -- Unit testing with assert, assert_eq, and effects *)
+(* testing.hml -- unit testing with assert, assert_eq, and effects *)
 
 use "../stdlib/list.hml"
 
@@ -8,7 +8,7 @@ val _ = assert (true, "true should be true")
 val _ = assert (1 + 1 = 2, "arithmetic")
 val _ = assert_eq (1 + 1, 2, "1 + 1 = 2")
 
-(* ── String operations ────────────────────────────────────────────── *)
+(* ── string operations ────────────────────────────────────────────── *)
 
 val _ = assert (to_upper "hello" = "HELLO", "to_upper")
 val _ = assert (to_lower "WORLD" = "world", "to_lower")
@@ -27,7 +27,7 @@ val _ = assert_eq (length (filter (fn x => x > 2) [1, 2, 3, 4, 5]), 3, "filter c
 
 (* ── Pattern matching ─────────────────────────────────────────────── *)
 
-datatype shape = Circle of Int | Rect of Int * Int
+datatype shape = Circle of int | Rect of int * int
 
 fun area s = case s of
     Circle r => r * r * 3
@@ -55,9 +55,9 @@ val _ = assert (regex_replace ("a-b-c", "-", "_") = "a_b_c", "regex replace")
 
 (* ── Error handling with effects ──────────────────────────────────── *)
 
-datatype 'a result = Ok of 'a | Err of String
+datatype 'a result = Ok of 'a | Err of string
 
-effect Fail of String
+effect Fail of string
 
 fun run_safe f =
   handle f ()
