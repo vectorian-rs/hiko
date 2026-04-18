@@ -1,0 +1,292 @@
+# Repo owner policy.
+# Broad local scripting profile for this repository:
+# - full filesystem access under .
+# - localhost HTTP for package serving and local services
+# - wide command whitelist for repo automation
+
+[limits]
+max_fuel = 100_000_000
+max_heap = 1_000_000
+
+[capabilities.stdio.print]
+enabled = true
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.stdio.read_line]
+enabled = true
+
+[capabilities.stdio.read_stdin]
+enabled = true
+
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.convert.float_to_string]
+enabled = true
+
+[capabilities.convert.string_to_int]
+enabled = true
+
+[capabilities.convert.char_to_int]
+enabled = true
+
+[capabilities.convert.int_to_char]
+enabled = true
+
+[capabilities.convert.int_to_float]
+enabled = true
+
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.string.string_contains]
+enabled = true
+
+[capabilities.string.trim]
+enabled = true
+
+[capabilities.string.split]
+enabled = true
+
+[capabilities.string.string_replace]
+enabled = true
+
+[capabilities.string.starts_with]
+enabled = true
+
+[capabilities.string.ends_with]
+enabled = true
+
+[capabilities.string.to_upper]
+enabled = true
+
+[capabilities.string.to_lower]
+enabled = true
+
+[capabilities.string.string_join]
+enabled = true
+
+[capabilities.regex.regex_match]
+enabled = true
+
+[capabilities.regex.regex_replace]
+enabled = true
+
+[capabilities.json.json_parse]
+enabled = true
+
+[capabilities.json.json_to_string]
+enabled = true
+
+[capabilities.json.json_get]
+enabled = true
+
+[capabilities.json.json_keys]
+enabled = true
+
+[capabilities.json.json_length]
+enabled = true
+
+[capabilities.math.sqrt]
+enabled = true
+
+[capabilities.math.abs_int]
+enabled = true
+
+[capabilities.math.abs_float]
+enabled = true
+
+[capabilities.math.floor]
+enabled = true
+
+[capabilities.math.ceil]
+enabled = true
+
+[capabilities.bytes.bytes_length]
+enabled = true
+
+[capabilities.bytes.bytes_to_string]
+enabled = true
+
+[capabilities.bytes.string_to_bytes]
+enabled = true
+
+[capabilities.bytes.bytes_get]
+enabled = true
+
+[capabilities.bytes.bytes_slice]
+enabled = true
+
+[capabilities.hash.blake3]
+enabled = true
+
+[capabilities.random.random_bytes]
+enabled = true
+
+[capabilities.random.rng_seed]
+enabled = true
+
+[capabilities.random.rng_bytes]
+enabled = true
+
+[capabilities.random.rng_int]
+enabled = true
+
+[capabilities.env.getenv]
+enabled = true
+
+[capabilities.time.epoch]
+enabled = true
+
+[capabilities.time.epoch_ms]
+enabled = true
+
+[capabilities.time.monotonic_ms]
+enabled = true
+
+[capabilities.time.sleep]
+enabled = true
+
+[capabilities.process.spawn]
+enabled = true
+
+[capabilities.process.await_process]
+enabled = true
+
+[capabilities.path.path_join]
+enabled = true
+
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_bytes]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.write_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.file_exists]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.list_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.remove_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.create_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.is_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.is_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_tagged]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.edit_file_tagged]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.glob]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.walk_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.http.http_get]
+enabled = true
+allowed_hosts = ["127.0.0.1", "localhost"]
+
+[capabilities.http.http]
+enabled = true
+allowed_hosts = ["127.0.0.1", "localhost"]
+
+[capabilities.http.http_json]
+enabled = true
+allowed_hosts = ["127.0.0.1", "localhost"]
+
+[capabilities.http.http_msgpack]
+enabled = true
+allowed_hosts = ["127.0.0.1", "localhost"]
+
+[capabilities.http.http_bytes]
+enabled = true
+allowed_hosts = ["127.0.0.1", "localhost"]
+
+[capabilities.exec.exec]
+enabled = true
+allowed_commands = [
+  "awk",
+  "bash",
+  "bun",
+  "cargo",
+  "cat",
+  "chmod",
+  "cp",
+  "curl",
+  "cut",
+  "diff",
+  "find",
+  "gh",
+  "git",
+  "grep",
+  "head",
+  "jq",
+  "ls",
+  "make",
+  "mkdir",
+  "mise",
+  "mv",
+  "node",
+  "npm",
+  "open",
+  "python",
+  "python3",
+  "rg",
+  "rm",
+  "sed",
+  "sh",
+  "sort",
+  "tail",
+  "tar",
+  "touch",
+  "tr",
+  "uniq",
+  "unzip",
+  "wc",
+  "xargs",
+  "zip",
+]
+timeout = 60
+
+[capabilities.system.exit]
+enabled = true
+
+[capabilities.testing.panic]
+enabled = true
+
+[capabilities.testing.assert]
+enabled = true
+
+[capabilities.testing.assert_eq]
+enabled = true

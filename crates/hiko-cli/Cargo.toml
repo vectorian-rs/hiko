@@ -13,3 +13,5 @@ hiko-types = { version = "0.6.0", path = "../hiko-types" }
 hiko-compile = { version = "0.6.0", path = "../hiko-compile" }
 hiko-vm = { version = "0.6.0", path = "../hiko-vm" }
 codespan-reporting = "0.11"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

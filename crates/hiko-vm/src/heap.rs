@@ -1,6 +1,7 @@
 use crate::value::{GcRef, HeapObject};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use url::Url;
 
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
@@ -121,13 +122,8 @@ impl Heap {
         if self.http_allowed_hosts.is_empty() {
             return Ok(());
         }
-        let host = url
-            .strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .and_then(|rest| rest.split('/').next())
-            .and_then(|host_port| host_port.split(':').next())
-            .unwrap_or("");
-        if self.http_allowed_hosts.iter().any(|h| h == host) {
+        let host = parse_http_url_host(url)?;
+        if self.http_allowed_hosts.iter().any(|h| h == &host) {
             Ok(())
         } else {
             Err(format!(
@@ -148,7 +144,7 @@ impl Heap {
             .get(builtin)
             .ok_or_else(|| format!("builtin '{builtin}' has no HTTP permission"))?;
 
-        let host = extract_url_host(url);
+        let host = parse_http_url_host(url)?;
         if allowed_hosts.iter().any(|h| h == &host) {
             Ok(())
         } else {
@@ -307,13 +303,22 @@ pub(crate) fn resolve_fs_path_in_folders(
     Err(last_err.unwrap_or_else(|| "path is outside allowed folders".into()))
 }
 
-fn extract_url_host(url: &str) -> String {
-    url.strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|host_port| host_port.split(':').next())
-        .unwrap_or("")
-        .to_string()
+pub(crate) fn parse_http_url_host(url: &str) -> Result<String, String> {
+    let parsed = Url::parse(url).map_err(|e| format!("invalid URL '{url}': {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(format!(
+                "URL '{}' uses unsupported scheme '{}'; expected http or https",
+                url, scheme
+            ));
+        }
+    }
+
+    parsed
+        .host_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("URL '{url}' has no host"))
 }
 
 fn canonicalize_with_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
@@ -450,6 +455,17 @@ mod tests {
             .check_http_host_for("http_get", "https://evil.example.com/nope")
             .unwrap_err();
         assert!(err.contains("not in allowed hosts"));
+    }
+
+    #[test]
+    fn test_check_http_host_rejects_userinfo_spoofed_url() {
+        let mut heap = Heap::new();
+        heap.http_allowed_hosts = vec!["localhost".to_string()];
+
+        let err = heap
+            .check_http_host("http://localhost:80@evil.example/path")
+            .unwrap_err();
+        assert!(err.contains("evil.example"));
     }
 
     #[test]

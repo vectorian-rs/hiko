@@ -1,0 +1,15 @@
+[project]
+name = "hiko"
+
+# First project-level policy registry.
+# `hiko-cli run` / `hiko-cli check` can use this manifest to resolve named
+# policies and default to the configured user policy when `--config` is omitted.
+[defaults]
+agent_policy = "agent_docs_writer"
+user_policy = "user_repo_full"
+
+[policies.agent_docs_writer]
+path = "policies/agent-docs-writer.policy.toml"
+
+[policies.user_repo_full]
+path = "policies/user-repo-full.policy.toml"

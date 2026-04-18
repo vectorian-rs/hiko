@@ -1561,62 +1561,8 @@ pub(crate) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
 
 /// Execute a command directly (no shell). Takes (String, String list) -> (Int, String, String).
 /// The allowed-commands check is done by the VM before calling this.
-pub(crate) fn exec(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let (v0, v1) = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
-            _ => return Err("exec: expected (String, String list)".into()),
-        },
-        _ => return Err("exec: expected (String, String list)".into()),
-    };
-
-    let command = match v0 {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("exec: expected String for command".into()),
-        },
-        _ => return Err("exec: expected String for command".into()),
-    };
-
-    // Walk the linked list of args
-    let mut cmd_args: Vec<String> = Vec::new();
-    let mut cur = v1;
-    loop {
-        match cur {
-            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-                HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
-                HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
-                    match fields[0] {
-                        Value::Heap(sr) => match heap.get(sr).map_err(|e| e.to_string())? {
-                            HeapObject::String(s) => cmd_args.push(s.clone()),
-                            _ => return Err("exec: args must be strings".into()),
-                        },
-                        _ => return Err("exec: args must be strings".into()),
-                    }
-                    cur = fields[1];
-                }
-                _ => return Err("exec: expected String list for args".into()),
-            },
-            _ => return Err("exec: expected String list for args".into()),
-        }
-    }
-
-    let output = std::process::Command::new(&command)
-        .args(&cmd_args)
-        .output()
-        .map_err(|e| format!("exec: {e}"))?;
-
-    let exit_code = Value::Int(output.status.code().unwrap_or(-1) as i64);
-    let stdout = Value::Heap(heap.alloc(HeapObject::String(
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-    )));
-    let stderr = Value::Heap(heap.alloc(HeapObject::String(
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )));
-
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        exit_code, stdout, stderr
-    ]))))
+pub(crate) fn exec(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Err("exec: builtin should be intercepted by the VM runtime".into())
 }
 
 pub(crate) fn getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {

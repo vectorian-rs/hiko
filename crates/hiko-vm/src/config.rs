@@ -642,7 +642,48 @@ impl RunConfig {
 #[cfg(test)]
 mod tests {
     use super::RunConfig;
-    use std::path::Path;
+    use hiko_compile::chunk::CompiledProgram;
+    use hiko_compile::compiler::Compiler;
+    use hiko_syntax::lexer::Lexer;
+    use hiko_syntax::parser::Parser;
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn compile_program(source: &str) -> CompiledProgram {
+        let tokens = Lexer::new(source, 0).tokenize().expect("lex");
+        let program = Parser::new(tokens).parse_program().expect("parse");
+        Compiler::compile(program).expect("compile").0
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "hiko-config-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn toml_path_literal(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "\\\\")
+    }
+
+    fn load_policy_text(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../policies")
+            .join(name);
+        fs::read_to_string(path).expect("policy file should exist")
+    }
 
     #[test]
     fn parse_run_config_with_entry_and_filesystem_leaf() {
@@ -673,6 +714,99 @@ folders = ["."]
             .join("../../docs/full-builtin-run-config.example.toml");
         let text = std::fs::read_to_string(path).expect("example config should exist");
         RunConfig::from_toml(&text).expect("full builtin example config should parse");
+    }
+
+    #[test]
+    fn parse_agent_docs_writer_policy() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../policies/agent-docs-writer.policy.toml");
+        let text = std::fs::read_to_string(path).expect("agent docs writer policy should exist");
+        RunConfig::from_toml(&text).expect("agent docs writer policy should parse");
+    }
+
+    #[test]
+    fn parse_user_repo_full_policy() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policies/user-repo-full.policy.toml");
+        let text = std::fs::read_to_string(path).expect("user repo full policy should exist");
+        RunConfig::from_toml(&text).expect("user repo full policy should parse");
+    }
+
+    #[test]
+    fn docs_policy_allows_writes_inside_docs_and_rejects_outside() {
+        let root = temp_dir("docs-policy");
+        let docs_dir = root.join("docs");
+        fs::create_dir_all(&docs_dir).unwrap();
+
+        let policy = load_policy_text("agent-docs-writer.policy.toml")
+            .replace(
+                "folders = [\"./docs\"]",
+                &format!("folders = [\"{}\"]", toml_path_literal(&docs_dir)),
+            )
+            .replace(
+                "folders = [\".\"]",
+                &format!("folders = [\"{}\"]", toml_path_literal(&root)),
+            );
+        let config = RunConfig::from_toml(&policy).expect("policy should parse");
+
+        let allowed = docs_dir.join("allowed.md");
+        let program = compile_program(&format!(
+            "val _ = write_file ({:?}, \"ok\")",
+            allowed.to_string_lossy()
+        ));
+        let mut vm = config.build_vm(program);
+        vm.run().expect("write under docs should succeed");
+        assert_eq!(fs::read_to_string(&allowed).unwrap(), "ok");
+
+        let blocked = root.join("README.md");
+        let program = compile_program(&format!(
+            "val _ = write_file ({:?}, \"nope\")",
+            blocked.to_string_lossy()
+        ));
+        let mut vm = config.build_vm(program);
+        let err = vm.run().expect_err("write outside docs should fail");
+        assert!(err.message.contains("outside allowed root"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn docs_policy_does_not_expose_exec() {
+        let config = RunConfig::from_toml(&load_policy_text("agent-docs-writer.policy.toml"))
+            .expect("policy should parse");
+        let program = compile_program(r#"val _ = exec ("echo", [])"#);
+        let mut vm = config.build_vm(program);
+        let err = vm.run().expect_err("docs policy should not expose exec");
+        assert!(err.message.contains("undefined global: exec"));
+    }
+
+    #[test]
+    fn user_policy_allows_localhost_http_and_rejects_remote_hosts() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind localhost test server");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .expect("write response");
+        });
+
+        let config = RunConfig::from_toml(&load_policy_text("user-repo-full.policy.toml"))
+            .expect("policy should parse");
+
+        let program = compile_program(&format!(
+            r#"val response = http_get "http://127.0.0.1:{port}/""#
+        ));
+        let mut vm = config.build_vm(program);
+        vm.run().expect("localhost http should be allowed");
+        server.join().unwrap();
+
+        let program = compile_program(r#"val response = http_get "http://example.com/""#);
+        let mut vm = config.build_vm(program);
+        let err = vm.run().expect_err("remote host should be rejected");
+        assert!(err.message.contains("not in allowed hosts"));
     }
 
     #[test]

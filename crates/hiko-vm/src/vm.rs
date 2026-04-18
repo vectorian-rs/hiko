@@ -1,5 +1,6 @@
 use smallvec::smallvec;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
@@ -67,6 +68,12 @@ impl RuntimeError {
     }
 }
 
+struct ResolvedExec {
+    display_command: String,
+    resolved_path: PathBuf,
+    args: Vec<String>,
+}
+
 struct CallFrame {
     proto_idx: usize,
     ip: usize,
@@ -80,6 +87,100 @@ struct HandlerFrame {
     clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
     proto_idx: usize,
     captures: Arc<[Value]>,
+}
+
+fn extract_exec_command_and_args(heap: &Heap, arg: Value) -> Result<(String, Vec<String>), String> {
+    let (v0, v1) = match arg {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err("exec: expected (String, String list)".into()),
+        },
+        _ => return Err("exec: expected (String, String list)".into()),
+    };
+
+    let command = match v0 {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.clone(),
+            _ => return Err("exec: expected String for command".into()),
+        },
+        _ => return Err("exec: expected String for command".into()),
+    };
+
+    let mut args = Vec::new();
+    let mut cur = v1;
+    loop {
+        match cur {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
+                HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
+                    match fields[0] {
+                        Value::Heap(sr) => match heap.get(sr).map_err(|e| e.to_string())? {
+                            HeapObject::String(s) => args.push(s.clone()),
+                            _ => return Err("exec: args must be strings".into()),
+                        },
+                        _ => return Err("exec: args must be strings".into()),
+                    }
+                    cur = fields[1];
+                }
+                _ => return Err("exec: expected String list for args".into()),
+            },
+            _ => return Err("exec: expected String list for args".into()),
+        }
+    }
+
+    Ok((command, args))
+}
+
+fn command_has_explicit_path(command: &str) -> bool {
+    let path = Path::new(command);
+    path.is_absolute() || path.components().count() > 1
+}
+
+fn canonicalize_exec_candidate(path: &Path) -> Option<PathBuf> {
+    let metadata = path.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    std::fs::canonicalize(path).ok()
+}
+
+fn resolve_exec_command_path(command: &str) -> Result<PathBuf, String> {
+    let path = Path::new(command);
+    if command_has_explicit_path(command) {
+        return canonicalize_exec_candidate(path)
+            .ok_or_else(|| format!("cannot resolve executable '{}'", path.display()));
+    }
+
+    let path_env = std::env::var_os("PATH")
+        .ok_or_else(|| format!("cannot resolve executable '{command}': PATH is not set"))?;
+
+    for dir in std::env::split_paths(&path_env) {
+        if let Some(resolved) = canonicalize_exec_candidate(&dir.join(command)) {
+            return Ok(resolved);
+        }
+
+        #[cfg(windows)]
+        {
+            let pathext =
+                std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+            for ext in pathext
+                .to_string_lossy()
+                .split(';')
+                .filter(|s| !s.is_empty())
+            {
+                let trimmed = ext.trim_start_matches('.');
+                if let Some(resolved) =
+                    canonicalize_exec_candidate(&dir.join(format!("{command}.{trimmed}")))
+                {
+                    return Ok(resolved);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "cannot resolve executable '{command}' from the current PATH"
+    ))
 }
 
 pub trait OutputSink: Send + Sync {
@@ -118,6 +219,8 @@ pub struct VM {
     /// Persistent total fuel budget (from VMBuilder.max_fuel). Not reset per slice.
     max_fuel_remaining: Option<u64>,
     exec_allowed: Vec<String>,
+    exec_allowed_paths: Vec<PathBuf>,
+    exec_allowed_resolution_errors: Vec<String>,
     exec_timeout: u64,
     /// Filesystem root for path enforcement. Empty means no restriction.
     fs_root: String,
@@ -245,6 +348,8 @@ impl VM {
             fuel: None,
             max_fuel_remaining: None,
             exec_allowed: Vec::new(),
+            exec_allowed_paths: Vec::new(),
+            exec_allowed_resolution_errors: Vec::new(),
             exec_timeout: 30,
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
@@ -444,30 +549,22 @@ impl VM {
 
     /// Check if a URL's host is in the allowed hosts list.
     pub fn check_http_host(&self, url: &str) -> Result<(), String> {
-        if self.http_allowed_hosts.is_empty() {
-            return Ok(());
-        }
-        // Extract host from URL
-        let host = url
-            .strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .and_then(|rest| rest.split('/').next())
-            .and_then(|host_port| host_port.split(':').next())
-            .unwrap_or("");
-
-        if self.http_allowed_hosts.iter().any(|h| h == host) {
-            Ok(())
-        } else {
-            Err(format!(
-                "host '{}' not in allowed hosts: {:?}",
-                host, self.http_allowed_hosts
-            ))
-        }
+        self.heap.check_http_host(url)
     }
 
     /// Set the allowed commands for the exec builtin.
     pub fn set_exec_allowed(&mut self, allowed: Vec<String>) {
+        let mut resolved = Vec::new();
+        let mut errors = Vec::new();
+        for command in &allowed {
+            match resolve_exec_command_path(command) {
+                Ok(path) => resolved.push(path),
+                Err(err) => errors.push(format!("{command}: {err}")),
+            }
+        }
         self.exec_allowed = allowed;
+        self.exec_allowed_paths = resolved;
+        self.exec_allowed_resolution_errors = errors;
     }
 
     /// Set the timeout for exec calls (in seconds).
@@ -928,12 +1025,12 @@ impl VM {
             }
         }
 
-        // Exec is fully intercepted: whitelist check + timeout
+        // Exec is fully intercepted: allowlist check + timeout
         if self.exec_builtin_id == Some(builtin_id) {
             let exec_arg = self.stack[callee_pos + 1];
-            self.check_exec_allowed(exec_arg)?;
+            let prepared = self.prepare_exec(exec_arg)?;
             let result = self
-                .run_exec(exec_arg)
+                .run_exec(prepared)
                 .map_err(|msg| RuntimeError { message: msg })?;
             self.stack.truncate(callee_pos);
             self.push(result)?;
@@ -983,102 +1080,48 @@ impl VM {
         }
     }
 
-    /// Check that the command in an exec call is in the allowed list.
-    /// Fails closed: if the command cannot be extracted, the call is denied.
-    fn check_exec_allowed(&self, arg: Value) -> Result<(), RuntimeError> {
-        let command = match arg {
-            Value::Heap(r) => match self.heap.get(r) {
-                Ok(HeapObject::Tuple(t)) if t.len() >= 2 => match t[0] {
-                    Value::Heap(sr) => {
-                        match self.heap.get(sr) {
-                            Ok(HeapObject::String(s)) => s.as_str(),
-                            _ => return Err(RuntimeError {
-                                message:
-                                    "exec: cannot determine command to check against allowed list"
-                                        .into(),
-                            }),
-                        }
-                    }
-                    _ => {
-                        return Err(RuntimeError {
-                            message: "exec: cannot determine command to check against allowed list"
-                                .into(),
-                        });
-                    }
-                },
-                _ => {
-                    return Err(RuntimeError {
-                        message: "exec: cannot determine command to check against allowed list"
-                            .into(),
-                    });
-                }
-            },
-            _ => {
-                return Err(RuntimeError {
-                    message: "exec: cannot determine command to check against allowed list".into(),
-                });
-            }
-        };
-        if self.exec_allowed.iter().any(|a| a == command) {
-            Ok(())
-        } else {
-            Err(RuntimeError {
-                message: format!(
-                    "exec: command '{}' is not in the allowed list: {:?}",
-                    command, self.exec_allowed
-                ),
+    /// Extract, resolve, and authorize an exec call before spawning.
+    fn prepare_exec(&self, arg: Value) -> Result<ResolvedExec, RuntimeError> {
+        let (command, args) = extract_exec_command_and_args(&self.heap, arg)
+            .map_err(|message| RuntimeError { message })?;
+        let resolved_path = resolve_exec_command_path(&command).map_err(|err| RuntimeError {
+            message: format!("exec: {err}"),
+        })?;
+        if self
+            .exec_allowed_paths
+            .iter()
+            .any(|path| path == &resolved_path)
+        {
+            Ok(ResolvedExec {
+                display_command: command,
+                resolved_path,
+                args,
             })
+        } else {
+            let mut message = format!(
+                "exec: command '{}' resolved to '{}' which is not in the allowed list: {:?}",
+                command,
+                resolved_path.display(),
+                self.exec_allowed
+            );
+            if !self.exec_allowed_resolution_errors.is_empty() {
+                message.push_str(&format!(
+                    " (unresolved configured commands: {:?})",
+                    self.exec_allowed_resolution_errors
+                ));
+            }
+            Err(RuntimeError { message })
         }
     }
 
-    /// Execute a command with timeout. Extracts args from the hiko value,
-    /// spawns the child, drains stdout/stderr in threads, and kills on timeout.
-    fn run_exec(&mut self, arg: Value) -> Result<Value, String> {
+    /// Execute a previously authorized command with timeout.
+    fn run_exec(&mut self, exec: ResolvedExec) -> Result<Value, String> {
         use std::io::Read as _;
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
 
-        // Extract (command, args_list)
-        let (v0, v1) = match arg {
-            Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
-                HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
-                _ => return Err("exec: expected (String, String list)".into()),
-            },
-            _ => return Err("exec: expected (String, String list)".into()),
-        };
-        let command = match v0 {
-            Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
-                HeapObject::String(s) => s.clone(),
-                _ => return Err("exec: expected String for command".into()),
-            },
-            _ => return Err("exec: expected String for command".into()),
-        };
-        let mut cmd_args: Vec<String> = Vec::new();
-        let mut cur = v1;
-        loop {
-            match cur {
-                Value::Heap(r) => match self.heap.get(r).map_err(|e| e.to_string())? {
-                    HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
-                    HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
-                        match fields[0] {
-                            Value::Heap(sr) => {
-                                match self.heap.get(sr).map_err(|e| e.to_string())? {
-                                    HeapObject::String(s) => cmd_args.push(s.clone()),
-                                    _ => return Err("exec: args must be strings".into()),
-                                }
-                            }
-                            _ => return Err("exec: args must be strings".into()),
-                        }
-                        cur = fields[1];
-                    }
-                    _ => return Err("exec: expected String list for args".into()),
-                },
-                _ => return Err("exec: expected String list for args".into()),
-            }
-        }
-
-        let mut child = Command::new(&command)
-            .args(&cmd_args)
+        let mut child = Command::new(&exec.resolved_path)
+            .args(&exec.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1107,7 +1150,7 @@ impl VM {
                     child.wait().ok();
                     return Err(format!(
                         "exec: '{}' timed out after {}s",
-                        command, self.exec_timeout
+                        exec.display_command, self.exec_timeout
                     ));
                 }
                 None => std::thread::sleep(Duration::from_millis(50)),
@@ -2317,6 +2360,75 @@ mod tests {
         assert!(vm.get_global("read_file").is_none());
         assert!(vm.get_global("write_file").is_none());
         assert!(vm.get_global("http_get").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_exec_allows_resolved_absolute_path() {
+        use crate::builder::ExecPolicy;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("exec-allowed");
+        let script = root.join("allowed.sh");
+        fs::write(&script, "#!/bin/sh\necho ok\n").unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let program = compile_program(&format!(
+            "val (code, out, err) = exec ({:?}, [])",
+            script.to_string_lossy()
+        ));
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_exec(ExecPolicy {
+                allowed: vec![script.to_string_lossy().to_string()],
+                timeout: 1,
+            })
+            .build();
+
+        vm.run().unwrap();
+        assert_eq!(global_int(&vm, "code"), 0);
+        assert_eq!(global_str(&vm, "out"), "ok\n");
+        assert_eq!(global_str(&vm, "err"), "");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_exec_rejects_resolved_path_not_in_allowlist() {
+        use crate::builder::ExecPolicy;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("exec-denied");
+        let allowed = root.join("allowed.sh");
+        let denied = root.join("denied.sh");
+        fs::write(&allowed, "#!/bin/sh\necho allowed\n").unwrap();
+        fs::write(&denied, "#!/bin/sh\necho denied\n").unwrap();
+        for path in [&allowed, &denied] {
+            let mut perms = fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms).unwrap();
+        }
+
+        let program = compile_program(&format!(
+            "val _ = exec ({:?}, [])",
+            denied.to_string_lossy()
+        ));
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_exec(ExecPolicy {
+                allowed: vec![allowed.to_string_lossy().to_string()],
+                timeout: 1,
+            })
+            .build();
+
+        let err = vm.run().unwrap_err();
+        assert!(err.message.contains("resolved to"));
+        assert!(err.message.contains("not in the allowed list"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
