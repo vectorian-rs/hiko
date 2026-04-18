@@ -717,11 +717,11 @@ folders = ["."]
     }
 
     #[test]
-    fn parse_agent_docs_writer_policy() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../policies/agent-docs-writer.policy.toml");
-        let text = std::fs::read_to_string(path).expect("agent docs writer policy should exist");
-        RunConfig::from_toml(&text).expect("agent docs writer policy should parse");
+    fn parse_docs_writer_policy() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policies/docs-writer.policy.toml");
+        let text = std::fs::read_to_string(path).expect("docs writer policy should exist");
+        RunConfig::from_toml(&text).expect("docs writer policy should parse");
     }
 
     #[test]
@@ -738,7 +738,7 @@ folders = ["."]
         let docs_dir = root.join("docs");
         fs::create_dir_all(&docs_dir).unwrap();
 
-        let policy = load_policy_text("agent-docs-writer.policy.toml")
+        let policy = load_policy_text("docs-writer.policy.toml")
             .replace(
                 "folders = [\"./docs\"]",
                 &format!("folders = [\"{}\"]", toml_path_literal(&docs_dir)),
@@ -772,7 +772,7 @@ folders = ["."]
 
     #[test]
     fn docs_policy_does_not_expose_exec() {
-        let config = RunConfig::from_toml(&load_policy_text("agent-docs-writer.policy.toml"))
+        let config = RunConfig::from_toml(&load_policy_text("docs-writer.policy.toml"))
             .expect("policy should parse");
         let program = compile_program(r#"val _ = exec ("echo", [])"#);
         let mut vm = config.build_vm(program);
@@ -781,7 +781,7 @@ folders = ["."]
     }
 
     #[test]
-    fn user_policy_allows_localhost_http_and_rejects_remote_hosts() {
+    fn user_repo_full_policy_allows_localhost_http_and_rejects_remote_hosts() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind localhost test server");
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {

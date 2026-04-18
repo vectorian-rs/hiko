@@ -1,4 +1,4 @@
-# Documentation agent policy.
+# Documentation role policy.
 # Read the whole repo, but only write under ./docs.
 
 [limits]

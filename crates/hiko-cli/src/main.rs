@@ -122,8 +122,7 @@ struct ScriptOptions {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ManifestDefaults {
-    agent_policy: Option<String>,
-    user_policy: Option<String>,
+    policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -224,7 +223,6 @@ fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
 fn resolve_policy_config_path_from(
     start_dir: &Path,
     policy_name: Option<&str>,
-    default_key: &str,
 ) -> Result<Option<PathBuf>, String> {
     let Some(manifest_path) = find_project_manifest_from(start_dir) else {
         if let Some(policy_name) = policy_name {
@@ -239,20 +237,10 @@ fn resolve_policy_config_path_from(
     let selected = if let Some(policy_name) = policy_name {
         policy_name.to_string()
     } else {
-        match default_key {
-            "agent_policy" => manifest.defaults.agent_policy.clone(),
-            "user_policy" => manifest.defaults.user_policy.clone(),
-            other => {
-                return Err(format!("unsupported default policy key '{other}'"));
-            }
+        match manifest.defaults.policy.clone() {
+            Some(policy) => policy,
+            None => return Ok(None),
         }
-        .ok_or_else(|| {
-            format!(
-                "Project manifest '{}' does not define '{}'",
-                manifest_path.display(),
-                default_key
-            )
-        })?
     };
 
     let policy = manifest.policies.get(&selected).ok_or_else(|| {
@@ -267,7 +255,7 @@ fn resolve_policy_config_path_from(
     Ok(Some(root.join(&policy.path)))
 }
 
-fn resolve_config_path(options: &ScriptOptions, default_key: &str) -> Option<String> {
+fn resolve_config_path(options: &ScriptOptions) -> Option<String> {
     if let Some(config_path) = &options.config_path {
         return Some(config_path.clone());
     }
@@ -277,7 +265,7 @@ fn resolve_config_path(options: &ScriptOptions, default_key: &str) -> Option<Str
         process::exit(1);
     });
 
-    match resolve_policy_config_path_from(&cwd, options.policy_name.as_deref(), default_key) {
+    match resolve_policy_config_path_from(&cwd, options.policy_name.as_deref()) {
         Ok(Some(path)) => Some(path.to_string_lossy().into_owned()),
         Ok(None) => None,
         Err(err) => {
@@ -618,7 +606,7 @@ fn strict_message(violation: &StrictViolation, has_config: bool) -> String {
 // ── Commands ─────────────────────────────────────────────────────────
 
 fn run_file(options: &ScriptOptions) {
-    let config_path = resolve_config_path(options, "user_policy");
+    let config_path = resolve_config_path(options);
     let config = config_path.as_deref().map(load_config);
     let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
     let compiled = match compile_source(&path) {
@@ -670,7 +658,7 @@ fn check_file(options: &ScriptOptions) {
         compiled.ctx.warning(&w.message, Some(w.span));
     }
 
-    let config_path = resolve_config_path(options, "user_policy");
+    let config_path = resolve_config_path(options);
     let config = config_path.as_deref().map(load_config);
     if options.strict
         && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
@@ -863,14 +851,14 @@ mod tests {
     fn parse_run_args_with_policy() {
         let args = vec![
             "--policy".to_string(),
-            "agent_docs_writer".to_string(),
+            "docs-writer".to_string(),
             "tools/read.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: None,
-                policy_name: Some("agent_docs_writer".to_string()),
+                policy_name: Some("docs-writer".to_string()),
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
             }
@@ -946,7 +934,7 @@ enabled = true
     }
 
     #[test]
-    fn resolve_policy_path_from_manifest_default_user_policy() {
+    fn resolve_policy_path_from_manifest_default_policy() {
         let root = temp_dir("manifest-default-user");
         fs::create_dir_all(root.join("policies")).unwrap();
         fs::write(
@@ -956,18 +944,18 @@ enabled = true
 name = "demo"
 
 [defaults]
-user_policy = "user_repo_full"
+policy = "user-repo-full"
 
-[policies.user_repo_full]
+[policies.user-repo-full]
 path = "policies/user.toml"
 "#,
         )
         .unwrap();
         fs::write(root.join("policies/user.toml"), "").unwrap();
 
-        let resolved = resolve_policy_config_path_from(&root, None, "user_policy")
+        let resolved = resolve_policy_config_path_from(&root, None)
             .expect("manifest resolution should succeed")
-            .expect("should resolve default user policy");
+            .expect("should resolve default policy");
         assert_eq!(resolved, root.join("policies/user.toml"));
 
         let _ = fs::remove_dir_all(root);
@@ -984,13 +972,12 @@ path = "policies/user.toml"
 name = "demo"
 
 [defaults]
-user_policy = "user_repo_full"
-agent_policy = "agent_docs_writer"
+policy = "user-repo-full"
 
-[policies.user_repo_full]
+[policies.user-repo-full]
 path = "policies/user.toml"
 
-[policies.agent_docs_writer]
+[policies.docs-writer]
 path = "policies/agent.toml"
 "#,
         )
@@ -998,11 +985,29 @@ path = "policies/agent.toml"
         fs::write(root.join("policies/user.toml"), "").unwrap();
         fs::write(root.join("policies/agent.toml"), "").unwrap();
 
-        let resolved =
-            resolve_policy_config_path_from(&root, Some("agent_docs_writer"), "user_policy")
-                .expect("manifest resolution should succeed")
-                .expect("should resolve named policy");
+        let resolved = resolve_policy_config_path_from(&root, Some("docs-writer"))
+            .expect("manifest resolution should succeed")
+            .expect("should resolve named policy");
         assert_eq!(resolved, root.join("policies/agent.toml"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_policy_path_from_manifest_without_default_returns_none() {
+        let root = temp_dir("manifest-no-default");
+        fs::write(
+            root.join("hiko.toml"),
+            r#"
+[project]
+name = "demo"
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_policy_config_path_from(&root, None)
+            .expect("manifest resolution should succeed without default");
+        assert!(resolved.is_none());
 
         let _ = fs::remove_dir_all(root);
     }
