@@ -1,17 +1,17 @@
-(* Tests for stdlib/either.hk *)
+(* Tests for Std-v0.1.0/modules/Either.hml *)
 
-use "../../stdlib/either.hml"
+use "../../libraries/Std-v0.1.0/modules/Either.hml"
 
-val _ = assert (is_left (Left 1), "is_left Left")
-val _ = assert (is_right (Right 1), "is_right Right")
-val _ = assert (not (is_left (Right 1)), "not is_left Right")
+val _ = assert (Either.is_left (Either.Left 1), "is_left Left")
+val _ = assert (Either.is_right (Either.Right 1), "is_right Right")
+val _ = assert (not (Either.is_left (Either.Right 1)), "not is_left Right")
 
-val _ = assert_eq (from_left 0 (Left 42), 42, "from_left Left")
-val _ = assert_eq (from_left 0 (Right 99), 0, "from_left Right")
-val _ = assert_eq (from_right 0 (Right 42), 42, "from_right Right")
-val _ = assert_eq (from_right 0 (Left 99), 0, "from_right Left")
+val _ = assert_eq (Either.from_left 0 (Either.Left 42), 42, "from_left Left")
+val _ = assert_eq (Either.from_left 0 (Either.Right 99), 0, "from_left Right")
+val _ = assert_eq (Either.from_right 0 (Either.Right 42), 42, "from_right Right")
+val _ = assert_eq (Either.from_right 0 (Either.Left 99), 0, "from_right Left")
 
-val _ = assert_eq (from_right 0 (map_right (fn x => x + 1) (Right 41)), 42, "map_right")
-val _ = assert_eq (from_left 0 (map_left (fn x => x + 1) (Left 41)), 42, "map_left")
+val _ = assert_eq (Either.from_right 0 (Either.map_right (fn x => x + 1) (Either.Right 41)), 42, "map_right")
+val _ = assert_eq (Either.from_left 0 (Either.map_left (fn x => x + 1) (Either.Left 41)), 42, "map_left")
 
 val _ = println "either tests passed"

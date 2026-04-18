@@ -1,22 +1,22 @@
 (* search.hml -- Demonstrates glob, walk_dir, regex_match, regex_replace *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* Glob: find all .hml files in examples/ *)
 val hml_files = glob "examples/*.hml"
 val _ = println "=== .hml files in examples/ ==="
-val _ = map println hml_files
+val _ = List.map println hml_files
 
-(* Walk: recursively find all files under stdlib/ *)
-val all_files = walk_dir "stdlib"
-val _ = println "\n=== All files under stdlib/ ==="
-val _ = map println all_files
+(* Walk: recursively find all files under the first Std package root *)
+val all_files = walk_dir "libraries/Std-v0.1.0"
+val _ = println "\n=== All files under libraries/Std-v0.1.0/ ==="
+val _ = List.map println all_files
 
 (* Regex match: filter lines containing a pattern *)
 val lines = ["fun foo x = x + 1", "val bar = 42", "fun baz y = y * 2"]
-val fun_lines = filter (fn l => regex_match (l, "^fun ")) lines
+val fun_lines = List.filter (fn l => regex_match (l, "^fun ")) lines
 val _ = println "\n=== Lines matching ^fun ==="
-val _ = map println fun_lines
+val _ = List.map println fun_lines
 
 (* Regex replace: transform text *)
 val input = "hello-world-foo-bar"

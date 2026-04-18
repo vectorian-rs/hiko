@@ -1,7 +1,7 @@
 (* json_typed.hml -- JSON as a proper algebraic data type *)
 
-use "../stdlib/json.hml"
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/Json.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* ── Functional test ────────────────────────────────────────────────── *)
 
@@ -11,56 +11,56 @@ val parsed = json_parse data
 
 (* Pattern match on the top level *)
 val _ = case parsed of
-    JObject fields =>
+    Json.JObject fields =>
       let
         fun show_field (key, value) =
           let val display = case value of
-              JNull => "null"
-            | JBool b => if b then "true" else "false"
-            | JInt n => int_to_string n
-            | JFloat f => float_to_string f
-            | JStr s => "\"" ^ s ^ "\""
-            | JArray _ => "[...]"
-            | JObject _ => "{...}"
+              Json.JNull => "null"
+            | Json.JBool b => if b then "true" else "false"
+            | Json.JInt n => int_to_string n
+            | Json.JFloat f => float_to_string f
+            | Json.JStr s => "\"" ^ s ^ "\""
+            | Json.JArray _ => "[...]"
+            | Json.JObject _ => "{...}"
           in println ("  " ^ key ^ " = " ^ display) end
       in
         let val _ = println "Parsed object fields:"
-        in map show_field fields end
+        in List.map show_field fields end
       end
-  | _ => let val _ = println "ERROR: expected JObject" in [] end
+  | _ => let val _ = println "ERROR: expected Json.JObject" in [] end
 
 (* Extract nested values via pattern matching *)
 fun lookup key fields = case fields of
-    [] => JNull
+    [] => Json.JNull
   | (k, v) :: rest =>
       if k = key then v else lookup key rest
 
 val _ = case parsed of
-    JObject fields =>
+    Json.JObject fields =>
       let
         val name = case lookup "name" fields of
-            JStr s => s
+            Json.JStr s => s
           | _ => "?"
         val stars = case lookup "stars" fields of
-            JInt n => int_to_string n
+            Json.JInt n => int_to_string n
           | _ => "?"
         val _ = println ("\nname: " ^ name ^ ", stars: " ^ stars)
 
         (* Nested object *)
         val repo_url = case lookup "repo" fields of
-            JObject rf => (case lookup "url" rf of
-                JStr s => s
+            Json.JObject rf => (case lookup "url" rf of
+                Json.JStr s => s
               | _ => "?")
           | _ => "?"
         val _ = println ("repo url: " ^ repo_url)
 
         (* Array *)
         val features = case lookup "features" fields of
-            JArray fs => fs
+            Json.JArray fs => fs
           | _ => []
-        val _ = println ("features: " ^ int_to_string (length features))
-        val _ = map (fn f => case f of
-            JStr s => println ("  - " ^ s)
+        val _ = println ("features: " ^ int_to_string (List.length features))
+        val _ = List.map (fn f => case f of
+            Json.JStr s => println ("  - " ^ s)
           | _ => ()
         ) features
       in () end
@@ -92,7 +92,7 @@ val parsed_large = json_parse large
 val t1 = epoch ()
 
 val _ = case parsed_large of
-    JArray items => println ("\nParsed " ^ int_to_string (length items) ^ " items")
+    Json.JArray items => println ("\nParsed " ^ int_to_string (List.length items) ^ " items")
   | _ => println "ERROR"
 
 val serialized_large = json_to_string parsed_large

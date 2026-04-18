@@ -139,10 +139,10 @@ val msg = "a" ^ "b"      (* string concatenation: ^ *)
 ### Imports
 
 ```sml
-use "stdlib/list.hml"
-use "stdlib/option.hml"
+use "libraries/Std-v0.1.0/modules/List.hml"
+use "libraries/Std-v0.1.0/modules/Option.hml"
 
-val xs = map (fn x => x * 2) [1, 2, 3]
+val xs = List.map (fn x => x * 2) [1, 2, 3]
 ```
 
 ### Builtins
@@ -226,9 +226,9 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 ## Standard Library
 
-- **`stdlib/list.hml`**: `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`
-- **`stdlib/option.hml`**: `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option`
-- **`stdlib/either.hml`**: `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right`
+- **`libraries/Std-v0.1.0/modules/List.hml`**: `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`
+- **`libraries/Std-v0.1.0/modules/Option.hml`**: `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option`
+- **`libraries/Std-v0.1.0/modules/Either.hml`**: `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right`
 
 ## Examples
 

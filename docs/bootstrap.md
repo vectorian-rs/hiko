@@ -507,7 +507,7 @@ Success criteria:
 - REPL with persistent environments
 - Minimal stdlib
 
-Runtime builtins (implemented in Rust, always available): `print`, `println`, `int_to_string`, `float_to_string`, `string_length`, `panic`. Stdlib functions (written in Hiko, loaded from `stdlib/`): `map`, `filter`, `foldl`, and other list utilities.
+Runtime builtins (implemented in Rust, always available): `print`, `println`, `int_to_string`, `float_to_string`, `string_length`, `panic`. Stdlib functions (written in Hiko, loaded from `libraries/Std-v0.1.0/modules/`): `map`, `filter`, `foldl`, and other list utilities.
 
 Representative test: `use "math.hml"` followed by calling a function defined in that file.
 
@@ -525,7 +525,7 @@ hiko/
 │   ├── hiko-compile/
 │   ├── hiko-vm/
 │   └── hiko-cli/
-├── stdlib/
+├── libraries/
 ├── tests/
 └── examples/
 ```

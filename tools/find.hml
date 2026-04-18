@@ -3,9 +3,9 @@
  * param pattern: string - Glob pattern (e.g. src/**/*.rs)
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val input = read_stdin ()
 val pattern = json_get (input, "pattern")
 val files = glob pattern
-val _ = map println files
+val _ = List.map println files

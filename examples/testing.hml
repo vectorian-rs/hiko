@@ -1,6 +1,6 @@
 (* testing.hml -- unit testing with assert, assert_eq, and effects *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* ── Basic assertions ─────────────────────────────────────────────── *)
 
@@ -20,10 +20,10 @@ val _ = assert (not (starts_with ("hello.hml", "world")), "starts_with negative"
 
 (* ── List operations ──────────────────────────────────────────────── *)
 
-val _ = assert_eq (length [1, 2, 3], 3, "list length")
-val _ = assert_eq (length (map (fn x => x * 2) [1, 2, 3]), 3, "map preserves length")
-val _ = assert_eq (foldl (fn (x, acc) => acc + x) 0 [1, 2, 3], 6, "foldl sum")
-val _ = assert_eq (length (filter (fn x => x > 2) [1, 2, 3, 4, 5]), 3, "filter count")
+val _ = assert_eq (List.length [1, 2, 3], 3, "list length")
+val _ = assert_eq (List.length (List.map (fn x => x * 2) [1, 2, 3]), 3, "map preserves length")
+val _ = assert_eq (List.foldl (fn (x, acc) => acc + x) 0 [1, 2, 3], 6, "foldl sum")
+val _ = assert_eq (List.length (List.filter (fn x => x > 2) [1, 2, 3, 4, 5]), 3, "filter count")
 
 (* ── Pattern matching ─────────────────────────────────────────────── *)
 
@@ -38,7 +38,7 @@ val _ = assert_eq (area (Rect (3, 4)), 12, "rect area")
 
 (* ── JSON round-trip ──────────────────────────────────────────────── *)
 
-use "../stdlib/json.hml"
+use "../libraries/Std-v0.1.0/modules/Json.hml"
 
 val original = "{\"name\":\"test\",\"value\":42}"
 val parsed = json_parse original

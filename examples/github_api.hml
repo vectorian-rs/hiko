@@ -3,27 +3,27 @@
  * With: http_get + json_parse, no shell, no python
  *)
 
-use "../stdlib/json.hml"
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/Json.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val (status, _, body) = http_get "https://api.github.com/repos/vectorian-rs/hiko/contents/"
 
 fun lookup key fs = case fs of
-    [] => JNull
+    [] => Json.JNull
   | (k, v) :: rest =>
       if k = key then v else lookup key rest
 
 val _ = case json_parse body of
-    JArray items =>
-      map (fn item => case item of
-          JObject fields =>
+    Json.JArray items =>
+      List.map (fn item => case item of
+          Json.JObject fields =>
             let
-              val name = case lookup "name" fields of JStr s => s | _ => "?"
-              val typ = case lookup "type" fields of JStr s => s | _ => "?"
+              val name = case lookup "name" fields of Json.JStr s => s | _ => "?"
+              val typ = case lookup "type" fields of Json.JStr s => s | _ => "?"
             in println (name ^ " " ^ typ) end
         | _ => ()
       ) items
-  | JObject fields =>
-      let val msg = case lookup "message" fields of JStr s => s | _ => "unknown error"
+  | Json.JObject fields =>
+      let val msg = case lookup "message" fields of Json.JStr s => s | _ => "unknown error"
       in let val _ = println ("API error: " ^ msg) in [] end end
   | _ => let val _ = println "unexpected response" in [] end

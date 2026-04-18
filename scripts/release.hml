@@ -6,7 +6,7 @@
  * asks for the new version, then updates all Cargo.toml files.
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* All crate Cargo.toml paths relative to repo root *)
 val crate_paths = [
@@ -52,7 +52,7 @@ fun update_file path =
   end
 
 val _ = println "Updating Cargo.toml files:"
-val _ = map update_file crate_paths
+val _ = List.map update_file crate_paths
 val _ = println ""
 val _ = println ("Done. All crates now at " ^ new_version)
 val _ = println "Next steps:"

@@ -2,7 +2,7 @@
  * Compute primes less than 1000
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 fun interval m n =
   if m > n then []
@@ -20,6 +20,6 @@ fun sieve xs = case xs of
   | x :: rest => x :: sieve (remove_multiples x rest)
 
 val primes = sieve (interval 2 200)
-val count = length primes
+val count = List.length primes
 val _ = assert_eq (count, 46, "primes below 200")
 val _ = println ("primes below 200: " ^ int_to_string count)

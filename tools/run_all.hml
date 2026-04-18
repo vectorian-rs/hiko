@@ -14,7 +14,7 @@
  *   ./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy tools/run_all.hml
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val examples = glob "examples/*.hml"
 val cwd = getenv "PWD"
@@ -25,7 +25,7 @@ val skip = ["examples/http_fetch.hml", "examples/github_api.hml",
             "examples/cycle_a.hml", "examples/cycle_b.hml"]
 
 fun should_skip file =
-  any (fn s => ends_with (file, s)) skip
+  List.any (fn s => ends_with (file, s)) skip
 
 fun display_name file =
   if starts_with (file, cwd_prefix)

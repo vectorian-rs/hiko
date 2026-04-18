@@ -1,6 +1,6 @@
 (* json.hml -- Demonstrates JSON builtins *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com/vectorian-rs/hiko\", \"stars\": 42}}"
 
@@ -18,8 +18,8 @@ val _ = println ("feature[1]: " ^ feat)
 
 (* Get all keys *)
 val keys = json_keys data
-val _ = println ("keys: " ^ int_to_string (length keys))
-val _ = map (fn k => println ("  " ^ k)) keys
+val _ = println ("keys: " ^ int_to_string (List.length keys))
+val _ = List.map (fn k => println ("  " ^ k)) keys
 
 (* Get array length *)
 val n = json_length "[1,2,3,4,5]"

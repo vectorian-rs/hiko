@@ -1,39 +1,38 @@
-(* benchmark.hml — Recursive walk + blake3 hash.
- *
- * One walk function, one effect, one handler.
- * Direct resume — no recursive wrapper needed.
- *)
+use "../libraries/Std-v0.1.0/modules/Filesystem.hml"
 
-effect ReadBytes of string
+(* Hash a single file *)
+fun hash_file path =
+  let
+    val bytes = Filesystem.read_bytes path
+    val hash = blake3 bytes
+  in
+    hash ^ "  " ^ path
+  end
 
-fun process dir entries results count = case entries of
-    [] => (results, count)
-  | name :: rest =>
-      let val path = path_join (dir, name)
-           in if is_file path
-              then let val bytes = perform ReadBytes path
-                       val hash = blake3 bytes
-                       val line = hash ^ "  " ^ int_to_string (bytes_length bytes) ^ "  " ^ path
-                   in process dir rest (line :: results) (count + 1) end
-              else if is_dir path
-              then let val (sub_results, sub_count) = walk path results count
-                   in process dir rest sub_results sub_count end
-              else process dir rest results count
-           end
+(* Walk a path: file or directory *)
+fun walk_path path =
+  if Filesystem.is_file path then
+    [hash_file path]
+  else if Filesystem.is_dir path then
+    walk_entries path (Filesystem.list_dir path)
+  else
+    []
 
-and walk dir results count = process dir (list_dir dir) results count
+(* Walk all entries in a directory *)
+and walk_entries dir entries =
+  case entries of
+      [] => []
+    | name :: rest =>
+        walk_path (Filesystem.join (dir, name))
+        @ walk_entries dir rest
 
-fun with_fs f =
-  handle f ()
-  with return x => x
-     | ReadBytes path k => resume k (read_file_bytes path)
+(* Run the program with a filesystem handler *)
+val results = Filesystem.run (fn () => walk_path ".")
 
-fun print_lines ls = case ls of
-    [] => ()
-  | l :: rest => let val _ = println l in print_lines rest end
+(* Print results *)
+fun print_lines xs =
+  case xs of
+      [] => ()
+    | x :: rest => (println x; print_lines rest)
 
-val t0 = monotonic_ms ()
-val (results, count) = with_fs (fn () => walk "/Users/l1x/code/home/vectorian-rs/hiko/.git" [] 0)
-val elapsed = monotonic_ms () - t0
 val _ = print_lines results
-val _ = println ("  " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")

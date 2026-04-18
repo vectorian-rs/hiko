@@ -4,7 +4,7 @@
  * param path: string - File or directory to search in
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val input = read_stdin ()
 val pattern = json_get (input, "pattern")
@@ -18,7 +18,7 @@ fun search_file file_path =
       if regex_match (line, pattern)
       then println (file_path ^ ":" ^ int_to_string (n + 1) ^ ": " ^ line)
       else ()
-    val _ = foldl (fn (line, n) =>
+    val _ = List.foldl (fn (line, n) =>
       let val _ = check_line (n, line)
       in n + 1 end
     ) 0 lines
@@ -28,7 +28,7 @@ val _ = if is_file path
   then search_file path
   else let
     val files = walk_dir path
-    val _ = map (fn f =>
+    val _ = List.map (fn f =>
       if is_file f then search_file f else ()
     ) files
   in () end

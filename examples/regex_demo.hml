@@ -1,6 +1,6 @@
 (* regex_demo.hml -- Regular expression matching and replacement *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* Simple matching *)
 val _ = println "=== Regex match ==="
@@ -19,5 +19,5 @@ val _ = println (regex_replace ("camelCase", "([a-z])([A-Z])", "$1_$2"))
 val _ = println "\n=== Filter with regex ==="
 val code = "fun foo x = x + 1\nval bar = 42\nfun baz y = y * 2\nval qux = true"
 val lines = split (code, "\n")
-val funs = filter (fn l => regex_match (l, "^fun ")) lines
-val _ = map println funs
+val funs = List.filter (fn l => regex_match (l, "^fun ")) lines
+val _ = List.map println funs

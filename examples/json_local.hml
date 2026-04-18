@@ -1,22 +1,22 @@
 (* json_local.hml -- Parse a local JSON file, same as curl | python but no network *)
 
-use "../stdlib/json.hml"
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/Json.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val body = read_file "/tmp/repo_contents.json"
 
 fun lookup key fs = case fs of
-    [] => JNull
+    [] => Json.JNull
   | (k, v) :: rest =>
       if k = key then v else lookup key rest
 
 val _ = case json_parse body of
-    JArray items =>
-      map (fn item => case item of
-          JObject fields =>
+    Json.JArray items =>
+      List.map (fn item => case item of
+          Json.JObject fields =>
             let
-              val name = case lookup "name" fields of JStr s => s | _ => "?"
-              val typ = case lookup "type" fields of JStr s => s | _ => "?"
+              val name = case lookup "name" fields of Json.JStr s => s | _ => "?"
+              val typ = case lookup "type" fields of Json.JStr s => s | _ => "?"
             in println (name ^ " " ^ typ) end
         | _ => ()
       ) items

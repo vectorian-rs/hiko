@@ -9,7 +9,7 @@
  * root process builds and traverses one large pid list.
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val count = 6000
 
@@ -30,7 +30,7 @@ val total = await_all pids 0
 val total_ms = monotonic_ms () - t0
 val expected = (count * (count + 1)) / 2
 
-val _ = assert_eq (length pids, count, "spawned child count")
+val _ = assert_eq (List.length pids, count, "spawned child count")
 val _ = assert_eq (total, expected, "spawn stress sum")
 
 val _ =

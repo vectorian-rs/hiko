@@ -4,7 +4,7 @@
  * With: glob + read + regex + fold — type-checked, no shell
  *)
 
-use "../stdlib/list.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* Count all function definitions across all Rust files *)
 val rs_files = glob "crates/**/*.rs"
@@ -13,10 +13,10 @@ fun count_fns file =
   let
     val content = read_file file
     val lines = split (content, "\n")
-    val fn_lines = filter (fn l => regex_match (l, "^\\s*(pub\\s+)?(fn|fun)\\s+")) lines
-  in length fn_lines end
+    val fn_lines = List.filter (fn l => regex_match (l, "^\\s*(pub\\s+)?(fn|fun)\\s+")) lines
+  in List.length fn_lines end
 
-val counts = map (fn f => (f, count_fns f)) rs_files
+val counts = List.map (fn f => (f, count_fns f)) rs_files
 
 fun sum_counts xs = case xs of
     [] => 0
@@ -24,9 +24,9 @@ fun sum_counts xs = case xs of
 val total = sum_counts counts
 
 val _ = println "=== Function count per file ==="
-val _ = map (fn (f, n) =>
+val _ = List.map (fn (f, n) =>
   if n > 0 then println ("  " ^ f ^ ": " ^ int_to_string n) else ()
 ) counts
 
 val _ = println ("\nTotal functions: " ^ int_to_string total)
-val _ = println ("Files scanned: " ^ int_to_string (length rs_files))
+val _ = println ("Files scanned: " ^ int_to_string (List.length rs_files))
