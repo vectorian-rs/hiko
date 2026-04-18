@@ -838,7 +838,7 @@ pub(crate) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
     Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
 }
 
-// ── JSON datatype tags (must match stdlib/json.hml declaration order) ──
+// ── JSON datatype tags (must match libraries/Std-v0.1.0/modules/Json.hml declaration order) ──
 const TAG_JNULL: u16 = 0;
 const TAG_JBOOL: u16 = 1;
 const TAG_JINT: u16 = 2;

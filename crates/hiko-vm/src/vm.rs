@@ -10,6 +10,7 @@ use crate::heap::Heap;
 use crate::value::{
     BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
 };
+use crate::verify::{VerificationError, verify_program};
 
 /// Default hard limit on the VM value stack, measured in `Value` slots.
 ///
@@ -252,6 +253,7 @@ pub struct VM {
     pub blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
     pub cancelled: bool,
+    startup_error: Option<String>,
     output_sink: Option<Arc<dyn OutputSink>>,
 }
 
@@ -330,8 +332,28 @@ impl VM {
         vm
     }
 
+    /// Create a VM with all builtins enabled after validating the compiled program.
+    pub fn try_new(program: CompiledProgram) -> Result<Self, VerificationError> {
+        let mut vm = Self::try_from_program(program)?;
+        vm.register_builtins();
+        Ok(vm)
+    }
+
     /// Create a VM with no builtins (for builder/embedding use).
     pub fn from_program(program: CompiledProgram) -> Self {
+        match verify_program(&program) {
+            Ok(()) => Self::from_verified_program(program, None),
+            Err(err) => Self::from_verified_program(program, Some(err.to_string())),
+        }
+    }
+
+    /// Create a VM with no builtins (for builder/embedding use) after validation.
+    pub fn try_from_program(program: CompiledProgram) -> Result<Self, VerificationError> {
+        verify_program(&program)?;
+        Ok(Self::from_verified_program(program, None))
+    }
+
+    fn from_verified_program(program: CompiledProgram, startup_error: Option<String>) -> Self {
         VM {
             heap: Heap::new(),
             stack: Vec::with_capacity(32),
@@ -371,6 +393,7 @@ impl VM {
             pending_runtime_request: None,
             blocked_continuation: None,
             cancelled: false,
+            startup_error,
             output_sink: None,
         }
     }
@@ -472,8 +495,7 @@ impl VM {
 
     /// Create a child VM with the same builtins and capabilities as this VM.
     pub fn create_child(&self) -> VM {
-        let program = self.get_program();
-        let mut child = VM::from_program(program);
+        let mut child = Self::from_verified_program(self.get_program(), self.startup_error.clone());
         // Copy all registered builtins
         for entry in &self.builtins {
             child.register_builtin(entry.name, entry.func);
@@ -742,6 +764,11 @@ impl VM {
     }
 
     pub fn run(&mut self) -> Result<(), RuntimeError> {
+        if let Some(message) = self.startup_error.as_ref() {
+            return Err(RuntimeError {
+                message: format!("program verification failed: {message}"),
+            });
+        }
         self.frames.push(CallFrame {
             proto_idx: usize::MAX,
             ip: 0,
@@ -755,6 +782,9 @@ impl VM {
     /// Respects any existing fuel limit (takes the minimum).
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
+        if let Some(message) = self.startup_error.as_ref() {
+            return RunResult::Failed(format!("program verification failed: {message}"));
+        }
         // Check persistent fuel budget
         if let Some(ref remaining) = self.max_fuel_remaining
             && *remaining == 0
@@ -1941,6 +1971,43 @@ mod tests {
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
         compiled
+    }
+
+    #[test]
+    fn test_try_new_rejects_invalid_compiled_program() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::Const as u8, 0, 0, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+        };
+
+        let err = match VM::try_new(program) {
+            Ok(_) => panic!("invalid compiled program should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.message().contains("constant index 0"));
+    }
+
+    #[test]
+    fn test_invalid_compiled_program_fails_before_dispatch() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::Const as u8, 0, 0, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+        };
+
+        let mut vm = VM::new(program);
+        let err = vm.run().expect_err("invalid compiled program should fail");
+        assert!(err.message.contains("program verification failed"));
+        assert!(err.message.contains("constant index 0"));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

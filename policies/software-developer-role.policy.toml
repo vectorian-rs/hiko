@@ -1,4 +1,4 @@
-# Repo owner policy.
+# Software developer role policy.
 # Broad local scripting profile for this repository:
 # - full filesystem access under .
 # - localhost HTTP for package serving and local services

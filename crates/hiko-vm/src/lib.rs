@@ -10,6 +10,7 @@ pub mod scheduler;
 pub mod sendable;
 pub mod threaded;
 pub mod value;
+pub mod verify;
 pub mod vm;
 
 pub use vm::{DEFAULT_MAX_CALL_FRAMES, DEFAULT_MAX_STACK_SLOTS};

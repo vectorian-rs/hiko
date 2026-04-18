@@ -425,6 +425,7 @@ version = "0.6.0"
 dependencies = [
  "codespan-reporting",
  "hiko-builtin-meta",
+ "hiko-common",
  "hiko-compile",
  "hiko-syntax",
  "hiko-types",

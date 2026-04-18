@@ -34,8 +34,10 @@ pub struct DefaultConfig {
 pub struct HikoConfig {
     #[serde(default = "default_hiko_bin")]
     pub bin: String,
-    #[serde(default = "default_hiko_config")]
-    pub config: String,
+    #[serde(default = "default_hiko_manifest")]
+    pub manifest: String,
+    #[serde(default = "default_hiko_policy")]
+    pub policy: String,
     #[serde(default = "default_hiko_strict")]
     pub strict: bool,
 }
@@ -64,8 +66,11 @@ fn default_max_turns() -> usize {
 fn default_hiko_bin() -> String {
     "hiko-cli".to_string()
 }
-fn default_hiko_config() -> String {
-    "policies/harness-tools.policy.toml".to_string()
+fn default_hiko_manifest() -> String {
+    "hiko.toml".to_string()
+}
+fn default_hiko_policy() -> String {
+    "harness-tools".to_string()
 }
 fn default_hiko_strict() -> bool {
     true
@@ -75,7 +80,8 @@ impl Default for HikoConfig {
     fn default() -> Self {
         Self {
             bin: default_hiko_bin(),
-            config: default_hiko_config(),
+            manifest: default_hiko_manifest(),
+            policy: default_hiko_policy(),
             strict: default_hiko_strict(),
         }
     }

@@ -468,6 +468,15 @@ mod tests {
     }
 
     #[test]
+    fn test_spawn_stress_example_verifies() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/spawn_stress.hml");
+        let program = compile_example(&path);
+        if let Err(err) = VM::try_new(program) {
+            panic!("verifier rejected spawn_stress example: {err}");
+        }
+    }
+
+    #[test]
     fn test_root_process_may_finish_with_non_sendable_value() {
         let program = compile("val f = fn () => 1");
         let mut runtime = Runtime::new();

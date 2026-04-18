@@ -5,10 +5,16 @@ name = "hiko"
 # `hiko-cli run` / `hiko-cli check` can use this manifest to resolve named
 # policies and default to the configured policy when `--config` is omitted.
 [defaults]
-policy = "user-repo-full"
+policy = "software-developer-role"
 
 [policies.docs-writer]
 path = "policies/docs-writer.policy.toml"
 
-[policies.user-repo-full]
-path = "policies/user-repo-full.policy.toml"
+[policies.software-developer-role]
+path = "policies/software-developer-role.policy.toml"
+
+[policies.harness-tools]
+path = "policies/harness-tools.policy.toml"
+
+[policies.test-runner]
+path = "policies/test-runner.policy.toml"

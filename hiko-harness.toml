@@ -11,7 +11,8 @@ max_turns = 50
 # Use an installed hiko-cli by default. For local repo development you can
 # point this at ./target/debug/hiko-cli after building the binary.
 bin = "hiko-cli"
-config = "policies/harness-tools.policy.toml"
+manifest = "hiko.toml"
+policy = "harness-tools"
 strict = true
 
 # ── Providers ─────────────────────────────────────────────────────────

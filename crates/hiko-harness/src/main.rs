@@ -149,7 +149,8 @@ fn main() {
 fn resolve_tool_runner(cfg: &config::Config) -> tools::ToolRunner {
     tools::ToolRunner {
         bin: resolve_hiko_bin(&cfg.hiko),
-        config_path: resolve_hiko_run_config(&cfg.hiko),
+        manifest_path: resolve_hiko_manifest(&cfg.hiko),
+        policy_name: resolve_hiko_policy(&cfg.hiko),
         strict: cfg.hiko.strict,
     }
 }
@@ -158,8 +159,12 @@ fn resolve_hiko_bin(hiko: &config::HikoConfig) -> OsString {
     OsString::from(&hiko.bin)
 }
 
-fn resolve_hiko_run_config(hiko: &config::HikoConfig) -> std::path::PathBuf {
-    std::path::PathBuf::from(&hiko.config)
+fn resolve_hiko_manifest(hiko: &config::HikoConfig) -> std::path::PathBuf {
+    std::path::PathBuf::from(&hiko.manifest)
+}
+
+fn resolve_hiko_policy(hiko: &config::HikoConfig) -> String {
+    hiko.policy.clone()
 }
 
 fn require_arg(args: &[String], i: usize, flag: &str) -> String {

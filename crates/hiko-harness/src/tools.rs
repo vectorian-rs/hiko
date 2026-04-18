@@ -11,7 +11,8 @@ use std::process::{Command, Stdio};
 #[derive(Debug, Clone)]
 pub struct ToolRunner {
     pub bin: OsString,
-    pub config_path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub policy_name: String,
     pub strict: bool,
 }
 
@@ -36,7 +37,8 @@ impl ToolRegistry {
             tools: HashMap::new(),
             runner: ToolRunner {
                 bin: OsString::from("hiko-cli"),
-                config_path: PathBuf::from("policies/harness-tools.policy.toml"),
+                manifest_path: PathBuf::from("hiko.toml"),
+                policy_name: "harness-tools".to_string(),
                 strict: true,
             },
         }
@@ -46,10 +48,10 @@ impl ToolRegistry {
     /// Each file's name (without .hml) becomes the tool name.
     /// The first comment block is parsed for metadata.
     pub fn load(tools_dir: &Path, runner: ToolRunner) -> Result<Self, String> {
-        if !runner.config_path.exists() {
+        if !runner.manifest_path.exists() {
             return Err(format!(
-                "hiko runner config not found: {}",
-                runner.config_path.display()
+                "hiko project manifest not found: {}",
+                runner.manifest_path.display()
             ));
         }
 
@@ -126,7 +128,9 @@ impl ToolRegistry {
         }
         command
             .arg("--config")
-            .arg(&self.runner.config_path)
+            .arg(&self.runner.manifest_path)
+            .arg("--policy")
+            .arg(&self.runner.policy_name)
             .arg(&tool.script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -274,19 +278,35 @@ mod tests {
              strict=\"$2\"\n\
              config_flag=\"$3\"\n\
              config_path=\"$4\"\n\
-             script_path=\"$5\"\n\
+             policy_flag=\"$5\"\n\
+             policy_name=\"$6\"\n\
+             script_path=\"$7\"\n\
              input=$(cat)\n\
-             printf 'mode=%s\\nstrict=%s\\nconfig_flag=%s\\nconfig=%s\\nscript=%s\\ninput=%s\\n' \"$mode\" \"$strict\" \"$config_flag\" \"$config_path\" \"$script_path\" \"$input\"\n",
+             printf 'mode=%s\\nstrict=%s\\nconfig_flag=%s\\nconfig=%s\\npolicy_flag=%s\\npolicy=%s\\nscript=%s\\ninput=%s\\n' \"$mode\" \"$strict\" \"$config_flag\" \"$config_path\" \"$policy_flag\" \"$policy_name\" \"$script_path\" \"$input\"\n",
         )
         .unwrap();
         fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(&runner_config, "[limits]\nmax_fuel = 1\n").unwrap();
+        fs::write(
+            &runner_config,
+            r#"
+[project]
+name = "test"
+
+[defaults]
+policy = "harness-tools"
+
+[policies.harness-tools]
+path = "policies/harness-tools.policy.toml"
+"#,
+        )
+        .unwrap();
 
         let registry = ToolRegistry::load(
             &dir,
             ToolRunner {
                 bin: runner.as_os_str().to_os_string(),
-                config_path: runner_config.clone(),
+                manifest_path: runner_config.clone(),
+                policy_name: "harness-tools".to_string(),
                 strict: true,
             },
         )
@@ -298,6 +318,8 @@ mod tests {
         assert!(output.contains("mode=run"));
         assert!(output.contains("strict=--strict"));
         assert!(output.contains(&format!("config={}", runner_config.display())));
+        assert!(output.contains("policy_flag=--policy"));
+        assert!(output.contains("policy=harness-tools"));
         assert!(output.contains(&format!("script={}", script.display())));
         assert!(output.contains(r#"input={"path":"src/main.rs"}"#));
 

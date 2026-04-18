@@ -11,6 +11,7 @@ use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 use hiko_builtin_meta::{BuiltinSurface, builtin_meta, core_builtin_names};
+use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::compiler::{CompileError, Compiler};
 use hiko_compile::op::Op;
@@ -29,11 +30,12 @@ fn main() {
         eprintln!("Usage: hiko <command> [args]");
         eprintln!("Commands:");
         eprintln!(
-            "  run [--config <file.toml> | --policy <name>] [--strict] [file.hml]  Compile and execute a program"
+            "  run [--config <hiko.toml>] [--policy <name>] [--strict] [file.hml]  Compile and execute a program"
         );
         eprintln!(
-            "  check [--config <file.toml> | --policy <name>] [--strict] <file.hml>  Type-check without executing"
+            "  check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>  Type-check without executing"
         );
+        eprintln!("  hash <file>...  Print BLAKE3 hashes for files");
         eprintln!("  build-vm <config.toml>  Generate a custom VM from a run config");
         process::exit(1);
     }
@@ -47,6 +49,13 @@ fn main() {
             let options = parse_check_args(&args[2..]);
             check_file(&options);
         }
+        "hash" => {
+            if args.len() < 3 {
+                eprintln!("Usage: hiko hash <file>...");
+                process::exit(1);
+            }
+            hash_files(&args[2..]);
+        }
         "build-vm" => {
             if args.len() < 3 {
                 eprintln!("Usage: hiko build-vm <config.toml>");
@@ -57,7 +66,7 @@ fn main() {
         other => {
             eprintln!("Unknown command: {other}");
             eprintln!(
-                "Try: hiko run [--config <file.toml> | --policy <name>] [--strict] [file.hml]"
+                "Try: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [file.hml]"
             );
             process::exit(1);
         }
@@ -190,16 +199,30 @@ fn compile_source(path: &str) -> Result<Compiled, ()> {
     }
 }
 
-fn load_config(config_path: &str) -> RunConfig {
+fn load_policy_config(policy_path: &str) -> RunConfig {
+    load_run_config(policy_path, "policy")
+}
+
+fn load_run_config(config_path: &str, label: &str) -> RunConfig {
     let toml = fs::read_to_string(config_path).unwrap_or_else(|e| {
-        eprintln!("Cannot read config file '{config_path}': {e}");
+        eprintln!("Cannot read {label} file '{config_path}': {e}");
         process::exit(1);
     });
 
     RunConfig::from_toml(&toml).unwrap_or_else(|e| {
-        eprintln!("Invalid config '{config_path}': {e}");
+        eprintln!("Invalid {label} '{config_path}': {e}");
         process::exit(1);
     })
+}
+
+fn hash_files(paths: &[String]) {
+    for path in paths {
+        let bytes = fs::read(path).unwrap_or_else(|e| {
+            eprintln!("Cannot read file '{path}': {e}");
+            process::exit(1);
+        });
+        println!("blake3:{}  {}", blake3_hex(&bytes), path);
+    }
 }
 
 fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
@@ -221,25 +244,21 @@ fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
 }
 
 fn resolve_policy_config_path_from(
-    start_dir: &Path,
+    manifest_path: &Path,
     policy_name: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
-    let Some(manifest_path) = find_project_manifest_from(start_dir) else {
-        if let Some(policy_name) = policy_name {
-            return Err(format!(
-                "No hiko.toml found while resolving policy '{policy_name}'"
-            ));
-        }
-        return Ok(None);
-    };
-
-    let manifest = load_project_manifest(&manifest_path)?;
+    let manifest = load_project_manifest(manifest_path)?;
     let selected = if let Some(policy_name) = policy_name {
         policy_name.to_string()
     } else {
         match manifest.defaults.policy.clone() {
             Some(policy) => policy,
-            None => return Ok(None),
+            None => {
+                return Err(format!(
+                    "Project manifest '{}' does not define defaults.policy; pass --policy <name>",
+                    manifest_path.display()
+                ));
+            }
         }
     };
 
@@ -255,17 +274,25 @@ fn resolve_policy_config_path_from(
     Ok(Some(root.join(&policy.path)))
 }
 
-fn resolve_config_path(options: &ScriptOptions) -> Option<String> {
-    if let Some(config_path) = &options.config_path {
-        return Some(config_path.clone());
-    }
-
+fn resolve_policy_path(options: &ScriptOptions) -> Option<String> {
     let cwd = env::current_dir().unwrap_or_else(|e| {
         eprintln!("Cannot determine current working directory: {e}");
         process::exit(1);
     });
 
-    match resolve_policy_config_path_from(&cwd, options.policy_name.as_deref()) {
+    let manifest_path = if let Some(config_path) = &options.config_path {
+        PathBuf::from(config_path)
+    } else if let Some(path) = find_project_manifest_from(&cwd) {
+        path
+    } else {
+        if let Some(policy_name) = &options.policy_name {
+            eprintln!("No hiko.toml found while resolving policy '{policy_name}'");
+            process::exit(1);
+        }
+        return None;
+    };
+
+    match resolve_policy_config_path_from(&manifest_path, options.policy_name.as_deref()) {
         Ok(Some(path)) => Some(path.to_string_lossy().into_owned()),
         Ok(None) => None,
         Err(err) => {
@@ -285,11 +312,6 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
     while i < args.len() {
         match args[i].as_str() {
             "--config" => {
-                if policy_name.is_some() {
-                    eprintln!("--config and --policy are mutually exclusive");
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
                 let Some(path) = args.get(i + 1) else {
                     eprintln!("{usage}");
                     process::exit(1);
@@ -298,11 +320,6 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
                 i += 2;
             }
             arg if arg.starts_with("--config=") => {
-                if policy_name.is_some() {
-                    eprintln!("--config and --policy are mutually exclusive");
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
                 let path = arg.trim_start_matches("--config=");
                 if path.is_empty() {
                     eprintln!("{usage}");
@@ -312,11 +329,6 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
                 i += 1;
             }
             "--policy" => {
-                if config_path.is_some() {
-                    eprintln!("--config and --policy are mutually exclusive");
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
                 let Some(name) = args.get(i + 1) else {
                     eprintln!("{usage}");
                     process::exit(1);
@@ -325,11 +337,6 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
                 i += 2;
             }
             arg if arg.starts_with("--policy=") => {
-                if config_path.is_some() {
-                    eprintln!("--config and --policy are mutually exclusive");
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
                 let name = arg.trim_start_matches("--policy=");
                 if name.is_empty() {
                     eprintln!("{usage}");
@@ -375,7 +382,7 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
 fn parse_run_args(args: &[String]) -> ScriptOptions {
     parse_script_args(
         args,
-        "Usage: hiko run [--config <file.toml> | --policy <name>] [--strict] [file.hml]",
+        "Usage: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [file.hml]",
         false,
     )
 }
@@ -383,7 +390,7 @@ fn parse_run_args(args: &[String]) -> ScriptOptions {
 fn parse_check_args(args: &[String]) -> ScriptOptions {
     parse_script_args(
         args,
-        "Usage: hiko check [--config <file.toml> | --policy <name>] [--strict] <file.hml>",
+        "Usage: hiko check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>",
         true,
     )
 }
@@ -397,7 +404,7 @@ fn resolve_run_target(config: Option<&RunConfig>, script_path: Option<&str>) -> 
     {
         return entry.clone();
     }
-    eprintln!("Usage: hiko run [--config <file.toml> | --policy <name>] [--strict] [file.hml]");
+    eprintln!("Usage: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [file.hml]");
     process::exit(1);
 }
 
@@ -606,8 +613,8 @@ fn strict_message(violation: &StrictViolation, has_config: bool) -> String {
 // ── Commands ─────────────────────────────────────────────────────────
 
 fn run_file(options: &ScriptOptions) {
-    let config_path = resolve_config_path(options);
-    let config = config_path.as_deref().map(load_config);
+    let policy_path = resolve_policy_path(options);
+    let config = policy_path.as_deref().map(load_policy_config);
     let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
     let compiled = match compile_source(&path) {
         Ok(c) => c,
@@ -658,8 +665,8 @@ fn check_file(options: &ScriptOptions) {
         compiled.ctx.warning(&w.message, Some(w.span));
     }
 
-    let config_path = resolve_config_path(options);
-    let config = config_path.as_deref().map(load_config);
+    let policy_path = resolve_policy_path(options);
+    let config = policy_path.as_deref().map(load_policy_config);
     if options.strict
         && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
     {
@@ -675,7 +682,7 @@ fn check_file(options: &ScriptOptions) {
 }
 
 fn build_vm(config_path: &str) {
-    let config = load_config(config_path);
+    let config = load_run_config(config_path, "run config");
 
     let rust_src = config.to_rust_source();
 
@@ -779,13 +786,13 @@ mod tests {
     fn parse_run_args_config_and_file() {
         let args = vec![
             "--config".to_string(),
-            "configs/read.toml".to_string(),
+            "hiko.toml".to_string(),
             "tools/read.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
-                config_path: Some("configs/read.toml".to_string()),
+                config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
@@ -796,13 +803,13 @@ mod tests {
     #[test]
     fn parse_run_args_inline_config() {
         let args = vec![
-            "--config=configs/read.toml".to_string(),
+            "--config=hiko.toml".to_string(),
             "tools/read.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
-                config_path: Some("configs/read.toml".to_string()),
+                config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
@@ -814,13 +821,13 @@ mod tests {
     fn parse_run_args_with_strict() {
         let args = vec![
             "--strict".to_string(),
-            "--config=configs/read.toml".to_string(),
+            "--config=hiko.toml".to_string(),
             "tools/read.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
-                config_path: Some("configs/read.toml".to_string()),
+                config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: true,
@@ -832,17 +839,37 @@ mod tests {
     fn parse_check_args_with_config_and_strict() {
         let args = vec![
             "--config".to_string(),
-            "configs/read.toml".to_string(),
+            "hiko.toml".to_string(),
             "--strict".to_string(),
             "tools/read.hml".to_string(),
         ];
         assert_eq!(
             parse_check_args(&args),
             ScriptOptions {
-                config_path: Some("configs/read.toml".to_string()),
+                config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_run_args_with_config_and_policy() {
+        let args = vec![
+            "--config".to_string(),
+            "hiko.toml".to_string(),
+            "--policy".to_string(),
+            "docs-writer".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_run_args(&args),
+            ScriptOptions {
+                config_path: Some("hiko.toml".to_string()),
+                policy_name: Some("docs-writer".to_string()),
+                script_path: Some("tools/read.hml".to_string()),
+                strict: false,
             }
         );
     }
@@ -935,25 +962,26 @@ enabled = true
 
     #[test]
     fn resolve_policy_path_from_manifest_default_policy() {
-        let root = temp_dir("manifest-default-user");
+        let root = temp_dir("manifest-default-policy");
         fs::create_dir_all(root.join("policies")).unwrap();
+        let manifest = root.join("hiko.toml");
         fs::write(
-            root.join("hiko.toml"),
+            &manifest,
             r#"
 [project]
 name = "demo"
 
 [defaults]
-policy = "user-repo-full"
+policy = "software-developer-role"
 
-[policies.user-repo-full]
+[policies.software-developer-role]
 path = "policies/user.toml"
 "#,
         )
         .unwrap();
         fs::write(root.join("policies/user.toml"), "").unwrap();
 
-        let resolved = resolve_policy_config_path_from(&root, None)
+        let resolved = resolve_policy_config_path_from(&manifest, None)
             .expect("manifest resolution should succeed")
             .expect("should resolve default policy");
         assert_eq!(resolved, root.join("policies/user.toml"));
@@ -965,16 +993,17 @@ path = "policies/user.toml"
     fn resolve_policy_path_from_manifest_named_policy() {
         let root = temp_dir("manifest-named-policy");
         fs::create_dir_all(root.join("policies")).unwrap();
+        let manifest = root.join("hiko.toml");
         fs::write(
-            root.join("hiko.toml"),
+            &manifest,
             r#"
 [project]
 name = "demo"
 
 [defaults]
-policy = "user-repo-full"
+policy = "software-developer-role"
 
-[policies.user-repo-full]
+[policies.software-developer-role]
 path = "policies/user.toml"
 
 [policies.docs-writer]
@@ -985,7 +1014,7 @@ path = "policies/agent.toml"
         fs::write(root.join("policies/user.toml"), "").unwrap();
         fs::write(root.join("policies/agent.toml"), "").unwrap();
 
-        let resolved = resolve_policy_config_path_from(&root, Some("docs-writer"))
+        let resolved = resolve_policy_config_path_from(&manifest, Some("docs-writer"))
             .expect("manifest resolution should succeed")
             .expect("should resolve named policy");
         assert_eq!(resolved, root.join("policies/agent.toml"));
@@ -994,10 +1023,11 @@ path = "policies/agent.toml"
     }
 
     #[test]
-    fn resolve_policy_path_from_manifest_without_default_returns_none() {
+    fn resolve_policy_path_from_manifest_without_default_errors() {
         let root = temp_dir("manifest-no-default");
+        let manifest = root.join("hiko.toml");
         fs::write(
-            root.join("hiko.toml"),
+            &manifest,
             r#"
 [project]
 name = "demo"
@@ -1005,9 +1035,9 @@ name = "demo"
         )
         .unwrap();
 
-        let resolved = resolve_policy_config_path_from(&root, None)
-            .expect("manifest resolution should succeed without default");
-        assert!(resolved.is_none());
+        let err = resolve_policy_config_path_from(&manifest, None)
+            .expect_err("manifest without default should require explicit --policy");
+        assert!(err.contains("defaults.policy"));
 
         let _ = fs::remove_dir_all(root);
     }

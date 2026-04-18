@@ -725,11 +725,12 @@ folders = ["."]
     }
 
     #[test]
-    fn parse_user_repo_full_policy() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policies/user-repo-full.policy.toml");
-        let text = std::fs::read_to_string(path).expect("user repo full policy should exist");
-        RunConfig::from_toml(&text).expect("user repo full policy should parse");
+    fn parse_software_developer_role_policy() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../policies/software-developer-role.policy.toml");
+        let text =
+            std::fs::read_to_string(path).expect("software developer role policy should exist");
+        RunConfig::from_toml(&text).expect("software developer role policy should parse");
     }
 
     #[test]
@@ -781,7 +782,7 @@ folders = ["."]
     }
 
     #[test]
-    fn user_repo_full_policy_allows_localhost_http_and_rejects_remote_hosts() {
+    fn software_developer_role_policy_allows_localhost_http_and_rejects_remote_hosts() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind localhost test server");
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -793,7 +794,7 @@ folders = ["."]
                 .expect("write response");
         });
 
-        let config = RunConfig::from_toml(&load_policy_text("user-repo-full.policy.toml"))
+        let config = RunConfig::from_toml(&load_policy_text("software-developer-role.policy.toml"))
             .expect("policy should parse");
 
         let program = compile_program(&format!(
