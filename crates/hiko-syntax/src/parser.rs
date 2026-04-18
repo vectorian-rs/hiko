@@ -1119,7 +1119,25 @@ impl Parser {
     }
 
     fn parse_app_pat(&mut self) -> Result<Pat, ParseError> {
-        if matches!(self.peek(), TokenKind::UpperIdent(_)) {
+        if self.can_start_qualified_path() {
+            let (name, is_constructor, span) = self.parse_qualified_symbol()?;
+            if !is_constructor {
+                return Err(self.err("pattern qualified name must end in a constructor"));
+            }
+            if self.can_start_atom_pat() {
+                let payload = self.parse_atom_pat()?;
+                let payload_span = payload.span;
+                Ok(Pat {
+                    kind: PatKind::Constructor(name, Some(Box::new(payload))),
+                    span: span.merge(payload_span),
+                })
+            } else {
+                Ok(Pat {
+                    kind: PatKind::Constructor(name, None),
+                    span,
+                })
+            }
+        } else if matches!(self.peek(), TokenKind::UpperIdent(_)) {
             let start = self.span();
             let name = self.take_symbol();
             if self.can_start_atom_pat() {
@@ -1141,6 +1159,17 @@ impl Parser {
     }
 
     fn parse_atom_pat(&mut self) -> Result<Pat, ParseError> {
+        if self.can_start_qualified_path() {
+            let (name, is_constructor, span) = self.parse_qualified_symbol()?;
+            if !is_constructor {
+                return Err(self.err("pattern qualified name must end in a constructor"));
+            }
+            return Ok(Pat {
+                kind: PatKind::Constructor(name, None),
+                span,
+            });
+        }
+
         let start = self.span();
         match self.peek() {
             TokenKind::Underscore => {
@@ -1591,6 +1620,42 @@ mod tests {
     fn test_import_decl_rejects_deep_names() {
         let err = parse_err("import Std.List.Extras");
         assert!(err.contains("exactly two segments"));
+    }
+
+    #[test]
+    fn test_qualified_constructor_pattern() {
+        let prog = parse("val x = case y of Json.JObject fields => fields | _ => []");
+        let DeclKind::Val(_, expr) = &prog.decls[0].kind else {
+            panic!("expected value declaration");
+        };
+        let ExprKind::Case(_, branches) = &expr.kind else {
+            panic!("expected case expression");
+        };
+        let (pat, _) = &branches[0];
+        match &pat.kind {
+            PatKind::Constructor(sym, Some(payload)) => {
+                assert_eq!(prog.interner.resolve(*sym), "Json.JObject");
+                assert!(matches!(payload.kind, PatKind::Var(_)));
+            }
+            other => panic!("expected qualified constructor pattern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_qualified_constructor_expr() {
+        let prog = parse("val x = Option.Some 42");
+        let DeclKind::Val(_, expr) = &prog.decls[0].kind else {
+            panic!("expected value declaration");
+        };
+        let ExprKind::App(f, arg) = &expr.kind else {
+            panic!("expected constructor application");
+        };
+        match (&f.kind, &arg.kind) {
+            (ExprKind::Constructor(sym), ExprKind::IntLit(42)) => {
+                assert_eq!(prog.interner.resolve(*sym), "Option.Some");
+            }
+            other => panic!("expected qualified constructor expr, got {other:?}"),
+        }
     }
 
     #[test]

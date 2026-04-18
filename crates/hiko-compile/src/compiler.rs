@@ -103,6 +103,10 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
         )));
     }
     for (package_name, package) in &lockfile.packages {
+        validate_package_name(
+            package_name,
+            &format!("package entry in '{}'", path.display()),
+        )?;
         if package_name.trim().is_empty() {
             return Err(CompileError::codegen(format!(
                 "package entry in '{}' has an empty name",
@@ -145,6 +149,20 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
     Ok(())
 }
 
+fn validate_package_name(package_name: &str, context: &str) -> Result<(), CompileError> {
+    if package_name.trim().is_empty() {
+        return Err(CompileError::codegen(format!(
+            "{context} has an empty package name"
+        )));
+    }
+    if package_name.starts_with("__") {
+        return Err(CompileError::codegen(format!(
+            "{context} uses reserved package name '{package_name}'; names starting with '__' are reserved"
+        )));
+    }
+    Ok(())
+}
+
 fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
     let Some((package, module)) = module_name.split_once('.') else {
         return Err(CompileError::codegen(format!(
@@ -156,6 +174,7 @@ fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
             "named import '{module_name}' must use the shape Package.Module"
         )));
     }
+    validate_package_name(package, &format!("named import '{module_name}'"))?;
     Ok((package, module))
 }
 
@@ -1791,6 +1810,48 @@ Prelude = "blake3:deadbeef"
                 assert!(message.contains("not found"));
             }
             other => panic!("expected missing module failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_reserved_package_name() {
+        match split_import_name("__Builtin.Filesystem") {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("reserved package name"));
+                assert!(message.contains("__Builtin"));
+            }
+            other => panic!("expected reserved package failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_import_rejects_reserved_package_name_in_lockfile() {
+        let project_dir = unique_temp_dir("named-import-reserved-package");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            r#"schema_version = 1
+
+[packages.__Builtin]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/__Builtin-v0.1.0"
+
+[packages.__Builtin.modules]
+Filesystem = "blake3:deadbeef"
+"#,
+        );
+        write_file(&entry_path, "val answer = 1\n");
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("reserved package name"));
+                assert!(message.contains("__Builtin"));
+            }
+            other => panic!("expected reserved package validation failure, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&project_dir).ok();

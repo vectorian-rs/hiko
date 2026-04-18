@@ -91,7 +91,7 @@ In the threaded runtime, `http_get` and `read_file` suspend the process instead 
 
 ## JSON
 
-Requires `use "stdlib/json.hml"` for typed JSON ADT (`JNull | JBool | JInt | JFloat | JStr | JArray | JObject`).
+Requires `use "libraries/Std-v0.1.0/modules/Json.hml"` for typed JSON ADT (`JNull | JBool | JInt | JFloat | JStr | JArray | JObject`).
 
 | Builtin          | Type                         | Description                           |
 | ---------------- | ---------------------------- | ------------------------------------- |

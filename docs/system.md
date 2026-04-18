@@ -26,7 +26,7 @@ hiko/
 │   ├── hiko-vm/         Stack VM, GC, builtins, config, builder
 │   ├── hiko-cli/        CLI (run, check, build-vm)
 │   └── hiko-harness/    Agentic coding tool (LLM loop, tools, config)
-├── stdlib/              list.hml, option.hml, either.hml, json.hml
+├── libraries/           Std-v0.1.0 package sources and published web-root layout
 ├── tools/               Harness tool scripts (.hml)
 ├── examples/            48 example programs
 ├── benchmarks/          Manticore-derived benchmarks
@@ -405,15 +405,15 @@ Tool metadata parsed from comment headers:
 
 Two-layer API:
 
-**Typed (via stdlib/json.hml):**
+**Typed (via libraries/Std-v0.1.0/modules/Json.hml):**
 
 ```sml
-use "stdlib/json.hml"
+use "libraries/Std-v0.1.0/modules/Json.hml"
 val data = json_parse body
 val _ = case data of
-    JObject fields => ...
-  | JArray items => ...
-  | JStr s => ...
+    Json.JObject fields => ...
+  | Json.JArray items => ...
+  | Json.JStr s => ...
 ```
 
 `json_parse` uses `serde_json` in Rust, returns the result as hiko algebraic data type values with fixed constructor tags. 5.4x faster than Python for JSON processing.

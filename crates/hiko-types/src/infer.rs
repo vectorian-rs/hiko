@@ -328,7 +328,7 @@ impl InferCtx {
                     Type::string(),
                 ),
             ),
-            // JSON (typed — requires use "stdlib/json.hml")
+            // JSON (typed — requires use "libraries/Std-v0.1.0/modules/Json.hml")
             ("json_parse", Type::arrow(Type::string(), a.clone())),
             ("json_to_string", Type::arrow(a.clone(), Type::string())),
             // JSON (string-based convenience)
@@ -2074,6 +2074,33 @@ mod tests {
             "datatype 'a option = None | Some of 'a
              fun f opt = case opt of None => 0 | Some x => x",
         );
+    }
+
+    #[test]
+    fn test_qualified_constructor_expr_and_exhaustive_case() {
+        let ctx = infer(
+            "structure Option = struct
+               datatype 'a option = None | Some of 'a
+             end
+             val result =
+               case Option.Some 41 of
+                   Option.None => 0
+                 | Option.Some x => x",
+        );
+        assert_eq!(type_of(&ctx, "result"), "int");
+    }
+
+    #[test]
+    fn test_qualified_constructor_case_non_exhaustive() {
+        let msg = infer_err(
+            "structure Option = struct
+               datatype 'a option = None | Some of 'a
+             end
+             fun unwrap opt =
+               case opt of
+                   Option.Some x => x",
+        );
+        assert!(msg.contains("non-exhaustive"), "got: {msg}");
     }
 
     #[test]
