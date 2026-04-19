@@ -1,7 +1,7 @@
 (* json_local.hml -- Parse a local JSON file, same as curl | python but no network *)
 
-use "../libraries/Std-v0.1.0/modules/Json.hml"
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.Json
+import Std.List
 
 val body = read_file "/tmp/repo_contents.json"
 

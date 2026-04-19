@@ -315,10 +315,15 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hiko_common::blake3_hex;
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::Path;
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn compile(source: &str) -> CompiledProgram {
         let tokens = Lexer::new(source, 0).tokenize().unwrap();
@@ -327,11 +332,87 @@ mod tests {
         compiled
     }
 
-    fn compile_example(path: &Path) -> CompiledProgram {
-        let source = std::fs::read_to_string(path).unwrap();
-        let tokens = Lexer::new(&source, 0).tokenize().unwrap();
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hiko-runtime-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn spawn_single_response_server(
+        expected_path: &'static str,
+        body: String,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request);
+            let request_line = String::from_utf8_lossy(&request);
+            let path = request_line
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let (status, response_body) = if path == expected_path {
+                ("200 OK", body)
+            } else {
+                ("404 Not Found", "not found".to_string())
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        (format!("http://{addr}{expected_path}"), handle)
+    }
+
+    fn compile_example_with_std_lockfile(path: &Path) -> CompiledProgram {
+        let source = std::fs::read_to_string(path).expect("read example source");
+        let list_module_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../libraries/Std-v0.1.0/modules/List.hml");
+        let list_module_source =
+            std::fs::read_to_string(&list_module_path).expect("read Std.List source");
+        let list_module_hash = blake3_hex(list_module_source.as_bytes());
+        let (list_url, server) =
+            spawn_single_response_server("/modules/List.hml", list_module_source);
+        let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
+
+        let project_dir = unique_temp_dir("spawn-stress-example");
+        let entry_path = project_dir.join(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .expect("example filename"),
+        );
+        std::fs::write(
+            project_dir.join("hiko.lock.toml"),
+            format!(
+                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{list_module_hash}\"\n"
+            ),
+        )
+        .expect("write lockfile");
+        std::fs::write(&entry_path, source).expect("write copied example");
+
+        let tokens = Lexer::new(
+            &std::fs::read_to_string(&entry_path).expect("read copied example"),
+            0,
+        )
+        .tokenize()
+        .unwrap();
         let program = Parser::new(tokens).parse_program().unwrap();
-        let (compiled, _) = Compiler::compile_file(program, path).unwrap();
+        let (compiled, _) = Compiler::compile_file(program, &entry_path).unwrap();
+
+        server.join().expect("join module server");
+        std::fs::remove_dir_all(&project_dir).ok();
         compiled
     }
 
@@ -458,7 +539,7 @@ mod tests {
     #[test]
     fn test_spawn_stress_example() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/spawn_stress.hml");
-        let program = compile_example(&path);
+        let program = compile_example_with_std_lockfile(&path);
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -470,7 +551,7 @@ mod tests {
     #[test]
     fn test_spawn_stress_example_verifies() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/spawn_stress.hml");
-        let program = compile_example(&path);
+        let program = compile_example_with_std_lockfile(&path);
         if let Err(err) = VM::try_new(program) {
             panic!("verifier rejected spawn_stress example: {err}");
         }

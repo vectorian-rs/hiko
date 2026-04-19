@@ -1,2 +1,2 @@
-use "cycle_a.hml"
+use "./cycle_a.hml"
 val b = 2

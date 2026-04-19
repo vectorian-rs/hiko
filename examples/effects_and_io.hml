@@ -7,8 +7,8 @@
  * This example shows how effects and I/O compose naturally.
  *)
 
-use "../libraries/Std-v0.1.0/modules/Json.hml"
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.Json
+import Std.List
 
 (* ── Effect: safe error handling around I/O ─────────────── *)
 

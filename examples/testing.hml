@@ -1,6 +1,6 @@
 (* testing.hml -- unit testing with assert, assert_eq, and effects *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 (* ── Basic assertions ─────────────────────────────────────────────── *)
 
@@ -38,7 +38,7 @@ val _ = assert_eq (area (Rect (3, 4)), 12, "rect area")
 
 (* ── JSON round-trip ──────────────────────────────────────────────── *)
 
-use "../libraries/Std-v0.1.0/modules/Json.hml"
+import Std.Json
 
 val original = "{\"name\":\"test\",\"value\":42}"
 val parsed = json_parse original

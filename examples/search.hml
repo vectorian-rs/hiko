@@ -1,6 +1,6 @@
 (* search.hml -- Demonstrates glob, walk_dir, regex_match, regex_replace *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 (* Glob: find all .hml files in examples/ *)
 val hml_files = glob "examples/*.hml"

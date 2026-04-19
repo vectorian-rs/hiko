@@ -1,6 +1,6 @@
 (* regex_demo.hml -- Regular expression matching and replacement *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 (* Simple matching *)
 val _ = println "=== Regex match ==="

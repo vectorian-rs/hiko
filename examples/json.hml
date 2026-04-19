@@ -1,6 +1,6 @@
 (* json.hml -- Demonstrates JSON builtins *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com/vectorian-rs/hiko\", \"stars\": 42}}"
 

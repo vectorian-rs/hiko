@@ -1,7 +1,7 @@
 (* json_api.hml -- Typed JSON with pattern matching *)
 
-use "../libraries/Std-v0.1.0/modules/Json.hml"
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.Json
+import Std.List
 
 (* Build JSON programmatically *)
 val config = Json.JObject [

@@ -1,4 +1,4 @@
-use "math.hml"
-use "math.hml"
+use "./math.hml"
+use "./math.hml"
 
 val _ = println (int_to_string (square 3))

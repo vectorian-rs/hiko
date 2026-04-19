@@ -4,7 +4,7 @@
  * With: glob + read + regex + fold — type-checked, no shell
  *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 (* Count all function definitions across all Rust files *)
 val rs_files = glob "crates/**/*.rs"

@@ -9,7 +9,7 @@
  * root process builds and traverses one large pid list.
  *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 val count = 6000
 

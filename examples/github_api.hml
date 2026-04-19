@@ -3,8 +3,8 @@
  * With: http_get + json_parse, no shell, no python
  *)
 
-use "../libraries/Std-v0.1.0/modules/Json.hml"
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.Json
+import Std.List
 
 val (status, _, body) = http_get "https://api.github.com/repos/vectorian-rs/hiko/contents/"
 

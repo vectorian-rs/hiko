@@ -1,5 +1,5 @@
-use "../libraries/Std-v0.1.0/modules/Filesystem.hml"
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.Filesystem
+import Std.List
 
 (* Hash a single file *)
 fun hash_file path =

@@ -1,6 +1,6 @@
 (* glob_walk.hml -- File discovery with glob patterns and recursive walk *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 (* Find all Rust source files *)
 val _ = println "=== Rust files in crates/ ==="

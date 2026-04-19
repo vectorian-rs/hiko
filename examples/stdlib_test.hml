@@ -1,4 +1,4 @@
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
 
 val nums = [1, 2, 3, 4, 5]
 val sum = List.foldl (fn (acc, x) => acc + x) 0 nums
