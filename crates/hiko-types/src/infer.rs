@@ -82,11 +82,6 @@ impl InferCtx {
         };
         ctx.type_arities.insert("list".into(), 1);
         // Register runtime builtins
-        // 'a type variable for polymorphic builtins
-        let a_var = ctx.next_var;
-        ctx.next_var += 1;
-        let a = Type::Var(a_var);
-
         let builtins: &[(&str, Type)] = &[
             // I/O
             ("print", Type::arrow(Type::string(), Type::unit())),
@@ -195,39 +190,6 @@ impl InferCtx {
                 ),
             ),
             (
-                "http_json",
-                Type::arrow(
-                    Type::Tuple(vec![
-                        Type::string(),
-                        Type::string(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::string(),
-                    ]),
-                    Type::Tuple(vec![
-                        Type::int(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        a.clone(),
-                    ]),
-                ),
-            ),
-            (
-                "http_msgpack",
-                Type::arrow(
-                    Type::Tuple(vec![
-                        Type::string(),
-                        Type::string(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::string(),
-                    ]),
-                    Type::Tuple(vec![
-                        Type::int(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        a.clone(),
-                    ]),
-                ),
-            ),
-            // HTTP bytes
-            (
                 "http_bytes",
                 Type::arrow(
                     Type::Tuple(vec![
@@ -328,9 +290,6 @@ impl InferCtx {
                     Type::string(),
                 ),
             ),
-            // JSON (typed — requires use "libraries/Std-v0.1.0/modules/Json.hml")
-            ("json_parse", Type::arrow(Type::string(), a.clone())),
-            ("json_to_string", Type::arrow(a.clone(), Type::string())),
             // JSON (string-based convenience)
             (
                 "json_get",
@@ -487,13 +446,7 @@ impl InferCtx {
             ),
             // System
             // Process operations
-            (
-                "spawn",
-                Type::arrow(Type::arrow(Type::unit(), a.clone()), Type::pid()),
-            ),
-            ("await_process", Type::arrow(Type::pid(), a.clone())),
             ("exit", Type::arrow(Type::int(), Type::unit())),
-            ("panic", Type::arrow(Type::string(), a.clone())),
             // Testing
             (
                 "assert",
@@ -502,18 +455,70 @@ impl InferCtx {
                     Type::unit(),
                 ),
             ),
-            (
-                "assert_eq",
-                Type::arrow(
-                    Type::Tuple(vec![a.clone(), a, Type::string()]),
-                    Type::unit(),
-                ),
-            ),
         ];
         for &(name, ref ty) in builtins {
             ctx.bind(name.to_string(), Scheme::mono(ty.clone()));
         }
+        ctx.bind_poly_builtin("http_json", |a| {
+            Type::arrow(
+                Type::Tuple(vec![
+                    Type::string(),
+                    Type::string(),
+                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                    Type::string(),
+                ]),
+                Type::Tuple(vec![
+                    Type::int(),
+                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                    a,
+                ]),
+            )
+        });
+        ctx.bind_poly_builtin("http_msgpack", |a| {
+            Type::arrow(
+                Type::Tuple(vec![
+                    Type::string(),
+                    Type::string(),
+                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                    Type::string(),
+                ]),
+                Type::Tuple(vec![
+                    Type::int(),
+                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
+                    a,
+                ]),
+            )
+        });
+        ctx.bind_poly_builtin("json_parse", |a| Type::arrow(Type::string(), a));
+        ctx.bind_poly_builtin("json_to_string", |a| Type::arrow(a, Type::string()));
+        ctx.bind_poly_builtin("spawn", |a| {
+            Type::arrow(Type::arrow(Type::unit(), a), Type::pid())
+        });
+        ctx.bind_poly_builtin("await_process", |a| Type::arrow(Type::pid(), a));
+        ctx.bind_poly_builtin("panic", |a| Type::arrow(Type::string(), a));
+        ctx.bind_poly_builtin("assert_eq", |a| {
+            Type::arrow(
+                Type::Tuple(vec![a.clone(), a, Type::string()]),
+                Type::unit(),
+            )
+        });
         ctx
+    }
+
+    fn bind_poly_builtin<F>(&mut self, name: &str, build: F)
+    where
+        F: FnOnce(Type) -> Type,
+    {
+        let var = self.next_var;
+        self.next_var += 1;
+        let ty = build(Type::Var(var));
+        self.bind(
+            name.to_string(),
+            Scheme {
+                vars: vec![var],
+                ty,
+            },
+        );
     }
 
     // ── Fresh variables ──────────────────────────────────────────────
@@ -2150,6 +2155,37 @@ mod tests {
     fn test_await_process_rejects_int() {
         let msg = infer_err("val x = await_process 123");
         assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_panic_instantiates_per_call_site() {
+        let ctx = infer(
+            "datatype 'a option = None | Some of 'a
+             val n = case Some 1 of Some x => x | None => panic \"missing int\"
+             val b = case Some true of Some x => x | None => panic \"missing bool\"",
+        );
+        assert_eq!(type_of(&ctx, "n"), "int");
+        assert_eq!(type_of(&ctx, "b"), "bool");
+    }
+
+    #[test]
+    fn test_assert_eq_instantiates_per_call_site() {
+        let ctx = infer(
+            r#"val int_check = assert_eq (1, 1, "int")
+               val bool_check = assert_eq (true, true, "bool")"#,
+        );
+        assert_eq!(type_of(&ctx, "int_check"), "unit");
+        assert_eq!(type_of(&ctx, "bool_check"), "unit");
+    }
+
+    #[test]
+    fn test_await_process_instantiates_per_call_site() {
+        let ctx = infer(
+            "fun wait_int p = await_process p + 1
+             fun wait_bool p = if await_process p then 1 else 0",
+        );
+        assert_eq!(type_of(&ctx, "wait_int"), "pid -> int");
+        assert_eq!(type_of(&ctx, "wait_bool"), "pid -> int");
     }
 
     // ── Exhaustiveness checking ──────────────────────────────────────

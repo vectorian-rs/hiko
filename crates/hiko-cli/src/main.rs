@@ -169,6 +169,62 @@ struct StrictViolation {
     span: Option<Span>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManifestSource {
+    ExplicitConfig,
+    AutoDiscovered,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedPolicy {
+    manifest_path: PathBuf,
+    manifest_source: ManifestSource,
+    policy_name: String,
+    policy_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeSurface {
+    CoreOnly,
+    Policy(ResolvedPolicy),
+}
+
+impl ResolvedPolicy {
+    fn source_label(&self) -> &'static str {
+        match self.manifest_source {
+            ManifestSource::ExplicitConfig => "--config",
+            ManifestSource::AutoDiscovered => "auto-discovered hiko.toml",
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "using policy '{}' from '{}' (manifest: '{}', source: {})",
+            self.policy_name,
+            self.policy_path.display(),
+            self.manifest_path.display(),
+            self.source_label()
+        )
+    }
+
+    fn error_context(&self) -> String {
+        format!(
+            "policy '{}' from '{}'",
+            self.policy_name,
+            self.policy_path.display()
+        )
+    }
+}
+
+impl RuntimeSurface {
+    fn describe(&self) -> String {
+        match self {
+            Self::CoreOnly => "using core-only runtime surface (no hiko.toml resolved)".to_string(),
+            Self::Policy(policy) => policy.describe(),
+        }
+    }
+}
+
 fn compile_source(path: &str) -> Result<Compiled, ()> {
     let source = fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("error: cannot read {path}: {e}");
@@ -209,8 +265,11 @@ fn compile_source(path: &str) -> Result<Compiled, ()> {
     }
 }
 
-fn load_policy_config(policy_path: &str) -> RunConfig {
-    load_run_config(policy_path, "policy")
+fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
+    load_run_config(
+        &policy.policy_path.to_string_lossy(),
+        &format!("policy '{}'", policy.policy_name),
+    )
 }
 
 fn load_run_config(config_path: &str, label: &str) -> RunConfig {
@@ -254,10 +313,10 @@ fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
     toml::from_str(&toml).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
 }
 
-fn resolve_policy_config_path_from(
+fn resolve_policy_from_manifest(
     manifest_path: &Path,
     policy_name: Option<&str>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<ResolvedPolicy, String> {
     let manifest = load_project_manifest(manifest_path)?;
     let selected = if let Some(policy_name) = policy_name {
         policy_name.to_string()
@@ -282,30 +341,37 @@ fn resolve_policy_config_path_from(
     })?;
 
     let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    Ok(Some(root.join(&policy.path)))
+    Ok(ResolvedPolicy {
+        manifest_path: manifest_path.to_path_buf(),
+        manifest_source: ManifestSource::AutoDiscovered,
+        policy_name: selected,
+        policy_path: root.join(&policy.path),
+    })
 }
 
-fn resolve_policy_path(options: &ScriptOptions) -> Option<String> {
+fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
     let cwd = env::current_dir().unwrap_or_else(|e| {
         eprintln!("Cannot determine current working directory: {e}");
         process::exit(1);
     });
 
-    let manifest_path = if let Some(config_path) = &options.config_path {
-        PathBuf::from(config_path)
+    let (manifest_path, manifest_source) = if let Some(config_path) = &options.config_path {
+        (PathBuf::from(config_path), ManifestSource::ExplicitConfig)
     } else if let Some(path) = find_project_manifest_from(&cwd) {
-        path
+        (path, ManifestSource::AutoDiscovered)
     } else {
         if let Some(policy_name) = &options.policy_name {
             eprintln!("No hiko.toml found while resolving policy '{policy_name}'");
             process::exit(1);
         }
-        return None;
+        return RuntimeSurface::CoreOnly;
     };
 
-    match resolve_policy_config_path_from(&manifest_path, options.policy_name.as_deref()) {
-        Ok(Some(path)) => Some(path.to_string_lossy().into_owned()),
-        Ok(None) => None,
+    match resolve_policy_from_manifest(&manifest_path, options.policy_name.as_deref()) {
+        Ok(mut policy) => {
+            policy.manifest_source = manifest_source;
+            RuntimeSurface::Policy(policy)
+        }
         Err(err) => {
             eprintln!("{err}");
             process::exit(1);
@@ -596,36 +662,88 @@ fn validate_strict_surface(
     }
 }
 
-fn strict_message(violation: &StrictViolation, has_config: bool) -> String {
+fn strict_message(violation: &StrictViolation, surface: &RuntimeSurface) -> String {
     if let Some(path) = violation.capability_path {
-        if has_config {
-            format!(
-                "builtin '{}' is not enabled by this run config (enable [{}])",
+        match surface {
+            RuntimeSurface::CoreOnly => format!(
+                "builtin '{}' is not available in the core-only runtime surface (layer: VMBuilder::with_core; pass --config and enable [{}])",
                 violation.builtin, path
-            )
-        } else {
-            format!(
-                "builtin '{}' is not available in the default core-only run surface (supply --config and enable [{}])",
-                violation.builtin, path
-            )
+            ),
+            RuntimeSurface::Policy(policy) => format!(
+                "builtin '{}' is not enabled by the active policy (layer: RunConfig::build_vm; {}; enable [{}])",
+                violation.builtin,
+                policy.error_context(),
+                path
+            ),
         }
     } else if builtin_meta(&violation.builtin)
         .is_some_and(|meta| meta.surface == BuiltinSurface::RuntimeOnly)
     {
-        format!(
-            "builtin '{}' is runtime-only and not part of the public run-config surface",
-            violation.builtin
-        )
+        match surface {
+            RuntimeSurface::CoreOnly => format!(
+                "builtin '{}' is runtime-only and not part of the public core-only surface (layer: internal builtin alias)",
+                violation.builtin
+            ),
+            RuntimeSurface::Policy(policy) => format!(
+                "builtin '{}' is runtime-only and not part of the public run-config surface (layer: internal builtin alias; {})",
+                violation.builtin,
+                policy.error_context()
+            ),
+        }
     } else {
         violation.builtin.clone()
     }
 }
 
+fn runtime_error_message(message: &str, surface: &RuntimeSurface) -> String {
+    let Some(name) = message.strip_prefix("undefined global: ") else {
+        return message.to_string();
+    };
+    let Some(meta) = builtin_meta(name) else {
+        return message.to_string();
+    };
+
+    if let Some(path) = meta.capability_path {
+        return match surface {
+            RuntimeSurface::CoreOnly => format!(
+                "builtin '{}' was not registered in the core-only VM (layer: VMBuilder::with_core; pass --config and enable [{}])",
+                name, path
+            ),
+            RuntimeSurface::Policy(policy) => format!(
+                "builtin '{}' was not registered by the active policy-filtered VM (layer: RunConfig::build_vm; {}; enable [{}])",
+                name,
+                policy.error_context(),
+                path
+            ),
+        };
+    }
+
+    if meta.surface == BuiltinSurface::RuntimeOnly {
+        return match surface {
+            RuntimeSurface::CoreOnly => format!(
+                "runtime builtin '{}' was not registered in the core-only VM (layer: internal builtin alias / VMBuilder::with_core)",
+                name
+            ),
+            RuntimeSurface::Policy(policy) => format!(
+                "runtime builtin '{}' was not registered by the active policy-filtered VM (layer: internal builtin alias / RunConfig::build_vm; {}). This usually means the supporting public capability family is missing from the active policy.",
+                name,
+                policy.error_context()
+            ),
+        };
+    }
+
+    message.to_string()
+}
+
 // ── Commands ─────────────────────────────────────────────────────────
 
 fn run_file(options: &ScriptOptions) {
-    let policy_path = resolve_policy_path(options);
-    let config = policy_path.as_deref().map(load_policy_config);
+    let surface = resolve_runtime_surface(options);
+    eprintln!("info: {}", surface.describe());
+    let config = match &surface {
+        RuntimeSurface::CoreOnly => None,
+        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
+    };
     let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
     let compiled = match compile_source(&path) {
         Ok(c) => c,
@@ -642,7 +760,7 @@ fn run_file(options: &ScriptOptions) {
         for violation in &violations {
             compiled
                 .ctx
-                .error(&strict_message(violation, config.is_some()), violation.span);
+                .error(&strict_message(violation, &surface), violation.span);
         }
         process::exit(1);
     }
@@ -656,13 +774,16 @@ fn run_file(options: &ScriptOptions) {
     match vm.run() {
         Ok(()) => {}
         Err(e) => {
-            compiled.ctx.error(&e.message, vm.error_span());
+            let message = runtime_error_message(&e.message, &surface);
+            compiled.ctx.error(&message, vm.error_span());
             process::exit(1);
         }
     }
 }
 
 fn check_file(options: &ScriptOptions) {
+    let surface = resolve_runtime_surface(options);
+    eprintln!("info: {}", surface.describe());
     let path = options
         .script_path
         .as_deref()
@@ -676,15 +797,17 @@ fn check_file(options: &ScriptOptions) {
         compiled.ctx.warning(&w.message, Some(w.span));
     }
 
-    let policy_path = resolve_policy_path(options);
-    let config = policy_path.as_deref().map(load_policy_config);
+    let config = match &surface {
+        RuntimeSurface::CoreOnly => None,
+        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
+    };
     if options.strict
         && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
     {
         for violation in &violations {
             compiled
                 .ctx
-                .error(&strict_message(violation, config.is_some()), violation.span);
+                .error(&strict_message(violation, &surface), violation.span);
         }
         process::exit(1);
     }
@@ -744,9 +867,9 @@ hiko-vm = "{version}"
 #[cfg(test)]
 mod tests {
     use super::{
-        Compiled, DiagCtx, ScriptOptions, parse_check_args, parse_run_args,
-        resolve_policy_config_path_from, resolve_run_target, strict_violations,
-        validate_strict_surface,
+        Compiled, DiagCtx, ManifestSource, ResolvedPolicy, RuntimeSurface, ScriptOptions,
+        parse_check_args, parse_run_args, resolve_policy_from_manifest, resolve_run_target,
+        runtime_error_message, strict_message, strict_violations, validate_strict_surface,
     };
     use hiko_builtin_meta::core_builtin_names;
     use hiko_compile::compiler::Compiler;
@@ -972,7 +1095,7 @@ enabled = true
     }
 
     #[test]
-    fn resolve_policy_path_from_manifest_default_policy() {
+    fn resolve_policy_from_manifest_default_policy() {
         let root = temp_dir("manifest-default-policy");
         fs::create_dir_all(root.join("policies")).unwrap();
         let manifest = root.join("hiko.toml");
@@ -992,16 +1115,16 @@ path = "policies/user.toml"
         .unwrap();
         fs::write(root.join("policies/user.toml"), "").unwrap();
 
-        let resolved = resolve_policy_config_path_from(&manifest, None)
-            .expect("manifest resolution should succeed")
-            .expect("should resolve default policy");
-        assert_eq!(resolved, root.join("policies/user.toml"));
+        let resolved = resolve_policy_from_manifest(&manifest, None)
+            .expect("manifest resolution should succeed");
+        assert_eq!(resolved.policy_name, "software-developer-role");
+        assert_eq!(resolved.policy_path, root.join("policies/user.toml"));
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn resolve_policy_path_from_manifest_named_policy() {
+    fn resolve_policy_from_manifest_named_policy() {
         let root = temp_dir("manifest-named-policy");
         fs::create_dir_all(root.join("policies")).unwrap();
         let manifest = root.join("hiko.toml");
@@ -1025,16 +1148,16 @@ path = "policies/agent.toml"
         fs::write(root.join("policies/user.toml"), "").unwrap();
         fs::write(root.join("policies/agent.toml"), "").unwrap();
 
-        let resolved = resolve_policy_config_path_from(&manifest, Some("docs-writer"))
-            .expect("manifest resolution should succeed")
-            .expect("should resolve named policy");
-        assert_eq!(resolved, root.join("policies/agent.toml"));
+        let resolved = resolve_policy_from_manifest(&manifest, Some("docs-writer"))
+            .expect("manifest resolution should succeed");
+        assert_eq!(resolved.policy_name, "docs-writer");
+        assert_eq!(resolved.policy_path, root.join("policies/agent.toml"));
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn resolve_policy_path_from_manifest_without_default_errors() {
+    fn resolve_policy_from_manifest_without_default_errors() {
         let root = temp_dir("manifest-no-default");
         let manifest = root.join("hiko.toml");
         fs::write(
@@ -1046,10 +1169,36 @@ name = "demo"
         )
         .unwrap();
 
-        let err = resolve_policy_config_path_from(&manifest, None)
+        let err = resolve_policy_from_manifest(&manifest, None)
             .expect_err("manifest without default should require explicit --policy");
         assert!(err.contains("defaults.policy"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn strict_message_includes_layer_and_policy_context() {
+        let violation = super::StrictViolation {
+            builtin: "exec".to_string(),
+            capability_path: Some("capabilities.exec.exec"),
+            span: None,
+        };
+        let surface = RuntimeSurface::Policy(ResolvedPolicy {
+            manifest_path: PathBuf::from("/tmp/hiko.toml"),
+            manifest_source: ManifestSource::ExplicitConfig,
+            policy_name: "dev".to_string(),
+            policy_path: PathBuf::from("/tmp/policies/dev.toml"),
+        });
+        let message = strict_message(&violation, &surface);
+        assert!(message.contains("RunConfig::build_vm"), "got: {message}");
+        assert!(message.contains("policy 'dev'"), "got: {message}");
+        assert!(message.contains("capabilities.exec.exec"), "got: {message}");
+    }
+
+    #[test]
+    fn runtime_error_message_explains_core_only_surface() {
+        let message = runtime_error_message("undefined global: exec", &RuntimeSurface::CoreOnly);
+        assert!(message.contains("VMBuilder::with_core"), "got: {message}");
+        assert!(message.contains("capabilities.exec.exec"), "got: {message}");
     }
 }

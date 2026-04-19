@@ -4,7 +4,7 @@
 
 Asynchronous programming is often split between two unsatisfying approaches. Future- and callback-based systems impose function coloring and make direct-style code harder to preserve. Shared-heap effect runtimes recover direct style, but push substantial complexity into scheduling, memory management, and synchronization. Hiko explores a different point in the design space: local algebraic effects for intra-process control flow, combined with an isolated-process runtime with per-process heaps, explicit process-boundary transfer, and host-provided capabilities.
 
-The central claim is narrow but important: algebraic effects do not require a shared-heap runtime. Effects can remain local to a process, while asynchronous I/O and external capabilities are handled by a fixed runtime suspension protocol. This produces a system with direct-style scripting inside each process, explicit ownership boundaries between processes, local garbage collection, and a runtime model that is easier to reason about for safety-oriented tooling.
+The contribution is not the claim that algebraic effects in isolation are novel outside a shared heap. The interesting claim is the combination: local effects stay process-local, asynchronous I/O is mediated by a fixed host runtime protocol, heaps remain isolated per process, and capabilities stay host-owned. This produces direct-style scripting inside each process, explicit ownership boundaries between processes, local garbage collection, and a runtime model that is easier to reason about for safety-oriented tooling.
 
 ## 1. Introduction
 
@@ -25,9 +25,11 @@ The answer proposed here is yes. Hiko combines:
 
 The result is not a programmable scheduler or a general-purpose user-defined concurrency framework. It is a fixed runtime model designed for safe orchestration of external work.
 
+The research claim should therefore be read as a compositional one: Hiko is interesting because of how these ingredients are arranged together, not because any single ingredient is independently unprecedented.
+
 ### Contributions
 
-- A language/runtime design that separates local algebraic effects from runtime-managed asynchronous suspension.
+- A language/runtime design that separates local algebraic effects from runtime-managed asynchronous suspension while keeping capability enforcement and scheduling in the host runtime.
 - An isolated-process execution model with per-process heaps and local garbage collection.
 - A process-boundary transfer model based on `SendableValue`, including shared immutable leaf payloads for strings and bytes.
 - A capability-oriented runtime architecture suitable for safe tooling and agentic coding workloads.

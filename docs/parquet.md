@@ -84,7 +84,8 @@ val rows = Parquet.head t 5
 
 ## Why `row = (string * value) list`
 
-Hiko does not currently need records for this use case.
+The first Parquet surface uses association-list rows because records are not
+available yet, not because records would be the wrong abstraction here.
 
 An association-list row:
 
@@ -100,6 +101,10 @@ is enough for:
 - nested struct rendering
 
 This keeps the first design compatible with Hiko's current datatype-oriented style.
+
+Once records land, they should become the preferred surface for structured row
+inspection. Records now sit ahead of mutable state on the roadmap precisely
+because APIs like this are already paying tuple/alist ceremony costs.
 
 ## Schema Representation
 

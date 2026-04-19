@@ -11,7 +11,7 @@ Hiko implements **Core SML**, the core language of Standard ML as defined in the
 
 The implementation target is a bytecode VM written in Rust, designed for scripting use cases where startup time, simplicity, and embeddability matter.
 
-v0 implements the functional nucleus of Core SML first. Some Core SML features (records, `ref`, exceptions, equality types, and full derived forms) are staged into later phases, not because they are unimportant, but because the functional nucleus must be correct before they are layered on. A small number of non-SML conveniences are added for tooling, most notably monomorphic operator names and a simple file-loading mechanism.
+v0 implements the functional nucleus of Core SML first. Some Core SML features (records, `ref`, equality types, and full derived forms) are staged into later phases, not because they are unimportant, but because the functional nucleus must be correct before they are layered on. Records now move ahead of mutable state in the roadmap because they pay down real API and data-shaping pressure for scripting workloads sooner. Exceptions are intentionally out of scope; Hiko prefers `Result`-style values and effect-based control flow over a separate exception subsystem. A small number of non-SML conveniences are added for tooling, most notably monomorphic operator names and a simple file-loading mechanism.
 
 v0 prioritizes semantic correctness over Basis compatibility, optimization, and advanced abstraction mechanisms.
 
@@ -42,9 +42,8 @@ These are part of Core SML but excluded from v0. Each is a deliberate staging de
 
 | Feature                       | SML core behavior                            | Target      | Why deferred                                                                                                                 |
 | ----------------------------- | -------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Records**                   | Structural record types, `#label` projection | Phase 6     | Row typing or restricted records add significant unification complexity; tuples are sufficient to bootstrap                  |
+| **Records**                   | Structural record types, `#label` projection | Phase 5     | Records pay down API ceremony for structured data and should land before mutable state or exceptions                         |
 | **`ref` / mutable state**     | `ref`, `:=`, `!`                             | Phase 6     | A pure functional core is simpler to verify; `ref` interacts with the value restriction and requires mutable cells in the VM |
-| **Exceptions**                | `exception`, `raise`, `handle`               | Phase 6     | Exceptions require a separate control-flow mechanism in the VM                                                               |
 | **Equality types**            | `''a` equality type variables, `eqtype`      | Phase 7     | Requires a parallel kind system for type variables; see §6 for the v0 equality policy                                        |
 | **Mutual datatype recursion** | `datatype t1 = ... and t2 = ...`             | Phase 6     | Single-datatype recursion is sufficient for v0; mutual recursion adds complexity to datatype environment setup               |
 | **Full derived forms**        | `while`, sequencing, etc.                    | Incremental | Added as needed; `if`/`case`/`let` cover v0                                                                                  |
@@ -55,6 +54,7 @@ These are part of Core SML but excluded from v0. Each is a deliberate staging de
 | ------------------------ | ----------------------------------- | ---------------------------------------------------------------------- |
 | **Overloaded operators** | `+` works on int, word, real        | Replaced by monomorphic operator names (see §2.3)                      |
 | **`abstype`**            | Abstract types in the core language | Effectively dead in SML practice; subsumed by opaque module ascription |
+| **Exceptions**           | `exception`, `raise`, `handle`      | Hiko prefers `Result`-style values and effect-based control flow instead of a separate exception subsystem |
 | **Full Basis Library**   | Standard Basis                      | Enormous and module-dependent; Hiko provides its own small stdlib      |
 
 ### 2.3 Non-SML divergences in v0
