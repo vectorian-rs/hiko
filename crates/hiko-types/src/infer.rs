@@ -362,10 +362,114 @@ impl InferCtx {
             ),
             ("to_upper", Type::arrow(Type::string(), Type::string())),
             ("to_lower", Type::arrow(Type::string(), Type::string())),
+            #[cfg(feature = "builtin-time")]
             ("epoch", Type::arrow(Type::unit(), Type::int())),
+            #[cfg(feature = "builtin-time")]
             ("epoch_ms", Type::arrow(Type::unit(), Type::int())),
+            #[cfg(feature = "builtin-time")]
             ("monotonic_ms", Type::arrow(Type::unit(), Type::int())),
+            #[cfg(feature = "builtin-time")]
             ("sleep", Type::arrow(Type::int(), Type::unit())),
+            #[cfg(feature = "builtin-time")]
+            ("date_utc_tz", Type::arrow(Type::unit(), Type::string())),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_local_tz",
+                Type::arrow(
+                    Type::unit(),
+                    Type::Tuple(vec![Type::bool(), Type::string()]),
+                ),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_timezone_of",
+                Type::arrow(
+                    Type::string(),
+                    Type::Tuple(vec![Type::bool(), Type::string()]),
+                ),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_fixed_offset",
+                Type::arrow(Type::int(), Type::string()),
+            ),
+            #[cfg(feature = "builtin-time")]
+            ("date_utc_now", Type::arrow(Type::unit(), Type::string())),
+            #[cfg(feature = "builtin-time")]
+            ("date_now_in", Type::arrow(Type::string(), Type::string())),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_from_instant",
+                Type::arrow(
+                    Type::Tuple(vec![Type::int(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
+            #[cfg(feature = "builtin-time")]
+            ("date_to_epoch_ms", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_to_timezone",
+                Type::arrow(Type::string(), Type::string()),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_in_timezone",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
+            #[cfg(feature = "builtin-time")]
+            ("date_year", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_month", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_day", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_hour", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_minute", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_second", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_millisecond", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            ("date_weekday", Type::arrow(Type::string(), Type::int())),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_to_rfc3339",
+                Type::arrow(Type::string(), Type::string()),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_to_rfc2822",
+                Type::arrow(Type::string(), Type::string()),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_format",
+                Type::arrow(
+                    Type::Tuple(vec![Type::string(), Type::string()]),
+                    Type::string(),
+                ),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_parse_rfc3339",
+                Type::arrow(
+                    Type::string(),
+                    Type::Tuple(vec![Type::bool(), Type::string()]),
+                ),
+            ),
+            #[cfg(feature = "builtin-time")]
+            (
+                "date_parse_rfc9557",
+                Type::arrow(
+                    Type::string(),
+                    Type::Tuple(vec![Type::bool(), Type::string()]),
+                ),
+            ),
             (
                 "string_join",
                 Type::arrow(

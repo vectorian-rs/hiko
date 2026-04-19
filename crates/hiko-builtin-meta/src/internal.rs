@@ -84,6 +84,33 @@ const TIME_SOURCE: &str = r#"structure BuiltinTime = struct
 end
 "#;
 
+const DATE_SOURCE: &str = r#"structure BuiltinDate = struct
+  val utc_tz_raw = date_utc_tz
+  val local_tz_raw = date_local_tz
+  val timezone_of_raw = date_timezone_of
+  val fixed_offset_raw = date_fixed_offset
+  val utc_now_raw = date_utc_now
+  val now_in_raw = date_now_in
+  val from_instant_raw = date_from_instant
+  val to_epoch_ms_raw = date_to_epoch_ms
+  val to_timezone_raw = date_to_timezone
+  val in_timezone_raw = date_in_timezone
+  val year_raw = date_year
+  val month_raw = date_month
+  val day_raw = date_day
+  val hour_raw = date_hour
+  val minute_raw = date_minute
+  val second_raw = date_second
+  val millisecond_raw = date_millisecond
+  val weekday_raw = date_weekday
+  val to_rfc3339_raw = date_to_rfc3339
+  val to_rfc2822_raw = date_to_rfc2822
+  val format_raw = date_format
+  val parse_rfc3339_raw = date_parse_rfc3339
+  val parse_rfc9557_raw = date_parse_rfc9557
+end
+"#;
+
 const MODULES: &[InternalBuiltinModule] = &[
     InternalBuiltinModule {
         leaf_name: "Filesystem",
@@ -154,6 +181,13 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-time",
         enabled: cfg!(feature = "builtin-time"),
         source: TIME_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Date",
+        import_name: "__Builtin.Date",
+        feature_name: "builtin-time",
+        enabled: cfg!(feature = "builtin-time"),
+        source: DATE_SOURCE,
     },
 ];
 

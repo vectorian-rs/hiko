@@ -1,0 +1,63 @@
+import Std.Option
+import __Builtin.Time
+
+structure Time = struct
+  datatype instant = Instant of int
+  datatype monotonic = Monotonic of int
+  datatype duration = Dur of int
+
+  fun now () =
+    Instant (BuiltinTime.epoch_ms_raw ())
+
+  fun monotonic_now () =
+    Monotonic (BuiltinTime.monotonic_ms_raw ())
+
+  fun from_ms n =
+    if n < 0 then panic "Time.from_ms: negative duration"
+    else Dur n
+
+  fun from_s n =
+    from_ms (n * 1000)
+
+  fun to_epoch_ms (Instant n) = n
+
+  fun of_epoch_ms n =
+    Instant n
+
+  fun diff (Instant later, Instant earlier) =
+    let
+      val d = Dur (later - earlier)
+    in
+      if later >= earlier then Option.Some d
+      else Option.None
+    end
+
+  fun shift (Instant instant_ms, Dur duration_ms) =
+    Instant (instant_ms + duration_ms)
+
+  fun elapsed (Monotonic earlier, Monotonic later) =
+    let
+      val d = Dur (later - earlier)
+    in
+      if later >= earlier then Option.Some d
+      else Option.None
+    end
+
+  fun to_ms (Dur n) = n
+
+  fun to_s (Dur n) = n / 1000
+
+  fun add_duration (Dur a, Dur b) =
+    Dur (a + b)
+
+  fun sub_duration (Dur a, Dur b) =
+    let
+      val d = Dur (a - b)
+    in
+      if a >= b then Option.Some d
+      else Option.None
+    end
+
+  fun sleep (Dur ms) =
+    BuiltinTime.sleep_raw ms
+end

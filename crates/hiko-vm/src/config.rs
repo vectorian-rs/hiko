@@ -291,6 +291,32 @@ enabled_family!(TimeCapabilities {
     sleep => "sleep",
 });
 
+enabled_family!(DateCapabilities {
+    utc_tz => "date_utc_tz",
+    local_tz => "date_local_tz",
+    timezone_of => "date_timezone_of",
+    fixed_offset => "date_fixed_offset",
+    utc_now => "date_utc_now",
+    now_in => "date_now_in",
+    from_instant => "date_from_instant",
+    to_epoch_ms => "date_to_epoch_ms",
+    to_timezone => "date_to_timezone",
+    in_timezone => "date_in_timezone",
+    year => "date_year",
+    month => "date_month",
+    day => "date_day",
+    hour => "date_hour",
+    minute => "date_minute",
+    second => "date_second",
+    millisecond => "date_millisecond",
+    weekday => "date_weekday",
+    to_rfc3339 => "date_to_rfc3339",
+    to_rfc2822 => "date_to_rfc2822",
+    format => "date_format",
+    parse_rfc3339 => "date_parse_rfc3339",
+    parse_rfc9557 => "date_parse_rfc9557",
+});
+
 enabled_family!(ProcessCapabilities {
     spawn => "spawn",
     await_process => "await_process",
@@ -403,6 +429,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub time: TimeCapabilities,
     #[serde(default)]
+    pub date: DateCapabilities,
+    #[serde(default)]
     pub process: ProcessCapabilities,
     #[serde(default)]
     pub path: PathCapabilities,
@@ -431,6 +459,7 @@ impl Capabilities {
         let builder = self.random.apply(builder);
         let builder = self.env.apply(builder);
         let builder = self.time.apply(builder);
+        let builder = self.date.apply(builder);
         let builder = self.process.apply(builder);
         let builder = self.path.apply(builder);
         let builder = self.filesystem.apply(builder);
@@ -452,6 +481,7 @@ impl Capabilities {
         self.random.emit(out);
         self.env.emit(out);
         self.time.emit(out);
+        self.date.emit(out);
         self.process.emit(out);
         self.path.emit(out);
         self.filesystem.emit(out);
@@ -474,6 +504,7 @@ impl Capabilities {
         self.random.extend_enabled(&mut out);
         self.env.extend_enabled(&mut out);
         self.time.extend_enabled(&mut out);
+        self.date.extend_enabled(&mut out);
         self.process.extend_enabled(&mut out);
         self.path.extend_enabled(&mut out);
         self.filesystem.extend_enabled(&mut out);

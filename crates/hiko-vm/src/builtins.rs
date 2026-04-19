@@ -7,6 +7,8 @@ use smallvec::smallvec;
 mod bytes;
 #[cfg(feature = "builtin-convert")]
 mod convert;
+#[cfg(feature = "builtin-time")]
+mod date;
 #[cfg(feature = "builtin-env")]
 mod env;
 #[cfg(feature = "builtin-exec")]
@@ -427,6 +429,29 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("epoch_ms", time::epoch_ms),
         ("monotonic_ms", time::monotonic_ms),
         ("sleep", time::sleep),
+        ("date_utc_tz", date::utc_tz),
+        ("date_local_tz", date::local_tz),
+        ("date_timezone_of", date::timezone_of),
+        ("date_fixed_offset", date::fixed_offset),
+        ("date_utc_now", date::utc_now),
+        ("date_now_in", date::now_in),
+        ("date_from_instant", date::from_instant),
+        ("date_to_epoch_ms", date::to_epoch_ms),
+        ("date_to_timezone", date::to_timezone),
+        ("date_in_timezone", date::in_timezone),
+        ("date_year", date::year),
+        ("date_month", date::month),
+        ("date_day", date::day),
+        ("date_hour", date::hour),
+        ("date_minute", date::minute),
+        ("date_second", date::second),
+        ("date_millisecond", date::millisecond),
+        ("date_weekday", date::weekday),
+        ("date_to_rfc3339", date::to_rfc3339),
+        ("date_to_rfc2822", date::to_rfc2822),
+        ("date_format", date::format),
+        ("date_parse_rfc3339", date::parse_rfc3339),
+        ("date_parse_rfc9557", date::parse_rfc9557),
     ]);
 
     #[cfg(feature = "builtin-process")]

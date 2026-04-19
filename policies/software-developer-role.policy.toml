@@ -152,6 +152,75 @@ enabled = true
 [capabilities.time.sleep]
 enabled = true
 
+[capabilities.date.utc_tz]
+enabled = true
+
+[capabilities.date.local_tz]
+enabled = true
+
+[capabilities.date.timezone_of]
+enabled = true
+
+[capabilities.date.fixed_offset]
+enabled = true
+
+[capabilities.date.utc_now]
+enabled = true
+
+[capabilities.date.now_in]
+enabled = true
+
+[capabilities.date.from_instant]
+enabled = true
+
+[capabilities.date.to_epoch_ms]
+enabled = true
+
+[capabilities.date.to_timezone]
+enabled = true
+
+[capabilities.date.in_timezone]
+enabled = true
+
+[capabilities.date.year]
+enabled = true
+
+[capabilities.date.month]
+enabled = true
+
+[capabilities.date.day]
+enabled = true
+
+[capabilities.date.hour]
+enabled = true
+
+[capabilities.date.minute]
+enabled = true
+
+[capabilities.date.second]
+enabled = true
+
+[capabilities.date.millisecond]
+enabled = true
+
+[capabilities.date.weekday]
+enabled = true
+
+[capabilities.date.to_rfc3339]
+enabled = true
+
+[capabilities.date.to_rfc2822]
+enabled = true
+
+[capabilities.date.format]
+enabled = true
+
+[capabilities.date.parse_rfc3339]
+enabled = true
+
+[capabilities.date.parse_rfc9557]
+enabled = true
+
 [capabilities.process.spawn]
 enabled = true
 

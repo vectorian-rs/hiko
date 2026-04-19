@@ -1,0 +1,108 @@
+import Std.Option
+import Std.Time
+import __Builtin.Date
+
+structure Date = struct
+  datatype timezone = Tz of string
+  datatype date = Dt of string
+
+  val utc = Tz (BuiltinDate.utc_tz_raw ())
+
+  fun local_timezone () =
+    case BuiltinDate.local_tz_raw () of
+      (true, text) =>
+        let
+          val tz = Tz text
+        in
+          Option.Some tz
+        end
+    | (false, _) => Option.None
+
+  fun timezone_of name =
+    case BuiltinDate.timezone_of_raw name of
+      (true, text) =>
+        let
+          val tz = Tz text
+        in
+          Option.Some tz
+        end
+    | (false, _) => Option.None
+
+  fun fixed_offset minutes =
+    Tz (BuiltinDate.fixed_offset_raw minutes)
+
+  fun timezone_name (Tz text) = text
+
+  fun utc_now () =
+    Dt (BuiltinDate.utc_now_raw ())
+
+  fun now_in (Tz text) =
+    Dt (BuiltinDate.now_in_raw text)
+
+  fun from_instant (instant, Tz text) =
+    Dt (BuiltinDate.from_instant_raw (Time.to_epoch_ms instant, text))
+
+  fun to_instant (Dt text) =
+    Time.of_epoch_ms (BuiltinDate.to_epoch_ms_raw text)
+
+  fun to_timezone (Dt text) =
+    Tz (BuiltinDate.to_timezone_raw text)
+
+  fun in_timezone (Dt date_text, Tz tz_text) =
+    Dt (BuiltinDate.in_timezone_raw (date_text, tz_text))
+
+  fun year (Dt text) =
+    BuiltinDate.year_raw text
+
+  fun month (Dt text) =
+    BuiltinDate.month_raw text
+
+  fun day (Dt text) =
+    BuiltinDate.day_raw text
+
+  fun hour (Dt text) =
+    BuiltinDate.hour_raw text
+
+  fun minute (Dt text) =
+    BuiltinDate.minute_raw text
+
+  fun second (Dt text) =
+    BuiltinDate.second_raw text
+
+  fun millisecond (Dt text) =
+    BuiltinDate.millisecond_raw text
+
+  fun weekday (Dt text) =
+    BuiltinDate.weekday_raw text
+
+  fun to_rfc9557 (Dt text) = text
+
+  fun to_rfc3339 (Dt text) =
+    BuiltinDate.to_rfc3339_raw text
+
+  fun to_rfc2822 (Dt text) =
+    BuiltinDate.to_rfc2822_raw text
+
+  fun format (pattern, Dt text) =
+    BuiltinDate.format_raw (pattern, text)
+
+  fun parse_rfc3339 text =
+    case BuiltinDate.parse_rfc3339_raw text of
+      (true, canonical) =>
+        let
+          val date = Dt canonical
+        in
+          Option.Some date
+        end
+    | (false, _) => Option.None
+
+  fun parse_rfc9557 text =
+    case BuiltinDate.parse_rfc9557_raw text of
+      (true, canonical) =>
+        let
+          val date = Dt canonical
+        in
+          Option.Some date
+        end
+    | (false, _) => Option.None
+end

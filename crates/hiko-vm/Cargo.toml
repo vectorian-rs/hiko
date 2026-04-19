@@ -1,6 +1,6 @@
 [package]
 name = "hiko-vm"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 description = "hiko-vm: part of the hiko ML-family scripting language"
@@ -54,7 +54,11 @@ builtin-random = [
     "dep:dryoc",
 ]
 builtin-env = ["hiko-builtin-meta/builtin-env", "hiko-compile/builtin-env"]
-builtin-time = ["hiko-builtin-meta/builtin-time", "hiko-compile/builtin-time"]
+builtin-time = [
+    "hiko-builtin-meta/builtin-time",
+    "hiko-compile/builtin-time",
+    "dep:jiff",
+]
 builtin-process = ["hiko-builtin-meta/builtin-process", "hiko-compile/builtin-process"]
 builtin-path = ["hiko-builtin-meta/builtin-path", "hiko-compile/builtin-path"]
 builtin-filesystem = [
@@ -75,14 +79,15 @@ builtin-system = ["hiko-builtin-meta/builtin-system", "hiko-compile/builtin-syst
 builtin-testing = ["hiko-builtin-meta/builtin-testing", "hiko-compile/builtin-testing"]
 
 [dependencies]
-hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta", default-features = false }
-hiko-common = { version = "0.6.0", path = "../hiko-common", default-features = false }
-hiko-compile = { version = "0.6.0", path = "../hiko-compile", default-features = false }
-hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
+hiko-builtin-meta = { version = "0.7.0", path = "../hiko-builtin-meta", default-features = false }
+hiko-common = { version = "0.7.0", path = "../hiko-common", default-features = false }
+hiko-compile = { version = "0.7.0", path = "../hiko-compile", default-features = false }
+hiko-syntax = { version = "0.7.0", path = "../hiko-syntax" }
 dashmap = "6"
 dryoc = { version = "0.7", default-features = false, optional = true }
 glob = { version = "0.3", optional = true }
 smallvec = "1"
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"], optional = true }
 rmp-serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 regex = { version = "1", optional = true }
@@ -91,5 +96,5 @@ serde = { version = "1", features = ["derive"] }
 url = { version = "2", optional = true }
 
 [dev-dependencies]
-hiko-common = { version = "0.6.0", path = "../hiko-common", default-features = false, features = ["hash"] }
-hiko-compile = { version = "0.6.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }
+hiko-common = { version = "0.7.0", path = "../hiko-common", default-features = false, features = ["hash"] }
+hiko-compile = { version = "0.7.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }

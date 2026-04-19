@@ -1,6 +1,6 @@
 [package]
 name = "hiko-types"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 description = "hiko-types: part of the hiko ML-family scripting language"
@@ -48,5 +48,5 @@ builtin-system = ["hiko-builtin-meta/builtin-system"]
 builtin-testing = ["hiko-builtin-meta/builtin-testing"]
 
 [dependencies]
-hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta", default-features = false }
-hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
+hiko-builtin-meta = { version = "0.7.0", path = "../hiko-builtin-meta", default-features = false }
+hiko-syntax = { version = "0.7.0", path = "../hiko-syntax" }

@@ -1,0 +1,42 @@
+import Std.Date
+import Std.Option
+import Std.Time
+
+val now = Date.utc_now ()
+val now_timezone_name = Date.timezone_name (Date.to_timezone now)
+val _ = assert (Date.year now >= 2024, "utc_now year looks valid")
+val _ = assert (now_timezone_name = "UTC", "utc_now is in UTC")
+
+val budapest_opt = Date.timezone_of "Europe/Budapest"
+val _ = assert (Option.is_some budapest_opt, "Europe/Budapest should exist")
+val budapest = Option.get_or budapest_opt Date.utc
+
+val _ = case Date.timezone_of "Mars/Olympus" of
+    Option.None => ()
+  | Option.Some _ => assert (false, "unknown timezone should return None")
+
+val sample = Date.from_instant (Time.of_epoch_ms 1720000000000, budapest)
+val sample_text = Date.to_rfc9557 sample
+val sample_timezone_name = Date.timezone_name (Date.to_timezone sample)
+
+val _ = assert (string_contains (sample_text, "Europe/Budapest"), "RFC9557 preserves named timezone")
+val _ = assert (sample_timezone_name = "Europe/Budapest", "timezone name preserved")
+
+val reparsed_opt = Date.parse_rfc9557 sample_text
+val _ = assert (Option.is_some reparsed_opt, "parse_rfc9557 should succeed")
+val reparsed = Option.get_or reparsed_opt sample
+
+val _ = assert (Date.to_rfc9557 reparsed = sample_text, "RFC9557 round-trip")
+
+val sample_utc = Date.in_timezone (sample, Date.utc)
+val sample_epoch_ms = Time.to_epoch_ms (Date.to_instant sample)
+val sample_utc_epoch_ms = Time.to_epoch_ms (Date.to_instant sample_utc)
+val _ = assert (sample_epoch_ms = sample_utc_epoch_ms, "timezone conversion preserves instant")
+
+val parsed3339_opt = Date.parse_rfc3339 "2024-07-03T11:46:40+02:00"
+val _ = assert (Option.is_some parsed3339_opt, "parse_rfc3339 should succeed")
+val parsed3339 = Option.get_or parsed3339_opt now
+
+val parsed3339_timezone_name = Date.timezone_name (Date.to_timezone parsed3339)
+val _ = assert (parsed3339_timezone_name = "+02:00", "RFC3339 uses fixed offset zone")
+val _ = assert (ends_with (Date.to_rfc3339 parsed3339, "+02:00"), "RFC3339 formatting keeps fixed offset")

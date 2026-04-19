@@ -1,0 +1,38 @@
+import Std.Option
+import Std.Time
+
+val now = Time.now ()
+val _ = assert (Time.to_epoch_ms now > 1700000000000, "now is after 2023")
+
+val shifted = Time.shift (now, Time.from_ms 1000)
+
+val diff_forward = Time.diff (shifted, now)
+val diff_forward_ms = Time.to_ms (Option.get_or diff_forward (Time.from_ms 0))
+val _ = assert (Option.is_some diff_forward, "diff forward returned Some")
+val _ = assert (diff_forward_ms = 1000, "diff forward")
+
+val _ = case Time.diff (now, shifted) of
+    Option.None => ()
+  | Option.Some _ => assert (false, "diff reverse should be None")
+
+val sub_forward = Time.sub_duration (Time.from_ms 500, Time.from_ms 200)
+val sub_forward_ms = Time.to_ms (Option.get_or sub_forward (Time.from_ms 0))
+val _ = assert (Option.is_some sub_forward, "duration subtraction returned Some")
+val _ = assert (sub_forward_ms = 300, "duration subtraction")
+
+val _ = case Time.sub_duration (Time.from_ms 200, Time.from_ms 500) of
+    Option.None => ()
+  | Option.Some _ => assert (false, "duration subtraction underflow should be None")
+
+val t0 = Time.monotonic_now ()
+val _ = Time.sleep (Time.from_ms 5)
+val t1 = Time.monotonic_now ()
+
+val elapsed_forward = Time.elapsed (t0, t1)
+val elapsed_forward_ms = Time.to_ms (Option.get_or elapsed_forward (Time.from_ms 0))
+val _ = assert (Option.is_some elapsed_forward, "elapsed forward returned Some")
+val _ = assert (elapsed_forward_ms >= 0, "elapsed is non-negative")
+
+val _ = case Time.elapsed (t1, t0) of
+    Option.None => ()
+  | Option.Some _ => assert (false, "elapsed reverse should be None")
