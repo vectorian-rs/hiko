@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Json source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Json</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Json</span></code></pre><p class="meta">Narrative docs: <a href="./Json.html">Json.html</a><br>Raw source: <a href="./Json.hml">Json.hml</a><br>BLAKE3: <code title="blake3:3b6498e260b3b3ce0d30c6c26307204d07ecac4c299bb597a63b6da7c5929f7c">blake3:3b6498e2...c5929f7c</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>json</strong> <span class="meta">JNull | JBool | JInt | JFloat | JStr | JArray | JObject</span></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">structure</span> <span class="tok-module">Json</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-comment">(* Constructor tags are fixed (0-6) and must match
+   * the json_parse builtin in builtins.rs.
+   *)</span>
+  <span class="tok-keyword">datatype</span> <span class="tok-type">json</span> = <span class="tok-constructor">JNull</span>
+                | <span class="tok-constructor">JBool</span> <span class="tok-keyword">of</span> <span class="tok-type">bool</span>
+                | <span class="tok-constructor">JInt</span> <span class="tok-keyword">of</span> <span class="tok-type">int</span>
+                | <span class="tok-constructor">JFloat</span> <span class="tok-keyword">of</span> <span class="tok-type">float</span>
+                | <span class="tok-constructor">JStr</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+                | <span class="tok-constructor">JArray</span> <span class="tok-keyword">of</span> <span class="tok-type">json</span> <span class="tok-type">list</span>
+                | <span class="tok-constructor">JObject</span> <span class="tok-keyword">of</span> (<span class="tok-type">string</span> * <span class="tok-type">json</span>) <span class="tok-type">list</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

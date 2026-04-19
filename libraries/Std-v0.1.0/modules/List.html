@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Std.List</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f2e9;
+      --panel: #fffdf8;
+      --text: #201b15;
+      --muted: #6b6256;
+      --line: #ddd2bf;
+      --accent: #7e3519;
+      --accent-soft: #f5e3d4;
+    }
+    body { margin: 0; font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; background: linear-gradient(180deg, #fffaf2 0%, var(--bg) 100%); color: var(--text); }
+    main { max-width: 900px; margin: 0 auto; padding: 48px 20px 64px; }
+    h1, h2 { font-weight: 600; margin-bottom: 0.45rem; }
+    p, li { line-height: 1.55; }
+    .eyebrow { color: var(--accent); font-size: 0.92rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px; box-shadow: 0 10px 30px rgba(41, 28, 16, 0.06); margin-top: 20px; }
+    .siglist { list-style: none; margin: 0; padding: 0; }
+    .siglist li { border-top: 1px solid var(--line); padding: 12px 0; }
+    .siglist li:first-child { border-top: 0; padding-top: 0; }
+    pre, code { font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; }
+    code { background: var(--accent-soft); border-radius: 6px; padding: 0.12rem 0.35rem; font-size: 0.95em; }
+    pre { margin: 0; background: #fffaf3; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-x: auto; line-height: 1.45; }
+    .meta { color: var(--muted); font-size: 0.95rem; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  
+    /* hiko-docgen narrative patch */
+    pre.code-block code { background: transparent; border-radius: 0; padding: 0; word-break: normal; }
+    .tok-keyword { color: #8f2d15; font-weight: 700; }
+    .tok-comment { color: #8f806f; font-style: italic; }
+    .tok-string { color: #26665a; }
+    .tok-string-special { color: #4a5ec9; }
+    .tok-number { color: #8e5b00; }
+    .tok-number-float { color: #8e5b00; }
+    .tok-constant-builtin-boolean { color: #4b3fb5; font-weight: 700; }
+    .tok-type-definition { color: #7d3a96; }
+    .tok-type { color: #1e5a99; }
+    .tok-constructor { color: #8b4d13; }
+    .tok-function-special { color: #9f2246; font-weight: 700; }
+    .tok-function { color: #9f2246; }
+    .tok-module { color: #1f5f9e; font-weight: 700; }
+    .tok-namespace { color: #6a2f88; }
+    .tok-variable { color: #201b15; }
+    .tok-variable-member { color: #8f2d15; }
+
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow"><a href="./index.html">Std modules</a></div>
+    <h1>Std.List</h1>
+    <p>A small list utility module for map/filter/fold style traversals and basic list inspection.</p>
+
+    <section class="panel">
+      <h2>Use</h2>
+      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">List</span></code></pre>
+      <p class="meta">Raw source: <a href="./List.hml">List.hml</a></p>
+    </section>
+
+    <section class="panel">
+      <h2>Public surface</h2>
+      <ul class="siglist">
+        <li><code>map : ('a -> 'b) -> 'a list -> 'b list</code></li>
+        <li><code>filter : ('a -> bool) -> 'a list -> 'a list</code></li>
+        <li><code>foldl : ('b * 'a -> 'b) -> 'b -> 'a list -> 'b</code></li>
+        <li><code>foldr : ('a * 'b -> 'b) -> 'b -> 'a list -> 'b</code></li>
+        <li><code>length : 'a list -> int</code></li>
+        <li><code>reverse : 'a list -> 'a list</code></li>
+        <li><code>append : 'a list -> 'a list -> 'a list</code></li>
+        <li><code>nth : 'a list -> int -> 'a</code></li>
+        <li><code>last : 'a list -> 'a</code></li>
+        <li><code>take : int -> 'a list -> 'a list</code></li>
+        <li><code>drop : int -> 'a list -> 'a list</code></li>
+        <li><code>zip : 'a list -> 'b list -> ('a * 'b) list</code></li>
+        <li><code>all : ('a -> bool) -> 'a list -> bool</code></li>
+        <li><code>any : ('a -> bool) -> 'a list -> bool</code></li>
+        <li><code>find : ('a -> bool) -> 'a list -> 'a</code></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Exhaustive example</h2>
+      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">List</span>
+
+<span class="tok-keyword">val</span> <span class="tok-variable">xs</span> = [<span class="tok-number">1</span>, <span class="tok-number">2</span>, <span class="tok-number">3</span>, <span class="tok-number">4</span>]
+<span class="tok-keyword">val</span> <span class="tok-variable">doubled</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">map</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> * <span class="tok-number">2</span>) <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">evens</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">filter</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> mod <span class="tok-number">2</span> = <span class="tok-number">0</span>) <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">total</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">foldl</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">acc</span> + <span class="tok-variable">x</span>) <span class="tok-number">0</span> <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">rendered</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">foldr</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">x</span>, <span class="tok-variable">acc</span>) =&gt; <span class="tok-variable">int_to_string</span> <span class="tok-variable">x</span> ^ <span class="tok-variable">acc</span>) <span class="tok-string">&quot;&quot;</span> <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">count</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">length</span> <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">reversed</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">reverse</span> <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">combined</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">append</span> <span class="tok-variable">xs</span> [<span class="tok-number">5</span>, <span class="tok-number">6</span>]
+<span class="tok-keyword">val</span> <span class="tok-variable">second</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">nth</span> <span class="tok-variable">xs</span> <span class="tok-number">1</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">tail_last</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">last</span> [<span class="tok-number">2</span>, <span class="tok-number">3</span>, <span class="tok-number">4</span>]
+<span class="tok-keyword">val</span> <span class="tok-variable">first_two</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">take</span> <span class="tok-number">2</span> <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">rest</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">drop</span> <span class="tok-number">2</span> <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">pairs</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">zip</span> [<span class="tok-string">&quot;a&quot;</span>, <span class="tok-string">&quot;b&quot;</span>] [<span class="tok-number">1</span>, <span class="tok-number">2</span>]
+<span class="tok-keyword">val</span> <span class="tok-variable">all_even</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">all</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> mod <span class="tok-number">2</span> = <span class="tok-number">0</span>) <span class="tok-variable">evens</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">any_even</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">any</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> mod <span class="tok-number">2</span> = <span class="tok-number">0</span>) <span class="tok-variable">xs</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">found</span> = <span class="tok-namespace">List</span>.<span class="tok-variable-member">find</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> = <span class="tok-number">3</span>) <span class="tok-variable">xs</span>
+
+<span class="tok-keyword">val</span> _ = <span class="tok-variable">println</span> (<span class="tok-variable">int_to_string</span> <span class="tok-variable">total</span>)</code></pre>
+    </section>
+  </main>
+</body>
+</html>

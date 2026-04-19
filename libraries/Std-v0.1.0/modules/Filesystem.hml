@@ -1,28 +1,15 @@
 structure Filesystem = struct
-  val raw_read_file = read_file
-  val raw_read_file_bytes = read_file_bytes
-  val raw_write_file = write_file
-  val raw_file_exists = file_exists
-  val raw_list_dir = list_dir
-  val raw_remove_file = remove_file
-  val raw_create_dir = create_dir
-  val raw_is_dir = is_dir
-  val raw_is_file = is_file
-  val raw_glob = glob
-  val raw_walk_dir = walk_dir
-  val raw_path_join = path_join
-
   effect ReadText of string
   effect ReadBytes of string
   effect WriteText of string * string
-  effect FileExists of string
-  effect ListDir of string
-  effect RemoveFile of string
-  effect CreateDir of string
-  effect IsDir of string
-  effect IsFile of string
-  effect Glob of string
-  effect WalkDir of string
+  effect Exists of string
+  effect ListEntries of string
+  effect Remove of string
+  effect CreateDirectory of string
+  effect IsDirectory of string
+  effect IsRegularFile of string
+  effect GlobMatches of string
+  effect Walk of string
 
   fun read_text path =
     perform ReadText path
@@ -33,61 +20,61 @@ structure Filesystem = struct
   fun write_text path content =
     perform WriteText (path, content)
 
-  fun file_exists path =
-    perform FileExists path
+  fun exists path =
+    perform Exists path
 
-  fun list_dir path =
-    perform ListDir path
+  fun list_entries path =
+    perform ListEntries path
 
-  fun remove_file path =
-    perform RemoveFile path
+  fun remove path =
+    perform Remove path
 
-  fun create_dir path =
-    perform CreateDir path
+  fun create_directory path =
+    perform CreateDirectory path
 
-  fun is_dir path =
-    perform IsDir path
+  fun is_directory path =
+    perform IsDirectory path
 
-  fun is_file path =
-    perform IsFile path
+  fun is_regular_file path =
+    perform IsRegularFile path
 
-  fun glob pattern =
-    perform Glob pattern
+  fun glob_matches pattern =
+    perform GlobMatches pattern
 
-  fun walk_dir path =
-    perform WalkDir path
+  fun walk path =
+    perform Walk path
 
   fun join parts =
-    raw_path_join parts
+    path_join parts
 
   fun run f =
     handle f ()
     with
       return x => x
     | ReadText path k =>
-        resume k (raw_read_file path)
+        resume k (read_file path)
     | ReadBytes path k =>
-        resume k (raw_read_file_bytes path)
+        resume k (read_file_bytes path)
     | WriteText pair k =>
         let
           val (path, content) = pair
         in
-          resume k (raw_write_file (path, content))
+          resume k (write_file (path, content))
         end
-    | FileExists path k =>
-        resume k (raw_file_exists path)
-    | ListDir path k =>
-        resume k (raw_list_dir path)
-    | RemoveFile path k =>
-        resume k (raw_remove_file path)
-    | CreateDir path k =>
-        resume k (raw_create_dir path)
-    | IsDir path k =>
-        resume k (raw_is_dir path)
-    | IsFile path k =>
-        resume k (raw_is_file path)
-    | Glob pattern k =>
-        resume k (raw_glob pattern)
-    | WalkDir path k =>
-        resume k (raw_walk_dir path)
+    | Exists path k =>
+        resume k (file_exists path)
+    | ListEntries path k =>
+        resume k (list_dir path)
+    | Remove path k =>
+        resume k (remove_file path)
+    | CreateDirectory path k =>
+        resume k (create_dir path)
+    | IsDirectory path k =>
+        resume k (is_dir path)
+    | IsRegularFile path k =>
+        resume k (is_file path)
+    | GlobMatches pattern k =>
+        resume k (glob pattern)
+    | Walk path k =>
+        resume k (walk_dir path)
 end

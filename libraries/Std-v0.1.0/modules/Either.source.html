@@ -1,0 +1,34 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Either source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Either</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Either</span></code></pre><p class="meta">Narrative docs: <a href="./Either.html">Either.html</a><br>Raw source: <a href="./Either.hml">Either.hml</a><br>BLAKE3: <code title="blake3:f25001f4a4c6a57490cf80abd65ee7aad0c5f5721154557516f6d5e8d68acdd1">blake3:f25001f4...d68acdd1</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>either</strong> <span class="meta">Left | Right</span></li><li><code>fun</code> <strong>map_right</strong></li><li><code>fun</code> <strong>map_left</strong></li><li><code>fun</code> <strong>is_left</strong></li><li><code>fun</code> <strong>is_right</strong></li><li><code>fun</code> <strong>from_left</strong></li><li><code>fun</code> <strong>from_right</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">structure</span> <span class="tok-module">Either</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">datatype</span> (<span class="tok-type-definition">&#39;a</span>, <span class="tok-type-definition">&#39;b</span>) <span class="tok-type">either</span> = <span class="tok-constructor">Left</span> <span class="tok-keyword">of</span> <span class="tok-type-definition">&#39;a</span> | <span class="tok-constructor">Right</span> <span class="tok-keyword">of</span> <span class="tok-type-definition">&#39;b</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">map_right</span> <span class="tok-variable">f</span> <span class="tok-variable">e</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">e</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Left</span> <span class="tok-variable">x</span>  =&gt; <span class="tok-constructor">Left</span> <span class="tok-variable">x</span>
+    | <span class="tok-constructor">Right</span> <span class="tok-variable">y</span> =&gt; <span class="tok-constructor">Right</span> (<span class="tok-variable">f</span> <span class="tok-variable">y</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">map_left</span> <span class="tok-variable">f</span> <span class="tok-variable">e</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">e</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Left</span> <span class="tok-variable">x</span>  =&gt; <span class="tok-constructor">Left</span> (<span class="tok-variable">f</span> <span class="tok-variable">x</span>)
+    | <span class="tok-constructor">Right</span> <span class="tok-variable">y</span> =&gt; <span class="tok-constructor">Right</span> <span class="tok-variable">y</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">is_left</span> <span class="tok-variable">e</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">e</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Left</span> _  =&gt; <span class="tok-constant-builtin-boolean">true</span>
+    | <span class="tok-constructor">Right</span> _ =&gt; <span class="tok-constant-builtin-boolean">false</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">is_right</span> <span class="tok-variable">e</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">e</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Left</span> _  =&gt; <span class="tok-constant-builtin-boolean">false</span>
+    | <span class="tok-constructor">Right</span> _ =&gt; <span class="tok-constant-builtin-boolean">true</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">from_left</span> <span class="tok-variable">default</span> <span class="tok-variable">e</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">e</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Left</span> <span class="tok-variable">x</span>  =&gt; <span class="tok-variable">x</span>
+    | <span class="tok-constructor">Right</span> _ =&gt; <span class="tok-variable">default</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">from_right</span> <span class="tok-variable">default</span> <span class="tok-variable">e</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">e</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Left</span> _  =&gt; <span class="tok-variable">default</span>
+    | <span class="tok-constructor">Right</span> <span class="tok-variable">y</span> =&gt; <span class="tok-variable">y</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

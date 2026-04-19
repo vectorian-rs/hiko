@@ -1,4 +1,5 @@
 use "../libraries/Std-v0.1.0/modules/Filesystem.hml"
+use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* Hash a single file *)
 fun hash_file path =
@@ -11,10 +12,10 @@ fun hash_file path =
 
 (* Walk a path: file or directory *)
 fun walk_path path =
-  if Filesystem.is_file path then
+  if Filesystem.is_regular_file path then
     [hash_file path]
-  else if Filesystem.is_dir path then
-    walk_entries path (Filesystem.list_dir path)
+  else if Filesystem.is_directory path then
+    walk_entries path (Filesystem.list_entries path)
   else
     []
 
@@ -23,8 +24,9 @@ and walk_entries dir entries =
   case entries of
       [] => []
     | name :: rest =>
-        walk_path (Filesystem.join (dir, name))
-        @ walk_entries dir rest
+        List.append
+          (walk_path (Filesystem.join (dir, name)))
+          (walk_entries dir rest)
 
 (* Run the program with a filesystem handler *)
 val results = Filesystem.run (fn () => walk_path ".")
@@ -33,6 +35,11 @@ val results = Filesystem.run (fn () => walk_path ".")
 fun print_lines xs =
   case xs of
       [] => ()
-    | x :: rest => (println x; print_lines rest)
+    | x :: rest =>
+        let
+          val _ = println x
+        in
+          print_lines rest
+        end
 
 val _ = print_lines results

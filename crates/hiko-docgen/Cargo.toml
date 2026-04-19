@@ -1,0 +1,15 @@
+[package]
+name = "hiko-docgen"
+version = "0.6.0"
+edition = "2024"
+license = "MIT"
+description = "Static documentation generator for published Hiko libraries"
+repository = "https://github.com/vectorian-rs/hiko"
+
+[dependencies]
+hiko-common = { path = "../hiko-common" }
+tree-sitter-hiko = { path = "../tree-sitter-hiko" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tree-sitter = "0.24"
+streaming-iterator = "0.1"

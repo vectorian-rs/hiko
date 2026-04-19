@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Std.Json</title>
+  <style>
+    :root { color-scheme: light; --bg:#f7f2e9; --panel:#fffdf8; --text:#201b15; --muted:#6b6256; --line:#ddd2bf; --accent:#7e3519; --accent-soft:#f5e3d4; }
+    body { margin:0; font-family:"Iowan Old Style","Palatino Linotype",Georgia,serif; background:linear-gradient(180deg,#fffaf2 0%,var(--bg) 100%); color:var(--text); }
+    main { max-width:900px; margin:0 auto; padding:48px 20px 64px; }
+    h1,h2 { font-weight:600; margin-bottom:0.45rem; }
+    p,li { line-height:1.55; }
+    .eyebrow { color:var(--accent); font-size:0.92rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px 22px; box-shadow:0 10px 30px rgba(41,28,16,0.06); margin-top:20px; }
+    pre,code { font-family:"SFMono-Regular","Menlo","Consolas",monospace; }
+    code { background:var(--accent-soft); border-radius:6px; padding:0.12rem 0.35rem; font-size:0.95em; }
+    pre { margin:0; background:#fffaf3; border:1px solid var(--line); border-radius:12px; padding:14px 16px; overflow-x:auto; line-height:1.45; }
+    .meta { color:var(--muted); font-size:0.95rem; }
+    a { color:var(--accent); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+  
+    /* hiko-docgen narrative patch */
+    pre.code-block code { background: transparent; border-radius: 0; padding: 0; word-break: normal; }
+    .tok-keyword { color: #8f2d15; font-weight: 700; }
+    .tok-comment { color: #8f806f; font-style: italic; }
+    .tok-string { color: #26665a; }
+    .tok-string-special { color: #4a5ec9; }
+    .tok-number { color: #8e5b00; }
+    .tok-number-float { color: #8e5b00; }
+    .tok-constant-builtin-boolean { color: #4b3fb5; font-weight: 700; }
+    .tok-type-definition { color: #7d3a96; }
+    .tok-type { color: #1e5a99; }
+    .tok-constructor { color: #8b4d13; }
+    .tok-function-special { color: #9f2246; font-weight: 700; }
+    .tok-function { color: #9f2246; }
+    .tok-module { color: #1f5f9e; font-weight: 700; }
+    .tok-namespace { color: #6a2f88; }
+    .tok-variable { color: #201b15; }
+    .tok-variable-member { color: #8f2d15; }
+
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow"><a href="./index.html">Std modules</a></div>
+    <h1>Std.Json</h1>
+    <p>The tagged JSON datatype used by the JSON parsing builtins and typed JSON examples.</p>
+
+    <section class="panel">
+      <h2>Use</h2>
+      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Json</span></code></pre>
+      <p class="meta">Raw source: <a href="./Json.hml">Json.hml</a></p>
+    </section>
+
+    <section class="panel">
+      <h2>Datatype</h2>
+      <pre class="code-block"><code><span class="tok-keyword">datatype</span> <span class="tok-type">json</span> =
+    <span class="tok-constructor">JNull</span>
+  | <span class="tok-constructor">JBool</span> <span class="tok-keyword">of</span> <span class="tok-type">bool</span>
+  | <span class="tok-constructor">JInt</span> <span class="tok-keyword">of</span> <span class="tok-type">int</span>
+  | <span class="tok-constructor">JFloat</span> <span class="tok-keyword">of</span> <span class="tok-type">float</span>
+  | <span class="tok-constructor">JStr</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+  | <span class="tok-constructor">JArray</span> <span class="tok-keyword">of</span> <span class="tok-type">json</span> <span class="tok-type">list</span>
+  | <span class="tok-constructor">JObject</span> <span class="tok-keyword">of</span> (<span class="tok-type">string</span> * <span class="tok-type">json</span>) <span class="tok-type">list</span></code></pre>
+    </section>
+
+    <section class="panel">
+      <h2>Parse example</h2>
+      <p>A concrete JSON string parsed through the runtime builtin:</p>
+      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Json</span>
+
+<span class="tok-keyword">val</span> <span class="tok-variable">input_json</span> =
+  <span class="tok-string">&quot;{\&quot;count\&quot;:3,\&quot;ok\&quot;:true,\&quot;tags\&quot;:[\&quot;ml\&quot;,\&quot;effects\&quot;]}&quot;</span>
+
+<span class="tok-keyword">val</span> <span class="tok-variable">parsed</span> = <span class="tok-variable">json_parse</span> <span class="tok-variable">input_json</span></code></pre>
+      <p class="meta">The resulting value has the same shape as:</p>
+      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Json</span>
+
+<span class="tok-keyword">val</span> <span class="tok-variable">parsed_shape</span> =
+  <span class="tok-namespace">Json</span>.<span class="tok-module">JObject</span> [
+    (<span class="tok-string">&quot;count&quot;</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JInt</span> <span class="tok-number">3</span>),
+    (<span class="tok-string">&quot;ok&quot;</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JBool</span> <span class="tok-constant-builtin-boolean">true</span>),
+    (<span class="tok-string">&quot;tags&quot;</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JArray</span> [<span class="tok-namespace">Json</span>.<span class="tok-module">JStr</span> <span class="tok-string">&quot;ml&quot;</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JStr</span> <span class="tok-string">&quot;effects&quot;</span>])
+  ]</code></pre>
+    </section>
+
+    <section class="panel">
+      <h2>Exhaustive constructor example</h2>
+      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Json</span>
+
+<span class="tok-keyword">val</span> <span class="tok-variable">null_value</span> = <span class="tok-namespace">Json</span>.<span class="tok-module">JNull</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">bool_value</span> = <span class="tok-namespace">Json</span>.<span class="tok-module">JBool</span> <span class="tok-constant-builtin-boolean">true</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">int_value</span> = <span class="tok-namespace">Json</span>.<span class="tok-module">JInt</span> <span class="tok-number">3</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">float_value</span> = <span class="tok-namespace">Json</span>.<span class="tok-module">JFloat</span> <span class="tok-number-float">3.14</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">string_value</span> = <span class="tok-namespace">Json</span>.<span class="tok-module">JStr</span> <span class="tok-string">&quot;hello&quot;</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">array_value</span> = <span class="tok-namespace">Json</span>.<span class="tok-module">JArray</span> [<span class="tok-namespace">Json</span>.<span class="tok-module">JInt</span> <span class="tok-number">1</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JInt</span> <span class="tok-number">2</span>]
+<span class="tok-keyword">val</span> <span class="tok-variable">object_value</span> =
+  <span class="tok-namespace">Json</span>.<span class="tok-module">JObject</span>
+    [(<span class="tok-string">&quot;ok&quot;</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JBool</span> <span class="tok-constant-builtin-boolean">true</span>), (<span class="tok-string">&quot;count&quot;</span>, <span class="tok-namespace">Json</span>.<span class="tok-module">JInt</span> <span class="tok-number">3</span>)]
+
+<span class="tok-keyword">fun</span> <span class="tok-function">describe</span> <span class="tok-variable">value</span> =
+  <span class="tok-keyword">case</span> <span class="tok-variable">value</span> <span class="tok-keyword">of</span>
+      <span class="tok-namespace">Json</span>.<span class="tok-constructor">JNull</span> =&gt; <span class="tok-string">&quot;null&quot;</span>
+    | <span class="tok-namespace">Json</span>.<span class="tok-constructor">JBool</span> <span class="tok-variable">b</span> =&gt; <span class="tok-keyword">if</span> <span class="tok-variable">b</span> <span class="tok-keyword">then</span> <span class="tok-string">&quot;bool:true&quot;</span> <span class="tok-keyword">else</span> <span class="tok-string">&quot;bool:false&quot;</span>
+    | <span class="tok-namespace">Json</span>.<span class="tok-constructor">JInt</span> <span class="tok-variable">n</span> =&gt; <span class="tok-string">&quot;int:&quot;</span> ^ <span class="tok-variable">int_to_string</span> <span class="tok-variable">n</span>
+    | <span class="tok-namespace">Json</span>.<span class="tok-constructor">JFloat</span> _ =&gt; <span class="tok-string">&quot;float&quot;</span>
+    | <span class="tok-namespace">Json</span>.<span class="tok-constructor">JStr</span> <span class="tok-variable">s</span> =&gt; <span class="tok-string">&quot;str:&quot;</span> ^ <span class="tok-variable">s</span>
+    | <span class="tok-namespace">Json</span>.<span class="tok-constructor">JArray</span> _ =&gt; <span class="tok-string">&quot;array&quot;</span>
+    | <span class="tok-namespace">Json</span>.<span class="tok-constructor">JObject</span> _ =&gt; <span class="tok-string">&quot;object&quot;</span></code></pre>
+      <p class="meta">This page covers the whole datatype surface; <code>Std.Json</code> currently exports constructors, not helper functions.</p>
+    </section>
+  </main>
+</body>
+</html>

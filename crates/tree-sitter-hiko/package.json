@@ -1,0 +1,13 @@
+{
+  "name": "tree-sitter-hiko",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Tree-sitter grammar for the Hiko language",
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.7"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  }
+}

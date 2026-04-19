@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Option source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Option</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Option</span></code></pre><p class="meta">Narrative docs: <a href="./Option.html">Option.html</a><br>Raw source: <a href="./Option.hml">Option.hml</a><br>BLAKE3: <code title="blake3:8cf8ec09b27dbfd081fc58ca8604c20fd6eb7f6812729b7e863ca8dc714cea53">blake3:8cf8ec09...714cea53</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>option</strong> <span class="meta">None | Some</span></li><li><code>fun</code> <strong>is_some</strong></li><li><code>fun</code> <strong>is_none</strong></li><li><code>fun</code> <strong>map_option</strong></li><li><code>fun</code> <strong>get_or</strong></li><li><code>fun</code> <strong>flat_map_option</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">structure</span> <span class="tok-module">Option</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">datatype</span> <span class="tok-type-definition">&#39;a</span> <span class="tok-type">option</span> = <span class="tok-constructor">None</span> | <span class="tok-constructor">Some</span> <span class="tok-keyword">of</span> <span class="tok-type-definition">&#39;a</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">is_some</span> <span class="tok-variable">opt</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">opt</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Some</span> _ =&gt; <span class="tok-constant-builtin-boolean">true</span>
+    | <span class="tok-constructor">None</span>   =&gt; <span class="tok-constant-builtin-boolean">false</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">is_none</span> <span class="tok-variable">opt</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">opt</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">None</span>   =&gt; <span class="tok-constant-builtin-boolean">true</span>
+    | <span class="tok-constructor">Some</span> _ =&gt; <span class="tok-constant-builtin-boolean">false</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">map_option</span> <span class="tok-variable">f</span> <span class="tok-variable">opt</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">opt</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">None</span>   =&gt; <span class="tok-constructor">None</span>
+    | <span class="tok-constructor">Some</span> <span class="tok-variable">x</span> =&gt; <span class="tok-constructor">Some</span> (<span class="tok-variable">f</span> <span class="tok-variable">x</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">get_or</span> <span class="tok-variable">opt</span> <span class="tok-variable">default</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">opt</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">None</span>   =&gt; <span class="tok-variable">default</span>
+    | <span class="tok-constructor">Some</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">flat_map_option</span> <span class="tok-variable">f</span> <span class="tok-variable">opt</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">opt</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">None</span>   =&gt; <span class="tok-constructor">None</span>
+    | <span class="tok-constructor">Some</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">f</span> <span class="tok-variable">x</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

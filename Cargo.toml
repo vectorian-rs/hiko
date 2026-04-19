@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/hiko-docgen",
     "crates/hiko-common",
     "crates/hiko-builtin-meta",
     "crates/hiko-syntax",
@@ -8,6 +9,7 @@ members = [
     "crates/hiko-vm",
     "crates/hiko-cli",
     "crates/hiko-harness",
+    "crates/tree-sitter-hiko",
 ]
 exclude = ["hiko-vm-*"]
 resolver = "2"

@@ -1,0 +1,244 @@
+(* Hiko surface syntax, written as human-facing EBNF.
+ *
+ * This file documents the intended source syntax. It is a reference for users
+ * and language design, not an executable parser definition.
+ *
+ * Notes:
+ * - Operator precedence and associativity are specified separately from the
+ *   grammar productions below.
+ * - Some contextual restrictions are enforced by the parser/typechecker rather
+ *   than by EBNF alone.
+ * - Named imports are exactly two segments: Package.Module.
+ * - `use` paths must be explicit relative paths beginning with "./" or "../".
+ *)
+
+program            ::= { decl } ;
+
+
+(* ── Declarations ─────────────────────────────────────────────── *)
+
+decl               ::= val_decl
+                     | val_rec_decl
+                     | fun_decl
+                     | datatype_decl
+                     | type_alias_decl
+                     | local_decl
+                     | import_decl
+                     | use_decl
+                     | signature_decl
+                     | structure_decl
+                     | effect_decl ;
+
+val_decl           ::= "val" pat "=" expr ;
+
+val_rec_decl       ::= "val" "rec" ident "=" "fn" pat "=>" expr ;
+
+fun_decl           ::= "fun" fun_binding { "and" fun_binding } ;
+
+fun_binding        ::= ident fun_clause { "|" ident fun_clause } ;
+
+fun_clause         ::= atom_pat { atom_pat } "=" expr ;
+
+datatype_decl      ::= "datatype" tyvar_params name "=" [ "|" ] constructor
+                       { "|" constructor } ;
+
+constructor        ::= upper_ident [ "of" type_expr ] ;
+
+type_alias_decl    ::= "type" tyvar_params name "=" type_expr ;
+
+local_decl         ::= "local" { decl } "in" { decl } "end" ;
+
+import_decl        ::= "import" upper_ident "." upper_ident ;
+
+use_decl           ::= "use" string_literal ;
+
+signature_decl     ::= "signature" upper_ident "=" "sig"
+                       { signature_spec }
+                       "end" ;
+
+signature_spec     ::= "type" tyvar_params name
+                     | "val" ident ":" type_expr ;
+
+structure_decl     ::= "structure" upper_ident
+                       [ ( ":" | ":>" ) upper_ident ]
+                       "="
+                       "struct"
+                       { decl }
+                       "end" ;
+
+effect_decl        ::= "effect" upper_ident [ "of" type_expr ] ;
+
+
+(* ── Expressions ──────────────────────────────────────────────── *)
+
+expr               ::= ann_expr ;
+
+ann_expr           ::= logic_or_expr [ ":" type_expr ] ;
+
+logic_or_expr      ::= logic_and_expr [ "orelse" logic_or_expr ] ;
+
+logic_and_expr     ::= compare_expr [ "andalso" logic_and_expr ] ;
+
+compare_expr       ::= cons_expr
+                       { compare_op cons_expr } ;
+
+compare_op         ::= "=" | "<>" | "<" | ">" | "<=" | ">="
+                     | "<." | ">." | "<=." | ">=." ;
+
+cons_expr          ::= add_expr [ "::" cons_expr ] ;
+
+add_expr           ::= mul_expr { add_op mul_expr } ;
+
+add_op             ::= "+" | "-" | "+." | "-." | "^" ;
+
+mul_expr           ::= app_expr { mul_op app_expr } ;
+
+mul_op             ::= "*" | "/" | "mod" | "*." | "/." ;
+
+app_expr           ::= unary_expr { atom_expr } ;
+
+unary_expr         ::= "~" unary_expr
+                     | "not" unary_expr
+                     | if_expr
+                     | fn_expr
+                     | let_expr
+                     | case_expr
+                     | perform_expr
+                     | handle_expr
+                     | resume_expr
+                     | atom_expr ;
+
+if_expr            ::= "if" expr "then" expr "else" expr ;
+
+fn_expr            ::= "fn" pat "=>" expr ;
+
+let_expr           ::= "let" { decl } "in" expr "end" ;
+
+case_expr          ::= "case" expr "of" case_arm { "|" case_arm } ;
+
+case_arm           ::= pat "=>" expr ;
+
+perform_expr       ::= "perform" upper_ident expr ;
+
+handle_expr        ::= "handle" expr "with"
+                       "return" ident "=>" expr
+                       { "|" effect_arm } ;
+
+effect_arm         ::= upper_ident ident ident "=>" expr ;
+
+resume_expr        ::= "resume" expr expr ;
+
+atom_expr          ::= int_literal
+                     | float_literal
+                     | string_literal
+                     | char_literal
+                     | "true"
+                     | "false"
+                     | unit_expr
+                     | ident
+                     | upper_ident
+                     | qualified_name
+                     | tuple_expr
+                     | list_expr
+                     | "(" expr ")" ;
+
+tuple_expr         ::= "(" expr "," expr { "," expr } ")" ;
+
+list_expr          ::= "[" [ expr { "," expr } ] "]" ;
+
+unit_expr          ::= "(" ")" ;
+
+qualified_name     ::= upper_ident "." name ;
+
+
+(* ── Patterns ─────────────────────────────────────────────────── *)
+
+pat                ::= ann_pat ;
+
+ann_pat            ::= as_pat [ ":" type_expr ] ;
+
+as_pat             ::= cons_pat [ "as" cons_pat ] ;
+
+cons_pat           ::= app_pat [ "::" cons_pat ] ;
+
+app_pat            ::= qualified_constructor [ atom_pat ]
+                     | upper_ident [ atom_pat ]
+                     | atom_pat ;
+
+qualified_constructor
+                   ::= upper_ident "." upper_ident ;
+
+atom_pat           ::= "_"
+                     | ident
+                     | int_literal
+                     | float_literal
+                     | string_literal
+                     | char_literal
+                     | "true"
+                     | "false"
+                     | unit_pat
+                     | tuple_pat
+                     | list_pat
+                     | "(" pat ")" ;
+
+tuple_pat          ::= "(" pat "," pat { "," pat } ")" ;
+
+list_pat           ::= "[" [ pat { "," pat } ] "]" ;
+
+unit_pat           ::= "(" ")" ;
+
+
+(* ── Types ─────────────────────────────────────────────────────── *)
+
+type_expr          ::= arrow_type ;
+
+arrow_type         ::= tuple_type [ "->" arrow_type ] ;
+
+tuple_type         ::= type_app { "*" type_app } ;
+
+type_app           ::= atom_type { atom_type } ;
+
+atom_type          ::= name
+                     | tyvar
+                     | "(" type_expr ")"
+                     | "(" type_expr "," type_expr { "," type_expr } ")" name ;
+
+tyvar_params       ::= tyvar
+                     | "(" tyvar { "," tyvar } ")"
+                     | ε ;
+
+
+(* ── Lexical categories ────────────────────────────────────────── *)
+
+name               ::= ident | upper_ident ;
+
+ident              ::= lowercase_letter { letter | digit | "_" } ;
+
+upper_ident        ::= uppercase_letter { letter | digit | "_" } ;
+
+tyvar              ::= "'" ident ;
+
+int_literal        ::= digit { digit } ;
+
+float_literal      ::= digit { digit } "." digit { digit } ;
+
+string_literal     ::= '"' { string_char } '"' ;
+
+char_literal       ::= "'" char_content "'" ;
+
+letter             ::= lowercase_letter | uppercase_letter ;
+
+lowercase_letter   ::= "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+                     | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r"
+                     | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ;
+
+uppercase_letter   ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I"
+                     | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R"
+                     | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+
+digit              ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+string_char        ::= ? any valid string character or escape ? ;
+
+char_content       ::= ? any valid character literal content or escape ? ;
+

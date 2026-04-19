@@ -1,0 +1,20 @@
+[package]
+name = "tree-sitter-hiko"
+version = "0.6.0"
+edition = "2024"
+license = "MIT"
+description = "Tree-sitter grammar for the Hiko language"
+repository = "https://github.com/vectorian-rs/hiko"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1.1"
+
+[dev-dependencies]
+tree-sitter = "0.24"

@@ -1,0 +1,175 @@
+==================
+Signature and structure
+==================
+
+signature LIST = sig
+  type 'a list
+  val map : ('a -> 'b) -> 'a list -> 'b list
+end
+
+structure List : LIST = struct
+  fun map f xs =
+    case xs of
+        [] => []
+      | x :: rest => f x :: map f rest
+end
+
+---
+
+(source_file
+  (signature_declaration
+    (upper_identifier)
+    (signature_specification
+      (type_parameters
+        (type_variable))
+      (name
+        (identifier)))
+    (signature_specification
+      (identifier)
+      (arrow_type
+        (tuple_type
+          (type_application
+            (type_argument
+              (parenthesized_type
+                (arrow_type
+                  (tuple_type
+                    (type_application
+                      (type_argument
+                        (type_variable))))
+                  (arrow_type
+                    (tuple_type
+                      (type_application
+                        (type_argument
+                          (type_variable))))))))))
+        (arrow_type
+          (tuple_type
+            (type_application
+              (type_argument
+                (type_variable))
+              (name
+                (identifier))))
+          (arrow_type
+            (tuple_type
+              (type_application
+                (type_argument
+                  (type_variable))
+                (name
+                  (identifier)))))))))
+  (structure_declaration
+    (upper_identifier)
+    (upper_identifier)
+    (function_declaration
+      (function_binding
+        (identifier)
+        (function_clause
+          (atomic_pattern
+            (identifier))
+          (atomic_pattern
+            (identifier))
+          (annotated_expression
+            (orelse_expression
+              (andalso_expression
+                (comparison_expression
+                  (cons_expression
+                    (additive_expression
+                      (multiplicative_expression
+                        (application_expression
+                          (unary_expression
+                            (case_expression
+                              (annotated_expression
+                                (orelse_expression
+                                  (andalso_expression
+                                    (comparison_expression
+                                      (cons_expression
+                                        (additive_expression
+                                          (multiplicative_expression
+                                            (application_expression
+                                              (unary_expression
+                                                (application_atom
+                                                  (identifier)))))))))))
+                              (case_arm
+                                (annotated_pattern
+                                  (as_pattern
+                                    (cons_pattern
+                                      (application_pattern
+                                        (atomic_pattern
+                                          (list_pattern))))))
+                                (annotated_expression
+                                  (orelse_expression
+                                    (andalso_expression
+                                      (comparison_expression
+                                        (cons_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (application_expression
+                                                (unary_expression
+                                                  (application_atom
+                                                    (list_expression))))))))))))
+                              (case_arm
+                                (annotated_pattern
+                                  (as_pattern
+                                    (cons_pattern
+                                      (application_pattern
+                                        (atomic_pattern
+                                          (identifier)))
+                                      (cons_pattern
+                                        (application_pattern
+                                          (atomic_pattern
+                                            (identifier)))))))
+                                (annotated_expression
+                                  (orelse_expression
+                                    (andalso_expression
+                                      (comparison_expression
+                                        (cons_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (application_expression
+                                                (unary_expression
+                                                  (application_atom
+                                                    (identifier)))
+                                                (application_argument
+                                                  (application_atom
+                                                    (identifier))))))
+                                          (cons_expression
+                                            (additive_expression
+                                              (multiplicative_expression
+                                                (application_expression
+                                                  (application_expression
+                                                    (unary_expression
+                                                      (application_atom
+                                                        (identifier)))
+                                                    (application_argument
+                                                      (application_atom
+                                                        (identifier))))
+                                                  (application_argument
+                                                    (application_atom
+                                                      (identifier))))))))))))))))))))))))))))
+
+==================
+Opaque structure
+==================
+
+structure Option :> OPTION = struct
+  datatype 'a option = None | Some of 'a
+end
+
+---
+
+(source_file
+  (structure_declaration
+    (upper_identifier)
+    (upper_identifier)
+    (datatype_declaration
+      (type_parameters
+        (type_variable))
+      (name
+        (identifier))
+      (constructor_declaration
+        (upper_identifier))
+      (constructor_declaration
+        (upper_identifier)
+        (arrow_type
+          (tuple_type
+            (type_application
+              (type_argument
+                (type_variable)))))))))
