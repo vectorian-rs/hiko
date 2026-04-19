@@ -128,7 +128,7 @@ module.exports = grammar({
 
     import_declaration: $ => seq(
       "import",
-      field("package", $.upper_identifier),
+      field("package", $._import_package_name),
       ".",
       field("module", $.upper_identifier),
     ),
@@ -575,11 +575,17 @@ module.exports = grammar({
       $.upper_identifier,
     ),
 
+    _import_package_name: $ => choice(
+      $.upper_identifier,
+      $.internal_package_identifier,
+    ),
+
     wildcard: _ => "_",
 
     boolean_literal: _ => choice("true", "false"),
 
     identifier: _ => /[a-z][a-zA-Z0-9_]*/,
+    internal_package_identifier: _ => /__[A-Za-z][a-zA-Z0-9_]*/,
     upper_identifier: _ => /[A-Z][a-zA-Z0-9_]*/,
     type_variable: _ => token(seq("'", /[a-z][a-zA-Z0-9_]*/)),
     integer_literal: _ => /\d+/,

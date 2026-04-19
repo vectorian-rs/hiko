@@ -11,6 +11,7 @@ use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 use hiko_builtin_meta::{BuiltinSurface, builtin_meta, core_builtin_names};
+#[cfg(feature = "cli-hash")]
 use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::compiler::{CompileError, Compiler};
@@ -35,6 +36,7 @@ fn main() {
         eprintln!(
             "  check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>  Type-check without executing"
         );
+        #[cfg(feature = "cli-hash")]
         eprintln!("  hash <file>...  Print BLAKE3 hashes for files");
         eprintln!("  build-vm <config.toml>  Generate a custom VM from a run config");
         process::exit(1);
@@ -50,11 +52,19 @@ fn main() {
             check_file(&options);
         }
         "hash" => {
-            if args.len() < 3 {
-                eprintln!("Usage: hiko hash <file>...");
+            #[cfg(feature = "cli-hash")]
+            {
+                if args.len() < 3 {
+                    eprintln!("Usage: hiko hash <file>...");
+                    process::exit(1);
+                }
+                hash_files(&args[2..]);
+            }
+            #[cfg(not(feature = "cli-hash"))]
+            {
+                eprintln!("This build of hiko was compiled without the 'hash' command");
                 process::exit(1);
             }
-            hash_files(&args[2..]);
         }
         "build-vm" => {
             if args.len() < 3 {
@@ -215,6 +225,7 @@ fn load_run_config(config_path: &str, label: &str) -> RunConfig {
     })
 }
 
+#[cfg(feature = "cli-hash")]
 fn hash_files(paths: &[String]) {
     for path in paths {
         let bytes = fs::read(path).unwrap_or_else(|e| {

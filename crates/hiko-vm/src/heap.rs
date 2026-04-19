@@ -1,6 +1,7 @@
 use crate::value::{GcRef, HeapObject};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "builtin-http")]
 use url::Url;
 
 pub struct Heap {
@@ -304,21 +305,30 @@ pub(crate) fn resolve_fs_path_in_folders(
 }
 
 pub(crate) fn parse_http_url_host(url: &str) -> Result<String, String> {
-    let parsed = Url::parse(url).map_err(|e| format!("invalid URL '{url}': {e}"))?;
-    match parsed.scheme() {
-        "http" | "https" => {}
-        scheme => {
-            return Err(format!(
-                "URL '{}' uses unsupported scheme '{}'; expected http or https",
-                url, scheme
-            ));
+    #[cfg(feature = "builtin-http")]
+    {
+        let parsed = Url::parse(url).map_err(|e| format!("invalid URL '{url}': {e}"))?;
+        match parsed.scheme() {
+            "http" | "https" => {}
+            scheme => {
+                return Err(format!(
+                    "URL '{}' uses unsupported scheme '{}'; expected http or https",
+                    url, scheme
+                ));
+            }
         }
+
+        parsed
+            .host_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| format!("URL '{url}' has no host"))
     }
 
-    parsed
-        .host_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| format!("URL '{url}' has no host"))
+    #[cfg(not(feature = "builtin-http"))]
+    {
+        let _ = url;
+        Err("HTTP builtins are not enabled in this build".into())
+    }
 }
 
 fn canonicalize_with_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
@@ -442,6 +452,7 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    #[cfg(feature = "builtin-http")]
     #[test]
     fn test_check_http_host_for_uses_builtin_hosts() {
         let mut heap = Heap::new();
@@ -457,6 +468,7 @@ mod tests {
         assert!(err.contains("not in allowed hosts"));
     }
 
+    #[cfg(feature = "builtin-http")]
     #[test]
     fn test_check_http_host_rejects_userinfo_spoofed_url() {
         let mut heap = Heap::new();

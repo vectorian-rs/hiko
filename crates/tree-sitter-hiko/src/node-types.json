@@ -1104,6 +1104,10 @@
         "required": true,
         "types": [
           {
+            "type": "internal_package_identifier",
+            "named": true
+          },
+          {
             "type": "upper_identifier",
             "named": true
           }
@@ -2214,6 +2218,10 @@
   },
   {
     "type": "integer_literal",
+    "named": true
+  },
+  {
+    "type": "internal_package_identifier",
     "named": true
   },
   {

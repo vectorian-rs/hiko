@@ -1,3 +1,6 @@
+import __Builtin.Filesystem
+import __Builtin.Path
+
 structure Filesystem = struct
   effect ReadText of string
   effect ReadBytes of string
@@ -45,36 +48,36 @@ structure Filesystem = struct
     perform Walk path
 
   fun join parts =
-    path_join parts
+    BuiltinPath.join_raw parts
 
   fun run f =
     handle f ()
     with
       return x => x
     | ReadText path k =>
-        resume k (read_file path)
+        resume k (BuiltinFilesystem.read_text_raw path)
     | ReadBytes path k =>
-        resume k (read_file_bytes path)
+        resume k (BuiltinFilesystem.read_bytes_raw path)
     | WriteText pair k =>
         let
           val (path, content) = pair
         in
-          resume k (write_file (path, content))
+          resume k (BuiltinFilesystem.write_text_raw (path, content))
         end
     | Exists path k =>
-        resume k (file_exists path)
+        resume k (BuiltinFilesystem.exists_raw path)
     | ListEntries path k =>
-        resume k (list_dir path)
+        resume k (BuiltinFilesystem.list_entries_raw path)
     | Remove path k =>
-        resume k (remove_file path)
+        resume k (BuiltinFilesystem.remove_raw path)
     | CreateDirectory path k =>
-        resume k (create_dir path)
+        resume k (BuiltinFilesystem.create_directory_raw path)
     | IsDirectory path k =>
-        resume k (is_dir path)
+        resume k (BuiltinFilesystem.is_directory_raw path)
     | IsRegularFile path k =>
-        resume k (is_file path)
+        resume k (BuiltinFilesystem.is_regular_file_raw path)
     | GlobMatches pattern k =>
-        resume k (glob pattern)
+        resume k (BuiltinFilesystem.glob_raw pattern)
     | Walk path k =>
-        resume k (walk_dir path)
+        resume k (BuiltinFilesystem.walk_raw path)
 end

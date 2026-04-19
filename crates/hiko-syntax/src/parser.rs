@@ -119,6 +119,20 @@ impl Parser {
         }
     }
 
+    fn expect_import_package_name(&mut self) -> Result<(Symbol, Span), ParseError> {
+        match self.peek() {
+            TokenKind::UpperIdent(_) => {
+                let span = self.span();
+                Ok((self.take_symbol(), span))
+            }
+            TokenKind::Ident(name) if name.starts_with("__") => {
+                let span = self.span();
+                Ok((self.take_symbol(), span))
+            }
+            _ => Err(self.err("expected package name")),
+        }
+    }
+
     fn expect_name(&mut self) -> Result<(Symbol, Span), ParseError> {
         if matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_)) {
             let span = self.span();
@@ -464,7 +478,7 @@ impl Parser {
     fn parse_import_decl(&mut self) -> Result<Decl, ParseError> {
         let start = self.span();
         self.advance(); // consume `import`
-        let (package, _) = self.expect_upper_ident()?;
+        let (package, _) = self.expect_import_package_name()?;
         self.expect(&TokenKind::Dot, ".")?;
         let (module, end) = self.expect_upper_ident()?;
         if matches!(self.peek(), TokenKind::Dot) {
@@ -1613,6 +1627,14 @@ mod tests {
         let prog = parse("import Std.List");
         assert!(
             matches!(&prog.decls[0].kind, DeclKind::Import(name) if prog.interner.resolve(*name) == "Std.List")
+        );
+    }
+
+    #[test]
+    fn test_import_decl_accepts_reserved_internal_package() {
+        let prog = parse("import __Builtin.Filesystem");
+        assert!(
+            matches!(&prog.decls[0].kind, DeclKind::Import(name) if prog.interner.resolve(*name) == "__Builtin.Filesystem")
         );
     }
 

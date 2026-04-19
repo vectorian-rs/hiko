@@ -6,9 +6,58 @@ license = "MIT"
 description = "hiko-compile: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+default = ["builtin-all", "loader-all"]
+builtin-all = [
+    "builtin-stdio",
+    "builtin-convert",
+    "builtin-string",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-math",
+    "builtin-bytes",
+    "builtin-hash",
+    "builtin-random",
+    "builtin-env",
+    "builtin-time",
+    "builtin-process",
+    "builtin-path",
+    "builtin-filesystem",
+    "builtin-http",
+    "builtin-exec",
+    "builtin-system",
+    "builtin-testing",
+]
+loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
+loader-named-imports = []
+loader-http = ["loader-named-imports", "hiko-common/http"]
+loader-integrity-blake3 = ["loader-http", "hiko-common/hash"]
+builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-types/builtin-stdio"]
+builtin-convert = ["hiko-builtin-meta/builtin-convert", "hiko-types/builtin-convert"]
+builtin-string = ["hiko-builtin-meta/builtin-string", "hiko-types/builtin-string"]
+builtin-regex = ["hiko-builtin-meta/builtin-regex", "hiko-types/builtin-regex"]
+builtin-json = ["hiko-builtin-meta/builtin-json", "hiko-types/builtin-json"]
+builtin-math = ["hiko-builtin-meta/builtin-math", "hiko-types/builtin-math"]
+builtin-bytes = ["hiko-builtin-meta/builtin-bytes", "hiko-types/builtin-bytes"]
+builtin-hash = ["hiko-builtin-meta/builtin-hash", "hiko-types/builtin-hash"]
+builtin-random = ["hiko-builtin-meta/builtin-random", "hiko-types/builtin-random"]
+builtin-env = ["hiko-builtin-meta/builtin-env", "hiko-types/builtin-env"]
+builtin-time = ["hiko-builtin-meta/builtin-time", "hiko-types/builtin-time"]
+builtin-process = ["hiko-builtin-meta/builtin-process", "hiko-types/builtin-process"]
+builtin-path = ["hiko-builtin-meta/builtin-path", "hiko-types/builtin-path"]
+builtin-filesystem = [
+    "hiko-builtin-meta/builtin-filesystem",
+    "hiko-types/builtin-filesystem",
+]
+builtin-http = ["hiko-builtin-meta/builtin-http", "hiko-types/builtin-http"]
+builtin-exec = ["hiko-builtin-meta/builtin-exec", "hiko-types/builtin-exec"]
+builtin-system = ["hiko-builtin-meta/builtin-system", "hiko-types/builtin-system"]
+builtin-testing = ["hiko-builtin-meta/builtin-testing", "hiko-types/builtin-testing"]
+
 [dependencies]
-hiko-common = { version = "0.6.0", path = "../hiko-common" }
+hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta", default-features = false }
+hiko-common = { version = "0.6.0", path = "../hiko-common", default-features = false }
 hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
-hiko-types = { version = "0.6.0", path = "../hiko-types" }
+hiko-types = { version = "0.6.0", path = "../hiko-types", default-features = false }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

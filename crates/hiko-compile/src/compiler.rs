@@ -1,8 +1,13 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use hiko_common::{blake3_hex, http_get_text};
+use hiko_builtin_meta::{internal_builtin_module, is_internal_builtin_package};
+#[cfg(feature = "loader-integrity-blake3")]
+use hiko_common::blake3_hex;
+#[cfg(feature = "loader-http")]
+use hiko_common::http_get_text;
 use hiko_syntax::ast::*;
 use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
@@ -31,29 +36,7 @@ impl CompileError {
     }
 }
 
-fn discover_import_loader(
-    entry_file: &Path,
-) -> Result<(Option<ImportLockfile>, Option<PathBuf>), CompileError> {
-    let Some(lockfile_path) = find_lockfile_path(entry_file) else {
-        return Ok((None, None));
-    };
-    let lockfile_text = std::fs::read_to_string(&lockfile_path).map_err(|e| {
-        CompileError::codegen(format!(
-            "cannot read module lockfile '{}': {e}",
-            lockfile_path.display()
-        ))
-    })?;
-    let lockfile: ImportLockfile = toml::from_str(&lockfile_text).map_err(|e| {
-        CompileError::codegen(format!(
-            "invalid module lockfile '{}': {e}",
-            lockfile_path.display()
-        ))
-    })?;
-    validate_lockfile(&lockfile, &lockfile_path)?;
-    let cache_dir = default_module_cache_dir()?;
-    Ok((Some(lockfile), Some(cache_dir)))
-}
-
+#[cfg(feature = "loader-named-imports")]
 fn find_lockfile_path(entry_file: &Path) -> Option<PathBuf> {
     let mut dir = entry_file.parent();
     while let Some(current) = dir {
@@ -66,6 +49,7 @@ fn find_lockfile_path(entry_file: &Path) -> Option<PathBuf> {
     None
 }
 
+#[cfg(feature = "loader-named-imports")]
 fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
     if let Ok(home) = std::env::var("HOME") {
         return Ok(PathBuf::from(home).join(".hiko").join("lib-cache"));
@@ -75,6 +59,7 @@ fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
     ))
 }
 
+#[cfg(feature = "loader-http")]
 fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileError> {
     http_get_text(url).map_err(|e| {
         CompileError::codegen(format!(
@@ -83,6 +68,7 @@ fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileEr
     })
 }
 
+#[cfg(feature = "loader-integrity-blake3")]
 fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), CompileError> {
     let actual = blake3_hex(bytes);
     if actual == expected_hash {
@@ -94,6 +80,7 @@ fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), C
     }
 }
 
+#[cfg(feature = "loader-named-imports")]
 fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), CompileError> {
     if lockfile.schema_version != 1 {
         return Err(CompileError::codegen(format!(
@@ -174,10 +161,13 @@ fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
             "named import '{module_name}' must use the shape Package.Module"
         )));
     }
-    validate_package_name(package, &format!("named import '{module_name}'"))?;
+    if !is_internal_builtin_package(package) {
+        validate_package_name(package, &format!("named import '{module_name}'"))?;
+    }
     Ok((package, module))
 }
 
+#[cfg(feature = "loader-integrity-blake3")]
 fn normalize_blake3(hash: &str) -> String {
     hash.trim()
         .strip_prefix("blake3:")
@@ -204,6 +194,7 @@ struct FuncCtx {
     name: Option<String>,
 }
 
+#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportLockfile {
@@ -212,6 +203,10 @@ struct ImportLockfile {
     packages: HashMap<String, LockedPackage>,
 }
 
+#[cfg_attr(
+    not(all(feature = "loader-named-imports", feature = "loader-http")),
+    allow(dead_code)
+)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockedPackage {
@@ -219,6 +214,62 @@ struct LockedPackage {
     base_url: String,
     #[serde(default)]
     modules: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ImportKey {
+    File(PathBuf),
+    Synthetic(&'static str),
+}
+
+#[derive(Debug)]
+enum ResolvedImport {
+    File {
+        canonical: PathBuf,
+        display_name: String,
+    },
+    Synthetic {
+        import_name: &'static str,
+        display_name: String,
+        source: &'static str,
+        base_dir: PathBuf,
+    },
+}
+
+impl ResolvedImport {
+    fn key(&self) -> ImportKey {
+        match self {
+            Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
+            Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
+        }
+    }
+
+    fn display_name(&self) -> &str {
+        match self {
+            Self::File { display_name, .. } | Self::Synthetic { display_name, .. } => display_name,
+        }
+    }
+
+    fn load_source(&self) -> Result<(Cow<'static, str>, PathBuf), CompileError> {
+        match self {
+            Self::File { canonical, .. } => {
+                let source = std::fs::read_to_string(canonical).map_err(|e| {
+                    CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
+                })?;
+                let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
+                Ok((Cow::Owned(source), base_dir))
+            }
+            Self::Synthetic {
+                source, base_dir, ..
+            } => Ok((Cow::Borrowed(*source), base_dir.clone())),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CachedImportedProgram {
+    base_dir: PathBuf,
+    decls: Vec<Decl>,
 }
 
 pub struct Compiler {
@@ -231,17 +282,43 @@ pub struct Compiler {
     next_effect_tag: u16,
     /// Base directory for resolving relative local file includes via `use`.
     base_dir: PathBuf,
-    /// Files currently being loaded (for cycle detection).
-    loading_files: HashSet<PathBuf>,
-    /// Files whose type inference is complete.
-    inferred_files: HashSet<PathBuf>,
-    /// Files whose codegen is complete.
-    compiled_files: HashSet<PathBuf>,
-    /// Cached desugared programs for imported files (used between passes).
-    imported_programs: HashMap<PathBuf, Vec<Decl>>,
-    /// Named module lockfile discovered from the entry program.
+    /// Entry file for file-based compilation. External named-import loader state is derived lazily from this.
+    #[cfg_attr(
+        not(all(
+            feature = "loader-named-imports",
+            feature = "loader-http",
+            feature = "loader-integrity-blake3"
+        )),
+        allow(dead_code)
+    )]
+    entry_file: Option<PathBuf>,
+    /// Imports currently being loaded (for cycle detection).
+    loading_imports: HashSet<ImportKey>,
+    /// Imports whose type inference is complete.
+    inferred_imports: HashSet<ImportKey>,
+    /// Imports whose codegen is complete.
+    compiled_imports: HashSet<ImportKey>,
+    /// Cached desugared programs for imported modules (used between passes).
+    imported_programs: HashMap<ImportKey, CachedImportedProgram>,
+    /// Named module lockfile loaded lazily from the entry program's project root.
+    #[cfg_attr(
+        not(all(
+            feature = "loader-named-imports",
+            feature = "loader-http",
+            feature = "loader-integrity-blake3"
+        )),
+        allow(dead_code)
+    )]
     import_lockfile: Option<ImportLockfile>,
     /// Cache directory for fetched remote modules.
+    #[cfg_attr(
+        not(all(
+            feature = "loader-named-imports",
+            feature = "loader-http",
+            feature = "loader-integrity-blake3"
+        )),
+        allow(dead_code)
+    )]
     module_cache_dir: Option<PathBuf>,
     /// Global function name -> proto_idx (for direct calls).
     global_protos: HashMap<String, u16>,
@@ -261,31 +338,23 @@ impl Compiler {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
-        let (import_lockfile, module_cache_dir) = discover_import_loader(&canonical)?;
         let mut loading = HashSet::new();
-        loading.insert(canonical);
-        Self::compile_with_ctx(
-            program,
-            base_dir,
-            loading,
-            import_lockfile,
-            module_cache_dir,
-        )
+        loading.insert(ImportKey::File(canonical.clone()));
+        Self::compile_with_ctx(program, base_dir, Some(canonical), loading)
     }
 
     /// Compile a program without a file context (e.g., from a string).
     pub fn compile(
         program: Program,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        Self::compile_with_ctx(program, PathBuf::from("."), HashSet::new(), None, None)
+        Self::compile_with_ctx(program, PathBuf::from("."), None, HashSet::new())
     }
 
     fn compile_with_ctx(
         program: Program,
         base_dir: PathBuf,
-        loading_files: HashSet<PathBuf>,
-        import_lockfile: Option<ImportLockfile>,
-        module_cache_dir: Option<PathBuf>,
+        entry_file: Option<PathBuf>,
+        loading_imports: HashSet<ImportKey>,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         // Desugar and constant-fold
         let program = hiko_syntax::desugar::desugar_program(program);
@@ -308,12 +377,13 @@ impl Compiler {
             effect_tags: HashMap::new(),
             next_effect_tag: 0,
             base_dir,
-            loading_files,
-            inferred_files: HashSet::new(),
-            compiled_files: HashSet::new(),
+            entry_file,
+            loading_imports,
+            inferred_imports: HashSet::new(),
+            compiled_imports: HashSet::new(),
             imported_programs: HashMap::new(),
-            import_lockfile,
-            module_cache_dir,
+            import_lockfile: None,
+            module_cache_dir: None,
             global_protos: HashMap::new(),
             infer_ctx: InferCtx::new(),
             interner,
@@ -636,23 +706,80 @@ impl Compiler {
 
     // ── Local and named import handling ─────────────────────────────
 
-    fn resolve_local_use(&self, path: &str) -> Result<PathBuf, CompileError> {
+    fn resolve_local_use(&self, path: &str) -> Result<ResolvedImport, CompileError> {
         let resolved = self.base_dir.join(path);
-        std::fs::canonicalize(&resolved).map_err(|e| {
+        let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
             CompileError::codegen(format!(
                 "cannot resolve local use '{}': {e}",
                 resolved.display()
             ))
+        })?;
+        Ok(ResolvedImport::File {
+            canonical,
+            display_name: path.to_string(),
         })
     }
 
-    fn resolve_named_import(&self, module_name: &str) -> Result<PathBuf, CompileError> {
-        let lockfile = self.import_lockfile.as_ref().ok_or_else(|| {
-            CompileError::codegen(format!(
-                "named import '{module_name}' requires hiko.lock.toml alongside the entry file"
-            ))
-        })?;
+    fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
+        if is_internal_builtin_package(package_name) {
+            return self.resolve_internal_builtin_import(module_name, leaf_module);
+        }
+        self.resolve_external_named_import(module_name, package_name, leaf_module)
+    }
+
+    #[cfg(not(feature = "loader-named-imports"))]
+    fn resolve_external_named_import(
+        &mut self,
+        module_name: &str,
+        _package_name: &str,
+        _leaf_module: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        Err(CompileError::codegen(format!(
+            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-named-imports'"
+        )))
+    }
+
+    #[cfg(all(feature = "loader-named-imports", not(feature = "loader-http")))]
+    fn resolve_external_named_import(
+        &mut self,
+        module_name: &str,
+        _package_name: &str,
+        _leaf_module: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        Err(CompileError::codegen(format!(
+            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-http'"
+        )))
+    }
+
+    #[cfg(all(
+        feature = "loader-named-imports",
+        feature = "loader-http",
+        not(feature = "loader-integrity-blake3")
+    ))]
+    fn resolve_external_named_import(
+        &mut self,
+        module_name: &str,
+        _package_name: &str,
+        _leaf_module: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        Err(CompileError::codegen(format!(
+            "named remote import '{module_name}' requires BLAKE3 verification support; enable cargo feature 'loader-integrity-blake3'"
+        )))
+    }
+
+    #[cfg(all(
+        feature = "loader-named-imports",
+        feature = "loader-http",
+        feature = "loader-integrity-blake3"
+    ))]
+    fn resolve_external_named_import(
+        &mut self,
+        module_name: &str,
+        package_name: &str,
+        leaf_module: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        let (lockfile, cache_dir) = self.ensure_import_loader(module_name)?;
         let package = lockfile.packages.get(package_name).ok_or_else(|| {
             CompileError::codegen(format!(
                 "package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
@@ -663,19 +790,12 @@ impl Compiler {
                 "module '{leaf_module}' in package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
             ))
         })?;
-        let cache_dir = self.module_cache_dir.as_ref().ok_or_else(|| {
-            CompileError::codegen(format!(
-                "named import '{module_name}' has no configured module cache directory"
-            ))
-        })?;
-
         std::fs::create_dir_all(cache_dir).map_err(|e| {
             CompileError::codegen(format!(
                 "cannot create module cache '{}': {e}",
                 cache_dir.display()
             ))
         })?;
-
         let module_url = format!(
             "{}/modules/{leaf_module}.hml",
             package.base_url.trim_end_matches('/')
@@ -698,7 +818,10 @@ impl Compiler {
             )
             .is_ok()
             {
-                return Ok(cache_path);
+                return Ok(ResolvedImport::File {
+                    canonical: cache_path,
+                    display_name: module_name.to_string(),
+                });
             }
             let _ = std::fs::remove_file(&cache_path);
         }
@@ -715,7 +838,73 @@ impl Compiler {
                 cache_path.display()
             ))
         })?;
-        Ok(cache_path)
+        Ok(ResolvedImport::File {
+            canonical: cache_path,
+            display_name: module_name.to_string(),
+        })
+    }
+
+    fn resolve_internal_builtin_import(
+        &self,
+        module_name: &str,
+        leaf_module: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        let module = internal_builtin_module(leaf_module).ok_or_else(|| {
+            CompileError::codegen(format!("unknown internal builtin module '{module_name}'"))
+        })?;
+        if !module.enabled {
+            return Err(CompileError::codegen(format!(
+                "internal builtin module '{}' is not available in this build of hiko; enable cargo feature '{}'",
+                module.import_name, module.feature_name
+            )));
+        }
+        Ok(ResolvedImport::Synthetic {
+            import_name: module.import_name,
+            display_name: module_name.to_string(),
+            source: module.source,
+            base_dir: self.base_dir.clone(),
+        })
+    }
+
+    #[cfg(all(
+        feature = "loader-named-imports",
+        feature = "loader-http",
+        feature = "loader-integrity-blake3"
+    ))]
+    fn ensure_import_loader(
+        &mut self,
+        module_name: &str,
+    ) -> Result<(&ImportLockfile, &PathBuf), CompileError> {
+        if self.import_lockfile.is_none() || self.module_cache_dir.is_none() {
+            let entry_file = self.entry_file.as_ref().ok_or_else(|| {
+                CompileError::codegen(format!(
+                    "named import '{module_name}' requires file-based compilation context"
+                ))
+            })?;
+            let lockfile_path = find_lockfile_path(entry_file).ok_or_else(|| {
+                CompileError::codegen(format!(
+                    "named import '{module_name}' requires hiko.lock.toml alongside the entry file"
+                ))
+            })?;
+            let lockfile_text = std::fs::read_to_string(&lockfile_path).map_err(|e| {
+                CompileError::codegen(format!(
+                    "cannot read module lockfile '{}': {e}",
+                    lockfile_path.display()
+                ))
+            })?;
+            let lockfile: ImportLockfile = toml::from_str(&lockfile_text).map_err(|e| {
+                CompileError::codegen(format!(
+                    "invalid module lockfile '{}': {e}",
+                    lockfile_path.display()
+                ))
+            })?;
+            validate_lockfile(&lockfile, &lockfile_path)?;
+            self.import_lockfile = Some(lockfile);
+            self.module_cache_dir = Some(default_module_cache_dir()?);
+        }
+        let lockfile = self.import_lockfile.as_ref().unwrap();
+        let cache_dir = self.module_cache_dir.as_ref().unwrap();
+        Ok((lockfile, cache_dir))
     }
 
     /// Pass 1: type-check a single declaration (handles `use` recursively)
@@ -747,24 +936,20 @@ impl Compiler {
     }
 
     /// Pass 1 for imported source: load, parse, desugar, infer, and cache.
-    fn infer_import_source(
-        &mut self,
-        canonical: PathBuf,
-        display_name: &str,
-    ) -> Result<(), CompileError> {
-        if self.loading_files.contains(&canonical) {
+    fn infer_import_source(&mut self, import: ResolvedImport) -> Result<(), CompileError> {
+        let key = import.key();
+        let display_name = import.display_name().to_string();
+        if self.loading_imports.contains(&key) {
             return Err(CompileError::codegen(format!(
                 "circular import detected while loading '{display_name}'"
             )));
         }
 
-        if self.inferred_files.contains(&canonical) {
+        if self.inferred_imports.contains(&key) {
             return Ok(());
         }
 
-        let source = std::fs::read_to_string(&canonical).map_err(|e| {
-            CompileError::codegen(format!("cannot read '{}': {e}", canonical.display()))
-        })?;
+        let (source, imported_base_dir) = import.load_source()?;
         let tokens = Lexer::new(&source, 0).tokenize().map_err(|e| {
             CompileError::codegen(format!("lex error in '{display_name}': {}", e.message))
         })?;
@@ -782,62 +967,71 @@ impl Compiler {
         self.infer_ctx.interner = self.interner.clone();
         let desugared = program.decls;
 
-        self.loading_files.insert(canonical.clone());
+        self.loading_imports.insert(key.clone());
         let old_base = self.base_dir.clone();
-        self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
+        self.base_dir = imported_base_dir.clone();
 
         let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
 
         self.base_dir = old_base;
-        self.loading_files.remove(&canonical);
+        self.loading_imports.remove(&key);
 
         result?;
-        self.inferred_files.insert(canonical.clone());
-        self.imported_programs.insert(canonical, desugared);
+        self.inferred_imports.insert(key.clone());
+        self.imported_programs.insert(
+            key,
+            CachedImportedProgram {
+                base_dir: imported_base_dir,
+                decls: desugared,
+            },
+        );
         Ok(())
     }
 
     fn infer_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let canonical = self.resolve_local_use(path)?;
-        self.infer_import_source(canonical, path)
+        let resolved = self.resolve_local_use(path)?;
+        self.infer_import_source(resolved)
     }
 
     fn infer_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
         let module_name = self.interner.resolve(module_name).to_string();
-        let canonical = self.resolve_named_import(&module_name)?;
-        self.infer_import_source(canonical, &module_name)
+        let resolved = self.resolve_named_import(&module_name)?;
+        self.infer_import_source(resolved)
     }
 
     /// Pass 2 for imported source: compile from cached desugared AST.
-    fn compile_import_source(&mut self, canonical: PathBuf) -> Result<(), CompileError> {
-        if self.compiled_files.contains(&canonical) {
+    fn compile_import_source(&mut self, key: ImportKey) -> Result<(), CompileError> {
+        if self.compiled_imports.contains(&key) {
             return Ok(());
         }
 
-        let desugared = self
+        let CachedImportedProgram { base_dir, decls } = self
             .imported_programs
-            .remove(&canonical)
-            .unwrap_or_default();
+            .remove(&key)
+            .unwrap_or(CachedImportedProgram {
+                base_dir: self.base_dir.clone(),
+                decls: Vec::new(),
+            });
 
         let old_base = self.base_dir.clone();
-        self.base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
-        for decl in &desugared {
+        self.base_dir = base_dir;
+        for decl in &decls {
             self.compile_decl(decl)?;
         }
         self.base_dir = old_base;
-        self.compiled_files.insert(canonical);
+        self.compiled_imports.insert(key);
         Ok(())
     }
 
     fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let canonical = self.resolve_local_use(path)?;
-        self.compile_import_source(canonical)
+        let resolved = self.resolve_local_use(path)?;
+        self.compile_import_source(resolved.key())
     }
 
     fn compile_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
         let module_name = self.interner.resolve(module_name).to_string();
-        let canonical = self.resolve_named_import(&module_name)?;
-        self.compile_import_source(canonical)
+        let resolved = self.resolve_named_import(&module_name)?;
+        self.compile_import_source(resolved.key())
     }
 
     fn compile_binding_pattern(&mut self, pat: &Pat) -> Result<(), CompileError> {
@@ -1632,6 +1826,18 @@ mod tests {
         Compiler::compile_file(parse_program(&source), path)
     }
 
+    #[cfg(feature = "builtin-path")]
+    #[test]
+    fn compile_accepts_internal_builtin_import_without_file_context() {
+        let result = Compiler::compile(parse_program(
+            "import __Builtin.Path\nval joined = BuiltinPath.join_raw (\"alpha\", \"beta\")\n",
+        ));
+        assert!(
+            result.is_ok(),
+            "expected in-memory compile to accept internal builtin import"
+        );
+    }
+
     #[test]
     fn named_import_fetches_over_http_and_reuses_cache() {
         let project_dir = unique_temp_dir("named-import-ok");
@@ -1816,14 +2022,91 @@ Prelude = "blake3:deadbeef"
     }
 
     #[test]
-    fn named_import_rejects_reserved_package_name() {
-        match split_import_name("__Builtin.Filesystem") {
+    fn named_import_accepts_internal_builtin_package_without_lockfile() {
+        let project_dir = unique_temp_dir("internal-builtin-import");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &entry_path,
+            "import __Builtin.Path\nval joined = BuiltinPath.join_raw (\"alpha\", \"beta\")\n",
+        );
+
+        let result = compile_path(&entry_path);
+        assert!(
+            result.is_ok(),
+            "expected internal builtin import to compile"
+        );
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[cfg(feature = "builtin-path")]
+    #[test]
+    fn malformed_lockfile_does_not_affect_local_use_compile() {
+        let project_dir = unique_temp_dir("local-use-ignores-bad-lockfile");
+        let entry_path = project_dir.join("main.hml");
+        let helper_path = project_dir.join("helper.hml");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            "this = [ is not valid toml",
+        );
+        write_file(&helper_path, "val local_answer = 7\n");
+        write_file(
+            &entry_path,
+            "use \"./helper.hml\"\nval answer = local_answer\n",
+        );
+
+        let result = compile_path(&entry_path);
+        assert!(
+            result.is_ok(),
+            "expected malformed lockfile to not affect local-only compilation"
+        );
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_unknown_internal_builtin_module() {
+        let project_dir = unique_temp_dir("unknown-internal-builtin");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(&entry_path, "import __Builtin.Nope\nval answer = 1\n");
+
+        let result = compile_path(&entry_path);
+        match result {
             Err(CompileError::Codegen(message)) => {
-                assert!(message.contains("reserved package name"));
-                assert!(message.contains("__Builtin"));
+                assert!(message.contains("unknown internal builtin module"));
+                assert!(message.contains("__Builtin.Nope"));
             }
-            other => panic!("expected reserved package failure, got {other:?}"),
+            other => panic!("expected unknown internal builtin failure, got {other:?}"),
         }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[cfg(not(feature = "builtin-hash"))]
+    #[test]
+    fn named_import_reports_missing_feature_for_disabled_internal_builtin() {
+        let project_dir = unique_temp_dir("disabled-internal-builtin");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &entry_path,
+            "import __Builtin.Hash\nval digest = BuiltinHash.blake3_raw \"abc\"\n",
+        );
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("__Builtin.Hash"));
+                assert!(message.contains("not available in this build"));
+                assert!(message.contains("builtin-hash"));
+            }
+            other => panic!("expected disabled internal builtin failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
     }
 
     #[test]
@@ -1843,7 +2126,7 @@ base_url = "http://127.0.0.1:8000/__Builtin-v0.1.0"
 Filesystem = "blake3:deadbeef"
 "#,
         );
-        write_file(&entry_path, "val answer = 1\n");
+        write_file(&entry_path, "import Std.List\nval answer = 1\n");
 
         let result = compile_path(&entry_path);
         match result {

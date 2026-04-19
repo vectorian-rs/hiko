@@ -7,7 +7,7 @@ description = "Static documentation generator for published Hiko libraries"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
-hiko-common = { path = "../hiko-common" }
+hiko-common = { path = "../hiko-common", default-features = false, features = ["hash"] }
 tree-sitter-hiko = { path = "../tree-sitter-hiko" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

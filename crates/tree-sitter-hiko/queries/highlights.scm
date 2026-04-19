@@ -95,6 +95,10 @@
   package: (upper_identifier) @namespace
   module: (upper_identifier) @module)
 
+(import_declaration
+  package: (internal_package_identifier) @namespace
+  module: (upper_identifier) @module)
+
 (qualified_name
   head: (upper_identifier) @namespace)
 

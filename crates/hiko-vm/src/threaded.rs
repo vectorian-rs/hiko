@@ -86,6 +86,7 @@ impl ProcessTable {
 pub struct ThreadedRuntime {
     next_pid: Arc<AtomicU64>,
     next_io_token: Arc<AtomicU64>,
+    active_workers: Arc<std::sync::atomic::AtomicUsize>,
     table: Arc<ProcessTable>,
     scheduler: Arc<dyn Scheduler>,
     io_backend: Arc<dyn IoBackend>,
@@ -97,6 +98,7 @@ impl ThreadedRuntime {
         Self {
             next_pid: Arc::new(AtomicU64::new(1)),
             next_io_token: Arc::new(AtomicU64::new(1)),
+            active_workers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             table: Arc::new(ProcessTable::new()),
             scheduler: Arc::new(FifoScheduler::new(1000)),
             io_backend: Arc::new(ThreadPoolIoBackend::new(num_workers.max(2))),
@@ -132,10 +134,18 @@ impl ThreadedRuntime {
                 let scheduler = Arc::clone(&self.scheduler);
                 let next_pid = Arc::clone(&self.next_pid);
                 let next_io_token = Arc::clone(&self.next_io_token);
+                let active_workers = Arc::clone(&self.active_workers);
                 let io_backend = Arc::clone(&self.io_backend);
 
                 std::thread::spawn(move || {
-                    worker_loop(&table, &*scheduler, &next_pid, &next_io_token, &*io_backend);
+                    worker_loop(
+                        &table,
+                        &*scheduler,
+                        &next_pid,
+                        &next_io_token,
+                        &active_workers,
+                        &*io_backend,
+                    );
                 })
             })
             .collect();
@@ -169,7 +179,12 @@ impl ThreadedRuntime {
                 }
             }
 
-            if self.table.is_all_done_or_blocked() {
+            // `active_workers` is part of the shutdown/deadlock decision, so
+            // observe worker activity with acquire semantics before reading the
+            // process table state used to classify termination.
+            if self.table.is_all_done_or_blocked()
+                && self.active_workers.load(Ordering::Acquire) == 0
+            {
                 let has_io_waiters = !self.table.io_waiters.is_empty();
                 if !has_io_waiters {
                     if self.table.has_permanently_blocked() {
@@ -225,13 +240,25 @@ fn worker_loop(
     scheduler: &dyn Scheduler,
     next_pid: &AtomicU64,
     next_io_token: &AtomicU64,
+    active_workers: &std::sync::atomic::AtomicUsize,
     io_backend: &dyn IoBackend,
 ) {
+    struct ActiveSlice<'a>(&'a std::sync::atomic::AtomicUsize);
+
+    impl Drop for ActiveSlice<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
     loop {
         let pid = match scheduler.dequeue() {
             Some(pid) => pid,
             None => return,
         };
+
+        active_workers.fetch_add(1, Ordering::AcqRel);
+        let _active_slice = ActiveSlice(active_workers);
 
         let reductions = scheduler.reductions(pid);
         let mut process = match table.take(pid) {
@@ -579,12 +606,14 @@ mod tests {
         let _ = std::fs::write(&data, "rooted");
 
         let runtime = ThreadedRuntime::new(1);
-        // We need to set fs_root on the VM after spawn_root
-        let pid = runtime.spawn_root(program);
-        // Set fs_root on the spawned process's VM
-        if let Some(mut process) = runtime.table.processes.get_mut(&pid) {
-            process.vm.set_fs_root(root_str.to_string());
-        }
+        let pid = runtime.new_pid();
+        let mut vm = VM::new(program);
+        vm.enable_output_capture();
+        vm.async_io = true;
+        vm.set_fs_root(root_str.to_string());
+        let process = Process::new(pid, vm, None);
+        runtime.table.insert(process);
+        runtime.scheduler.enqueue(pid);
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["rooted\n"]);

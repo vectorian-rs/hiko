@@ -6,4 +6,45 @@ license = "MIT"
 description = "Shared builtin metadata for hiko"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+default = ["builtin-all"]
+builtin-all = [
+    "builtin-stdio",
+    "builtin-convert",
+    "builtin-string",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-math",
+    "builtin-bytes",
+    "builtin-hash",
+    "builtin-random",
+    "builtin-env",
+    "builtin-time",
+    "builtin-process",
+    "builtin-path",
+    "builtin-filesystem",
+    "builtin-http",
+    "builtin-exec",
+    "builtin-system",
+    "builtin-testing",
+]
+builtin-stdio = []
+builtin-convert = []
+builtin-string = []
+builtin-regex = []
+builtin-json = []
+builtin-math = []
+builtin-bytes = []
+builtin-hash = []
+builtin-random = []
+builtin-env = []
+builtin-time = []
+builtin-process = []
+builtin-path = []
+builtin-filesystem = []
+builtin-http = []
+builtin-exec = []
+builtin-system = []
+builtin-testing = []
+
 [dependencies]

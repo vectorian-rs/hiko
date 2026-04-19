@@ -4,6 +4,7 @@
 //! request with the backend, and resumes the process when the backend
 //! reports completion. No worker thread is blocked during I/O.
 
+#[cfg(feature = "builtin-http")]
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -185,30 +186,14 @@ fn execute_io_request(request: IoRequest) -> IoResult {
     }
 }
 
-/// Dispatch a ureq HTTP request. Returns the raw response.
-pub(crate) fn dispatch_ureq(
-    method: &str,
-    url: &str,
-    headers: &[(String, String)],
-    body: &str,
-) -> Result<ureq::http::Response<ureq::Body>, String> {
-    hiko_common::dispatch_ureq(method, url, headers, body)
-}
-
-/// Extract headers from a ureq HeaderMap as plain string pairs.
-pub(crate) fn extract_headers(headers: &ureq::http::HeaderMap) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect()
-}
-
 /// Async HTTP GET — runs on I/O pool thread.
+#[cfg(feature = "builtin-http")]
 fn aio_http_get(url: &str) -> Result<SendableValue, String> {
     aio_http("GET", url, &[], "", HttpResponseFormat::Text)
 }
 
 /// Async full HTTP — runs on I/O pool thread.
+#[cfg(feature = "builtin-http")]
 fn aio_http(
     method: &str,
     url: &str,
@@ -216,11 +201,13 @@ fn aio_http(
     body: &str,
     format: HttpResponseFormat,
 ) -> Result<SendableValue, String> {
-    let response = dispatch_ureq(method, url, req_headers, body)?;
+    let response = hiko_common::dispatch_ureq(method, url, req_headers, body)?;
 
     let status = SendableValue::Int(response.status().as_u16() as i64);
-    let headers: Vec<SendableValue> = extract_headers(response.headers())
-        .into_iter()
+    let headers: Vec<SendableValue> = response
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .map(|(k, v)| {
             SendableValue::Tuple(vec![
                 SendableValue::String(k.into()),
@@ -238,19 +225,35 @@ fn aio_http(
             SendableValue::String(s.into())
         }
         HttpResponseFormat::Json => {
-            let s = response
-                .into_body()
-                .read_to_string()
-                .map_err(|e| format!("http_json: {e}"))?;
-            let parsed: serde_json::Value =
-                serde_json::from_str(&s).map_err(|e| format!("http_json: {e}"))?;
-            json_value_to_sendable(&parsed)
+            #[cfg(feature = "builtin-http")]
+            {
+                let s = response
+                    .into_body()
+                    .read_to_string()
+                    .map_err(|e| format!("http_json: {e}"))?;
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&s).map_err(|e| format!("http_json: {e}"))?;
+                json_value_to_sendable(&parsed)
+            }
+            #[cfg(not(feature = "builtin-http"))]
+            {
+                let _ = response;
+                return Err("http_json is not available in this build".into());
+            }
         }
         HttpResponseFormat::Msgpack => {
-            let reader = response.into_body().into_reader();
-            let parsed: serde_json::Value =
-                rmp_serde::from_read(reader).map_err(|e| format!("http_msgpack: {e}"))?;
-            json_value_to_sendable(&parsed)
+            #[cfg(feature = "builtin-http")]
+            {
+                let reader = response.into_body().into_reader();
+                let parsed: serde_json::Value =
+                    rmp_serde::from_read(reader).map_err(|e| format!("http_msgpack: {e}"))?;
+                json_value_to_sendable(&parsed)
+            }
+            #[cfg(not(feature = "builtin-http"))]
+            {
+                let _ = response;
+                return Err("http_msgpack is not available in this build".into());
+            }
         }
         HttpResponseFormat::Bytes => {
             let mut buf = Vec::new();
@@ -271,6 +274,7 @@ fn aio_http(
 }
 
 /// Convert a serde_json::Value to SendableValue (for async JSON/msgpack parsing).
+#[cfg(feature = "builtin-http")]
 fn json_value_to_sendable(v: &serde_json::Value) -> SendableValue {
     match v {
         serde_json::Value::Null => SendableValue::Unit,
@@ -297,6 +301,24 @@ fn json_value_to_sendable(v: &serde_json::Value) -> SendableValue {
                 .collect(),
         ),
     }
+}
+
+#[cfg(not(feature = "builtin-http"))]
+fn aio_http_get(url: &str) -> Result<SendableValue, String> {
+    let _ = url;
+    Err("http_get is not available in this build".into())
+}
+
+#[cfg(not(feature = "builtin-http"))]
+fn aio_http(
+    method: &str,
+    url: &str,
+    req_headers: &[(String, String)],
+    body: &str,
+    format: HttpResponseFormat,
+) -> Result<SendableValue, String> {
+    let _ = (method, url, req_headers, body, format);
+    Err("HTTP builtins are not available in this build".into())
 }
 
 #[cfg(test)]

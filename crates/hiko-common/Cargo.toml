@@ -6,6 +6,10 @@ license = "MIT"
 description = "hiko-common: shared raw helpers for hiko"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+hash = ["dep:blake3"]
+http = ["dep:ureq"]
+
 [dependencies]
-blake3 = "1"
-ureq = "3"
+blake3 = { version = "1", optional = true }
+ureq = { version = "3", optional = true }

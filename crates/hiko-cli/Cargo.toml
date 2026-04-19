@@ -6,13 +6,149 @@ license = "MIT"
 description = "hiko-cli: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+default = ["builtin-all", "loader-all", "cli-hash"]
+builtin-all = [
+    "builtin-stdio",
+    "builtin-convert",
+    "builtin-string",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-math",
+    "builtin-bytes",
+    "builtin-hash",
+    "builtin-random",
+    "builtin-env",
+    "builtin-time",
+    "builtin-process",
+    "builtin-path",
+    "builtin-filesystem",
+    "builtin-http",
+    "builtin-exec",
+    "builtin-system",
+    "builtin-testing",
+]
+loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
+loader-named-imports = ["hiko-compile/loader-named-imports"]
+loader-http = ["loader-named-imports", "hiko-compile/loader-http"]
+loader-integrity-blake3 = ["loader-http", "hiko-compile/loader-integrity-blake3"]
+cli-hash = ["dep:hiko-common"]
+builtin-stdio = [
+    "hiko-builtin-meta/builtin-stdio",
+    "hiko-compile/builtin-stdio",
+    "hiko-types/builtin-stdio",
+    "hiko-vm/builtin-stdio",
+]
+builtin-convert = [
+    "hiko-builtin-meta/builtin-convert",
+    "hiko-compile/builtin-convert",
+    "hiko-types/builtin-convert",
+    "hiko-vm/builtin-convert",
+]
+builtin-string = [
+    "hiko-builtin-meta/builtin-string",
+    "hiko-compile/builtin-string",
+    "hiko-types/builtin-string",
+    "hiko-vm/builtin-string",
+]
+builtin-regex = [
+    "hiko-builtin-meta/builtin-regex",
+    "hiko-compile/builtin-regex",
+    "hiko-types/builtin-regex",
+    "hiko-vm/builtin-regex",
+]
+builtin-json = [
+    "hiko-builtin-meta/builtin-json",
+    "hiko-compile/builtin-json",
+    "hiko-types/builtin-json",
+    "hiko-vm/builtin-json",
+]
+builtin-math = [
+    "hiko-builtin-meta/builtin-math",
+    "hiko-compile/builtin-math",
+    "hiko-types/builtin-math",
+    "hiko-vm/builtin-math",
+]
+builtin-bytes = [
+    "hiko-builtin-meta/builtin-bytes",
+    "hiko-compile/builtin-bytes",
+    "hiko-types/builtin-bytes",
+    "hiko-vm/builtin-bytes",
+]
+builtin-hash = [
+    "hiko-builtin-meta/builtin-hash",
+    "hiko-compile/builtin-hash",
+    "hiko-types/builtin-hash",
+    "hiko-vm/builtin-hash",
+]
+builtin-random = [
+    "hiko-builtin-meta/builtin-random",
+    "hiko-compile/builtin-random",
+    "hiko-types/builtin-random",
+    "hiko-vm/builtin-random",
+]
+builtin-env = [
+    "hiko-builtin-meta/builtin-env",
+    "hiko-compile/builtin-env",
+    "hiko-types/builtin-env",
+    "hiko-vm/builtin-env",
+]
+builtin-time = [
+    "hiko-builtin-meta/builtin-time",
+    "hiko-compile/builtin-time",
+    "hiko-types/builtin-time",
+    "hiko-vm/builtin-time",
+]
+builtin-process = [
+    "hiko-builtin-meta/builtin-process",
+    "hiko-compile/builtin-process",
+    "hiko-types/builtin-process",
+    "hiko-vm/builtin-process",
+]
+builtin-path = [
+    "hiko-builtin-meta/builtin-path",
+    "hiko-compile/builtin-path",
+    "hiko-types/builtin-path",
+    "hiko-vm/builtin-path",
+]
+builtin-filesystem = [
+    "hiko-builtin-meta/builtin-filesystem",
+    "hiko-compile/builtin-filesystem",
+    "hiko-types/builtin-filesystem",
+    "hiko-vm/builtin-filesystem",
+]
+builtin-http = [
+    "hiko-builtin-meta/builtin-http",
+    "hiko-compile/builtin-http",
+    "hiko-types/builtin-http",
+    "hiko-vm/builtin-http",
+]
+builtin-exec = [
+    "hiko-builtin-meta/builtin-exec",
+    "hiko-compile/builtin-exec",
+    "hiko-types/builtin-exec",
+    "hiko-vm/builtin-exec",
+]
+builtin-system = [
+    "hiko-builtin-meta/builtin-system",
+    "hiko-compile/builtin-system",
+    "hiko-types/builtin-system",
+    "hiko-vm/builtin-system",
+]
+builtin-testing = [
+    "hiko-builtin-meta/builtin-testing",
+    "hiko-compile/builtin-testing",
+    "hiko-types/builtin-testing",
+    "hiko-vm/builtin-testing",
+]
+
 [dependencies]
-hiko-common = { version = "0.6.0", path = "../hiko-common" }
-hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta" }
+hiko-common = { version = "0.6.0", path = "../hiko-common", default-features = false, features = ["hash"], optional = true }
+hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta", default-features = false }
 hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
-hiko-types = { version = "0.6.0", path = "../hiko-types" }
-hiko-compile = { version = "0.6.0", path = "../hiko-compile" }
-hiko-vm = { version = "0.6.0", path = "../hiko-vm" }
+hiko-types = { version = "0.6.0", path = "../hiko-types", default-features = false }
+hiko-compile = { version = "0.6.0", path = "../hiko-compile", default-features = false }
+hiko-vm = { version = "0.6.0", path = "../hiko-vm", default-features = false }
 codespan-reporting = "0.11"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

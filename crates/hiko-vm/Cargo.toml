@@ -6,21 +6,90 @@ license = "MIT"
 description = "hiko-vm: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+default = ["builtin-all"]
+builtin-all = [
+    "builtin-stdio",
+    "builtin-convert",
+    "builtin-string",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-math",
+    "builtin-bytes",
+    "builtin-hash",
+    "builtin-random",
+    "builtin-env",
+    "builtin-time",
+    "builtin-process",
+    "builtin-path",
+    "builtin-filesystem",
+    "builtin-http",
+    "builtin-exec",
+    "builtin-system",
+    "builtin-testing",
+]
+builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-compile/builtin-stdio"]
+builtin-convert = ["hiko-builtin-meta/builtin-convert", "hiko-compile/builtin-convert"]
+builtin-string = ["hiko-builtin-meta/builtin-string", "hiko-compile/builtin-string"]
+builtin-regex = [
+    "hiko-builtin-meta/builtin-regex",
+    "hiko-compile/builtin-regex",
+    "dep:regex",
+]
+builtin-json = [
+    "hiko-builtin-meta/builtin-json",
+    "hiko-compile/builtin-json",
+    "dep:serde_json",
+]
+builtin-math = ["hiko-builtin-meta/builtin-math", "hiko-compile/builtin-math"]
+builtin-bytes = ["hiko-builtin-meta/builtin-bytes", "hiko-compile/builtin-bytes"]
+builtin-hash = [
+    "hiko-builtin-meta/builtin-hash",
+    "hiko-compile/builtin-hash",
+    "hiko-common/hash",
+]
+builtin-random = [
+    "hiko-builtin-meta/builtin-random",
+    "hiko-compile/builtin-random",
+    "dep:dryoc",
+]
+builtin-env = ["hiko-builtin-meta/builtin-env", "hiko-compile/builtin-env"]
+builtin-time = ["hiko-builtin-meta/builtin-time", "hiko-compile/builtin-time"]
+builtin-process = ["hiko-builtin-meta/builtin-process", "hiko-compile/builtin-process"]
+builtin-path = ["hiko-builtin-meta/builtin-path", "hiko-compile/builtin-path"]
+builtin-filesystem = [
+    "hiko-builtin-meta/builtin-filesystem",
+    "hiko-compile/builtin-filesystem",
+    "dep:glob",
+]
+builtin-http = [
+    "hiko-builtin-meta/builtin-http",
+    "hiko-compile/builtin-http",
+    "hiko-common/http",
+    "dep:rmp-serde",
+    "dep:serde_json",
+    "dep:url",
+]
+builtin-exec = ["hiko-builtin-meta/builtin-exec", "hiko-compile/builtin-exec"]
+builtin-system = ["hiko-builtin-meta/builtin-system", "hiko-compile/builtin-system"]
+builtin-testing = ["hiko-builtin-meta/builtin-testing", "hiko-compile/builtin-testing"]
+
 [dependencies]
-hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta" }
-hiko-common = { version = "0.6.0", path = "../hiko-common" }
-hiko-compile = { version = "0.6.0", path = "../hiko-compile" }
+hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta", default-features = false }
+hiko-common = { version = "0.6.0", path = "../hiko-common", default-features = false }
+hiko-compile = { version = "0.6.0", path = "../hiko-compile", default-features = false }
 hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }
 dashmap = "6"
-dryoc = { version = "0.7", default-features = false }
-glob = "0.3"
+dryoc = { version = "0.7", default-features = false, optional = true }
+glob = { version = "0.3", optional = true }
 smallvec = "1"
-rmp-serde = "1"
-serde_json = "1"
-regex = "1"
+rmp-serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+regex = { version = "1", optional = true }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-ureq = "3"
-url = "2"
+url = { version = "2", optional = true }
 
 [dev-dependencies]
+hiko-common = { version = "0.6.0", path = "../hiko-common", default-features = false, features = ["hash"] }
+hiko-compile = { version = "0.6.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }

@@ -6,6 +6,47 @@ license = "MIT"
 description = "hiko-types: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+default = ["builtin-all"]
+builtin-all = [
+    "builtin-stdio",
+    "builtin-convert",
+    "builtin-string",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-math",
+    "builtin-bytes",
+    "builtin-hash",
+    "builtin-random",
+    "builtin-env",
+    "builtin-time",
+    "builtin-process",
+    "builtin-path",
+    "builtin-filesystem",
+    "builtin-http",
+    "builtin-exec",
+    "builtin-system",
+    "builtin-testing",
+]
+builtin-stdio = ["hiko-builtin-meta/builtin-stdio"]
+builtin-convert = ["hiko-builtin-meta/builtin-convert"]
+builtin-string = ["hiko-builtin-meta/builtin-string"]
+builtin-regex = ["hiko-builtin-meta/builtin-regex"]
+builtin-json = ["hiko-builtin-meta/builtin-json"]
+builtin-math = ["hiko-builtin-meta/builtin-math"]
+builtin-bytes = ["hiko-builtin-meta/builtin-bytes"]
+builtin-hash = ["hiko-builtin-meta/builtin-hash"]
+builtin-random = ["hiko-builtin-meta/builtin-random"]
+builtin-env = ["hiko-builtin-meta/builtin-env"]
+builtin-time = ["hiko-builtin-meta/builtin-time"]
+builtin-process = ["hiko-builtin-meta/builtin-process"]
+builtin-path = ["hiko-builtin-meta/builtin-path"]
+builtin-filesystem = ["hiko-builtin-meta/builtin-filesystem"]
+builtin-http = ["hiko-builtin-meta/builtin-http"]
+builtin-exec = ["hiko-builtin-meta/builtin-exec"]
+builtin-system = ["hiko-builtin-meta/builtin-system"]
+builtin-testing = ["hiko-builtin-meta/builtin-testing"]
+
 [dependencies]
-hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta" }
+hiko-builtin-meta = { version = "0.6.0", path = "../hiko-builtin-meta", default-features = false }
 hiko-syntax = { version = "0.6.0", path = "../hiko-syntax" }

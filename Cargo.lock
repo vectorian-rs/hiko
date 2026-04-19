@@ -446,6 +446,7 @@ dependencies = [
 name = "hiko-compile"
 version = "0.6.0"
 dependencies = [
+ "hiko-builtin-meta",
  "hiko-common",
  "hiko-syntax",
  "hiko-types",
@@ -507,7 +508,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "toml",
- "ureq",
  "url",
 ]
 

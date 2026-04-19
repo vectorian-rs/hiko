@@ -463,7 +463,7 @@
           "name": "package",
           "content": {
             "type": "SYMBOL",
-            "name": "upper_identifier"
+            "name": "_import_package_name"
           }
         },
         {
@@ -2550,6 +2550,19 @@
         }
       ]
     },
+    "_import_package_name": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "upper_identifier"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "internal_package_identifier"
+        }
+      ]
+    },
     "wildcard": {
       "type": "STRING",
       "value": "_"
@@ -2570,6 +2583,10 @@
     "identifier": {
       "type": "PATTERN",
       "value": "[a-z][a-zA-Z0-9_]*"
+    },
+    "internal_package_identifier": {
+      "type": "PATTERN",
+      "value": "__[A-Za-z][a-zA-Z0-9_]*"
     },
     "upper_identifier": {
       "type": "PATTERN",
