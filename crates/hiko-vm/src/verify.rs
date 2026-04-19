@@ -34,11 +34,11 @@ struct DecodedInst {
     op: Op,
     stack: StackRule,
     successors: Vec<usize>,
+    handler_clause_targets: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
 enum StackRule {
-    Skip,
     Exact { min_depth: usize, delta: isize },
     Terminal { min_depth: usize },
 }
@@ -67,20 +67,9 @@ fn verify_chunk(
     functions: &[FunctionProto],
 ) -> Result<(), String> {
     let decoded = decode_chunk(chunk, proto, functions)?;
-    if !contains_effect_ops(&decoded) {
-        let initial_depth = proto.map_or(0usize, |p| p.arity as usize);
-        verify_stack_effects(&decoded, initial_depth)?;
-    }
+    let initial_depth = proto.map_or(0usize, |p| p.arity as usize);
+    verify_stack_effects(&decoded, initial_depth)?;
     Ok(())
-}
-
-fn contains_effect_ops(decoded: &[DecodedInst]) -> bool {
-    decoded.iter().any(|inst| {
-        matches!(
-            inst.op,
-            Op::InstallHandler | Op::Perform | Op::Resume | Op::RemoveHandler
-        )
-    })
 }
 
 fn decode_chunk(
@@ -159,6 +148,7 @@ fn decode_instruction(
         };
 
     let mut successors = Vec::new();
+    let mut handler_clause_targets = Vec::new();
     let stack = match op {
         Op::Halt => StackRule::Terminal { min_depth: 0 },
         Op::Const => {
@@ -393,20 +383,30 @@ fn decode_instruction(
                 let _effect_tag = read_u16(chunk, ip, "InstallHandler clause")?;
                 let offset = read_i16(chunk, ip, "InstallHandler clause")?;
                 let target = read_relative_target(*ip, offset, "InstallHandler clause")?;
-                successors.push(target);
+                handler_clause_targets.push(target);
             }
             successors.push(*ip);
-            StackRule::Skip
+            StackRule::Exact {
+                min_depth: 0,
+                delta: 0,
+            }
         }
         Op::RemoveHandler => {
             successors.push(*ip);
-            StackRule::Skip
+            StackRule::Exact {
+                min_depth: 0,
+                delta: 0,
+            }
         }
         Op::Perform => {
             let _effect_tag = read_u16(chunk, ip, "Perform")?;
-            StackRule::Skip
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 1,
+                delta: 0,
+            }
         }
-        Op::Resume => StackRule::Skip,
+        Op::Resume => StackRule::Terminal { min_depth: 2 },
     };
 
     Ok(DecodedInst {
@@ -414,6 +414,7 @@ fn decode_instruction(
         op,
         stack,
         successors,
+        handler_clause_targets,
     })
 }
 
@@ -447,7 +448,6 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
             .expect("decoded instruction starts should be indexed")];
 
         let successor_depth = match &inst.stack {
-            StackRule::Skip => continue,
             StackRule::Exact { min_depth, delta } => {
                 if depth < *min_depth {
                     return Err(format!(
@@ -470,6 +470,17 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
 
         for target in &inst.successors {
             pending.push_back((*target, successor_depth));
+        }
+        if !inst.handler_clause_targets.is_empty() {
+            let clause_depth = successor_depth.checked_add(2).ok_or_else(|| {
+                format!(
+                    "{:?} at offset {} overflows stack depth for handler clause entry",
+                    inst.op, inst.start
+                )
+            })?;
+            for target in &inst.handler_clause_targets {
+                pending.push_back((*target, clause_depth));
+            }
         }
     }
 
@@ -539,5 +550,19 @@ mod tests {
         };
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("expects a string constant"));
+    }
+
+    #[test]
+    fn rejects_perform_without_payload() {
+        let program = empty_program(vec![Op::Perform as u8, 0, 0, Op::Halt as u8]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("requires stack depth >= 1"));
+    }
+
+    #[test]
+    fn rejects_resume_without_continuation_and_argument() {
+        let program = empty_program(vec![Op::Resume as u8]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("requires stack depth >= 2"));
     }
 }

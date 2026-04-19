@@ -1,5 +1,7 @@
 use smallvec::smallvec;
+use std::any::Any;
 use std::collections::HashMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -23,6 +25,9 @@ pub const DEFAULT_MAX_STACK_SLOTS: usize = 64 * 1024;
 /// This is a fixed runtime guard today; unlike heap and fuel, it is not yet
 /// configurable through `VMBuilder`.
 pub const DEFAULT_MAX_CALL_FRAMES: usize = 65_536;
+
+/// Default hard limit on installed effect handlers.
+pub const DEFAULT_MAX_HANDLER_FRAMES: usize = 65_536;
 
 pub(crate) const TAG_NIL: u16 = 0;
 pub(crate) const TAG_CONS: u16 = 1;
@@ -67,6 +72,20 @@ impl RuntimeError {
     pub fn is_heap_limit(&self) -> bool {
         self.message.starts_with("heap limit exceeded")
     }
+}
+
+fn heap_limit_panic_message(payload: &(dyn Any + Send)) -> Option<String> {
+    let message = if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        message
+    } else {
+        return None;
+    };
+
+    message
+        .starts_with("heap limit exceeded")
+        .then(|| message.to_string())
 }
 
 struct ResolvedExec {
@@ -457,7 +476,11 @@ impl VM {
                 let frame_base = if i == 0 {
                     main_base
                 } else {
-                    stack_base + sf.base_offset
+                    stack_base
+                        .checked_add(sf.base_offset)
+                        .ok_or_else(|| RuntimeError {
+                            message: "resume_blocked: saved frame base overflow".into(),
+                        })?
                 };
                 if i == 0 && !self.frames.is_empty() {
                     // Overwrite the main frame with the saved one
@@ -663,6 +686,64 @@ impl VM {
         self.alloc(HeapObject::String(s))
     }
 
+    fn dispatch_catching_heap_limit(&mut self) -> Result<(), RuntimeError> {
+        match panic::catch_unwind(AssertUnwindSafe(|| self.dispatch())) {
+            Ok(result) => result,
+            Err(payload) => {
+                if let Some(message) = heap_limit_panic_message(payload.as_ref()) {
+                    Err(RuntimeError { message })
+                } else {
+                    panic::resume_unwind(payload);
+                }
+            }
+        }
+    }
+
+    fn checked_relative_ip(
+        &self,
+        proto_idx: usize,
+        base_after_operand: usize,
+        offset: i16,
+        what: &str,
+    ) -> Result<usize, RuntimeError> {
+        let target = base_after_operand
+            .checked_add_signed(offset as isize)
+            .ok_or_else(|| RuntimeError {
+                message: format!("{what}: instruction pointer overflow"),
+            })?;
+        if target > self.chunk_for(proto_idx).code.len() {
+            return Err(RuntimeError {
+                message: format!("{what}: relative jump target {target} lands outside chunk"),
+            });
+        }
+        Ok(target)
+    }
+
+    fn capture_value(
+        &self,
+        frame_idx: usize,
+        is_local: bool,
+        index: usize,
+    ) -> Result<Value, RuntimeError> {
+        if is_local {
+            let base = self.frames[frame_idx].base;
+            let slot = base.checked_add(index).ok_or_else(|| RuntimeError {
+                message: "MakeClosure: local capture index overflow".into(),
+            })?;
+            self.stack.get(slot).copied().ok_or_else(|| RuntimeError {
+                message: format!("MakeClosure: local capture index {index} out of bounds"),
+            })
+        } else {
+            self.frames[frame_idx]
+                .captures
+                .get(index)
+                .copied()
+                .ok_or_else(|| RuntimeError {
+                    message: format!("MakeClosure: upvalue index {index} out of bounds"),
+                })
+        }
+    }
+
     fn gc_collect_with_extra_roots(&mut self, extra_roots: impl IntoIterator<Item = GcRef>) {
         let roots = self
             .stack
@@ -775,7 +856,7 @@ impl VM {
             base: 0,
             captures: Arc::from([]),
         });
-        self.dispatch()
+        self.dispatch_catching_heap_limit()
     }
 
     /// Run for up to `reductions` opcodes, then yield.
@@ -813,7 +894,7 @@ impl VM {
             });
         }
 
-        let result = self.dispatch();
+        let result = self.dispatch_catching_heap_limit();
 
         // Update persistent fuel budget: deduct consumed reductions
         if let Some(ref mut remaining) = self.max_fuel_remaining {
@@ -1431,15 +1512,18 @@ impl VM {
                 // ── Control flow ────────────────────────────────
                 Op::Jump => {
                     let offset = self.read_i16()?;
-                    let frame = &mut self.frames[fi];
-                    frame.ip = (frame.ip as i64 + offset as i64) as usize;
+                    let ip = self.frames[fi].ip;
+                    let target = self.checked_relative_ip(proto_idx, ip, offset, "Jump")?;
+                    self.frames[fi].ip = target;
                 }
                 Op::JumpIfFalse => {
                     let offset = self.read_i16()?;
                     let cond = self.pop_bool()?;
                     if !cond {
-                        let frame = &mut self.frames[fi];
-                        frame.ip = (frame.ip as i64 + offset as i64) as usize;
+                        let ip = self.frames[fi].ip;
+                        let target =
+                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfFalse")?;
+                        self.frames[fi].ip = target;
                     }
                 }
 
@@ -1451,12 +1535,7 @@ impl VM {
                     for _ in 0..n_captures {
                         let is_local = self.read_u8()? != 0;
                         let index = self.read_u16()? as usize;
-                        let val = if is_local {
-                            let base = self.frames[fi].base;
-                            self.stack[base + index]
-                        } else {
-                            self.frames[fi].captures[index]
-                        };
+                        let val = self.capture_value(fi, is_local, index)?;
                         captures.push(val);
                     }
                     let captures: Arc<[Value]> = Arc::from(captures);
@@ -1620,12 +1699,22 @@ impl VM {
 
                 // ── Effect handlers ───────────────────────────
                 Op::InstallHandler => {
+                    if self.handlers.len() >= DEFAULT_MAX_HANDLER_FRAMES {
+                        return Err(RuntimeError {
+                            message: "too many installed effect handlers".into(),
+                        });
+                    }
                     let n_clauses = self.read_u16()? as usize;
                     let mut clauses = Vec::with_capacity(n_clauses);
                     for _ in 0..n_clauses {
                         let effect_tag = self.read_u16()?;
-                        let offset = self.read_i16()? as i64;
-                        let abs_ip = (self.frames[fi].ip as i64 + offset) as usize;
+                        let offset = self.read_i16()?;
+                        let abs_ip = self.checked_relative_ip(
+                            self.frames[fi].proto_idx,
+                            self.frames[fi].ip,
+                            offset,
+                            "InstallHandler clause",
+                        )?;
                         clauses.push((effect_tag, abs_ip));
                     }
                     self.handlers.push(HandlerFrame {
@@ -1670,7 +1759,12 @@ impl VM {
                         let save_from = handler.stack_base;
                         let mut saved_stack = self.stack.split_off(save_from);
 
-                        let handler_locals_count = save_from - handler_base;
+                        let handler_locals_count =
+                            save_from
+                                .checked_sub(handler_base)
+                                .ok_or_else(|| RuntimeError {
+                                    message: "perform: invalid handler stack range".into(),
+                                })?;
                         if handler_locals_count > 0 {
                             let mut combined =
                                 Vec::with_capacity(handler_locals_count + saved_stack.len());
@@ -1689,15 +1783,31 @@ impl VM {
 
                         let mut saved_frames = vec![handler_frame];
                         for frame in &self.frames[handler.call_frame_idx + 1..] {
+                            let frame_offset =
+                                frame
+                                    .base
+                                    .checked_sub(save_from)
+                                    .ok_or_else(|| RuntimeError {
+                                        message: "perform: invalid saved frame base".into(),
+                                    })?;
                             saved_frames.push(SavedFrame {
                                 proto_idx: frame.proto_idx,
                                 ip: frame.ip,
-                                base_offset: handler_locals_count + (frame.base - save_from),
+                                base_offset: handler_locals_count
+                                    .checked_add(frame_offset)
+                                    .ok_or_else(|| RuntimeError {
+                                        message: "perform: saved frame base overflow".into(),
+                                    })?,
                                 captures: frame.captures.clone(),
                             });
                         }
 
-                        let locals_offset = save_from - handler_base;
+                        let locals_offset =
+                            save_from
+                                .checked_sub(handler_base)
+                                .ok_or_else(|| RuntimeError {
+                                    message: "perform: invalid handler locals offset".into(),
+                                })?;
                         let cont = self.alloc(HeapObject::Continuation {
                             saved_frames,
                             saved_stack,
@@ -1759,7 +1869,12 @@ impl VM {
 
                     let first_restored_idx = self.frames.len();
                     for sf in &saved_frames {
-                        let frame_base = stack_base + sf.base_offset;
+                        let frame_base =
+                            stack_base
+                                .checked_add(sf.base_offset)
+                                .ok_or_else(|| RuntimeError {
+                                    message: "resume: saved frame base overflow".into(),
+                                })?;
                         self.frames.push(CallFrame {
                             proto_idx: sf.proto_idx,
                             ip: sf.ip,
@@ -1776,9 +1891,14 @@ impl VM {
                         && self.handlers.len() < sh.handler_count_before
                     {
                         let handler_frame_base = self.frames[first_restored_idx].base;
+                        let stack_base = handler_frame_base
+                            .checked_add(sh.locals_offset)
+                            .ok_or_else(|| RuntimeError {
+                                message: "resume: handler stack base overflow".into(),
+                            })?;
                         self.handlers.push(HandlerFrame {
                             call_frame_idx: first_restored_idx,
-                            stack_base: handler_frame_base + sh.locals_offset,
+                            stack_base,
                             clauses: sh.clauses,
                             proto_idx: sh.proto_idx,
                             captures: sh.captures,
@@ -2354,6 +2474,88 @@ mod tests {
         let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
         assert_eq!(err.message, "resume_blocked: expected continuation");
         assert!(vm.blocked_continuation.is_none());
+    }
+
+    #[test]
+    fn test_resume_blocked_rejects_saved_frame_base_overflow() {
+        let mut vm = compile_vm("val _ = ()");
+        vm.stack.push(Value::Unit);
+        let cont = vm.heap.alloc(HeapObject::Continuation {
+            saved_frames: vec![
+                SavedFrame {
+                    proto_idx: usize::MAX,
+                    ip: 0,
+                    base_offset: 0,
+                    captures: Arc::from([]),
+                },
+                SavedFrame {
+                    proto_idx: usize::MAX,
+                    ip: 0,
+                    base_offset: usize::MAX,
+                    captures: Arc::from([]),
+                },
+            ],
+            saved_stack: vec![Value::Unit],
+            saved_handler: None,
+        });
+        vm.blocked_continuation = Some(cont);
+
+        let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
+        assert_eq!(err.message, "resume_blocked: saved frame base overflow");
+    }
+
+    #[test]
+    fn test_capture_value_rejects_out_of_bounds_local_index() {
+        let mut vm = compile_vm("val _ = ()");
+        vm.stack.push(Value::Unit);
+        vm.frames.push(CallFrame {
+            proto_idx: usize::MAX,
+            ip: 0,
+            base: 0,
+            captures: Arc::from([]),
+        });
+
+        let err = vm.capture_value(0, true, 1).unwrap_err();
+        assert_eq!(
+            err.message,
+            "MakeClosure: local capture index 1 out of bounds"
+        );
+    }
+
+    #[test]
+    fn test_install_handler_rejects_excessive_nesting() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::InstallHandler as u8, 0, 0, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+        };
+        let mut vm = VM::new(program);
+        for _ in 0..DEFAULT_MAX_HANDLER_FRAMES {
+            vm.handlers.push(HandlerFrame {
+                call_frame_idx: 0,
+                stack_base: 0,
+                clauses: Vec::new(),
+                proto_idx: usize::MAX,
+                captures: Arc::from([]),
+            });
+        }
+
+        let err = vm.run().unwrap_err();
+        assert_eq!(err.message, "too many installed effect handlers");
+    }
+
+    #[test]
+    fn test_heap_limit_returns_runtime_error() {
+        let mut vm = compile_vm("val pair = (1, 2)");
+        vm.set_max_heap(0);
+
+        let err = vm.run().unwrap_err();
+        assert!(err.is_heap_limit());
+        assert_eq!(err.message, "heap limit exceeded: 0 objects (max 0)");
     }
 
     #[test]
