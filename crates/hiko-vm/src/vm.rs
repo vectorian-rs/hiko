@@ -9,6 +9,7 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, Function
 use hiko_compile::op::Op;
 
 use crate::heap::Heap;
+use crate::process::ProcessFailure;
 use crate::value::{
     BuiltinEntry, BuiltinFn, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
 };
@@ -40,7 +41,7 @@ pub enum RunResult {
     /// Reduction budget exhausted; can be resumed.
     Yielded,
     /// Program failed with an error.
-    Failed(String),
+    Failed(ProcessFailure),
     /// Process requested to spawn a child.
     /// Contains (proto_idx, serialized_captures).
     Spawn {
@@ -865,13 +866,15 @@ impl VM {
     /// Returns the outcome: Done, Yielded, or Failed.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
         if let Some(message) = self.startup_error.as_ref() {
-            return RunResult::Failed(format!("program verification failed: {message}"));
+            return RunResult::Failed(ProcessFailure::runtime(format!(
+                "program verification failed: {message}"
+            )));
         }
         // Check persistent fuel budget
         if let Some(ref remaining) = self.max_fuel_remaining
             && *remaining == 0
         {
-            return RunResult::Failed("fuel exhausted (max_fuel limit reached)".into());
+            return RunResult::Failed(ProcessFailure::FuelExhausted);
         }
         // Use the minimum of slice reductions and persistent budget
         let effective = match self.max_fuel_remaining {
@@ -931,7 +934,7 @@ impl VM {
                 self.gc_collect_at_boundary_if_needed();
                 RunResult::Yielded
             }
-            Err(e) => RunResult::Failed(e.message),
+            Err(e) => RunResult::Failed(ProcessFailure::from_runtime_message(e.message)),
         }
     }
 

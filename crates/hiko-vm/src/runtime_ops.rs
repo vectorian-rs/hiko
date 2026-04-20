@@ -1,6 +1,6 @@
 //! Shared process operation logic used by both single-threaded and multi-threaded runtimes.
 
-use crate::process::{Pid, ProcessStatus};
+use crate::process::{Pid, ProcessFailure, ProcessStatus};
 use crate::sendable::{SendableValue, deserialize, serialize};
 use crate::value::Value;
 use crate::vm::VM;
@@ -8,7 +8,7 @@ use crate::vm::VM;
 /// Result of checking a child's state for an await operation.
 pub enum ChildState {
     Done(SendableValue),
-    Failed(String),
+    Failed(ProcessFailure),
     Running,
     NotFound,
     NotChild,
@@ -63,10 +63,10 @@ pub fn serialize_result(vm: &VM) -> SendableValue {
 }
 
 /// Prepare the delivery payload for waiters of a finished process.
-pub fn prepare_delivery(status: &ProcessStatus, vm: &VM) -> Result<SendableValue, String> {
+pub fn prepare_delivery(status: &ProcessStatus, vm: &VM) -> Result<SendableValue, ProcessFailure> {
     match status {
         ProcessStatus::Done => Ok(serialize_result(vm)),
         ProcessStatus::Failed(msg) => Err(msg.clone()),
-        _ => Err("child not finished".into()),
+        _ => Err(ProcessFailure::runtime("child not finished")),
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::process::{BlockReason, Pid, Process, ProcessStatus};
+use crate::process::{BlockReason, Pid, Process, ProcessFailure, ProcessStatus};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::sendable::{SendableValue, deserialize, serialize};
 use crate::value::Value;
@@ -89,8 +89,8 @@ impl Runtime {
                         match serialize(val, &process.vm.heap) {
                             Ok(sv) => process.result = Some(sv),
                             Err(e) => {
-                                process.status = ProcessStatus::Failed(format!(
-                                    "child result not sendable: {e}"
+                                process.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                                    format!("child result not sendable: {e}"),
                                 ));
                                 self.scheduler.remove(pid);
                                 self.wake_and_deliver_results(pid);
@@ -105,9 +105,9 @@ impl Runtime {
                 RunResult::Yielded => {
                     self.scheduler.enqueue(pid);
                 }
-                RunResult::Failed(msg) => {
+                RunResult::Failed(failure) => {
                     let process = self.processes.get_mut(&pid).unwrap();
-                    process.status = ProcessStatus::Failed(msg);
+                    process.status = ProcessStatus::Failed(failure);
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -129,12 +129,13 @@ impl Runtime {
                 }
                 RunResult::Io(_req) => {
                     let process = self.processes.get_mut(&pid).unwrap();
-                    process.status =
-                        ProcessStatus::Failed("async I/O requires ThreadedRuntime".into());
+                    process.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                        "async I/O requires ThreadedRuntime",
+                    ));
                 }
                 RunResult::Cancelled => {
                     let process = self.processes.get_mut(&pid).unwrap();
-                    process.status = ProcessStatus::Failed("cancelled".into());
+                    process.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -171,7 +172,7 @@ impl Runtime {
         // Extract child state as an owned value to avoid borrow conflicts
         enum ChildState {
             Done,
-            Failed(String),
+            Failed(ProcessFailure),
             Running,
             NotFound,
             NotChild,
@@ -204,8 +205,9 @@ impl Runtime {
                     Some(sv) => sv,
                     None => {
                         let parent = self.processes.get_mut(&parent_pid).unwrap();
-                        parent.status =
-                            ProcessStatus::Failed("await: child result already consumed".into());
+                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                            "await: child result already consumed",
+                        ));
                         return;
                     }
                 };
@@ -217,9 +219,10 @@ impl Runtime {
                 self.processes.remove(&child_pid);
                 self.waiters.remove(&child_pid);
             }
-            ChildState::Failed(msg) => {
+            ChildState::Failed(failure) => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
+                parent.status =
+                    ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(Box::new(failure)));
                 self.scheduler.remove(parent_pid);
                 self.processes.remove(&child_pid);
                 self.waiters.remove(&child_pid);
@@ -231,16 +234,18 @@ impl Runtime {
             }
             ChildState::NotFound => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status =
-                    ProcessStatus::Failed(format!("await: unknown process {:?}", child_pid));
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "await: unknown process {:?}",
+                    child_pid
+                )));
                 self.scheduler.remove(parent_pid);
             }
             ChildState::NotChild => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(format!(
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
                     "await: process {:?} is not a child of {:?}",
                     child_pid, parent_pid
-                ));
+                )));
                 self.scheduler.remove(parent_pid);
             }
         }
@@ -263,7 +268,7 @@ impl Runtime {
                 Ok(sendable)
             }
             ProcessStatus::Failed(msg) => Err(msg.clone()),
-            _ => Err("child not finished".into()),
+            _ => Err(ProcessFailure::runtime("child not finished")),
         };
 
         for waiter in waiter_pids {
@@ -277,8 +282,9 @@ impl Runtime {
                         self.scheduler.enqueue(waiter);
                     }
                     Err(msg) => {
-                        process.status =
-                            ProcessStatus::Failed(format!("child process failed: {msg}"));
+                        process.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
+                            Box::new(msg.clone()),
+                        ));
                     }
                 }
             }
@@ -443,7 +449,7 @@ mod tests {
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
         match &runtime.processes[&pid].status {
-            ProcessStatus::Failed(msg) => assert!(msg.contains("boom")),
+            ProcessStatus::Failed(msg) => assert!(msg.to_string().contains("boom")),
             other => panic!("expected Failed, got {:?}", other),
         }
     }

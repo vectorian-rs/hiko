@@ -2,6 +2,7 @@
 
 use crate::sendable::SendableValue;
 use crate::vm::VM;
+use std::fmt;
 
 /// Unique process identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -38,7 +39,55 @@ pub enum ProcessStatus {
     /// Finished successfully.
     Done,
     /// Finished with an error.
-    Failed(String),
+    Failed(ProcessFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessFailure {
+    RuntimeError(String),
+    HeapObjectLimitExceeded { limit: usize, live: usize },
+    FuelExhausted,
+    Cancelled,
+    ChildProcessFailed(Box<ProcessFailure>),
+}
+
+impl ProcessFailure {
+    pub fn runtime(message: impl Into<String>) -> Self {
+        Self::RuntimeError(message.into())
+    }
+
+    pub fn from_runtime_message(message: String) -> Self {
+        if message == "fuel exhausted (max_fuel limit reached)" {
+            return Self::FuelExhausted;
+        }
+
+        if let Some((live, limit)) = parse_heap_limit_message(&message) {
+            return Self::HeapObjectLimitExceeded { limit, live };
+        }
+
+        Self::RuntimeError(message)
+    }
+}
+
+impl fmt::Display for ProcessFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RuntimeError(message) => f.write_str(message),
+            Self::HeapObjectLimitExceeded { limit, live } => {
+                write!(f, "heap limit exceeded: {live} objects (max {limit})")
+            }
+            Self::FuelExhausted => f.write_str("fuel exhausted (max_fuel limit reached)"),
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::ChildProcessFailed(cause) => write!(f, "child process failed: {cause}"),
+        }
+    }
+}
+
+fn parse_heap_limit_message(message: &str) -> Option<(usize, usize)> {
+    let suffix = message.strip_prefix("heap limit exceeded: ")?;
+    let (live, limit) = suffix.split_once(" objects (max ")?;
+    let limit = limit.strip_suffix(')')?;
+    Some((live.parse().ok()?, limit.parse().ok()?))
 }
 
 /// An isolated hiko process.

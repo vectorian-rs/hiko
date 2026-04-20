@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 
 use crate::io_backend::{IoBackend, IoToken, ThreadPoolIoBackend};
-use crate::process::{BlockReason, Pid, Process, ProcessStatus, Scope, ScopeId};
+use crate::process::{BlockReason, Pid, Process, ProcessFailure, ProcessStatus, Scope, ScopeId};
 use crate::runtime_ops::deliver_result_to_parent;
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::value::Value;
@@ -170,7 +170,7 @@ impl ThreadedRuntime {
                             self.scheduler.enqueue(pid);
                         }
                         crate::io_backend::IoResult::Err(msg) => {
-                            process.status = ProcessStatus::Failed(msg);
+                            process.status = ProcessStatus::Failed(ProcessFailure::runtime(msg));
                             drop(process);
                             self.scheduler.remove(pid);
                             wake_waiters(&self.table, &*self.scheduler, pid);
@@ -202,9 +202,9 @@ impl ThreadedRuntime {
                         // Mark as failed and atomically clean up waiters
                         for &pid in &stuck {
                             if let Some(mut entry) = self.table.processes.get_mut(&pid) {
-                                entry.status = ProcessStatus::Failed(
-                                    "deadlock: process blocked with no possible waker".into(),
-                                );
+                                entry.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                                    "deadlock: process blocked with no possible waker",
+                                ));
                             }
                             // Clear any waiters that were waiting on this process
                             if let Some((_, waiter_pids)) = self.table.waiters.remove(&pid) {
@@ -213,9 +213,10 @@ impl ThreadedRuntime {
                                         self.table.processes.get_mut(&waiter_pid)
                                         && matches!(waiter.status, ProcessStatus::Blocked(_))
                                     {
-                                        waiter.status = ProcessStatus::Failed(
-                                            "deadlock: child process deadlocked".into(),
-                                        );
+                                        waiter.status =
+                                            ProcessStatus::Failed(ProcessFailure::runtime(
+                                                "deadlock: child process deadlocked",
+                                            ));
                                     }
                                 }
                             }
@@ -277,8 +278,9 @@ fn worker_loop(
                     match crate::sendable::serialize(val, &process.vm.heap) {
                         Ok(sv) => process.result = Some(sv),
                         Err(e) => {
-                            process.status =
-                                ProcessStatus::Failed(format!("child result not sendable: {e}"));
+                            process.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                                format!("child result not sendable: {e}"),
+                            ));
                             table.return_process(process);
                             scheduler.remove(pid);
                             wake_waiters(table, scheduler, pid);
@@ -295,8 +297,8 @@ fn worker_loop(
                 table.return_process(process);
                 scheduler.enqueue(pid);
             }
-            RunResult::Failed(msg) => {
-                process.status = ProcessStatus::Failed(msg);
+            RunResult::Failed(failure) => {
+                process.status = ProcessStatus::Failed(failure);
                 table.return_process(process);
                 scheduler.remove(pid);
                 wake_waiters(table, scheduler, pid);
@@ -333,7 +335,7 @@ fn worker_loop(
                 io_backend.register(token, request);
             }
             RunResult::Cancelled => {
-                process.status = ProcessStatus::Failed("cancelled".into());
+                process.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
                 table.return_process(process);
                 scheduler.remove(pid);
                 wake_waiters(table, scheduler, pid);
@@ -353,15 +355,17 @@ fn handle_await(
     // Use get_mut to allow take() on result for single-consumption
     match table.processes.get_mut(&child_pid) {
         None => {
-            parent.status =
-                ProcessStatus::Failed(format!("await: unknown process {:?}", child_pid));
+            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                "await: unknown process {:?}",
+                child_pid
+            )));
             table.return_process(parent);
         }
         Some(child) if child.parent != Some(parent_pid) => {
-            parent.status = ProcessStatus::Failed(format!(
+            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
                 "await: process {:?} is not a child of {:?}",
                 child_pid, parent_pid
-            ));
+            )));
             table.return_process(parent);
         }
         Some(mut child) => match &child.status {
@@ -378,16 +382,18 @@ fn handle_await(
                     }
                     None => {
                         drop(child);
-                        parent.status =
-                            ProcessStatus::Failed("await: result already consumed".into());
+                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                            "await: result already consumed",
+                        ));
                         table.return_process(parent);
                     }
                 }
             }
             ProcessStatus::Failed(msg) => {
-                let msg = msg.clone();
+                let failure = msg.clone();
                 drop(child);
-                parent.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
+                parent.status =
+                    ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(Box::new(failure)));
                 table.processes.remove(&child_pid);
                 table.waiters.remove(&child_pid);
                 table.return_process(parent);
@@ -413,10 +419,10 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
         Some(p) => match &p.status {
             ProcessStatus::Done => match &p.result {
                 Some(sv) => Ok(sv.clone()),
-                None => Err("child result already consumed".into()),
+                None => Err(ProcessFailure::runtime("child result already consumed")),
             },
             ProcessStatus::Failed(msg) => Err(msg.clone()),
-            _ => Err("child not finished".into()),
+            _ => Err(ProcessFailure::runtime("child not finished")),
         },
         None => return,
     };
@@ -431,7 +437,9 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
                     scheduler.enqueue(waiter_pid);
                 }
                 Err(msg) => {
-                    waiter.status = ProcessStatus::Failed(format!("child process failed: {msg}"));
+                    waiter.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
+                        Box::new(msg.clone()),
+                    ));
                 }
             }
         }
