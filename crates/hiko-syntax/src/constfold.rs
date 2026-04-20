@@ -143,6 +143,7 @@ fn fold_expr(expr: Expr) -> Expr {
 
 fn try_fold_binop(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<ExprKind> {
     match (op, &lhs.kind, &rhs.kind) {
+        (BinOp::Pipe, _, _) => None,
         // Int arithmetic
         (BinOp::AddInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
             a.checked_add(*b).map(ExprKind::IntLit)

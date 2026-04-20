@@ -1,13 +1,14 @@
 const PREC = {
   annotation: 1,
-  orelse: 2,
-  andalso: 3,
-  compare: 4,
-  cons: 5,
-  add: 6,
-  mul: 7,
-  application: 8,
-  unary: 9,
+  pipe: 2,
+  orelse: 3,
+  andalso: 4,
+  compare: 5,
+  cons: 6,
+  add: 7,
+  mul: 8,
+  application: 9,
+  unary: 10,
   type_arrow: 1,
   type_tuple: 2,
   type_application: 3,
@@ -176,9 +177,18 @@ module.exports = grammar({
 
     annotated_expression: $ => choice(
       prec.right(PREC.annotation, seq(
-        field("expression", $.orelse_expression),
+        field("expression", $.pipe_expression),
         ":",
         field("type", $._type_expression),
+      )),
+      $.pipe_expression,
+    ),
+
+    pipe_expression: $ => choice(
+      prec.left(PREC.pipe, seq(
+        field("left", $.pipe_expression),
+        "|>",
+        field("right", $.orelse_expression),
       )),
       $.orelse_expression,
     ),

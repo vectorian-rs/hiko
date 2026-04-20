@@ -614,7 +614,7 @@ impl Parser {
     }
 
     fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
-        let expr = self.parse_orelse()?;
+        let expr = self.parse_pipe()?;
         if self.eat(&TokenKind::Colon).is_some() {
             let ty = self.parse_type_expr()?;
             let span = expr.span.merge(ty.span);
@@ -625,6 +625,19 @@ impl Parser {
         } else {
             Ok(expr)
         }
+    }
+
+    fn parse_pipe(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_orelse()?;
+        while self.eat(&TokenKind::PipeGt).is_some() {
+            let rhs = self.parse_orelse()?;
+            let span = lhs.span.merge(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::BinOp(BinOp::Pipe, Box::new(lhs), Box::new(rhs)),
+                span,
+            };
+        }
+        Ok(lhs)
     }
 
     fn parse_orelse(&mut self) -> Result<Expr, ParseError> {
@@ -2020,6 +2033,42 @@ mod tests {
                 assert!(matches!(&rhs.kind, ExprKind::BinOp(BinOp::Andalso, _, _)));
             } else {
                 panic!("expected Andalso at top");
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_left_assoc() {
+        let prog = parse("val x = a |> b |> c");
+        if let DeclKind::Val(_, ref expr) = prog.decls[0].kind {
+            if let ExprKind::BinOp(BinOp::Pipe, ref lhs, _) = expr.kind {
+                assert!(matches!(&lhs.kind, ExprKind::BinOp(BinOp::Pipe, _, _)));
+            } else {
+                panic!("expected Pipe at top");
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_has_lower_precedence_than_orelse() {
+        let prog = parse("val x = a orelse b |> f");
+        if let DeclKind::Val(_, ref expr) = prog.decls[0].kind {
+            if let ExprKind::BinOp(BinOp::Pipe, ref lhs, _) = expr.kind {
+                assert!(matches!(&lhs.kind, ExprKind::BinOp(BinOp::Orelse, _, _)));
+            } else {
+                panic!("expected Pipe at top");
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_has_lower_precedence_than_application() {
+        let prog = parse("val x = a |> f b");
+        if let DeclKind::Val(_, ref expr) = prog.decls[0].kind {
+            if let ExprKind::BinOp(BinOp::Pipe, _, ref rhs) = expr.kind {
+                assert!(matches!(&rhs.kind, ExprKind::App(_, _)));
+            } else {
+                panic!("expected Pipe at top");
             }
         }
     }

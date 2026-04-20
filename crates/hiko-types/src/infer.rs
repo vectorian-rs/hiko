@@ -1251,6 +1251,7 @@ impl InferCtx {
         let rhs_ty = self.infer_expr(rhs)?;
 
         let (expected_lhs, expected_rhs, result) = match op {
+            BinOp::Pipe => unreachable!("pipeline is desugared to application"),
             BinOp::AddInt | BinOp::SubInt | BinOp::MulInt | BinOp::DivInt | BinOp::ModInt => {
                 (Type::int(), Type::int(), Type::int())
             }
@@ -2186,6 +2187,15 @@ mod tests {
         );
         assert_eq!(type_of(&ctx, "wait_int"), "pid -> int");
         assert_eq!(type_of(&ctx, "wait_bool"), "pid -> int");
+    }
+
+    #[test]
+    fn test_pipeline_desugars_before_inference() {
+        let ctx = infer(
+            "fun inc x = x + 1
+             val y = 1 |> inc",
+        );
+        assert_eq!(type_of(&ctx, "y"), "int");
     }
 
     // ── Exhaustiveness checking ──────────────────────────────────────

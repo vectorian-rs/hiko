@@ -13,7 +13,7 @@ The language semantics are anchored in Core SML (Standard ML), with Hindley-Miln
 - **67 builtins** (string, math, file, HTTP, JSON, regex, exec, RNG, bytes)
 - **57 bytecode opcodes** including tail calls and algebraic effects
 - **48 examples**, 6 benchmarks, 7 tool scripts, 4 stdlib modules
-- **Published on crates.io** as v0.3.0
+- **Published on crates.io** as v0.7.0
 
 ## Crate architecture
 
@@ -58,12 +58,13 @@ Lexer (hiko-syntax/lexer.rs, 780 lines)
     ▼
 Parser (hiko-syntax/parser.rs, 1629 lines)
     │  Recursive descent with precedence climbing
-    │  8 precedence levels: orelse > andalso > comparison > cons > add > mul > app > atom
+    │  9 expression layers, loosest to tightest: pipe > orelse > andalso > comparison > cons > add > mul > app > atom
     ▼
 Desugar (hiko-syntax/desugar.rs, 324 lines)
     │  List literals → cons chains
     │  andalso/orelse → if-then-else
     │  not → if-then-else
+    │  |> → application
     ▼
 Const fold (hiko-syntax/constfold.rs, 172 lines)
     │  Compile-time constant evaluation
@@ -115,6 +116,8 @@ Hindley-Milner with the SML-97 value restriction.
 ### Polymorphism
 
 Generalization at `val` bindings of syntactic values only. Type annotations supported. No overloading — monomorphic operators (`+` for `int`, `+.` for `float`, `^` for `string`).
+
+Hiko also has a left-associative pipeline operator `|>`, which desugars to ordinary application (`x |> f` means `f x`). Application still binds tighter, so `x |> f a` means `(f a) x`.
 
 ## Runtime representation
 

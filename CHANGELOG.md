@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.0
+
+### Language and Surface Syntax
+
+- **Pipeline operator**: added a left-associative `|>` operator that desugars to ordinary application, so `x |> f |> g` reads as `g (f x)` while keeping the core language free of new runtime machinery.
+- **Timezone-aware date/time stdlib**: added `Std.Time` and `Std.Date` with Jiff-backed timezone handling, RFC3339 formatting/parsing, fixed-offset zones, and IANA zone lookup behind the `builtin-time` feature.
+
+### Correctness and Diagnostics
+
+- **Polymorphic inference fix**: repaired scheme instantiation so polymorphic builtins such as `panic` no longer leak concrete instantiations across call sites or modules.
+- **Layered runtime diagnostics**: CLI `run`/`check` now make config/runtime selection explicit and report missing builtin/capability failures at the layer that rejected them.
+- **Iterative structural equality**: `values_equal` now uses an explicit worklist instead of recursive descent, preventing host stack overflow on deeply nested equalities.
+
+### VM Hardening
+
+- **Verified effect stack behavior**: the bytecode verifier now enforces stack effects for effect-handler opcodes instead of skipping chunks that contain them.
+- **Checked continuation restore paths**: continuation/frame restoration now uses checked arithmetic and additional bounds checks in control-flow-sensitive runtime paths.
+- **Heap limit errors**: heap object-limit exhaustion now reports a runtime error instead of panicking the host process.
+- **Handler depth cap**: installed effect handlers are bounded to prevent untrusted code from growing handler stacks without limit.
+
+### Tooling and Ecosystem
+
+- **Tree-sitter pipeline support**: the `tree-sitter-hiko` grammar, generated artifacts, and corpus tests now understand `|>` so editor tooling matches the handwritten frontend.
+- **Documentation refresh**: updated the README, system description, bootstrap EBNF, and examples to reflect `|>` and the new time/date surface.
+
 ## 0.6.0
 
 ### Language and Surface Syntax

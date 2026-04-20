@@ -213,7 +213,7 @@
         "required": false,
         "types": [
           {
-            "type": "orelse_expression",
+            "type": "pipe_expression",
             "named": true
           }
         ]
@@ -234,7 +234,7 @@
       "required": false,
       "types": [
         {
-          "type": "orelse_expression",
+          "type": "pipe_expression",
           "named": true
         }
       ]
@@ -1396,6 +1396,42 @@
     }
   },
   {
+    "type": "pipe_expression",
+    "named": true,
+    "fields": {
+      "left": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "pipe_expression",
+            "named": true
+          }
+        ]
+      },
+      "right": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "orelse_expression",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "orelse_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "prefixed_argument",
     "named": true,
     "fields": {
@@ -2322,6 +2358,10 @@
   },
   {
     "type": "|",
+    "named": false
+  },
+  {
+    "type": "|>",
     "named": false
   },
   {

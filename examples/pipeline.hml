@@ -6,17 +6,26 @@
 
 import Std.List
 
+fun lines s = split (s, "\n")
+
+fun is_function_line line =
+  regex_match (line, "^\\s*(pub\\s+)?(fn|fun)\\s+")
+
+fun count_matches xs = List.length xs
+
 (* Count all function definitions across all Rust files *)
 val rs_files = glob "crates/**/*.rs"
 
 fun count_fns file =
-  let
-    val content = read_file file
-    val lines = split (content, "\n")
-    val fn_lines = List.filter (fn l => regex_match (l, "^\\s*(pub\\s+)?(fn|fun)\\s+")) lines
-  in List.length fn_lines end
+  file
+  |> read_file
+  |> lines
+  |> List.filter is_function_line
+  |> count_matches
 
-val counts = List.map (fn f => (f, count_fns f)) rs_files
+val counts =
+  rs_files
+  |> List.map (fn f => (f, count_fns f))
 
 fun sum_counts xs = case xs of
     [] => 0

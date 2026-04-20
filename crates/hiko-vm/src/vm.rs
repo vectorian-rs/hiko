@@ -2256,6 +2256,14 @@ mod tests {
     }
 
     #[test]
+    fn test_pipeline_operator() {
+        let vm = run("fun inc x = x + 1
+             fun double x = x * 2
+             val result = 3 |> inc |> double");
+        assert_eq!(global_int(&vm, "result"), 8);
+    }
+
+    #[test]
     fn test_tco_loop() {
         let vm = run("fun loop n = if n = 0 then 42 else loop (n - 1)
              val result = loop 100000");

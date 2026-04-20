@@ -126,6 +126,7 @@ e ::= int_lit | float_lit | "s" | #"c"  (* literals *)
     | (e1, e2, ..., en)                 (* tuple, n >= 2 *)
     | [e1, e2, ..., en]                 (* list literal, sugar for cons/nil *)
     | e1 :: e2                          (* cons *)
+    | e1 |> e2                          (* pipeline, sugar for application *)
     | e1 op e2                          (* binary operator *)
     | ~e                                (* unary negation *)
     | not e                             (* boolean not *)
@@ -137,6 +138,8 @@ e ::= int_lit | float_lit | "s" | #"c"  (* literals *)
     | (e)                               (* parenthesized *)
     | e : t                             (* type annotation *)
 ```
+
+`|>` is left-associative and has lower precedence than `orelse`. It desugars before typing, so `x |> f` means `f x`.
 
 **Note:** v0 does **not** include tuple projection syntax like `#1 e`. In SML, projection is part of the record system. Since records are deferred in Hiko v0 (§2.2), projection syntax is also deferred. Tuple decomposition is done through pattern matching and `val` bindings.
 
@@ -246,6 +249,7 @@ Hiko follows the Standard ML split between **type-level names** and **value-leve
 | 2          | `=`, `<>`, `<`, `>`, `<=`, `>=`, `<.`, `>.`, `<=.`, `>=.` | non-assoc     |
 | 1          | `andalso`                                                 | right         |
 | 0          | `orelse`                                                  | right         |
+| -1         | `|>`                                                      | left          |
 
 ---
 

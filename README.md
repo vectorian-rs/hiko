@@ -145,6 +145,22 @@ use "libraries/Std-v0.1.0/modules/Option.hml"
 val xs = List.map (fn x => x * 2) [1, 2, 3]
 ```
 
+### Pipelines
+
+```sml
+fun lines s = split (s, "\n")
+fun count xs = List.length xs
+
+val fn_count =
+  "examples/pipeline.hml"
+  |> read_file
+  |> lines
+  |> List.filter (fn line => regex_match (line, "^fun "))
+  |> count
+```
+
+`|>` is left-associative and desugars to ordinary application, so `x |> f` means `f x`.
+
 ### Builtins
 
 | Function | Type | Description |
@@ -173,7 +189,7 @@ Lexer ──> Tokens
 Parser ──> Surface AST        (precedence-climbing recursive descent)
   |
   v
-Desugar ──> Core AST           (list literals, andalso/orelse, not, paren)
+Desugar ──> Core AST           (list literals, andalso/orelse, not, |>, paren)
   |
   v
 Type Inference ──> Typed AST   (Algorithm W, Hindley-Milner)
@@ -200,12 +216,13 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 ### Key Implementation Details
 
-**Parser.** Hand-written precedence-climbing recursive descent. Each precedence level is a separate function (`parse_orelse` > `parse_andalso` > `parse_comparison` > `parse_cons` > `parse_addition` > `parse_multiplication` > `parse_app` > `parse_atom`).
+**Parser.** Hand-written precedence-climbing recursive descent. Each precedence level is a separate function (`parse_pipe` > `parse_orelse` > `parse_andalso` > `parse_comparison` > `parse_cons` > `parse_addition` > `parse_multiplication` > `parse_app` > `parse_atom`), from loosest to tightest binding.
 
 **Desugaring.** AST-to-AST pass that eliminates syntactic sugar before type-checking:
 - `[1, 2, 3]` becomes nested `1 :: 2 :: 3 :: []`
 - `andalso`/`orelse` become `if-then-else`
 - `not e` becomes `if e then false else true`
+- `x |> f` becomes `f x`
 - `(e)` unwrapped
 
 **Type Inference.** Algorithm W with the SML value restriction. Polymorphic types are generalized only at `val` bindings of syntactic values. Types are unified with occurs-check to prevent infinite types.

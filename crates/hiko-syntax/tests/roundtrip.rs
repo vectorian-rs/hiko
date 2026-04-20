@@ -222,6 +222,16 @@ fn rt_andalso_chain() {
 }
 
 #[test]
+fn rt_pipeline_chain() {
+    assert_roundtrip("val x = a |> f |> g");
+}
+
+#[test]
+fn rt_pipeline_with_application_rhs() {
+    assert_roundtrip("val x = a |> f b");
+}
+
+#[test]
 fn rt_string_concat() {
     assert_roundtrip(r#"val s = "hello" ^ " " ^ "world""#);
 }

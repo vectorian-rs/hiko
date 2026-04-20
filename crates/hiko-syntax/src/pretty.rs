@@ -435,8 +435,9 @@ fn needs_parens_as_atom(expr: &Expr) -> bool {
 
 fn binop_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Orelse => 0,
-        BinOp::Andalso => 1,
+        BinOp::Pipe => 0,
+        BinOp::Orelse => 1,
+        BinOp::Andalso => 2,
         BinOp::Eq
         | BinOp::Ne
         | BinOp::LtInt
@@ -446,7 +447,7 @@ fn binop_prec(op: &BinOp) -> u8 {
         | BinOp::LtFloat
         | BinOp::GtFloat
         | BinOp::LeFloat
-        | BinOp::GeFloat => 2,
+        | BinOp::GeFloat => 3,
         BinOp::AddInt | BinOp::SubInt | BinOp::AddFloat | BinOp::SubFloat | BinOp::ConcatStr => 4,
         BinOp::MulInt | BinOp::DivInt | BinOp::ModInt | BinOp::MulFloat | BinOp::DivFloat => 5,
     }
@@ -486,6 +487,7 @@ fn binop_needs_parens_rhs(op: &BinOp, rhs: &Expr) -> bool {
 
 fn binop_str(op: &BinOp) -> &'static str {
     match op {
+        BinOp::Pipe => "|>",
         BinOp::AddInt => "+",
         BinOp::SubInt => "-",
         BinOp::MulInt => "*",

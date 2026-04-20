@@ -900,6 +900,10 @@ fn desugar_expr(expr: Expr, interner: &mut StringInterner) -> Expr {
             }),
             Box::new(desugar_expr(*rhs, interner)),
         ),
+        ExprKind::BinOp(BinOp::Pipe, lhs, rhs) => ExprKind::App(
+            Box::new(desugar_expr(*rhs, interner)),
+            Box::new(desugar_expr(*lhs, interner)),
+        ),
         ExprKind::Not(e) => ExprKind::If(
             Box::new(desugar_expr(*e, interner)),
             Box::new(Expr {

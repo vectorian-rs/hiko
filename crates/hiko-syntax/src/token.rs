@@ -90,6 +90,7 @@ pub enum TokenKind {
     // Other operators
     Tilde,      // ~ (unary negation)
     ColonColon, // ::
+    PipeGt,     // |>
     Arrow,      // =>
     ThinArrow,  // ->
     Bar,        // |

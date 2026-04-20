@@ -76,6 +76,8 @@ pub enum BinOp {
     // Short-circuit boolean
     Andalso,
     Orelse,
+    // Pipeline
+    Pipe,
 }
 
 // ── Declarations ─────────────────────────────────────────────────────

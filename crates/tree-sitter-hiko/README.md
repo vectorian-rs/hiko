@@ -31,6 +31,7 @@ published `Std` package and its effectful filesystem wrapper:
 - `datatype` and `type`
 - `signature` and `structure`
 - `effect`, `perform`, `handle`, and `resume`
+- the `|>` pipeline operator in expressions
 - core expressions, patterns, and type expressions used by the current `Std`
   modules
 

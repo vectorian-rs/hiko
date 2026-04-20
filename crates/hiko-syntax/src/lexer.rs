@@ -300,7 +300,12 @@ impl<'src> Lexer<'src> {
             }
             b'|' => {
                 self.pos += 1;
-                TokenKind::Bar
+                if self.peek() == Some(b'>') {
+                    self.pos += 1;
+                    TokenKind::PipeGt
+                } else {
+                    TokenKind::Bar
+                }
             }
 
             b':' => {
@@ -685,11 +690,12 @@ mod tests {
     #[test]
     fn test_arrows_and_cons() {
         assert_eq!(
-            lex("=> -> ::"),
+            lex("=> -> :: |>"),
             vec![
                 TokenKind::Arrow,
                 TokenKind::ThinArrow,
                 TokenKind::ColonColon,
+                TokenKind::PipeGt,
                 TokenKind::Eof,
             ]
         );

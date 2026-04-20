@@ -1712,6 +1712,7 @@ fn is_trivial_pat(pat: &Pat) -> bool {
 
 fn binop_to_op(op: BinOp) -> Op {
     match op {
+        BinOp::Pipe => unreachable!("pipeline is desugared to application"),
         BinOp::AddInt => Op::AddInt,
         BinOp::SubInt => Op::SubInt,
         BinOp::MulInt => Op::MulInt,
