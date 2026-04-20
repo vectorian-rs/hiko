@@ -288,51 +288,54 @@ pub enum RuntimeRequest {
 }
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Pid(x), Value::Pid(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Char(x), Value::Char(y)) => x == y,
-        (Value::Unit, Value::Unit) => true,
-        (Value::Heap(ra), Value::Heap(rb)) => {
-            if ra == rb {
-                return true;
-            }
-            let (Ok(obj_a), Ok(obj_b)) = (heap.get(ra), heap.get(rb)) else {
-                return false;
-            };
-            match (obj_a, obj_b) {
-                (HeapObject::String(sa), HeapObject::String(sb)) => sa == sb,
-                (HeapObject::Tuple(ta), HeapObject::Tuple(tb)) => {
-                    ta.len() == tb.len()
-                        && ta
-                            .iter()
-                            .zip(tb.iter())
-                            .all(|(x, y)| values_equal(*x, *y, heap))
+    let mut worklist = vec![(a, b)];
+
+    while let Some((left, right)) = worklist.pop() {
+        match (left, right) {
+            (Value::Int(x), Value::Int(y)) if x == y => {}
+            (Value::Pid(x), Value::Pid(y)) if x == y => {}
+            (Value::Float(x), Value::Float(y)) if x == y => {}
+            (Value::Bool(x), Value::Bool(y)) if x == y => {}
+            (Value::Char(x), Value::Char(y)) if x == y => {}
+            (Value::Unit, Value::Unit) => {}
+            (Value::Heap(ra), Value::Heap(rb)) => {
+                if ra == rb {
+                    continue;
                 }
-                (
-                    HeapObject::Data {
-                        tag: ta,
-                        fields: fa,
-                    },
-                    HeapObject::Data {
-                        tag: tb,
-                        fields: fb,
-                    },
-                ) => {
-                    ta == tb
-                        && fa.len() == fb.len()
-                        && fa
-                            .iter()
-                            .zip(fb.iter())
-                            .all(|(x, y)| values_equal(*x, *y, heap))
+                let (Ok(obj_a), Ok(obj_b)) = (heap.get(ra), heap.get(rb)) else {
+                    return false;
+                };
+                match (obj_a, obj_b) {
+                    (HeapObject::String(sa), HeapObject::String(sb)) if sa == sb => {}
+                    (HeapObject::Tuple(ta), HeapObject::Tuple(tb)) => {
+                        if ta.len() != tb.len() {
+                            return false;
+                        }
+                        worklist.extend(ta.iter().copied().zip(tb.iter().copied()));
+                    }
+                    (
+                        HeapObject::Data {
+                            tag: ta,
+                            fields: fa,
+                        },
+                        HeapObject::Data {
+                            tag: tb,
+                            fields: fb,
+                        },
+                    ) => {
+                        if ta != tb || fa.len() != fb.len() {
+                            return false;
+                        }
+                        worklist.extend(fa.iter().copied().zip(fb.iter().copied()));
+                    }
+                    _ => return false,
                 }
-                _ => false,
             }
+            _ => return false,
         }
-        _ => false,
     }
+
+    true
 }
 
 // Compile-time assertion: VM must be Send for multi-threaded scheduling.
@@ -2093,6 +2096,22 @@ mod tests {
         compiled
     }
 
+    fn build_int_list(heap: &mut Heap, len: usize) -> Value {
+        let mut list = Value::Heap(heap.alloc(HeapObject::Data {
+            tag: TAG_NIL,
+            fields: smallvec![],
+        }));
+
+        for i in (0..len).rev() {
+            list = Value::Heap(heap.alloc(HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![Value::Int(i as i64), list],
+            }));
+        }
+
+        list
+    }
+
     #[test]
     fn test_try_new_rejects_invalid_compiled_program() {
         let program = hiko_compile::chunk::CompiledProgram {
@@ -2248,6 +2267,15 @@ mod tests {
         let vm = run(r#"val a = "hello" = "hello" val b = "hello" = "world""#);
         assert!(global_bool(&vm, "a"));
         assert!(!global_bool(&vm, "b"));
+    }
+
+    #[test]
+    fn test_values_equal_handles_deep_lists_iteratively() {
+        let mut heap = Heap::new();
+        let left = build_int_list(&mut heap, 50_000);
+        let right = build_int_list(&mut heap, 50_000);
+
+        assert!(values_equal(left, right, &heap));
     }
 
     #[test]
