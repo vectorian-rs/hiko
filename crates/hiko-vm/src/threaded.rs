@@ -162,12 +162,19 @@ impl ThreadedRuntime {
                 {
                     match result {
                         crate::io_backend::IoResult::Ok(sv) => {
-                            let val = crate::sendable::deserialize(sv, &mut process.vm.heap);
-                            process.vm.stack.pop(); // remove placeholder
-                            process.vm.push_value(val);
-                            process.status = ProcessStatus::Runnable;
-                            drop(process);
-                            self.scheduler.enqueue(pid);
+                            match deliver_result_to_parent(&mut process.vm, sv) {
+                                Ok(()) => {
+                                    process.status = ProcessStatus::Runnable;
+                                    drop(process);
+                                    self.scheduler.enqueue(pid);
+                                }
+                                Err(failure) => {
+                                    process.status = ProcessStatus::Failed(failure);
+                                    drop(process);
+                                    self.scheduler.remove(pid);
+                                    wake_waiters(&self.table, &*self.scheduler, pid);
+                                }
+                            }
                         }
                         crate::io_backend::IoResult::Err(msg) => {
                             process.status = ProcessStatus::Failed(ProcessFailure::runtime(msg));
@@ -308,19 +315,28 @@ fn worker_loop(
                 captures,
             } => {
                 let child_pid = Pid(next_pid.fetch_add(1, Ordering::Relaxed));
-                let child_vm = crate::runtime_ops::create_child_vm_from_parent(
+                match crate::runtime_ops::create_child_vm_from_parent(
                     &process.vm,
                     proto_idx,
                     captures,
-                );
-                let child = Process::new(child_pid, child_vm, Some(pid));
-                table.insert(child);
-                scheduler.enqueue(child_pid);
+                ) {
+                    Ok(child_vm) => {
+                        let child = Process::new(child_pid, child_vm, Some(pid));
+                        table.insert(child);
+                        scheduler.enqueue(child_pid);
 
-                process.vm.stack.pop();
-                process.vm.push_value(Value::Pid(child_pid.0));
-                table.return_process(process);
-                scheduler.enqueue(pid);
+                        process.vm.stack.pop();
+                        process.vm.push_value(Value::Pid(child_pid.0));
+                        table.return_process(process);
+                        scheduler.enqueue(pid);
+                    }
+                    Err(failure) => {
+                        process.status = ProcessStatus::Failed(failure);
+                        table.return_process(process);
+                        scheduler.remove(pid);
+                        wake_waiters(table, scheduler, pid);
+                    }
+                }
             }
             RunResult::Await(child_pid_val) => {
                 let child_pid = Pid(child_pid_val);
@@ -374,11 +390,20 @@ fn handle_await(
                 match child.result.take() {
                     Some(sv) => {
                         drop(child);
-                        deliver_result_to_parent(&mut parent.vm, sv);
-                        table.processes.remove(&child_pid);
-                        table.waiters.remove(&child_pid);
-                        table.return_process(parent);
-                        scheduler.enqueue(parent_pid);
+                        match deliver_result_to_parent(&mut parent.vm, sv) {
+                            Ok(()) => {
+                                table.processes.remove(&child_pid);
+                                table.waiters.remove(&child_pid);
+                                table.return_process(parent);
+                                scheduler.enqueue(parent_pid);
+                            }
+                            Err(failure) => {
+                                parent.status = ProcessStatus::Failed(failure);
+                                table.processes.remove(&child_pid);
+                                table.waiters.remove(&child_pid);
+                                table.return_process(parent);
+                            }
+                        }
                     }
                     None => {
                         drop(child);
@@ -430,12 +455,16 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
     for waiter_pid in waiter_pids {
         if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
             match &delivery {
-                Ok(sendable) => {
-                    deliver_result_to_parent(&mut waiter.vm, sendable.clone());
-                    waiter.status = ProcessStatus::Runnable;
-                    drop(waiter);
-                    scheduler.enqueue(waiter_pid);
-                }
+                Ok(sendable) => match deliver_result_to_parent(&mut waiter.vm, sendable.clone()) {
+                    Ok(()) => {
+                        waiter.status = ProcessStatus::Runnable;
+                        drop(waiter);
+                        scheduler.enqueue(waiter_pid);
+                    }
+                    Err(failure) => {
+                        waiter.status = ProcessStatus::Failed(failure);
+                    }
+                },
                 Err(msg) => {
                     waiter.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
                         Box::new(msg.clone()),

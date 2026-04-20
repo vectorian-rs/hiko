@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BlockReason, Pid, Process, ProcessFailure, ProcessStatus};
 use crate::scheduler::{FifoScheduler, Scheduler};
-use crate::sendable::{SendableValue, deserialize, serialize};
+use crate::sendable::{SendableValue, serialize};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
@@ -115,13 +115,22 @@ impl Runtime {
                     proto_idx,
                     captures,
                 } => {
-                    let child_pid = self.handle_spawn(pid, proto_idx, captures);
-                    // Resume parent with child pid
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    // Replace the Unit placeholder with the actual Pid
-                    process.vm.stack.pop();
-                    process.vm.push_value(Value::Pid(child_pid.0));
-                    self.scheduler.enqueue(pid);
+                    match self.handle_spawn(pid, proto_idx, captures) {
+                        Ok(child_pid) => {
+                            // Resume parent with child pid
+                            let process = self.processes.get_mut(&pid).unwrap();
+                            // Replace the Unit placeholder with the actual Pid
+                            process.vm.stack.pop();
+                            process.vm.push_value(Value::Pid(child_pid.0));
+                            self.scheduler.enqueue(pid);
+                        }
+                        Err(failure) => {
+                            let process = self.processes.get_mut(&pid).unwrap();
+                            process.status = ProcessStatus::Failed(failure);
+                            self.scheduler.remove(pid);
+                            self.wake_and_deliver_results(pid);
+                        }
+                    }
                 }
                 RunResult::Await(child_pid_val) => {
                     let child_pid = Pid(child_pid_val);
@@ -156,15 +165,15 @@ impl Runtime {
         parent_pid: Pid,
         proto_idx: usize,
         captures: Vec<SendableValue>,
-    ) -> Pid {
+    ) -> Result<Pid, ProcessFailure> {
         let child_pid = self.new_pid();
         let parent = self.processes.get(&parent_pid).unwrap();
         let child_vm =
-            crate::runtime_ops::create_child_vm_from_parent(&parent.vm, proto_idx, captures);
+            crate::runtime_ops::create_child_vm_from_parent(&parent.vm, proto_idx, captures)?;
         let child = Process::new(child_pid, child_vm, Some(parent_pid));
         self.processes.insert(child_pid, child);
         self.scheduler.enqueue(child_pid);
-        child_pid
+        Ok(child_pid)
     }
 
     /// Handle an await request: block parent or resume with result.
@@ -212,12 +221,19 @@ impl Runtime {
                     }
                 };
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.vm.stack.pop();
-                let val = deserialize(sendable, &mut parent.vm.heap);
-                parent.vm.push_value(val);
-                self.scheduler.enqueue(parent_pid);
-                self.processes.remove(&child_pid);
-                self.waiters.remove(&child_pid);
+                match crate::runtime_ops::deliver_result_to_parent(&mut parent.vm, sendable) {
+                    Ok(()) => {
+                        self.scheduler.enqueue(parent_pid);
+                        self.processes.remove(&child_pid);
+                        self.waiters.remove(&child_pid);
+                    }
+                    Err(failure) => {
+                        parent.status = ProcessStatus::Failed(failure);
+                        self.scheduler.remove(parent_pid);
+                        self.processes.remove(&child_pid);
+                        self.waiters.remove(&child_pid);
+                    }
+                }
             }
             ChildState::Failed(failure) => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
@@ -275,11 +291,18 @@ impl Runtime {
             if let Some(process) = self.processes.get_mut(&waiter) {
                 match &delivery {
                     Ok(sendable) => {
-                        process.vm.stack.pop();
-                        let val = deserialize(sendable.clone(), &mut process.vm.heap);
-                        process.vm.push_value(val);
-                        process.status = ProcessStatus::Runnable;
-                        self.scheduler.enqueue(waiter);
+                        match crate::runtime_ops::deliver_result_to_parent(
+                            &mut process.vm,
+                            sendable.clone(),
+                        ) {
+                            Ok(()) => {
+                                process.status = ProcessStatus::Runnable;
+                                self.scheduler.enqueue(waiter);
+                            }
+                            Err(failure) => {
+                                process.status = ProcessStatus::Failed(failure);
+                            }
+                        }
                     }
                     Err(msg) => {
                         process.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(

@@ -1,5 +1,7 @@
 //! Shared process operation logic used by both single-threaded and multi-threaded runtimes.
 
+use std::panic::{self, AssertUnwindSafe};
+
 use crate::process::{Pid, ProcessFailure, ProcessStatus};
 use crate::sendable::{SendableValue, deserialize, serialize};
 use crate::value::Value;
@@ -35,10 +37,14 @@ pub fn check_child_state(
 }
 
 /// Deliver a child's result to a waiting parent.
-pub fn deliver_result_to_parent(parent_vm: &mut VM, sendable: SendableValue) {
+pub fn deliver_result_to_parent(
+    parent_vm: &mut VM,
+    sendable: SendableValue,
+) -> Result<(), ProcessFailure> {
     parent_vm.stack.pop(); // remove placeholder
-    let val = deserialize(sendable, &mut parent_vm.heap);
+    let val = deserialize_with_heap_limit(sendable, &mut parent_vm.heap)?;
     parent_vm.push_value(val);
+    Ok(())
 }
 
 /// Create a child VM that inherits capabilities from the parent VM.
@@ -46,14 +52,14 @@ pub fn create_child_vm_from_parent(
     parent_vm: &VM,
     proto_idx: usize,
     captures: Vec<SendableValue>,
-) -> VM {
+) -> Result<VM, ProcessFailure> {
     let mut child_vm = parent_vm.create_child();
     let child_captures: Vec<Value> = captures
         .into_iter()
-        .map(|v| deserialize(v, &mut child_vm.heap))
-        .collect();
+        .map(|v| deserialize_with_heap_limit(v, &mut child_vm.heap))
+        .collect::<Result<_, _>>()?;
     child_vm.setup_closure_call(proto_idx, &child_captures);
-    child_vm
+    Ok(child_vm)
 }
 
 /// Serialize the result value from a finished process.
@@ -68,5 +74,21 @@ pub fn prepare_delivery(status: &ProcessStatus, vm: &VM) -> Result<SendableValue
         ProcessStatus::Done => Ok(serialize_result(vm)),
         ProcessStatus::Failed(msg) => Err(msg.clone()),
         _ => Err(ProcessFailure::runtime("child not finished")),
+    }
+}
+
+fn deserialize_with_heap_limit(
+    sendable: SendableValue,
+    heap: &mut crate::heap::Heap,
+) -> Result<Value, ProcessFailure> {
+    match panic::catch_unwind(AssertUnwindSafe(|| deserialize(sendable, heap))) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            if let Some(failure) = ProcessFailure::from_heap_limit_panic(payload.as_ref()) {
+                Err(failure)
+            } else {
+                panic::resume_unwind(payload);
+            }
+        }
     }
 }
