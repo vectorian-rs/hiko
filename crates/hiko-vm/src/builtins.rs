@@ -86,6 +86,26 @@ fn collect_list(heap: &Heap, list_val: Value) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
+pub(crate) fn extract_pid_list_arg(
+    args: &[Value],
+    heap: &Heap,
+    name: &str,
+) -> Result<Vec<u64>, String> {
+    let list_val = args
+        .first()
+        .copied()
+        .ok_or_else(|| format!("{name}: expected pid list"))?;
+    let values = collect_list(heap, list_val)?;
+    let mut pids = Vec::with_capacity(values.len());
+    for value in values {
+        match value {
+            Value::Pid(pid) => pids.push(pid),
+            _ => return Err(format!("{name}: expected pid list")),
+        }
+    }
+    Ok(pids)
+}
+
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
 const TAG_JNULL: u16 = 0;
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
@@ -458,6 +478,8 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
     entries.extend([
         ("spawn", process::spawn_placeholder as BuiltinFn),
         ("await_process", process::await_placeholder),
+        ("cancel", process::cancel_placeholder),
+        ("wait_any", process::wait_any_placeholder),
     ]);
 
     #[cfg(feature = "builtin-path")]

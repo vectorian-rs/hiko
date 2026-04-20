@@ -17,6 +17,7 @@ use hiko_compile::chunk::CompiledProgram;
 struct ProcessTable {
     processes: DashMap<Pid, Process>,
     waiters: DashMap<Pid, Vec<Pid>>,
+    any_waiters: DashMap<Pid, Vec<Pid>>,
     io_waiters: DashMap<IoToken, Pid>,
     #[allow(dead_code)] // scaffolding for structured concurrency
     scopes: DashMap<ScopeId, Scope>,
@@ -27,6 +28,7 @@ impl ProcessTable {
         Self {
             processes: DashMap::new(),
             waiters: DashMap::new(),
+            any_waiters: DashMap::new(),
             io_waiters: DashMap::new(),
             scopes: DashMap::new(),
         }
@@ -75,10 +77,13 @@ impl ProcessTable {
         }
         // If no I/O pending and no runnable processes, remaining blocked
         // processes are deadlocked
-        self.processes
-            .iter()
-            .any(|e| matches!(e.status, ProcessStatus::Blocked(BlockReason::Await(_))))
-            && !self.processes.iter().any(|e| e.is_runnable())
+        self.processes.iter().any(|e| {
+            matches!(
+                e.status,
+                ProcessStatus::Blocked(BlockReason::Await(_))
+                    | ProcessStatus::Blocked(BlockReason::WaitAny(_))
+            )
+        }) && !self.processes.iter().any(|e| e.is_runnable())
     }
 }
 
@@ -172,7 +177,8 @@ impl ThreadedRuntime {
                                     process.status = ProcessStatus::Failed(failure);
                                     drop(process);
                                     self.scheduler.remove(pid);
-                                    wake_waiters(&self.table, &*self.scheduler, pid);
+                                    wake_any_waiters(&self.table, &*self.scheduler, pid);
+                                    wake_join_waiters(&self.table, &*self.scheduler, pid);
                                 }
                             }
                         }
@@ -180,7 +186,8 @@ impl ThreadedRuntime {
                             process.status = ProcessStatus::Failed(ProcessFailure::runtime(msg));
                             drop(process);
                             self.scheduler.remove(pid);
-                            wake_waiters(&self.table, &*self.scheduler, pid);
+                            wake_any_waiters(&self.table, &*self.scheduler, pid);
+                            wake_join_waiters(&self.table, &*self.scheduler, pid);
                         }
                     }
                 }
@@ -201,7 +208,11 @@ impl ThreadedRuntime {
                             .processes
                             .iter()
                             .filter(|e| {
-                                matches!(e.status, ProcessStatus::Blocked(BlockReason::Await(_)))
+                                matches!(
+                                    e.status,
+                                    ProcessStatus::Blocked(BlockReason::Await(_))
+                                        | ProcessStatus::Blocked(BlockReason::WaitAny(_))
+                                )
                             })
                             .map(|e| *e.key())
                             .collect();
@@ -290,7 +301,8 @@ fn worker_loop(
                             ));
                             table.return_process(process);
                             scheduler.remove(pid);
-                            wake_waiters(table, scheduler, pid);
+                            wake_any_waiters(table, scheduler, pid);
+                            wake_join_waiters(table, scheduler, pid);
                             continue;
                         }
                     }
@@ -298,7 +310,8 @@ fn worker_loop(
                 process.status = ProcessStatus::Done;
                 table.return_process(process);
                 scheduler.remove(pid);
-                wake_waiters(table, scheduler, pid);
+                wake_any_waiters(table, scheduler, pid);
+                wake_join_waiters(table, scheduler, pid);
             }
             RunResult::Yielded => {
                 table.return_process(process);
@@ -308,7 +321,8 @@ fn worker_loop(
                 process.status = ProcessStatus::Failed(failure);
                 table.return_process(process);
                 scheduler.remove(pid);
-                wake_waiters(table, scheduler, pid);
+                wake_any_waiters(table, scheduler, pid);
+                wake_join_waiters(table, scheduler, pid);
             }
             RunResult::Spawn {
                 proto_idx,
@@ -334,13 +348,22 @@ fn worker_loop(
                         process.status = ProcessStatus::Failed(failure);
                         table.return_process(process);
                         scheduler.remove(pid);
-                        wake_waiters(table, scheduler, pid);
+                        wake_any_waiters(table, scheduler, pid);
+                        wake_join_waiters(table, scheduler, pid);
                     }
                 }
             }
             RunResult::Await(child_pid_val) => {
                 let child_pid = Pid(child_pid_val);
                 handle_await(table, scheduler, process, child_pid);
+            }
+            RunResult::Cancel(child_pid_val) => {
+                let child_pid = Pid(child_pid_val);
+                handle_cancel(table, scheduler, process, child_pid);
+            }
+            RunResult::WaitAny(child_pid_vals) => {
+                let child_pids = child_pid_vals.into_iter().map(Pid).collect();
+                handle_wait_any(table, scheduler, process, child_pids);
             }
             RunResult::Io(request) => {
                 // Register I/O with backend, block process
@@ -354,7 +377,8 @@ fn worker_loop(
                 process.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
                 table.return_process(process);
                 scheduler.remove(pid);
-                wake_waiters(table, scheduler, pid);
+                wake_any_waiters(table, scheduler, pid);
+                wake_join_waiters(table, scheduler, pid);
             }
         }
     }
@@ -433,7 +457,143 @@ fn handle_await(
     }
 }
 
-fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
+fn handle_cancel(
+    table: &ProcessTable,
+    scheduler: &dyn Scheduler,
+    mut parent: Process,
+    child_pid: Pid,
+) {
+    let parent_pid = parent.pid;
+
+    match table.processes.get_mut(&child_pid) {
+        None => {
+            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                "cancel: unknown process {:?}",
+                child_pid
+            )));
+            table.return_process(parent);
+        }
+        Some(child) if child.parent != Some(parent_pid) => {
+            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                "cancel: process {:?} is not a child of {:?}",
+                child_pid, parent_pid
+            )));
+            table.return_process(parent);
+        }
+        Some(mut child) => {
+            match &child.status {
+                ProcessStatus::Done | ProcessStatus::Failed(_) => {
+                    drop(child);
+                }
+                ProcessStatus::Blocked(reason) => {
+                    let reason = reason.clone();
+                    child.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
+                    drop(child);
+                    scheduler.remove(child_pid);
+                    clear_blocked_registration(table, child_pid, &reason);
+                    wake_any_waiters(table, scheduler, child_pid);
+                    wake_join_waiters(table, scheduler, child_pid);
+                }
+                ProcessStatus::Runnable => {
+                    child.cancelled = true;
+                    drop(child);
+                }
+            }
+
+            parent.vm.stack.pop();
+            parent.vm.push_value(Value::Unit);
+            table.return_process(parent);
+            scheduler.enqueue(parent_pid);
+        }
+    }
+}
+
+fn handle_wait_any(
+    table: &ProcessTable,
+    scheduler: &dyn Scheduler,
+    mut parent: Process,
+    child_pids: Vec<Pid>,
+) {
+    let parent_pid = parent.pid;
+    let child_pids = dedup_pids(child_pids);
+
+    if child_pids.is_empty() {
+        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+            "wait_any: expected non-empty pid list",
+        ));
+        table.return_process(parent);
+        return;
+    }
+
+    for &child_pid in &child_pids {
+        match table.processes.get(&child_pid) {
+            None => {
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "wait_any: unknown process {:?}",
+                    child_pid
+                )));
+                table.return_process(parent);
+                return;
+            }
+            Some(child) if child.parent != Some(parent_pid) => {
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "wait_any: process {:?} is not a child of {:?}",
+                    child_pid, parent_pid
+                )));
+                table.return_process(parent);
+                return;
+            }
+            Some(child)
+                if matches!(child.status, ProcessStatus::Done | ProcessStatus::Failed(_)) =>
+            {
+                drop(child);
+                crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, child_pid);
+                table.return_process(parent);
+                scheduler.enqueue(parent_pid);
+                return;
+            }
+            Some(_) => {}
+        }
+    }
+
+    parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
+    table.return_process(parent);
+    for child_pid in child_pids {
+        table
+            .any_waiters
+            .entry(child_pid)
+            .or_default()
+            .push(parent_pid);
+    }
+}
+
+fn wake_any_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
+    let waiter_pids = match table.any_waiters.remove(&finished_pid) {
+        Some((_, waiters)) => waiters,
+        None => return,
+    };
+
+    for waiter_pid in waiter_pids {
+        let child_pids = match table.processes.get(&waiter_pid) {
+            Some(waiter) => match &waiter.status {
+                ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => child_pids.clone(),
+                _ => continue,
+            },
+            None => continue,
+        };
+
+        remove_any_waiter_registration(table, waiter_pid, &child_pids);
+
+        if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
+            crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, finished_pid);
+            waiter.status = ProcessStatus::Runnable;
+            drop(waiter);
+            scheduler.enqueue(waiter_pid);
+        }
+    }
+}
+
+fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
     let waiter_pids = match table.waiters.remove(&finished_pid) {
         Some((_, w)) => w,
         None => return,
@@ -475,6 +635,44 @@ fn wake_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: P
     }
 
     table.processes.remove(&finished_pid);
+}
+
+fn clear_blocked_registration(table: &ProcessTable, pid: Pid, reason: &BlockReason) {
+    match reason {
+        BlockReason::Await(child_pid) => remove_waiter(&table.waiters, *child_pid, pid),
+        BlockReason::WaitAny(child_pids) => remove_any_waiter_registration(table, pid, child_pids),
+        BlockReason::Io(token) => {
+            table.io_waiters.remove(token);
+        }
+    }
+}
+
+fn dedup_pids(child_pids: Vec<Pid>) -> Vec<Pid> {
+    let mut unique = Vec::with_capacity(child_pids.len());
+    for pid in child_pids {
+        if !unique.contains(&pid) {
+            unique.push(pid);
+        }
+    }
+    unique
+}
+
+fn remove_any_waiter_registration(table: &ProcessTable, waiter_pid: Pid, child_pids: &[Pid]) {
+    for &child_pid in child_pids {
+        remove_waiter(&table.any_waiters, child_pid, waiter_pid);
+    }
+}
+
+fn remove_waiter(waiters: &DashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: Pid) {
+    let should_remove = if let Some(mut waiter_pids) = waiters.get_mut(&child_pid) {
+        waiter_pids.retain(|pid| *pid != waiter_pid);
+        waiter_pids.is_empty()
+    } else {
+        false
+    };
+    if should_remove {
+        waiters.remove(&child_pid);
+    }
 }
 
 #[cfg(test)]
@@ -582,6 +780,46 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["both done\n"]);
+    }
+
+    #[test]
+    fn test_wait_any_returns_first_finished_child_pid() {
+        let program = compile(
+            "val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
+             val fast = spawn (fn () => 20)\n\
+             val winner = wait_any [slow, fast]\n\
+             val result = await_process winner\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["20\n"]);
+    }
+
+    #[test]
+    fn test_cancel_marks_blocked_child_cancelled() {
+        let program = compile(
+            "val child = spawn (fn () => let val _ = sleep 999999 in 42 end)\n\
+             val _ = cancel child\n\
+             val _ = println \"cancelled\"",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["cancelled\n"]);
+        assert!(runtime.table.processes.iter().any(|entry| {
+            *entry.key() != pid
+                && matches!(
+                    entry.status,
+                    ProcessStatus::Failed(ProcessFailure::Cancelled)
+                )
+        }));
     }
 
     #[test]

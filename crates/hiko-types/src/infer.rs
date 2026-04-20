@@ -495,6 +495,14 @@ impl InferCtx {
             Type::arrow(Type::arrow(Type::unit(), a), Type::pid())
         });
         ctx.bind_poly_builtin("await_process", |a| Type::arrow(Type::pid(), a));
+        ctx.bind(
+            "cancel".to_string(),
+            Scheme::mono(Type::arrow(Type::pid(), Type::unit())),
+        );
+        ctx.bind(
+            "wait_any".to_string(),
+            Scheme::mono(Type::arrow(Type::list(Type::pid()), Type::pid())),
+        );
         ctx.bind_poly_builtin("panic", |a| Type::arrow(Type::string(), a));
         ctx.bind_poly_builtin("assert_eq", |a| {
             Type::arrow(

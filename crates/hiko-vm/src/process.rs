@@ -22,10 +22,12 @@ pub struct Scope {
 }
 
 /// Why a process is blocked.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum BlockReason {
     /// Waiting for a child process to complete.
     Await(Pid),
+    /// Waiting for any child in the set to complete.
+    WaitAny(Vec<Pid>),
     /// Waiting for an I/O operation to complete.
     Io(crate::io_backend::IoToken),
 }

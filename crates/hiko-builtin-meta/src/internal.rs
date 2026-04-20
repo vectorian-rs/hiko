@@ -63,6 +63,8 @@ end
 const PROCESS_SOURCE: &str = r#"structure BuiltinProcess = struct
   val spawn_raw = spawn
   val await_raw = await_process
+  val cancel_raw = cancel
+  val wait_any_raw = wait_any
 end
 "#;
 

@@ -15,4 +15,16 @@ pub const BUILTINS: &[BuiltinMeta] = &[
         in_core_default: true,
         surface: PUBLIC,
     },
+    BuiltinMeta {
+        name: "cancel",
+        capability_path: Some("capabilities.process.cancel"),
+        in_core_default: true,
+        surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "wait_any",
+        capability_path: Some("capabilities.process.wait_any"),
+        in_core_default: true,
+        surface: PUBLIC,
+    },
 ];

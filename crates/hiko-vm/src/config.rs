@@ -320,6 +320,8 @@ enabled_family!(DateCapabilities {
 enabled_family!(ProcessCapabilities {
     spawn => "spawn",
     await_process => "await_process",
+    cancel => "cancel",
+    wait_any => "wait_any",
 });
 
 enabled_family!(PathCapabilities {

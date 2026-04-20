@@ -17,6 +17,8 @@ pub struct Runtime {
     scheduler: Box<dyn Scheduler>,
     /// Processes waiting for another process to finish: child_pid → [waiter_pids]
     waiters: HashMap<Pid, Vec<Pid>>,
+    /// Processes waiting for any child in a set to finish: child_pid → [waiter_pids]
+    any_waiters: HashMap<Pid, Vec<Pid>>,
 }
 
 impl Default for Runtime {
@@ -26,6 +28,7 @@ impl Default for Runtime {
             processes: HashMap::new(),
             scheduler: Box::new(FifoScheduler::new(1000)),
             waiters: HashMap::new(),
+            any_waiters: HashMap::new(),
         }
     }
 }
@@ -43,6 +46,7 @@ impl Runtime {
             processes: HashMap::new(),
             scheduler,
             waiters: HashMap::new(),
+            any_waiters: HashMap::new(),
         }
     }
 
@@ -135,6 +139,14 @@ impl Runtime {
                 RunResult::Await(child_pid_val) => {
                     let child_pid = Pid(child_pid_val);
                     self.handle_await(pid, child_pid);
+                }
+                RunResult::Cancel(child_pid_val) => {
+                    let child_pid = Pid(child_pid_val);
+                    self.handle_cancel(pid, child_pid);
+                }
+                RunResult::WaitAny(child_pid_vals) => {
+                    let child_pids = child_pid_vals.into_iter().map(Pid).collect();
+                    self.handle_wait_any(pid, child_pids);
                 }
                 RunResult::Io(_req) => {
                     let process = self.processes.get_mut(&pid).unwrap();
@@ -267,8 +279,186 @@ impl Runtime {
         }
     }
 
+    fn handle_cancel(&mut self, parent_pid: Pid, child_pid: Pid) {
+        enum CancelState {
+            Running,
+            Done,
+            Failed,
+            NotFound,
+            NotChild,
+        }
+
+        let child_state = match self.processes.get(&child_pid) {
+            None => CancelState::NotFound,
+            Some(child) if child.parent != Some(parent_pid) => CancelState::NotChild,
+            Some(child) => match child.status {
+                ProcessStatus::Done => CancelState::Done,
+                ProcessStatus::Failed(_) => CancelState::Failed,
+                _ => CancelState::Running,
+            },
+        };
+
+        match child_state {
+            CancelState::Running => {
+                self.cancel_process(child_pid);
+                if let Some(parent) = self.processes.get_mut(&parent_pid) {
+                    self.scheduler.enqueue(parent_pid);
+                    parent.status = ProcessStatus::Runnable;
+                }
+            }
+            CancelState::Done | CancelState::Failed => {
+                if let Some(parent) = self.processes.get_mut(&parent_pid) {
+                    parent.vm.stack.pop();
+                    parent.vm.push_value(Value::Unit);
+                    parent.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(parent_pid);
+                }
+            }
+            CancelState::NotFound => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "cancel: unknown process {:?}",
+                    child_pid
+                )));
+                self.scheduler.remove(parent_pid);
+            }
+            CancelState::NotChild => {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "cancel: process {:?} is not a child of {:?}",
+                    child_pid, parent_pid
+                )));
+                self.scheduler.remove(parent_pid);
+            }
+        }
+    }
+
+    fn handle_wait_any(&mut self, parent_pid: Pid, child_pids: Vec<Pid>) {
+        let child_pids = dedup_pids(child_pids);
+        if child_pids.is_empty() {
+            let parent = self.processes.get_mut(&parent_pid).unwrap();
+            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                "wait_any: expected non-empty pid list",
+            ));
+            self.scheduler.remove(parent_pid);
+            return;
+        }
+
+        let mut first_finished = None;
+        for &child_pid in &child_pids {
+            let Some(child) = self.processes.get(&child_pid) else {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "wait_any: unknown process {:?}",
+                    child_pid
+                )));
+                self.scheduler.remove(parent_pid);
+                return;
+            };
+            if child.parent != Some(parent_pid) {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "wait_any: process {:?} is not a child of {:?}",
+                    child_pid, parent_pid
+                )));
+                self.scheduler.remove(parent_pid);
+                return;
+            }
+            if matches!(child.status, ProcessStatus::Done | ProcessStatus::Failed(_)) {
+                first_finished = Some(child_pid);
+                break;
+            }
+        }
+
+        if let Some(winner) = first_finished {
+            let parent = self.processes.get_mut(&parent_pid).unwrap();
+            crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, winner);
+            parent.status = ProcessStatus::Runnable;
+            self.scheduler.enqueue(parent_pid);
+            return;
+        }
+
+        let parent = self.processes.get_mut(&parent_pid).unwrap();
+        parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
+        for child_pid in child_pids {
+            self.any_waiters
+                .entry(child_pid)
+                .or_default()
+                .push(parent_pid);
+        }
+    }
+
+    fn cancel_process(&mut self, pid: Pid) {
+        let block_reason = match self.processes.get_mut(&pid) {
+            Some(process) => {
+                let block_reason = match &process.status {
+                    ProcessStatus::Blocked(reason) => Some(reason.clone()),
+                    _ => None,
+                };
+                if block_reason.is_some() {
+                    process.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
+                } else {
+                    process.cancelled = true;
+                }
+                block_reason
+            }
+            None => return,
+        };
+
+        if let Some(reason) = block_reason {
+            self.scheduler.remove(pid);
+            match reason {
+                BlockReason::Await(child_pid) => {
+                    remove_waiter(&mut self.waiters, child_pid, pid);
+                }
+                BlockReason::WaitAny(child_pids) => {
+                    self.remove_wait_any_registration(pid, &child_pids);
+                }
+                BlockReason::Io(_) => {}
+            }
+            self.wake_any_waiters(pid);
+            self.wake_join_waiters(pid);
+        }
+    }
+
+    fn remove_wait_any_registration(&mut self, parent_pid: Pid, child_pids: &[Pid]) {
+        for &child_pid in child_pids {
+            remove_waiter(&mut self.any_waiters, child_pid, parent_pid);
+        }
+    }
+
+    fn wake_any_waiters(&mut self, finished_pid: Pid) {
+        let waiter_pids = match self.any_waiters.remove(&finished_pid) {
+            Some(waiters) => waiters,
+            None => return,
+        };
+
+        for waiter_pid in waiter_pids {
+            let child_pids = match self.processes.get(&waiter_pid) {
+                Some(process) => match &process.status {
+                    ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => child_pids.clone(),
+                    _ => continue,
+                },
+                None => continue,
+            };
+
+            self.remove_wait_any_registration(waiter_pid, &child_pids);
+
+            if let Some(process) = self.processes.get_mut(&waiter_pid) {
+                crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, finished_pid);
+                process.status = ProcessStatus::Runnable;
+                self.scheduler.enqueue(waiter_pid);
+            }
+        }
+    }
+
     /// When a child finishes, wake blocked parents and give them the result.
     fn wake_and_deliver_results(&mut self, finished_pid: Pid) {
+        self.wake_any_waiters(finished_pid);
+        self.wake_join_waiters(finished_pid);
+    }
+
+    fn wake_join_waiters(&mut self, finished_pid: Pid) {
         let waiter_pids = match self.waiters.remove(&finished_pid) {
             Some(w) => w,
             None => return,
@@ -338,6 +528,28 @@ impl Runtime {
     /// Get the number of processes.
     pub fn process_count(&self) -> usize {
         self.processes.len()
+    }
+}
+
+fn dedup_pids(child_pids: Vec<Pid>) -> Vec<Pid> {
+    let mut unique = Vec::with_capacity(child_pids.len());
+    for pid in child_pids {
+        if !unique.contains(&pid) {
+            unique.push(pid);
+        }
+    }
+    unique
+}
+
+fn remove_waiter(waiters: &mut HashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: Pid) {
+    let should_remove = if let Some(waiter_pids) = waiters.get_mut(&child_pid) {
+        waiter_pids.retain(|pid| *pid != waiter_pid);
+        waiter_pids.is_empty()
+    } else {
+        false
+    };
+    if should_remove {
+        waiters.remove(&child_pid);
     }
 }
 

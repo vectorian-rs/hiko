@@ -47,6 +47,12 @@ pub fn deliver_result_to_parent(
     Ok(())
 }
 
+/// Deliver a runtime-managed pid result to a waiting parent.
+pub fn deliver_pid_to_parent(parent_vm: &mut VM, pid: Pid) {
+    parent_vm.stack.pop(); // remove placeholder
+    parent_vm.push_value(Value::Pid(pid.0));
+}
+
 /// Create a child VM that inherits capabilities from the parent VM.
 pub fn create_child_vm_from_parent(
     parent_vm: &VM,

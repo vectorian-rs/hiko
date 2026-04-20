@@ -50,6 +50,10 @@ pub enum RunResult {
     },
     /// Process requested to await a child result.
     Await(u64),
+    /// Process requested to cooperatively cancel a child.
+    Cancel(u64),
+    /// Process requested to wait for any child in the set to complete.
+    WaitAny(Vec<u64>),
     /// Process requested an async I/O operation.
     Io(crate::io_backend::IoRequest),
     /// Process was cancelled at a suspension point.
@@ -256,6 +260,8 @@ pub struct VM {
     println_builtin_id: Option<u16>,
     spawn_builtin_id: Option<u16>,
     await_builtin_id: Option<u16>,
+    cancel_builtin_id: Option<u16>,
+    wait_any_builtin_id: Option<u16>,
     sleep_builtin_id: Option<u16>,
     http_get_builtin_id: Option<u16>,
     http_builtin_id: Option<u16>,
@@ -265,7 +271,7 @@ pub struct VM {
     read_file_builtin_id: Option<u16>,
     /// When true, I/O builtins suspend via RuntimeRequest::Io instead of blocking.
     pub async_io: bool,
-    /// Pending runtime request from a spawn/await builtin.
+    /// Pending runtime request from a process/runtime builtin.
     pending_runtime_request: Option<RuntimeRequest>,
     /// Effect metadata from compiled program (name → tag).
     pub effect_metadata: Arc<[EffectMeta]>,
@@ -285,6 +291,8 @@ pub enum RuntimeRequest {
         captures: Vec<crate::sendable::SendableValue>,
     },
     Await(u64),
+    Cancel(u64),
+    WaitAny(Vec<u64>),
     Io(crate::io_backend::IoRequest),
 }
 
@@ -405,6 +413,8 @@ impl VM {
             println_builtin_id: None,
             spawn_builtin_id: None,
             await_builtin_id: None,
+            cancel_builtin_id: None,
+            wait_any_builtin_id: None,
             sleep_builtin_id: None,
             http_get_builtin_id: None,
             http_builtin_id: None,
@@ -637,6 +647,8 @@ impl VM {
             "exec" => self.exec_builtin_id = Some(idx),
             "spawn" => self.spawn_builtin_id = Some(idx),
             "await_process" => self.await_builtin_id = Some(idx),
+            "cancel" => self.cancel_builtin_id = Some(idx),
+            "wait_any" => self.wait_any_builtin_id = Some(idx),
             "sleep" => self.sleep_builtin_id = Some(idx),
             "http_get" => self.http_get_builtin_id = Some(idx),
             "http" => self.http_builtin_id = Some(idx),
@@ -908,7 +920,7 @@ impl VM {
         // Clear per-slice fuel for next slice
         self.fuel = None;
 
-        // Check for pending runtime request (spawn/await)
+        // Check for pending runtime request (process/runtime builtins)
         if let Some(req) = self.pending_runtime_request.take() {
             self.gc_collect_at_boundary_if_needed();
             return match req {
@@ -920,6 +932,8 @@ impl VM {
                     captures,
                 },
                 RuntimeRequest::Await(pid) => RunResult::Await(pid),
+                RuntimeRequest::Cancel(pid) => RunResult::Cancel(pid),
+                RuntimeRequest::WaitAny(pids) => RunResult::WaitAny(pids),
                 RuntimeRequest::Io(req) => RunResult::Io(req),
             };
         }
@@ -1064,6 +1078,42 @@ impl VM {
                     });
                 }
             }
+        }
+
+        // Cancel: signal runtime to cooperatively cancel a child
+        if self.cancel_builtin_id == Some(builtin_id) {
+            let pid_val = self.stack[callee_pos + 1];
+            match pid_val {
+                Value::Pid(pid) => {
+                    self.pending_runtime_request = Some(RuntimeRequest::Cancel(pid));
+                    self.stack.truncate(callee_pos);
+                    self.push(Value::Unit)?;
+                    return Err(RuntimeError {
+                        message: "runtime request".into(),
+                    });
+                }
+                _ => {
+                    return Err(RuntimeError {
+                        message: "cancel: expected Pid".into(),
+                    });
+                }
+            }
+        }
+
+        // WaitAny: block until any child in the set finishes, then resume with its Pid
+        if self.wait_any_builtin_id == Some(builtin_id) {
+            let pids = crate::builtins::extract_pid_list_arg(
+                &self.stack[callee_pos + 1..callee_pos + 1 + arity],
+                &self.heap,
+                "wait_any",
+            )
+            .map_err(|message| RuntimeError { message })?;
+            self.pending_runtime_request = Some(RuntimeRequest::WaitAny(pids));
+            self.stack.truncate(callee_pos);
+            self.push(Value::Unit)?;
+            return Err(RuntimeError {
+                message: "runtime request".into(),
+            });
         }
 
         // I/O builtins: in async mode, suspend instead of blocking
