@@ -209,7 +209,7 @@ impl VMBuilder {
         let mut vm = VM::from_program(self.program);
 
         for (name, func) in &self.builtins {
-            vm.register_builtin(name, *func);
+            vm.register_builtin(*name, *func);
         }
 
         vm.set_exec_allowed(self.exec_allowed);

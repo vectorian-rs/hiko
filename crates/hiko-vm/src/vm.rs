@@ -524,7 +524,7 @@ impl VM {
         let mut child = Self::from_verified_program(self.get_program(), self.startup_error.clone());
         // Copy all registered builtins
         for entry in &self.builtins {
-            child.register_builtin(entry.name, entry.func);
+            child.register_builtin(entry.name.clone(), entry.func);
         }
         // Copy capability settings
         child.set_exec_allowed(self.exec_allowed.clone());
@@ -621,12 +621,16 @@ impl VM {
     }
 
     /// Register a single builtin function by name.
-    pub fn register_builtin(&mut self, name: &'static str, func: BuiltinFn) {
+    pub fn register_builtin(&mut self, name: impl Into<Arc<str>>, func: BuiltinFn) {
+        let name: Arc<str> = name.into();
         let idx = self.builtins.len() as u16;
-        self.builtins.push(BuiltinEntry { name, func });
+        self.builtins.push(BuiltinEntry {
+            name: name.clone(),
+            func,
+        });
         let slot = self.global_slot(name.to_string());
         self.globals[slot] = Value::Builtin(idx);
-        match name {
+        match name.as_ref() {
             "print" => self.print_builtin_id = Some(idx),
             "println" => self.println_builtin_id = Some(idx),
             "exec" => self.exec_builtin_id = Some(idx),
@@ -644,16 +648,8 @@ impl VM {
     }
 
     /// Register a builtin with an owned name string.
-    pub fn register_builtin_owned(&mut self, name: String, func: &BuiltinFn) {
-        let idx = self.builtins.len() as u16;
-        // Leak the string to get a 'static str (safe: builtins live for the VM's lifetime)
-        let name_static: &'static str = Box::leak(name.into_boxed_str());
-        self.builtins.push(BuiltinEntry {
-            name: name_static,
-            func: *func,
-        });
-        let slot = self.global_slot(name_static.to_string());
-        self.globals[slot] = Value::Builtin(idx);
+    pub fn register_builtin_owned(&mut self, name: String, func: BuiltinFn) {
+        self.register_builtin(name, func);
     }
 
     /// Set the maximum heap size (in number of objects).
@@ -773,7 +769,9 @@ impl VM {
     /// Format a value for display (print/println).
     fn display_value(&self, v: &Value) -> String {
         match v {
-            Value::Builtin(id) => format!("<builtin:{}>", self.builtins[*id as usize].name),
+            Value::Builtin(id) => {
+                format!("<builtin:{}>", self.builtins[*id as usize].name.as_ref())
+            }
             Value::Pid(pid) => format!("<pid {pid}>"),
             Value::Heap(r) => match self.heap.get(*r) {
                 Ok(HeapObject::String(s)) => s.clone(),
@@ -1097,7 +1095,7 @@ impl VM {
                 let (method, url, headers, body) =
                     crate::builtins::extract_http_args(args, &self.heap, "http")
                         .map_err(|msg| RuntimeError { message: msg })?;
-                let builtin_name = self.builtins[builtin_id as usize].name;
+                let builtin_name = self.builtins[builtin_id as usize].name.as_ref();
                 self.heap
                     .check_http_host_for(builtin_name, &url)
                     .map_err(|e| RuntimeError {
@@ -2284,6 +2282,32 @@ mod tests {
         let right = build_int_list(&mut heap, 50_000);
 
         assert!(values_equal(left, right, &heap));
+    }
+
+    fn builtin_answer(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+        Ok(Value::Int(42))
+    }
+
+    #[test]
+    fn test_register_builtin_owned_keeps_owned_name_and_clones_to_child() {
+        let program = compile_program("val x = 0");
+        let mut vm = VM::new(program);
+        let name = "dynamic_builtin_answer".to_string();
+
+        vm.register_builtin_owned(name.clone(), builtin_answer);
+
+        let builtin_id = match vm.get_global(&name) {
+            Some(Value::Builtin(id)) => *id as usize,
+            other => panic!("expected builtin global, got {other:?}"),
+        };
+        assert_eq!(vm.builtins[builtin_id].name.as_ref(), name);
+
+        let child = vm.create_child();
+        let child_builtin_id = match child.get_global(&name) {
+            Some(Value::Builtin(id)) => *id as usize,
+            other => panic!("expected builtin global in child, got {other:?}"),
+        };
+        assert_eq!(child.builtins[child_builtin_id].name.as_ref(), name);
     }
 
     #[test]

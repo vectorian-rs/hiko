@@ -100,7 +100,7 @@ impl HeapObject {
 
 /// Builtin function entry, stored in a VM-level table.
 pub struct BuiltinEntry {
-    pub name: &'static str,
+    pub name: Arc<str>,
     pub func: BuiltinFn,
 }
 
