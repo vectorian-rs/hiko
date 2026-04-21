@@ -1,6 +1,8 @@
 (* tool: list
  * description: List directory contents
  * param path: string - Directory path to list
+ *
+ * notes: Entries that are directories are suffixed with /.
  *)
 
 use "../libraries/Std-v0.1.0/modules/List.hml"

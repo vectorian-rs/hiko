@@ -3,6 +3,12 @@
  * param path: string - File path to read
  * param offset: number - Start line, 0 for beginning
  * param limit: number - Max lines, 0 for all
+ *
+ * notes: Returns lines formatted as LINE:HASH\tCONTENT where HASH is
+ * a 2-character content hash (FNV-1a, base62). These hashes are the
+ * anchors for the edit tool -- they prove you know what you are
+ * changing. Always read a file before editing it. Use offset and
+ * limit for large files to stay within context.
  *)
 
 val input = read_stdin ()

@@ -127,6 +127,12 @@ const DATE_SOURCE: &str = r#"structure BuiltinDate = struct
 end
 "#;
 
+const HASHLINE_SOURCE: &str = r#"structure BuiltinHashline = struct
+  val read_tagged_raw = read_file_tagged
+  val edit_tagged_raw = edit_file_tagged
+end
+"#;
+
 const MODULES: &[InternalBuiltinModule] = &[
     InternalBuiltinModule {
         leaf_name: "Filesystem",
@@ -204,6 +210,13 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-time",
         enabled: cfg!(feature = "builtin-time"),
         source: DATE_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Hashline",
+        import_name: "__Builtin.Hashline",
+        feature_name: "builtin-filesystem",
+        enabled: cfg!(feature = "builtin-filesystem"),
+        source: HASHLINE_SOURCE,
     },
 ];
 

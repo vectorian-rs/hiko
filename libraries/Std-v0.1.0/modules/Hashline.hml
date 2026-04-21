@@ -1,0 +1,34 @@
+import __Builtin.Hashline
+
+structure Hashline = struct
+  effect ReadTagged of string * int * int
+  effect EditTagged of string * string
+
+  (* Read a file with hashline content-hash anchors.
+   * Returns lines formatted as:  LINE:HASH\tCONTENT
+   * offset: start line (0 = beginning), limit: max lines (0 = all) *)
+  fun read path offset limit =
+    perform ReadTagged (path, offset, limit)
+
+  (* Read an entire file with hashline anchors. *)
+  fun read_all path =
+    perform ReadTagged (path, 0, 0)
+
+  (* Apply hashline-anchored edits to a file.
+   * Each edit line: ACTION LINE:HASH CONTENT
+   *   R LINE:HASH NEW_CONTENT   - replace line
+   *   I LINE:HASH NEW_CONTENT   - insert after line
+   *   D LINE:HASH               - delete line
+   * Rejects all edits if any hash does not match current file state. *)
+  fun edit path edits =
+    perform EditTagged (path, edits)
+
+  fun run f =
+    handle f ()
+    with
+      return x => x
+    | ReadTagged args k =>
+        resume k (BuiltinHashline.read_tagged_raw args)
+    | EditTagged args k =>
+        resume k (BuiltinHashline.edit_tagged_raw args)
+end

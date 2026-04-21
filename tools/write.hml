@@ -1,7 +1,11 @@
 (* tool: write
- * description: Write content to a file (creates or overwrites)
+ * description: Write content to a file, creating or overwriting it
  * param path: string - File path to write
  * param content: string - Content to write
+ *
+ * notes: Creates the file if it does not exist. Overwrites entirely
+ * if it does. For surgical changes to an existing file, use the edit
+ * tool with hashline anchors instead.
  *)
 
 val input = read_stdin ()

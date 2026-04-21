@@ -1,0 +1,34 @@
+(* Stress test: repeated Fiber.first and Fiber.any must not leak children. *)
+
+use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+
+fun loop_first n =
+  if n = 0 then ()
+  else
+    let
+      val _ =
+        Fiber.first (
+          (fn () => let val _ = sleep 999999 in 1 end),
+          (fn () => 2)
+        )
+    in
+      loop_first (n - 1)
+    end
+
+fun loop_any n =
+  if n = 0 then ()
+  else
+    let
+      val _ =
+        Fiber.any [
+          fn () => let val _ = sleep 999999 in 1 end,
+          fn () => 2,
+          fn () => let val _ = sleep 999999 in 3 end
+        ]
+    in
+      loop_any (n - 1)
+    end
+
+val _ = loop_first 50
+val _ = loop_any 50
+val _ = println "no leak"

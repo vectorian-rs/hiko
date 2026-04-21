@@ -23,6 +23,16 @@ structure FiberInternal = struct
     | fiber :: rest =>
         if fiber = target then rest
         else fiber :: remove_first target rest
+
+  fun reap_all fibers =
+    case fibers of
+      []            => ()
+    | fiber :: rest =>
+        let
+          val _ = BuiltinProcess.await_result_raw fiber
+        in
+          reap_all rest
+        end
 end
 
 structure Fiber = struct
@@ -98,6 +108,7 @@ structure Fiber = struct
         if winner = left then right
         else left
       val _ = BuiltinProcess.cancel_raw loser
+      val _ = BuiltinProcess.await_result_raw loser
     in
       Fiber.join winner
     end
@@ -113,6 +124,7 @@ structure Fiber = struct
             val winner = BuiltinProcess.wait_any_raw fibers
             val losers = FiberInternal.remove_first winner fibers
             val _ = FiberInternal.cancel_all losers
+            val _ = FiberInternal.reap_all losers
           in
             Fiber.join winner
           end

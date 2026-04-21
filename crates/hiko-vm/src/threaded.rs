@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 
 use crate::io_backend::{IoBackend, IoToken, ThreadPoolIoBackend};
-use crate::process::{AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus, Scope, ScopeId};
+use crate::process::{
+    AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus, Scope,
+    ScopeId,
+};
 use crate::runtime_ops::{deliver_join_result_to_parent, deliver_result_to_parent};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::value::Value;
@@ -405,7 +408,10 @@ fn handle_await(
                 ));
             }
             AwaitKind::Result => {
-                match deliver_join_result_to_parent(&mut parent.vm, Err(FiberJoinError::AlreadyJoined)) {
+                match deliver_join_result_to_parent(
+                    &mut parent.vm,
+                    Err(FiberJoinError::AlreadyJoined),
+                ) {
                     Ok(()) => {
                         parent.status = ProcessStatus::Runnable;
                         table.return_process(parent);
@@ -502,8 +508,9 @@ fn handle_await(
                 drop(child);
                 match await_kind {
                     AwaitKind::Raw => {
-                        parent.status =
-                            ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(Box::new(failure)));
+                        parent.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
+                            Box::new(failure),
+                        ));
                     }
                     AwaitKind::Result => {
                         match deliver_join_result_to_parent(
@@ -1044,6 +1051,30 @@ mod tests {
             .unwrap_or_else(|| "<missing>".into());
         assert_eq!(status, "Done");
         assert_eq!(output, vec!["fiber heap tests passed\n"]);
+    }
+
+    #[test]
+    fn test_fiber_first_does_not_leak_children() {
+        // Repeated Fiber.first calls must not accumulate unreaped children.
+        // Each iteration spawns 2 children; losers must be reaped via cancel+join.
+        let program = compile_file(&test_program_path("test_fiber_no_leak.hml"));
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|process| format!("{:?}", process.status))
+            .unwrap_or_else(|| "<missing>".into());
+        assert_eq!(status, "Done");
+        // After completion, only the root process should remain in the table.
+        let remaining = runtime.table.processes.len();
+        assert_eq!(
+            remaining, 1,
+            "expected only root process in table, found {remaining} processes"
+        );
     }
 
     #[test]

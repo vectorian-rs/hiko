@@ -1,7 +1,18 @@
 (* tool: edit
- * description: Edit a file using hashline anchors. Verifies content hashes before applying. Format per edit line: ACTION LINE:HASH CONTENT. Actions: R (replace), I (insert after), D (delete).
+ * description: Edit a file using hashline anchors
  * param path: string - File path to edit
  * param edits: string - Newline-separated edit operations
+ *
+ * notes: Each edit line has the format ACTION LINE:HASH CONTENT.
+ * Actions: R (replace line), I (insert after line), D (delete line).
+ * Example edits string:
+ *   R 5:a3 new content for line 5
+ *   I 5:a3 inserted line after line 5
+ *   D 8:f1
+ * All hashes are verified before any edit is applied. If any hash
+ * does not match the current file content, ALL edits are rejected
+ * atomically. This means the file changed since you last read it --
+ * read again to get fresh hashes.
  *)
 
 val input = read_stdin ()

@@ -1,6 +1,9 @@
 (* tool: find
  * description: Find files matching a glob pattern
  * param pattern: string - Glob pattern (e.g. src/**/*.rs)
+ *
+ * notes: Returns one matching file path per line. Useful for
+ * discovering project structure before reading specific files.
  *)
 
 use "../libraries/Std-v0.1.0/modules/List.hml"

@@ -48,3 +48,8 @@ fn test_stdlib_time() {
 fn test_stdlib_date() {
     run_hiko_file("../../tests/run/test_date.hml");
 }
+
+#[test]
+fn test_stdlib_hashline() {
+    run_hiko_file("../../tests/run/test_hashline.hml");
+}

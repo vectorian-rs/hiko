@@ -1,7 +1,12 @@
 (* tool: bash
  * description: Execute a whitelisted command directly (no shell)
- * param command: string - Command path to execute
+ * param command: string - Command to execute
  * param args: string - Space-separated arguments
+ *
+ * notes: Runs the command without a shell. The command must be on
+ * the policy whitelist. Arguments are split on spaces. Prints
+ * stdout, then stderr prefixed with "stderr: ", then exit code
+ * if nonzero.
  *)
 
 val input = read_stdin ()
