@@ -134,6 +134,8 @@ val loaded =
 
 Process joins are not `Result`-typed yet; child failure still propagates as a process failure today.
 
+See [error-handling.md](error-handling.md) for the standard library/application error-layering pattern.
+
 ---
 
 ## Scheduler

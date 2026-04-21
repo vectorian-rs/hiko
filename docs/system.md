@@ -124,6 +124,7 @@ Hiko also has a left-associative pipeline operator `|>`, which desugars to ordin
 - Recoverable failures use `Std.Result` with `Ok` / `Err`.
 - `Std.Result` helpers are data-last so they compose naturally with `|>`.
 - Structured concurrency lives in `Std.Fiber`, which wraps raw runtime process primitives (`spawn`, `join`, `cancel`, `first`, `any`) without introducing function coloring.
+- See [error-handling.md](error-handling.md) for the library error-type and rendering conventions.
 
 ## Runtime representation
 
