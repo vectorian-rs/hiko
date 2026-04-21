@@ -50,6 +50,8 @@ pub enum RunResult {
     },
     /// Process requested to await a child result.
     Await(u64),
+    /// Process requested to await a child result as a Result value.
+    AwaitResult(u64),
     /// Process requested to cooperatively cancel a child.
     Cancel(u64),
     /// Process requested to wait for any child in the set to complete.
@@ -260,6 +262,7 @@ pub struct VM {
     println_builtin_id: Option<u16>,
     spawn_builtin_id: Option<u16>,
     await_builtin_id: Option<u16>,
+    await_result_builtin_id: Option<u16>,
     cancel_builtin_id: Option<u16>,
     wait_any_builtin_id: Option<u16>,
     sleep_builtin_id: Option<u16>,
@@ -291,6 +294,7 @@ pub enum RuntimeRequest {
         captures: Vec<crate::sendable::SendableValue>,
     },
     Await(u64),
+    AwaitResult(u64),
     Cancel(u64),
     WaitAny(Vec<u64>),
     Io(crate::io_backend::IoRequest),
@@ -413,6 +417,7 @@ impl VM {
             println_builtin_id: None,
             spawn_builtin_id: None,
             await_builtin_id: None,
+            await_result_builtin_id: None,
             cancel_builtin_id: None,
             wait_any_builtin_id: None,
             sleep_builtin_id: None,
@@ -544,6 +549,9 @@ impl VM {
         child.set_fs_builtin_folders(self.fs_builtin_folders.clone());
         child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
         child.set_http_allowed_hosts_by_builtin(self.http_allowed_hosts_by_builtin.clone());
+        if let Some(max_heap) = self.heap.max_objects() {
+            child.set_max_heap(max_heap);
+        }
         if self.output.is_some() {
             child.enable_output_capture();
         }
@@ -647,6 +655,7 @@ impl VM {
             "exec" => self.exec_builtin_id = Some(idx),
             "spawn" => self.spawn_builtin_id = Some(idx),
             "await_process" => self.await_builtin_id = Some(idx),
+            "await_process_result" => self.await_result_builtin_id = Some(idx),
             "cancel" => self.cancel_builtin_id = Some(idx),
             "wait_any" => self.wait_any_builtin_id = Some(idx),
             "sleep" => self.sleep_builtin_id = Some(idx),
@@ -932,6 +941,7 @@ impl VM {
                     captures,
                 },
                 RuntimeRequest::Await(pid) => RunResult::Await(pid),
+                RuntimeRequest::AwaitResult(pid) => RunResult::AwaitResult(pid),
                 RuntimeRequest::Cancel(pid) => RunResult::Cancel(pid),
                 RuntimeRequest::WaitAny(pids) => RunResult::WaitAny(pids),
                 RuntimeRequest::Io(req) => RunResult::Io(req),
@@ -1075,6 +1085,26 @@ impl VM {
                 _ => {
                     return Err(RuntimeError {
                         message: "await_process: expected Pid".into(),
+                    });
+                }
+            }
+        }
+
+        // AwaitResult: signal runtime to block until child completes and return a Result-shaped value
+        if self.await_result_builtin_id == Some(builtin_id) {
+            let pid_val = self.stack[callee_pos + 1];
+            match pid_val {
+                Value::Pid(pid) => {
+                    self.pending_runtime_request = Some(RuntimeRequest::AwaitResult(pid));
+                    self.stack.truncate(callee_pos);
+                    self.push(Value::Unit)?;
+                    return Err(RuntimeError {
+                        message: "runtime request".into(),
+                    });
+                }
+                _ => {
+                    return Err(RuntimeError {
+                        message: "await_process_result: expected Pid".into(),
                     });
                 }
             }

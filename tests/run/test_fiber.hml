@@ -1,25 +1,48 @@
 (* Tests for Std-v0.1.0/modules/Fiber.hml *)
 
+use "../../libraries/Std-v0.1.0/modules/Result.hml"
 use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
 
-val (left, right) = Fiber.both ((fn () => 21), (fn () => 21))
-val _ = assert_eq (left + right, 42, "both")
+val joined = Fiber.join (Fiber.spawn (fn () => 42))
+val joined_value =
+  case joined of
+      Result.Ok value => value
+    | Result.Err err => panic ("join failed: " ^ Fiber.render_error err)
 
-val all_values = Fiber.all [fn () => 1, fn () => 2, fn () => 3]
+val _ = assert_eq (joined_value, 42, "join")
+
+val both_value =
+  case Fiber.both ((fn () => 21), (fn () => 21)) of
+      Result.Ok (left, right) => left + right
+    | Result.Err err => panic ("both failed: " ^ Fiber.render_error err)
+
+val _ = assert_eq (both_value, 42, "both")
+
+val all_values =
+  case Fiber.all [fn () => 1, fn () => 2, fn () => 3] of
+      Result.Ok values => values
+    | Result.Err err => panic ("all failed: " ^ Fiber.render_error err)
+
 val _ = assert_eq (all_values, [1, 2, 3], "all")
 
 val first_value =
-  Fiber.first (
-    (fn () => let val _ = sleep 999999 in 10 end),
+  case Fiber.first (
+    (fn () => let val _ = sleep 50 in 10 end),
     (fn () => 20)
-  )
+  ) of
+      Result.Ok value => value
+    | Result.Err err => panic ("first failed: " ^ Fiber.render_error err)
+
 val _ = assert_eq (first_value, 20, "first")
 
 val any_value =
-  Fiber.any [
-    fn () => let val _ = sleep 999999 in 1 end,
+  case Fiber.any [
+    fn () => let val _ = sleep 50 in 1 end,
     fn () => 2
-  ]
+  ] of
+      Result.Ok value => value
+    | Result.Err err => panic ("any failed: " ^ Fiber.render_error err)
+
 val _ = assert_eq (any_value, 2, "any")
 
 val _ = println "fiber tests passed"

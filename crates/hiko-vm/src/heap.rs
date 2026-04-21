@@ -160,6 +160,10 @@ impl Heap {
         self.max_objects = Some(max);
     }
 
+    pub fn max_objects(&self) -> Option<usize> {
+        self.max_objects
+    }
+
     pub fn alloc(&mut self, obj: HeapObject) -> GcRef {
         if let Some(max) = self.max_objects {
             let live = self.objects.len() - self.free_list.len();

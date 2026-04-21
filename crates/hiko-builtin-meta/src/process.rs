@@ -1,6 +1,7 @@
 use crate::{BuiltinMeta, BuiltinSurface};
 
 const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
+const RUNTIME_ONLY: BuiltinSurface = BuiltinSurface::RuntimeOnly;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
     BuiltinMeta {
@@ -14,6 +15,12 @@ pub const BUILTINS: &[BuiltinMeta] = &[
         capability_path: Some("capabilities.process.await_process"),
         in_core_default: true,
         surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "await_process_result",
+        capability_path: Some("capabilities.process.await_process"),
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
     },
     BuiltinMeta {
         name: "cancel",

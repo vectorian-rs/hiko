@@ -4,6 +4,7 @@ use crate::sendable::SendableValue;
 use crate::vm::VM;
 use std::any::Any;
 use std::fmt;
+use std::collections::HashSet;
 
 /// Unique process identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -25,11 +26,20 @@ pub struct Scope {
 #[derive(Clone, Debug)]
 pub enum BlockReason {
     /// Waiting for a child process to complete.
-    Await(Pid),
+    Await {
+        child: Pid,
+        kind: AwaitKind,
+    },
     /// Waiting for any child in the set to complete.
     WaitAny(Vec<Pid>),
     /// Waiting for an I/O operation to complete.
     Io(crate::io_backend::IoToken),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AwaitKind {
+    Raw,
+    Result,
 }
 
 /// Process lifecycle status.
@@ -52,6 +62,43 @@ pub enum ProcessFailure {
     FuelExhausted,
     Cancelled,
     ChildProcessFailed(Box<ProcessFailure>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FiberJoinError {
+    RuntimeError(String),
+    HeapObjectLimitExceeded { limit: usize, live: usize },
+    FuelExhausted,
+    Cancelled,
+    AlreadyJoined,
+}
+
+impl FiberJoinError {
+    pub fn from_process_failure(failure: ProcessFailure) -> Self {
+        match failure {
+            ProcessFailure::RuntimeError(message) => Self::RuntimeError(message),
+            ProcessFailure::HeapObjectLimitExceeded { limit, live } => {
+                Self::HeapObjectLimitExceeded { limit, live }
+            }
+            ProcessFailure::FuelExhausted => Self::FuelExhausted,
+            ProcessFailure::Cancelled => Self::Cancelled,
+            ProcessFailure::ChildProcessFailed(cause) => Self::from_process_failure(*cause),
+        }
+    }
+}
+
+impl fmt::Display for FiberJoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RuntimeError(message) => f.write_str(message),
+            Self::HeapObjectLimitExceeded { limit, live } => {
+                write!(f, "heap limit exceeded: {live} objects (max {limit})")
+            }
+            Self::FuelExhausted => f.write_str("fuel exhausted (max_fuel limit reached)"),
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::AlreadyJoined => f.write_str("fiber already joined"),
+        }
+    }
 }
 
 impl ProcessFailure {
@@ -118,6 +165,8 @@ pub struct Process {
     pub scope_id: Option<ScopeId>,
     /// Cooperative cancellation flag. Checked at suspension/resume points.
     pub cancelled: bool,
+    /// Child pids whose join result has already been consumed by this process.
+    pub consumed_children: HashSet<Pid>,
 }
 
 impl Process {
@@ -130,6 +179,7 @@ impl Process {
             result: None,
             scope_id: None,
             cancelled: false,
+            consumed_children: HashSet::new(),
         }
     }
 
@@ -142,6 +192,7 @@ impl Process {
             result: None,
             scope_id: Some(scope_id),
             cancelled: false,
+            consumed_children: HashSet::new(),
         }
     }
 

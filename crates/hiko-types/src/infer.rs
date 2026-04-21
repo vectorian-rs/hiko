@@ -495,6 +495,7 @@ impl InferCtx {
             Type::arrow(Type::arrow(Type::unit(), a), Type::pid())
         });
         ctx.bind_poly_builtin("await_process", |a| Type::arrow(Type::pid(), a));
+        ctx.bind_poly_builtin("await_process_result", |a| Type::arrow(Type::pid(), a));
         ctx.bind(
             "cancel".to_string(),
             Scheme::mono(Type::arrow(Type::pid(), Type::unit())),

@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 
 use crate::io_backend::{IoBackend, IoToken, ThreadPoolIoBackend};
-use crate::process::{BlockReason, Pid, Process, ProcessFailure, ProcessStatus, Scope, ScopeId};
-use crate::runtime_ops::deliver_result_to_parent;
+use crate::process::{AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus, Scope, ScopeId};
+use crate::runtime_ops::{deliver_join_result_to_parent, deliver_result_to_parent};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
@@ -80,7 +80,7 @@ impl ProcessTable {
         self.processes.iter().any(|e| {
             matches!(
                 e.status,
-                ProcessStatus::Blocked(BlockReason::Await(_))
+                ProcessStatus::Blocked(BlockReason::Await { .. })
                     | ProcessStatus::Blocked(BlockReason::WaitAny(_))
             )
         }) && !self.processes.iter().any(|e| e.is_runnable())
@@ -210,7 +210,7 @@ impl ThreadedRuntime {
                             .filter(|e| {
                                 matches!(
                                     e.status,
-                                    ProcessStatus::Blocked(BlockReason::Await(_))
+                                    ProcessStatus::Blocked(BlockReason::Await { .. })
                                         | ProcessStatus::Blocked(BlockReason::WaitAny(_))
                                 )
                             })
@@ -355,7 +355,11 @@ fn worker_loop(
             }
             RunResult::Await(child_pid_val) => {
                 let child_pid = Pid(child_pid_val);
-                handle_await(table, scheduler, process, child_pid);
+                handle_await(table, scheduler, process, child_pid, AwaitKind::Raw);
+            }
+            RunResult::AwaitResult(child_pid_val) => {
+                let child_pid = Pid(child_pid_val);
+                handle_await(table, scheduler, process, child_pid, AwaitKind::Result);
             }
             RunResult::Cancel(child_pid_val) => {
                 let child_pid = Pid(child_pid_val);
@@ -389,8 +393,34 @@ fn handle_await(
     scheduler: &dyn Scheduler,
     mut parent: Process,
     child_pid: Pid,
+    await_kind: AwaitKind,
 ) {
     let parent_pid = parent.pid;
+
+    if parent.consumed_children.contains(&child_pid) {
+        match await_kind {
+            AwaitKind::Raw => {
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                    "await: child result already consumed",
+                ));
+            }
+            AwaitKind::Result => {
+                match deliver_join_result_to_parent(&mut parent.vm, Err(FiberJoinError::AlreadyJoined)) {
+                    Ok(()) => {
+                        parent.status = ProcessStatus::Runnable;
+                        table.return_process(parent);
+                        scheduler.enqueue(parent_pid);
+                        return;
+                    }
+                    Err(failure) => {
+                        parent.status = ProcessStatus::Failed(failure);
+                    }
+                }
+            }
+        }
+        table.return_process(parent);
+        return;
+    }
 
     // Use get_mut to allow take() on result for single-consumption
     match table.processes.get_mut(&child_pid) {
@@ -414,8 +444,16 @@ fn handle_await(
                 match child.result.take() {
                     Some(sv) => {
                         drop(child);
-                        match deliver_result_to_parent(&mut parent.vm, sv) {
+                        let delivered = match await_kind {
+                            AwaitKind::Raw => deliver_result_to_parent(&mut parent.vm, sv),
+                            AwaitKind::Result => {
+                                deliver_join_result_to_parent(&mut parent.vm, Ok(sv))
+                            }
+                        };
+                        match delivered {
                             Ok(()) => {
+                                parent.status = ProcessStatus::Runnable;
+                                parent.consumed_children.insert(child_pid);
                                 table.processes.remove(&child_pid);
                                 table.waiters.remove(&child_pid);
                                 table.return_process(parent);
@@ -431,9 +469,30 @@ fn handle_await(
                     }
                     None => {
                         drop(child);
-                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                            "await: result already consumed",
-                        ));
+                        match await_kind {
+                            AwaitKind::Raw => {
+                                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                                    "await: result already consumed",
+                                ));
+                            }
+                            AwaitKind::Result => {
+                                match deliver_join_result_to_parent(
+                                    &mut parent.vm,
+                                    Err(FiberJoinError::AlreadyJoined),
+                                ) {
+                                    Ok(()) => {
+                                        parent.status = ProcessStatus::Runnable;
+                                        parent.consumed_children.insert(child_pid);
+                                        table.return_process(parent);
+                                        scheduler.enqueue(parent_pid);
+                                        return;
+                                    }
+                                    Err(failure) => {
+                                        parent.status = ProcessStatus::Failed(failure);
+                                    }
+                                }
+                            }
+                        }
                         table.return_process(parent);
                     }
                 }
@@ -441,15 +500,41 @@ fn handle_await(
             ProcessStatus::Failed(msg) => {
                 let failure = msg.clone();
                 drop(child);
-                parent.status =
-                    ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(Box::new(failure)));
+                match await_kind {
+                    AwaitKind::Raw => {
+                        parent.status =
+                            ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(Box::new(failure)));
+                    }
+                    AwaitKind::Result => {
+                        match deliver_join_result_to_parent(
+                            &mut parent.vm,
+                            Err(FiberJoinError::from_process_failure(failure)),
+                        ) {
+                            Ok(()) => {
+                                parent.status = ProcessStatus::Runnable;
+                                parent.consumed_children.insert(child_pid);
+                                table.processes.remove(&child_pid);
+                                table.waiters.remove(&child_pid);
+                                table.return_process(parent);
+                                scheduler.enqueue(parent_pid);
+                                return;
+                            }
+                            Err(delivery_failure) => {
+                                parent.status = ProcessStatus::Failed(delivery_failure);
+                            }
+                        }
+                    }
+                }
                 table.processes.remove(&child_pid);
                 table.waiters.remove(&child_pid);
                 table.return_process(parent);
             }
             _ => {
                 drop(child);
-                parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
+                parent.status = ProcessStatus::Blocked(BlockReason::Await {
+                    child: child_pid,
+                    kind: await_kind,
+                });
                 table.return_process(parent);
                 table.waiters.entry(child_pid).or_default().push(parent_pid);
             }
@@ -613,22 +698,66 @@ fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_p
     };
 
     for waiter_pid in waiter_pids {
+        let await_kind = match table.processes.get(&waiter_pid) {
+            Some(waiter) => match &waiter.status {
+                ProcessStatus::Blocked(BlockReason::Await { child, kind })
+                    if *child == finished_pid =>
+                {
+                    *kind
+                }
+                _ => continue,
+            },
+            None => continue,
+        };
+
         if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
-            match &delivery {
-                Ok(sendable) => match deliver_result_to_parent(&mut waiter.vm, sendable.clone()) {
-                    Ok(()) => {
-                        waiter.status = ProcessStatus::Runnable;
-                        drop(waiter);
-                        scheduler.enqueue(waiter_pid);
+            match (await_kind, &delivery) {
+                (AwaitKind::Raw, Ok(sendable)) => {
+                    match deliver_result_to_parent(&mut waiter.vm, sendable.clone()) {
+                        Ok(()) => {
+                            waiter.status = ProcessStatus::Runnable;
+                            waiter.consumed_children.insert(finished_pid);
+                            drop(waiter);
+                            scheduler.enqueue(waiter_pid);
+                        }
+                        Err(failure) => {
+                            waiter.status = ProcessStatus::Failed(failure);
+                        }
                     }
-                    Err(failure) => {
-                        waiter.status = ProcessStatus::Failed(failure);
-                    }
-                },
-                Err(msg) => {
+                }
+                (AwaitKind::Raw, Err(msg)) => {
                     waiter.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
                         Box::new(msg.clone()),
                     ));
+                }
+                (AwaitKind::Result, Ok(sendable)) => {
+                    match deliver_join_result_to_parent(&mut waiter.vm, Ok(sendable.clone())) {
+                        Ok(()) => {
+                            waiter.status = ProcessStatus::Runnable;
+                            waiter.consumed_children.insert(finished_pid);
+                            drop(waiter);
+                            scheduler.enqueue(waiter_pid);
+                        }
+                        Err(failure) => {
+                            waiter.status = ProcessStatus::Failed(failure);
+                        }
+                    }
+                }
+                (AwaitKind::Result, Err(msg)) => {
+                    match deliver_join_result_to_parent(
+                        &mut waiter.vm,
+                        Err(FiberJoinError::from_process_failure(msg.clone())),
+                    ) {
+                        Ok(()) => {
+                            waiter.status = ProcessStatus::Runnable;
+                            waiter.consumed_children.insert(finished_pid);
+                            drop(waiter);
+                            scheduler.enqueue(waiter_pid);
+                        }
+                        Err(failure) => {
+                            waiter.status = ProcessStatus::Failed(failure);
+                        }
+                    }
                 }
             }
         }
@@ -639,7 +768,7 @@ fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_p
 
 fn clear_blocked_registration(table: &ProcessTable, pid: Pid, reason: &BlockReason) {
     match reason {
-        BlockReason::Await(child_pid) => remove_waiter(&table.waiters, *child_pid, pid),
+        BlockReason::Await { child, .. } => remove_waiter(&table.waiters, *child, pid),
         BlockReason::WaitAny(child_pids) => remove_any_waiter_registration(table, pid, child_pids),
         BlockReason::Io(token) => {
             table.io_waiters.remove(token);
@@ -839,6 +968,23 @@ mod tests {
     #[test]
     fn test_stdlib_fiber_module() {
         let program = compile_file(&test_program_path("test_fiber.hml"));
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|process| format!("{:?}", process.status))
+            .unwrap_or_else(|| "<missing>".into());
+        assert_eq!(status, "Done");
+        assert_eq!(output, vec!["fiber tests passed\n"]);
+    }
+
+    #[test]
+    fn test_stdlib_fiber_error_paths() {
+        let program = compile_file(&test_program_path("test_fiber_errors.hml"));
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
         let pid = runtime.spawn_root(program);
@@ -851,7 +997,53 @@ mod tests {
             .map(|process| format!("{:?}", process.status))
             .unwrap_or_else(|| "<missing>".into());
         assert_eq!(status, "Done");
-        assert_eq!(output, vec!["fiber tests passed\n"]);
+        assert_eq!(output, vec!["fiber error tests passed\n"]);
+    }
+
+    #[test]
+    fn test_stdlib_fiber_reports_child_fuel_exhaustion() {
+        let program = compile_file(&test_program_path("test_fiber_fuel.hml"));
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.new_pid();
+        let mut vm = VM::new(program);
+        vm.enable_output_capture();
+        vm.set_fuel(2_500);
+        let process = Process::new(pid, vm, None);
+        runtime.table.insert(process);
+        runtime.scheduler.enqueue(pid);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|process| format!("{:?}", process.status))
+            .unwrap_or_else(|| "<missing>".into());
+        assert_eq!(status, "Done");
+        assert_eq!(output, vec!["fiber fuel tests passed\n"]);
+    }
+
+    #[test]
+    fn test_stdlib_fiber_reports_child_heap_limit() {
+        let program = compile_file(&test_program_path("test_fiber_heap.hml"));
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.new_pid();
+        let mut vm = VM::new(program);
+        vm.enable_output_capture();
+        vm.set_max_heap(64);
+        let process = Process::new(pid, vm, None);
+        runtime.table.insert(process);
+        runtime.scheduler.enqueue(pid);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|process| format!("{:?}", process.status))
+            .unwrap_or_else(|| "<missing>".into());
+        assert_eq!(status, "Done");
+        assert_eq!(output, vec!["fiber heap tests passed\n"]);
     }
 
     #[test]

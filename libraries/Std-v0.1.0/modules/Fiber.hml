@@ -1,3 +1,4 @@
+use "./Result.hml"
 import __Builtin.Process
 
 structure FiberInternal = struct
@@ -5,11 +6,6 @@ structure FiberInternal = struct
     case fs of
       []        => []
     | f :: rest => BuiltinProcess.spawn_raw f :: spawn_all rest
-
-  fun join_all fibers =
-    case fibers of
-      []            => []
-    | fiber :: rest => BuiltinProcess.await_raw fiber :: join_all rest
 
   fun cancel_all fibers =
     case fibers of
@@ -31,12 +27,33 @@ end
 
 structure Fiber = struct
   type 'a t = pid
+  type error = BuiltinProcess.error
+
+  fun render_error err =
+    case err of
+      BuiltinProcess.RuntimeError msg => msg
+    | BuiltinProcess.Cancelled => "cancelled"
+    | BuiltinProcess.FuelExhausted => "fuel exhausted"
+    | BuiltinProcess.AlreadyJoined => "fiber already joined"
+    | BuiltinProcess.HeapObjectLimitExceeded (live, limit) =>
+        "heap limit exceeded: "
+        ^ int_to_string live
+        ^ " objects (max "
+        ^ int_to_string limit
+        ^ ")"
 
   fun spawn f =
     BuiltinProcess.spawn_raw f
 
   fun join fiber =
-    BuiltinProcess.await_raw fiber
+    case BuiltinProcess.await_result_raw fiber of
+      BuiltinProcess.Ok value => Result.Ok value
+    | BuiltinProcess.Err err => Result.Err err
+
+  fun join_or_fail fiber =
+    case Fiber.join fiber of
+      Result.Ok value => value
+    | Result.Err err => panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
 
   fun cancel fiber =
     BuiltinProcess.cancel_raw fiber
@@ -45,14 +62,32 @@ structure Fiber = struct
     let
       val left = BuiltinProcess.spawn_raw f
       val right = BuiltinProcess.spawn_raw g
-      val left_result = BuiltinProcess.await_raw left
-      val right_result = BuiltinProcess.await_raw right
+      val left_result = Fiber.join left
+      val right_result = Fiber.join right
     in
-      (left_result, right_result)
+      case (left_result, right_result) of
+        (Result.Ok left_value, Result.Ok right_value) =>
+          Result.Ok (left_value, right_value)
+      | (Result.Err err, _) => Result.Err err
+      | (_, Result.Err err) => Result.Err err
     end
 
+  fun join_all fibers =
+    case fibers of
+      [] => Result.Ok []
+    | fiber :: rest =>
+        let
+          val head = Fiber.join fiber
+          val tail = Fiber.join_all rest
+        in
+          case (head, tail) of
+            (Result.Ok value, Result.Ok values) => Result.Ok (value :: values)
+          | (Result.Err err, _) => Result.Err err
+          | (_, Result.Err err) => Result.Err err
+        end
+
   fun all fs =
-    FiberInternal.join_all (FiberInternal.spawn_all fs)
+    Fiber.join_all (FiberInternal.spawn_all fs)
 
   fun first (f, g) =
     let
@@ -64,7 +99,7 @@ structure Fiber = struct
         else left
       val _ = BuiltinProcess.cancel_raw loser
     in
-      BuiltinProcess.await_raw winner
+      Fiber.join winner
     end
 
   fun any fs =
@@ -72,14 +107,14 @@ structure Fiber = struct
       val fibers = FiberInternal.spawn_all fs
     in
       case fibers of
-        [] => panic "Fiber.any: empty list"
+        [] => Result.Err (BuiltinProcess.RuntimeError "Fiber.any: empty list")
       | _ =>
           let
             val winner = BuiltinProcess.wait_any_raw fibers
             val losers = FiberInternal.remove_first winner fibers
             val _ = FiberInternal.cancel_all losers
           in
-            BuiltinProcess.await_raw winner
+            Fiber.join winner
           end
     end
 end

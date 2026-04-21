@@ -1,0 +1,39 @@
+use "../../libraries/Std-v0.1.0/modules/Result.hml"
+use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+
+val cancelled = Fiber.spawn (fn () => let val _ = sleep 999999 in 42 end)
+val _ = Fiber.cancel cancelled
+
+fun is_error_message expected result =
+  Result.fold
+    (fn _ => 0)
+    (fn err => if Fiber.render_error err = expected then 1 else 0)
+    result
+
+val cancelled_status = is_error_message "cancelled" (Fiber.join cancelled)
+
+val _ = assert_eq (cancelled_status, 1, "cancelled join")
+
+val joined_twice = Fiber.spawn (fn () => 42)
+val first_join_status =
+  Result.fold
+    (fn value => if value = 42 then 1 else 0)
+    (fn _ => 0)
+    (Fiber.join joined_twice)
+
+val second_join_status = is_error_message "fiber already joined" (Fiber.join joined_twice)
+
+val _ = assert_eq (first_join_status, 1, "first join ok")
+val _ = assert_eq (second_join_status, 1, "second join already joined")
+
+val failed = Fiber.spawn (fn () => panic "boom")
+val after_failure =
+  Result.fold
+    (fn _ => 0)
+    (fn err =>
+      if string_contains (Fiber.render_error err, "boom") then 41 else 0)
+    (Fiber.join failed)
+
+val _ = assert_eq (after_failure + 1, 42, "parent continues after child failure")
+
+val _ = println "fiber error tests passed"

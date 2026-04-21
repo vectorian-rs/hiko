@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::process::{BlockReason, Pid, Process, ProcessFailure, ProcessStatus};
+use crate::process::{AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::sendable::{SendableValue, serialize};
 use crate::value::Value;
@@ -138,7 +138,11 @@ impl Runtime {
                 }
                 RunResult::Await(child_pid_val) => {
                     let child_pid = Pid(child_pid_val);
-                    self.handle_await(pid, child_pid);
+                    self.handle_await(pid, child_pid, AwaitKind::Raw);
+                }
+                RunResult::AwaitResult(child_pid_val) => {
+                    let child_pid = Pid(child_pid_val);
+                    self.handle_await(pid, child_pid, AwaitKind::Result);
                 }
                 RunResult::Cancel(child_pid_val) => {
                     let child_pid = Pid(child_pid_val);
@@ -189,7 +193,7 @@ impl Runtime {
     }
 
     /// Handle an await request: block parent or resume with result.
-    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid) {
+    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid, await_kind: AwaitKind) {
         // Extract child state as an owned value to avoid borrow conflicts
         enum ChildState {
             Done,
@@ -197,6 +201,38 @@ impl Runtime {
             Running,
             NotFound,
             NotChild,
+        }
+
+        if self
+            .processes
+            .get(&parent_pid)
+            .is_some_and(|parent| parent.consumed_children.contains(&child_pid))
+        {
+            let parent = self.processes.get_mut(&parent_pid).unwrap();
+            match await_kind {
+                AwaitKind::Raw => {
+                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                        "await: child result already consumed",
+                    ));
+                    self.scheduler.remove(parent_pid);
+                }
+                AwaitKind::Result => {
+                    match crate::runtime_ops::deliver_join_result_to_parent(
+                        &mut parent.vm,
+                        Err(FiberJoinError::AlreadyJoined),
+                    ) {
+                        Ok(()) => {
+                            parent.status = ProcessStatus::Runnable;
+                            self.scheduler.enqueue(parent_pid);
+                        }
+                        Err(failure) => {
+                            parent.status = ProcessStatus::Failed(failure);
+                            self.scheduler.remove(parent_pid);
+                        }
+                    }
+                }
+            }
+            return;
         }
 
         let child_state = match self.processes.get(&child_pid) {
@@ -226,15 +262,47 @@ impl Runtime {
                     Some(sv) => sv,
                     None => {
                         let parent = self.processes.get_mut(&parent_pid).unwrap();
-                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                            "await: child result already consumed",
-                        ));
+                        match await_kind {
+                            AwaitKind::Raw => {
+                                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                                    "await: child result already consumed",
+                                ));
+                                self.scheduler.remove(parent_pid);
+                            }
+                            AwaitKind::Result => {
+                                match crate::runtime_ops::deliver_join_result_to_parent(
+                                    &mut parent.vm,
+                                    Err(FiberJoinError::AlreadyJoined),
+                                ) {
+                                    Ok(()) => {
+                                        parent.status = ProcessStatus::Runnable;
+                                        parent.consumed_children.insert(child_pid);
+                                        self.scheduler.enqueue(parent_pid);
+                                    }
+                                    Err(failure) => {
+                                        parent.status = ProcessStatus::Failed(failure);
+                                        self.scheduler.remove(parent_pid);
+                                    }
+                                }
+                            }
+                        }
                         return;
                     }
                 };
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                match crate::runtime_ops::deliver_result_to_parent(&mut parent.vm, sendable) {
+                let delivery = match await_kind {
+                    AwaitKind::Raw => {
+                        crate::runtime_ops::deliver_result_to_parent(&mut parent.vm, sendable)
+                    }
+                    AwaitKind::Result => crate::runtime_ops::deliver_join_result_to_parent(
+                        &mut parent.vm,
+                        Ok(sendable),
+                    ),
+                };
+                match delivery {
                     Ok(()) => {
+                        parent.status = ProcessStatus::Runnable;
+                        parent.consumed_children.insert(child_pid);
                         self.scheduler.enqueue(parent_pid);
                         self.processes.remove(&child_pid);
                         self.waiters.remove(&child_pid);
@@ -249,15 +317,39 @@ impl Runtime {
             }
             ChildState::Failed(failure) => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status =
-                    ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(Box::new(failure)));
-                self.scheduler.remove(parent_pid);
+                match await_kind {
+                    AwaitKind::Raw => {
+                        parent.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
+                            Box::new(failure),
+                        ));
+                        self.scheduler.remove(parent_pid);
+                    }
+                    AwaitKind::Result => {
+                        match crate::runtime_ops::deliver_join_result_to_parent(
+                            &mut parent.vm,
+                            Err(FiberJoinError::from_process_failure(failure)),
+                        ) {
+                            Ok(()) => {
+                                parent.status = ProcessStatus::Runnable;
+                                parent.consumed_children.insert(child_pid);
+                                self.scheduler.enqueue(parent_pid);
+                            }
+                            Err(delivery_failure) => {
+                                parent.status = ProcessStatus::Failed(delivery_failure);
+                                self.scheduler.remove(parent_pid);
+                            }
+                        }
+                    }
+                }
                 self.processes.remove(&child_pid);
                 self.waiters.remove(&child_pid);
             }
             ChildState::Running => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Blocked(BlockReason::Await(child_pid));
+                parent.status = ProcessStatus::Blocked(BlockReason::Await {
+                    child: child_pid,
+                    kind: await_kind,
+                });
                 self.waiters.entry(child_pid).or_default().push(parent_pid);
             }
             ChildState::NotFound => {
@@ -408,8 +500,8 @@ impl Runtime {
         if let Some(reason) = block_reason {
             self.scheduler.remove(pid);
             match reason {
-                BlockReason::Await(child_pid) => {
-                    remove_waiter(&mut self.waiters, child_pid, pid);
+                BlockReason::Await { child, .. } => {
+                    remove_waiter(&mut self.waiters, child, pid);
                 }
                 BlockReason::WaitAny(child_pids) => {
                     self.remove_wait_any_registration(pid, &child_pids);
@@ -478,15 +570,28 @@ impl Runtime {
         };
 
         for waiter in waiter_pids {
+            let await_kind = match self.processes.get(&waiter) {
+                Some(process) => match &process.status {
+                    ProcessStatus::Blocked(BlockReason::Await { child, kind })
+                        if *child == finished_pid =>
+                    {
+                        *kind
+                    }
+                    _ => continue,
+                },
+                None => continue,
+            };
+
             if let Some(process) = self.processes.get_mut(&waiter) {
-                match &delivery {
-                    Ok(sendable) => {
+                match (await_kind, &delivery) {
+                    (AwaitKind::Raw, Ok(sendable)) => {
                         match crate::runtime_ops::deliver_result_to_parent(
                             &mut process.vm,
                             sendable.clone(),
                         ) {
                             Ok(()) => {
                                 process.status = ProcessStatus::Runnable;
+                                process.consumed_children.insert(finished_pid);
                                 self.scheduler.enqueue(waiter);
                             }
                             Err(failure) => {
@@ -494,10 +599,40 @@ impl Runtime {
                             }
                         }
                     }
-                    Err(msg) => {
+                    (AwaitKind::Raw, Err(msg)) => {
                         process.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
                             Box::new(msg.clone()),
                         ));
+                    }
+                    (AwaitKind::Result, Ok(sendable)) => {
+                        match crate::runtime_ops::deliver_join_result_to_parent(
+                            &mut process.vm,
+                            Ok(sendable.clone()),
+                        ) {
+                            Ok(()) => {
+                                process.status = ProcessStatus::Runnable;
+                                process.consumed_children.insert(finished_pid);
+                                self.scheduler.enqueue(waiter);
+                            }
+                            Err(failure) => {
+                                process.status = ProcessStatus::Failed(failure);
+                            }
+                        }
+                    }
+                    (AwaitKind::Result, Err(msg)) => {
+                        match crate::runtime_ops::deliver_join_result_to_parent(
+                            &mut process.vm,
+                            Err(FiberJoinError::from_process_failure(msg.clone())),
+                        ) {
+                            Ok(()) => {
+                                process.status = ProcessStatus::Runnable;
+                                process.consumed_children.insert(finished_pid);
+                                self.scheduler.enqueue(waiter);
+                            }
+                            Err(failure) => {
+                                process.status = ProcessStatus::Failed(failure);
+                            }
+                        }
                     }
                 }
             }

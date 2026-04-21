@@ -61,8 +61,22 @@ end
 "#;
 
 const PROCESS_SOURCE: &str = r#"structure BuiltinProcess = struct
+  datatype error =
+      RuntimeError of string
+    | Cancelled
+    | FuelExhausted
+    | AlreadyJoined
+    (* HeapObjectLimitExceeded (live, limit) *)
+    | HeapObjectLimitExceeded of int * int
+
+  datatype 'a await_result =
+      Ok of 'a
+    | Err of error
+
   val spawn_raw = spawn
   val await_raw = await_process
+  fun await_result_raw pid =
+    await_process_result pid
   val cancel_raw = cancel
   val wait_any_raw = wait_any
 end

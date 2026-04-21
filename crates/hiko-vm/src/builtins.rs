@@ -478,6 +478,7 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
     entries.extend([
         ("spawn", process::spawn_placeholder as BuiltinFn),
         ("await_process", process::await_placeholder),
+        ("await_process_result", process::await_result_placeholder),
         ("cancel", process::cancel_placeholder),
         ("wait_any", process::wait_any_placeholder),
     ]);
