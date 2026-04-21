@@ -1,0 +1,25 @@
+(* Tests for Std-v0.1.0/modules/Fiber.hml *)
+
+use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+
+val (left, right) = Fiber.both ((fn () => 21), (fn () => 21))
+val _ = assert_eq (left + right, 42, "both")
+
+val all_values = Fiber.all [fn () => 1, fn () => 2, fn () => 3]
+val _ = assert_eq (all_values, [1, 2, 3], "all")
+
+val first_value =
+  Fiber.first (
+    (fn () => let val _ = sleep 999999 in 10 end),
+    (fn () => 20)
+  )
+val _ = assert_eq (first_value, 20, "first")
+
+val any_value =
+  Fiber.any [
+    fn () => let val _ = sleep 999999 in 1 end,
+    fn () => 2
+  ]
+val _ = assert_eq (any_value, 2, "any")
+
+val _ = println "fiber tests passed"

@@ -1,0 +1,38 @@
+(* Tests for Std-v0.1.0/modules/Result.hml *)
+
+use "../../libraries/Std-v0.1.0/modules/Result.hml"
+
+val _ = assert (Result.is_ok (Result.Ok 1), "is_ok Ok")
+val _ = assert (Result.is_err (Result.Err "boom"), "is_err Err")
+val _ = assert (not (Result.is_ok (Result.Err "boom")), "not is_ok Err")
+
+val _ = assert_eq (Result.unwrap_or 0 (Result.Ok 42), 42, "unwrap_or Ok")
+val _ = assert_eq (Result.unwrap_or 7 (Result.Err "boom"), 7, "unwrap_or Err")
+
+val _ = assert_eq (
+  Result.unwrap_or 0 (Result.map (fn x => x + 1) (Result.Ok 41)),
+  42,
+  "map Ok"
+)
+val _ = assert (Result.is_err (Result.map (fn x => x + 1) (Result.Err "boom")), "map Err")
+
+val _ = assert_eq (
+  Result.unwrap_or_else (fn err => err) (Result.map_err (fn _ => "fail") (Result.Err "boom")),
+  "fail",
+  "map_err Err"
+)
+
+val _ = assert_eq (
+  Result.unwrap_or 0 (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Ok 41)),
+  42,
+  "and_then Ok"
+)
+val _ = assert (Result.is_err (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Err "boom")), "and_then Err")
+
+val _ = assert_eq (
+  Result.unwrap_or 0 (Result.or_else (fn _ => Result.Ok 42) (Result.Err "boom")),
+  42,
+  "or_else Err"
+)
+
+val _ = println "result tests passed"

@@ -35,6 +35,11 @@ fn test_stdlib_either() {
 }
 
 #[test]
+fn test_stdlib_result() {
+    run_hiko_file("../../tests/run/test_result.hml");
+}
+
+#[test]
 fn test_stdlib_time() {
     run_hiko_file("../../tests/run/test_time.hml");
 }

@@ -1,0 +1,43 @@
+structure Result = struct
+  datatype ('a, 'e) result = Ok of 'a | Err of 'e
+
+  fun is_ok result =
+    case result of
+      Ok _  => true
+    | Err _ => false
+
+  fun is_err result =
+    case result of
+      Ok _  => false
+    | Err _ => true
+
+  fun map f result =
+    case result of
+      Ok value => Ok (f value)
+    | Err err  => Err err
+
+  fun map_err f result =
+    case result of
+      Ok value => Ok value
+    | Err err  => Err (f err)
+
+  fun and_then f result =
+    case result of
+      Ok value => f value
+    | Err err  => Err err
+
+  fun or_else f result =
+    case result of
+      Ok value => Ok value
+    | Err err  => f err
+
+  fun unwrap_or default result =
+    case result of
+      Ok value => value
+    | Err _    => default
+
+  fun unwrap_or_else f result =
+    case result of
+      Ok value => value
+    | Err err  => f err
+end

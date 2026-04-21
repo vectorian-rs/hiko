@@ -1,0 +1,85 @@
+import __Builtin.Process
+
+structure FiberInternal = struct
+  fun spawn_all fs =
+    case fs of
+      []        => []
+    | f :: rest => BuiltinProcess.spawn_raw f :: spawn_all rest
+
+  fun join_all fibers =
+    case fibers of
+      []            => []
+    | fiber :: rest => BuiltinProcess.await_raw fiber :: join_all rest
+
+  fun cancel_all fibers =
+    case fibers of
+      []            => ()
+    | fiber :: rest =>
+        let
+          val _ = BuiltinProcess.cancel_raw fiber
+        in
+          cancel_all rest
+        end
+
+  fun remove_first target fibers =
+    case fibers of
+      []            => []
+    | fiber :: rest =>
+        if fiber = target then rest
+        else fiber :: remove_first target rest
+end
+
+structure Fiber = struct
+  type 'a t = pid
+
+  fun spawn f =
+    BuiltinProcess.spawn_raw f
+
+  fun join fiber =
+    BuiltinProcess.await_raw fiber
+
+  fun cancel fiber =
+    BuiltinProcess.cancel_raw fiber
+
+  fun both (f, g) =
+    let
+      val left = BuiltinProcess.spawn_raw f
+      val right = BuiltinProcess.spawn_raw g
+      val left_result = BuiltinProcess.await_raw left
+      val right_result = BuiltinProcess.await_raw right
+    in
+      (left_result, right_result)
+    end
+
+  fun all fs =
+    FiberInternal.join_all (FiberInternal.spawn_all fs)
+
+  fun first (f, g) =
+    let
+      val left = BuiltinProcess.spawn_raw f
+      val right = BuiltinProcess.spawn_raw g
+      val winner = BuiltinProcess.wait_any_raw [left, right]
+      val loser =
+        if winner = left then right
+        else left
+      val _ = BuiltinProcess.cancel_raw loser
+    in
+      BuiltinProcess.await_raw winner
+    end
+
+  fun any fs =
+    let
+      val fibers = FiberInternal.spawn_all fs
+    in
+      case fibers of
+        [] => panic "Fiber.any: empty list"
+      | _ =>
+          let
+            val winner = BuiltinProcess.wait_any_raw fibers
+            val losers = FiberInternal.remove_first winner fibers
+            val _ = FiberInternal.cancel_all losers
+          in
+            BuiltinProcess.await_raw winner
+          end
+    end
+end

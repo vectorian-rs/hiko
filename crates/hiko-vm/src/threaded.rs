@@ -681,13 +681,21 @@ mod tests {
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn compile(source: &str) -> CompiledProgram {
         let tokens = Lexer::new(source, 0).tokenize().unwrap();
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
+        compiled
+    }
+
+    fn compile_file(path: &Path) -> CompiledProgram {
+        let source = std::fs::read_to_string(path).expect("read source");
+        let tokens = Lexer::new(&source, 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let (compiled, _) = Compiler::compile_file(program, path).unwrap();
         compiled
     }
 
@@ -700,6 +708,12 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn test_program_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/run")
+            .join(name)
     }
 
     #[test]
@@ -820,6 +834,24 @@ mod tests {
                     ProcessStatus::Failed(ProcessFailure::Cancelled)
                 )
         }));
+    }
+
+    #[test]
+    fn test_stdlib_fiber_module() {
+        let program = compile_file(&test_program_path("test_fiber.hml"));
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|process| format!("{:?}", process.status))
+            .unwrap_or_else(|| "<missing>".into());
+        assert_eq!(status, "Done");
+        assert_eq!(output, vec!["fiber tests passed\n"]);
     }
 
     #[test]
