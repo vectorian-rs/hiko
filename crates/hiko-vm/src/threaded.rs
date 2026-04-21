@@ -291,6 +291,61 @@ fn make_terminal(table: &ProcessTable, process: Process, outcome: ChildOutcome) 
     }
 }
 
+/// Cancel all running children of a terminating process (scope cleanup).
+/// When a parent exits, its children must not outlive it.
+fn cancel_scope_children(table: &ProcessTable, scheduler: &dyn Scheduler, parent_pid: Pid) {
+    let children: Vec<Pid> = table
+        .child_parents
+        .iter()
+        .filter(|entry| *entry.value() == parent_pid)
+        .map(|entry| *entry.key())
+        .collect();
+
+    for child_pid in children {
+        // Skip if already tombstoned
+        if table.tombstones.contains_key(&child_pid) {
+            continue;
+        }
+
+        // Try to cancel in the table
+        match table.processes.get_mut(&child_pid) {
+            Some(mut child) => match &child.status {
+                ProcessStatus::Blocked(reason) => {
+                    let reason = reason.clone();
+                    let child_parent = child.parent;
+                    child.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
+                    drop(child);
+                    scheduler.remove(child_pid);
+                    clear_blocked_registration(table, child_pid, &reason);
+                    if let Some(child_parent) = child_parent {
+                        table.processes.remove(&child_pid);
+                        table.tombstones.insert(
+                            child_pid,
+                            ChildRecord::Ready {
+                                parent: child_parent,
+                                outcome: ChildOutcome::Err(ProcessFailure::Cancelled),
+                            },
+                        );
+                    }
+                    wake_any_waiters(table, scheduler, child_pid);
+                    wake_join_waiters(table, scheduler, child_pid);
+                }
+                ProcessStatus::Runnable => {
+                    child.cancelled = true;
+                    drop(child);
+                }
+                _ => {
+                    drop(child);
+                }
+            },
+            None => {
+                // Being executed by another worker — schedule pending cancel
+                table.pending_cancels.insert(child_pid, ());
+            }
+        }
+    }
+}
+
 fn worker_loop(
     table: &ProcessTable,
     scheduler: &dyn Scheduler,
@@ -343,6 +398,7 @@ fn worker_loop(
                     ChildOutcome::Ok(crate::sendable::SendableValue::Unit)
                 };
                 make_terminal(table, process, outcome);
+                cancel_scope_children(table, scheduler, pid);
                 scheduler.remove(pid);
                 wake_any_waiters(table, scheduler, pid);
                 wake_join_waiters(table, scheduler, pid);
@@ -353,6 +409,7 @@ fn worker_loop(
             }
             RunResult::Failed(failure) => {
                 make_terminal(table, process, ChildOutcome::Err(failure));
+                cancel_scope_children(table, scheduler, pid);
                 scheduler.remove(pid);
                 wake_any_waiters(table, scheduler, pid);
                 wake_join_waiters(table, scheduler, pid);
@@ -411,6 +468,7 @@ fn worker_loop(
             }
             RunResult::Cancelled => {
                 make_terminal(table, process, ChildOutcome::Err(ProcessFailure::Cancelled));
+                cancel_scope_children(table, scheduler, pid);
                 scheduler.remove(pid);
                 wake_any_waiters(table, scheduler, pid);
                 wake_join_waiters(table, scheduler, pid);
@@ -1525,5 +1583,76 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["done\n"]);
+    }
+
+    // --- Scope cleanup tests ---
+
+    #[test]
+    fn test_scope_cancels_unawaited_child() {
+        // Parent finishes without awaiting child → child should be cancelled by scope cleanup
+        let program = compile(
+            "val _ = spawn (fn () => let val _ = sleep 999999 in 42 end)\n\
+             val _ = println \"parent done\"",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["parent done\n"]);
+        // Only root should remain in processes (child was scope-cancelled and tombstoned)
+        assert_eq!(runtime.table.processes.len(), 1);
+    }
+
+    #[test]
+    fn test_scope_cancels_multiple_unawaited_children() {
+        let program = compile(
+            "val _ = spawn (fn () => let val _ = sleep 999999 in 1 end)\n\
+             val _ = spawn (fn () => let val _ = sleep 999999 in 2 end)\n\
+             val _ = spawn (fn () => let val _ = sleep 999999 in 3 end)\n\
+             val _ = println \"done\"",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["done\n"]);
+        assert_eq!(runtime.table.processes.len(), 1);
+    }
+
+    #[test]
+    fn test_scope_cascades_cancellation() {
+        // Parent spawns child, child spawns grandchild; parent exits → both cancelled
+        let program = compile(
+            "val _ = spawn (fn () =>\n\
+               let val _ = spawn (fn () => sleep 999999)\n\
+               in sleep 999999 end)\n\
+             val _ = println \"root done\"",
+        );
+        let runtime = ThreadedRuntime::new(1)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["root done\n"]);
+        assert_eq!(runtime.table.processes.len(), 1);
+    }
+
+    #[test]
+    fn test_multiworker_scope_cleanup() {
+        // Same scope cleanup test but with 4 workers
+        let program = compile(
+            "val _ = spawn (fn () => let val _ = sleep 999999 in 1 end)\n\
+             val _ = spawn (fn () => let val _ = sleep 999999 in 2 end)\n\
+             val _ = println \"done\"",
+        );
+        let runtime = ThreadedRuntime::new(4)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["done\n"]);
+        assert_eq!(runtime.table.processes.len(), 1);
     }
 }

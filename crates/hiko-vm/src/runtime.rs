@@ -108,6 +108,7 @@ impl Runtime {
                         }
                     };
                     self.make_terminal(pid, outcome);
+                    self.cancel_scope_children(pid);
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -116,6 +117,7 @@ impl Runtime {
                 }
                 RunResult::Failed(failure) => {
                     self.make_terminal(pid, ChildOutcome::Err(failure));
+                    self.cancel_scope_children(pid);
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -131,6 +133,7 @@ impl Runtime {
                     }
                     Err(failure) => {
                         self.make_terminal(pid, ChildOutcome::Err(failure));
+                        self.cancel_scope_children(pid);
                         self.scheduler.remove(pid);
                         self.wake_and_deliver_results(pid);
                     }
@@ -158,9 +161,11 @@ impl Runtime {
                             "async I/O requires ThreadedRuntime",
                         )),
                     );
+                    self.cancel_scope_children(pid);
                 }
                 RunResult::Cancelled => {
                     self.make_terminal(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
+                    self.cancel_scope_children(pid);
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -211,6 +216,20 @@ impl Runtime {
                 ChildOutcome::Ok(_) => process.status = ProcessStatus::Done,
                 ChildOutcome::Err(failure) => process.status = ProcessStatus::Failed(failure),
             }
+        }
+    }
+
+    /// Cancel all running children of a terminating process (scope cleanup).
+    fn cancel_scope_children(&mut self, parent_pid: Pid) {
+        let children: Vec<Pid> = self
+            .processes
+            .values()
+            .filter(|p| p.parent == Some(parent_pid))
+            .map(|p| p.pid)
+            .collect();
+
+        for child_pid in children {
+            self.cancel_process(child_pid);
         }
     }
 
@@ -503,6 +522,7 @@ impl Runtime {
                 BlockReason::Io(_) => {}
             }
             self.make_terminal(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
+            self.cancel_scope_children(pid);
             self.wake_any_waiters(pid);
             self.wake_join_waiters(pid);
         }
