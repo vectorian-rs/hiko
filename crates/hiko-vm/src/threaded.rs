@@ -542,8 +542,26 @@ fn handle_await(
                     child: child_pid,
                     kind: await_kind,
                 });
-                table.return_process(parent);
+                // Register waiter BEFORE returning parent to table, so that
+                // if the child finishes concurrently, wake_join_waiters will
+                // find this waiter entry. Then recheck child status to handle
+                // the race where the child finished between our initial check
+                // and the waiter registration.
                 table.waiters.entry(child_pid).or_default().push(parent_pid);
+                table.return_process(parent);
+
+                // Recheck: if the child became terminal during the gap,
+                // wake_join_waiters may have already run and missed us.
+                // Trigger it again — the single-get_mut wake logic prevents
+                // double delivery.
+                let child_terminal = table
+                    .processes
+                    .get(&child_pid)
+                    .map(|c| matches!(c.status, ProcessStatus::Done | ProcessStatus::Failed(_)))
+                    .unwrap_or(false);
+                if child_terminal {
+                    wake_join_waiters(table, scheduler, child_pid);
+                }
             }
         },
     }
@@ -649,13 +667,31 @@ fn handle_wait_any(
     }
 
     parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
-    table.return_process(parent);
-    for child_pid in child_pids {
+    // Register all waiters BEFORE returning parent to table, so that
+    // if a child finishes concurrently, wake_any_waiters will find
+    // this waiter entry.
+    for &child_pid in &child_pids {
         table
             .any_waiters
             .entry(child_pid)
             .or_default()
             .push(parent_pid);
+    }
+    table.return_process(parent);
+
+    // Recheck: if any child became terminal during the gap between
+    // our initial scan and the waiter registration, trigger the wake
+    // path. The single-get_mut wake logic prevents double delivery.
+    for &child_pid in &child_pids {
+        let child_terminal = table
+            .processes
+            .get(&child_pid)
+            .map(|c| matches!(c.status, ProcessStatus::Done | ProcessStatus::Failed(_)))
+            .unwrap_or(false);
+        if child_terminal {
+            wake_any_waiters(table, scheduler, child_pid);
+            break;
+        }
     }
 }
 
