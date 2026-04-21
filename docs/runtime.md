@@ -1,6 +1,9 @@
-# Hiko Runtime: Direct-Style Async with Isolated Processes
+ww# Hiko Runtime: Direct-Style Async with Isolated Processes
 
 ## Overview
+
+For the VM/runtime boundary and current process-creation cost model, see
+[vm.md](vm.md).
 
 Hiko's runtime executes many **isolated processes** on a fixed pool of worker threads. Each process has its own VM, heap, stack, and effect handlers. No mutable state is shared between processes.
 
@@ -44,16 +47,14 @@ struct Process {
     vm: VM,
     status: ProcessStatus,
     parent: Option<Pid>,
-    result: Option<SendableValue>,
-    blocked_continuation: Option<GcRef>, // GC root when suspended
+    scope_id: Option<ScopeId>,
 }
 ```
 
 Each process owns:
 
-- VM (heap, stack, frames, handlers)
-- its continuation when suspended
-- its execution lifecycle
+- VM state (heap, stack, frames, handlers, blocked continuation root)
+- lifecycle metadata (`pid`, `status`, `parent`, scope membership)
 
 There is **no mailbox** and no general inter-process messaging.
 
