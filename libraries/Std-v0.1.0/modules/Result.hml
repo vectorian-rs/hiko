@@ -26,6 +26,16 @@ structure Result = struct
       Ok value => f value
     | Err err  => Err err
 
+  fun flatten result =
+    case result of
+      Ok inner => inner
+    | Err err  => Err err
+
+  fun fold on_ok on_err result =
+    case result of
+      Ok value => on_ok value
+    | Err err  => on_err err
+
   fun or_else f result =
     case result of
       Ok value => Ok value

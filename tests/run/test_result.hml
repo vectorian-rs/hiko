@@ -30,6 +30,33 @@ val _ = assert_eq (
 val _ = assert (Result.is_err (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Err "boom")), "and_then Err")
 
 val _ = assert_eq (
+  Result.unwrap_or 0 (Result.flatten (Result.Ok (Result.Ok 42))),
+  42,
+  "flatten Ok Ok"
+)
+val _ = assert_eq (
+  Result.unwrap_or_else (fn err => err) (Result.flatten (Result.Ok (Result.Err "boom"))),
+  "boom",
+  "flatten Ok Err"
+)
+val _ = assert_eq (
+  Result.unwrap_or_else (fn err => err) (Result.flatten (Result.Err "outer")),
+  "outer",
+  "flatten Err"
+)
+
+val _ = assert_eq (
+  Result.fold (fn x => x + 1) (fn _ => 0) (Result.Ok 41),
+  42,
+  "fold Ok"
+)
+val _ = assert_eq (
+  Result.fold (fn _ => 0) (fn err => string_length err) (Result.Err "boom"),
+  4,
+  "fold Err"
+)
+
+val _ = assert_eq (
   Result.unwrap_or 0 (Result.or_else (fn _ => Result.Ok 42) (Result.Err "boom")),
   42,
   "or_else Err"

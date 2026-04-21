@@ -246,7 +246,7 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 - **`libraries/Std-v0.1.0/modules/List.hml`**: `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`
 - **`libraries/Std-v0.1.0/modules/Option.hml`**: `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option`
 - **`libraries/Std-v0.1.0/modules/Either.hml`**: `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right`
-- **`libraries/Std-v0.1.0/modules/Result.hml`**: `Ok` / `Err`, `map`, `map_err`, `and_then`, `or_else`, `unwrap_or`
+- **`libraries/Std-v0.1.0/modules/Result.hml`**: `Ok` / `Err`, `map`, `map_err`, `and_then`, `flatten`, `fold`, `or_else`, `unwrap_or`
 - **`libraries/Std-v0.1.0/modules/Fiber.hml`**: `spawn`, `join`, `cancel`, `both`, `all`, `first`, `any`
 
 ## Examples
