@@ -101,15 +101,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Load system prompt
-    let system_prompt = match system_prompt_path {
-        Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            eprintln!("Cannot read system prompt '{path}': {e}");
-            std::process::exit(1);
-        }),
-        None => load_default_system_prompt(),
-    };
-
     // Load tools
     let tools_path = Path::new(&tools_dir);
     let registry = if tools_path.exists() {
@@ -126,7 +117,22 @@ fn main() {
         tools::ToolRegistry::empty()
     };
 
-    let client = llm::LlmClient::new(resolved.api_url, resolved.api_key);
+    // Assemble system prompt: base prompt + auto-generated tool guide
+    let base_prompt = match system_prompt_path {
+        Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("Cannot read system prompt '{path}': {e}");
+            std::process::exit(1);
+        }),
+        None => load_default_system_prompt(),
+    };
+    let tool_guide = registry.tool_guide();
+    let system_prompt = if tool_guide.is_empty() {
+        base_prompt
+    } else {
+        format!("{}\n\n{}", base_prompt.trim_end(), tool_guide)
+    };
+
+    let client = llm::LlmClient::new(resolved.api_url, resolved.api_key, resolved.api_format);
 
     let agent_config = agent::AgentConfig {
         model: resolved.model_id,

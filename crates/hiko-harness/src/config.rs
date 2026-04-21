@@ -42,12 +42,27 @@ pub struct HikoConfig {
     pub strict: bool,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiFormat {
+    #[default]
+    Openai,
+    Anthropic,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Provider {
     pub api_url: String,
+    /// Direct API key value. Takes precedence over api_key_env.
+    #[serde(default)]
+    pub api_key: String,
+    /// Environment variable name to read the API key from.
     #[serde(default)]
     pub api_key_env: String,
+    /// API wire format: "openai" (default) or "anthropic".
+    #[serde(default)]
+    pub api_format: ApiFormat,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,21 +161,24 @@ pub struct ResolvedModel {
     pub api_url: String,
     pub api_key: String,
     pub model_id: String,
+    pub api_format: ApiFormat,
 }
 
 impl ResolvedModel {
     fn from_provider(provider: &Provider, model_id: String) -> Result<Self, String> {
+        let api_key = if !provider.api_key.is_empty() {
+            provider.api_key.clone()
+        } else if !provider.api_key_env.is_empty() {
+            std::env::var(&provider.api_key_env)
+                .map_err(|_| format!("environment variable '{}' not set", provider.api_key_env))?
+        } else {
+            String::new()
+        };
         Ok(Self {
             api_url: provider.api_url.clone(),
-            api_key: resolve_api_key(&provider.api_key_env)?,
+            api_key,
             model_id,
+            api_format: provider.api_format,
         })
     }
-}
-
-fn resolve_api_key(env_var: &str) -> Result<String, String> {
-    if env_var.is_empty() {
-        return Ok(String::new());
-    }
-    std::env::var(env_var).map_err(|_| format!("environment variable '{env_var}' not set"))
 }

@@ -20,6 +20,7 @@ pub struct ToolRunner {
 pub struct Tool {
     pub name: String,
     pub description: String,
+    pub notes: String,
     pub parameters: serde_json::Value,
     pub script_path: PathBuf,
 }
@@ -76,14 +77,15 @@ impl ToolRegistry {
             let source = std::fs::read_to_string(&path)
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
 
-            let (description, parameters) = parse_tool_metadata(&source, &name);
+            let meta = parse_tool_metadata(&source, &name);
 
             tools.insert(
                 name.clone(),
                 Tool {
                     name,
-                    description,
-                    parameters,
+                    description: meta.description,
+                    notes: meta.notes,
+                    parameters: meta.parameters,
                     script_path: path,
                 },
             );
@@ -105,6 +107,22 @@ impl ToolRegistry {
                 },
             })
             .collect()
+    }
+
+    /// Generate a tool guide section for the system prompt.
+    /// Each tool gets a heading with its description and notes.
+    pub fn tool_guide(&self) -> String {
+        let mut tools: Vec<&Tool> = self.tools.values().collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut out = String::from("## Tools\n");
+        for tool in tools {
+            out.push_str(&format!("\n### {}\n{}\n", tool.name, tool.description));
+            if !tool.notes.is_empty() {
+                out.push_str(&format!("{}\n", tool.notes));
+            }
+        }
+        out
     }
 
     /// Execute a tool by name with the given JSON arguments.
@@ -180,10 +198,19 @@ impl ToolRegistry {
 ///  * param limit: number - Max lines (0 = all)
 ///  *)
 /// ```
-fn parse_tool_metadata(source: &str, default_name: &str) -> (String, serde_json::Value) {
+/// Parsed metadata from a tool's `(* ... *)` comment block.
+struct ToolMetadata {
+    description: String,
+    notes: String,
+    parameters: serde_json::Value,
+}
+
+fn parse_tool_metadata(source: &str, default_name: &str) -> ToolMetadata {
     let mut description = format!("Tool: {default_name}");
+    let mut notes_lines: Vec<String> = Vec::new();
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
+    let mut in_notes = false;
 
     // Find the first (* ... *) comment block
     #[allow(clippy::collapsible_if)]
@@ -193,8 +220,10 @@ fn parse_tool_metadata(source: &str, default_name: &str) -> (String, serde_json:
             for line in comment.lines() {
                 let line = line.trim().trim_start_matches('*').trim();
                 if let Some(desc) = line.strip_prefix("description:") {
+                    in_notes = false;
                     description = desc.trim().to_string();
                 } else if let Some(param) = line.strip_prefix("param ") {
+                    in_notes = false;
                     // Parse "param name: type - description"
                     if let Some((name_type, desc)) = param.split_once('-') {
                         let name_type = name_type.trim();
@@ -217,18 +246,33 @@ fn parse_tool_metadata(source: &str, default_name: &str) -> (String, serde_json:
                             required.push(serde_json::Value::String(name.to_string()));
                         }
                     }
+                } else if line.strip_prefix("notes:").is_some() {
+                    in_notes = true;
+                    let rest = line.strip_prefix("notes:").unwrap().trim();
+                    if !rest.is_empty() {
+                        notes_lines.push(rest.to_string());
+                    }
+                } else if in_notes && !line.is_empty() {
+                    notes_lines.push(line.to_string());
+                } else if line.is_empty() && in_notes {
+                    // blank line inside notes is preserved
+                    notes_lines.push(String::new());
                 }
             }
         }
     }
 
-    let params = json!({
+    let parameters = json!({
         "type": "object",
         "properties": properties,
         "required": required,
     });
 
-    (description, params)
+    ToolMetadata {
+        description,
+        notes: notes_lines.join(" ").trim().to_string(),
+        parameters,
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +366,66 @@ path = "policies/harness-tools.policy.toml"
         assert!(output.contains("policy=harness-tools"));
         assert!(output.contains(&format!("script={}", script.display())));
         assert!(output.contains(r#"input={"path":"src/main.rs"}"#));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_notes_from_tool_metadata() {
+        use super::parse_tool_metadata;
+
+        let source = "\
+(* tool: read
+ * description: Read a file with anchors
+ * param path: string - File path
+ *
+ * notes: Returns lines as LINE:HASH\\tCONTENT.
+ * Use offset and limit for large files.
+ *)
+val _ = ()
+";
+        let meta = parse_tool_metadata(source, "read");
+        assert_eq!(meta.description, "Read a file with anchors");
+        assert!(meta.notes.contains("LINE:HASH"));
+        assert!(meta.notes.contains("offset and limit"));
+    }
+
+    #[test]
+    fn tool_guide_includes_notes() {
+        let dir = temp_tools_dir("guide");
+        let runner_config = dir.join("hiko.toml");
+        fs::write(
+            &runner_config,
+            "[project]\nname = \"test\"\n[defaults]\npolicy = \"p\"\n[policies.p]\npath = \"p.toml\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("alpha.hml"),
+            "(* tool: alpha\n * description: Alpha tool\n * notes: Alpha notes here.\n *)\nval _ = ()\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("beta.hml"),
+            "(* tool: beta\n * description: Beta tool\n *)\nval _ = ()\n",
+        )
+        .unwrap();
+
+        let registry = ToolRegistry::load(
+            &dir,
+            ToolRunner {
+                bin: "hiko-cli".into(),
+                manifest_path: runner_config,
+                policy_name: "p".to_string(),
+                strict: true,
+            },
+        )
+        .unwrap();
+
+        let guide = registry.tool_guide();
+        assert!(guide.contains("### alpha"));
+        assert!(guide.contains("Alpha notes here."));
+        assert!(guide.contains("### beta"));
+        assert!(guide.contains("Beta tool"));
 
         fs::remove_dir_all(&dir).ok();
     }
