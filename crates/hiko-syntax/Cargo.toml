@@ -8,3 +8,9 @@ repository = "https://github.com/vectorian-rs/hiko"
 
 [dev-dependencies]
 insta = "1"
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "syntax_bench"
+harness = false

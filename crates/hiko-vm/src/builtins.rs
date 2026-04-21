@@ -565,6 +565,72 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
 }
 
 #[cfg(test)]
+pub(super) mod test_helpers {
+    use super::*;
+    use smallvec::smallvec;
+
+    pub fn heap_string(value: Value, heap: &Heap) -> String {
+        match value {
+            Value::Heap(r) => match heap.get(r).unwrap() {
+                HeapObject::String(text) => text.clone(),
+                other => panic!("expected string, got {other:?}"),
+            },
+            other => panic!("expected heap string, got {other:?}"),
+        }
+    }
+
+    pub fn string_arg(heap: &mut Heap, text: &str) -> Value {
+        heap_alloc(heap, HeapObject::String(text.into())).unwrap()
+    }
+
+    pub fn tuple2(heap: &mut Heap, left: Value, right: Value) -> Value {
+        heap_alloc(heap, HeapObject::Tuple(smallvec![left, right])).unwrap()
+    }
+
+    pub fn tuple3(heap: &mut Heap, a: Value, b: Value, c: Value) -> Value {
+        heap_alloc(heap, HeapObject::Tuple(smallvec![a, b, c])).unwrap()
+    }
+
+    pub fn assert_int(value: Value, expected: i64) {
+        match value {
+            Value::Int(n) => assert_eq!(n, expected),
+            other => panic!("expected Int({expected}), got {other:?}"),
+        }
+    }
+
+    pub fn assert_bool(value: Value, expected: bool) {
+        match value {
+            Value::Bool(b) => assert_eq!(b, expected),
+            other => panic!("expected Bool({expected}), got {other:?}"),
+        }
+    }
+
+    pub fn assert_char(value: Value, expected: char) {
+        match value {
+            Value::Char(c) => assert_eq!(c, expected),
+            other => panic!("expected Char({expected}), got {other:?}"),
+        }
+    }
+
+    pub fn assert_float_approx(value: Value, expected: f64, epsilon: f64) {
+        match value {
+            Value::Float(f) => {
+                assert!(
+                    (f - expected).abs() < epsilon,
+                    "expected ~{expected}, got {f}"
+                );
+            }
+            other => panic!("expected Float(~{expected}), got {other:?}"),
+        }
+    }
+
+    pub fn collect_string_list(value: Value, heap: &Heap) -> Vec<String> {
+        let elems = collect_list(heap, value).unwrap();
+        elems.iter().map(|v| heap_string(*v, heap)).collect()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
