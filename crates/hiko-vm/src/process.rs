@@ -3,7 +3,6 @@
 use crate::sendable::SendableValue;
 use crate::vm::VM;
 use std::any::Any;
-use std::collections::HashSet;
 use std::fmt;
 
 /// Unique process identifier.
@@ -98,6 +97,31 @@ impl fmt::Display for FiberJoinError {
     }
 }
 
+/// Compact outcome stored when a child process terminates.
+#[derive(Debug, Clone)]
+pub enum ChildOutcome {
+    Ok(SendableValue),
+    Err(ProcessFailure),
+}
+
+/// Compact tombstone replacing a full Process after termination.
+/// Stores just enough state for subsequent await/cancel operations.
+#[derive(Debug, Clone)]
+pub enum ChildRecord {
+    /// Result available for joining.
+    Ready { parent: Pid, outcome: ChildOutcome },
+    /// Already joined; further awaits return AlreadyJoined.
+    Consumed { parent: Pid },
+}
+
+impl ChildRecord {
+    pub fn parent(&self) -> Pid {
+        match self {
+            Self::Ready { parent, .. } | Self::Consumed { parent } => *parent,
+        }
+    }
+}
+
 impl ProcessFailure {
     pub fn runtime(message: impl Into<String>) -> Self {
         Self::RuntimeError(message.into())
@@ -156,14 +180,10 @@ pub struct Process {
     pub vm: VM,
     pub status: ProcessStatus,
     pub parent: Option<Pid>,
-    /// The process's return value (set when Done).
-    pub result: Option<SendableValue>,
     /// The scope this process belongs to.
     pub scope_id: Option<ScopeId>,
     /// Cooperative cancellation flag. Checked at suspension/resume points.
     pub cancelled: bool,
-    /// Child pids whose join result has already been consumed by this process.
-    pub consumed_children: HashSet<Pid>,
 }
 
 impl Process {
@@ -173,10 +193,8 @@ impl Process {
             vm,
             status: ProcessStatus::Runnable,
             parent,
-            result: None,
             scope_id: None,
             cancelled: false,
-            consumed_children: HashSet::new(),
         }
     }
 
@@ -186,10 +204,8 @@ impl Process {
             vm,
             status: ProcessStatus::Runnable,
             parent,
-            result: None,
             scope_id: Some(scope_id),
             cancelled: false,
-            consumed_children: HashSet::new(),
         }
     }
 

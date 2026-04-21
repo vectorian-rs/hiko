@@ -3,39 +3,10 @@
 use smallvec::smallvec;
 use std::panic::{self, AssertUnwindSafe};
 
-use crate::process::{FiberJoinError, Pid, ProcessFailure, ProcessStatus};
-use crate::sendable::{SendableValue, deserialize, serialize};
+use crate::process::{FiberJoinError, Pid, ProcessFailure};
+use crate::sendable::{SendableValue, deserialize};
 use crate::value::{Fields, HeapObject, Value};
 use crate::vm::VM;
-
-/// Result of checking a child's state for an await operation.
-pub enum ChildState {
-    Done(SendableValue),
-    Failed(ProcessFailure),
-    Running,
-    NotFound,
-    NotChild,
-}
-
-/// Check a child process's state for an await operation.
-pub fn check_child_state(
-    child_status: Option<(&ProcessStatus, Option<Pid>)>,
-    parent_pid: Pid,
-    child_stack_top: Option<Value>,
-    child_heap: Option<&crate::heap::Heap>,
-) -> ChildState {
-    match child_status {
-        None => ChildState::NotFound,
-        Some((_, parent)) if parent != Some(parent_pid) => ChildState::NotChild,
-        Some((ProcessStatus::Done, _)) => {
-            let val = child_stack_top.unwrap_or(Value::Unit);
-            let heap = child_heap.unwrap();
-            ChildState::Done(serialize(val, heap).unwrap_or(SendableValue::Unit))
-        }
-        Some((ProcessStatus::Failed(msg), _)) => ChildState::Failed(msg.clone()),
-        Some(_) => ChildState::Running,
-    }
-}
 
 /// Deliver a child's result to a waiting parent.
 pub fn deliver_result_to_parent(
@@ -103,21 +74,6 @@ pub fn create_child_vm_from_parent(
         .collect::<Result<_, _>>()?;
     child_vm.setup_closure_call(proto_idx, &child_captures);
     Ok(child_vm)
-}
-
-/// Serialize the result value from a finished process.
-pub fn serialize_result(vm: &VM) -> SendableValue {
-    let val = vm.stack.last().copied().unwrap_or(Value::Unit);
-    serialize(val, &vm.heap).unwrap_or(SendableValue::Unit)
-}
-
-/// Prepare the delivery payload for waiters of a finished process.
-pub fn prepare_delivery(status: &ProcessStatus, vm: &VM) -> Result<SendableValue, ProcessFailure> {
-    match status {
-        ProcessStatus::Done => Ok(serialize_result(vm)),
-        ProcessStatus::Failed(msg) => Err(msg.clone()),
-        _ => Err(ProcessFailure::runtime("child not finished")),
-    }
 }
 
 fn encode_join_error(

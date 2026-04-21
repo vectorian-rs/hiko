@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{
-    AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus,
+    AwaitKind, BlockReason, ChildOutcome, ChildRecord, FiberJoinError, Pid, Process,
+    ProcessFailure, ProcessStatus,
 };
 use crate::runtime_ops::dedup_pids;
 use crate::scheduler::{FifoScheduler, Scheduler};
@@ -17,6 +18,8 @@ use hiko_compile::chunk::CompiledProgram;
 pub struct Runtime {
     next_pid: AtomicU64,
     processes: HashMap<Pid, Process>,
+    /// Compact tombstones for terminated child processes (replaces full Process).
+    tombstones: HashMap<Pid, ChildRecord>,
     scheduler: Box<dyn Scheduler>,
     /// Processes waiting for another process to finish: child_pid → [waiter_pids]
     waiters: HashMap<Pid, Vec<Pid>>,
@@ -29,6 +32,7 @@ impl Default for Runtime {
         Self {
             next_pid: AtomicU64::new(1),
             processes: HashMap::new(),
+            tombstones: HashMap::new(),
             scheduler: Box::new(FifoScheduler::new(1000)),
             waiters: HashMap::new(),
             any_waiters: HashMap::new(),
@@ -47,6 +51,7 @@ impl Runtime {
         Self {
             next_pid: AtomicU64::new(1),
             processes: HashMap::new(),
+            tombstones: HashMap::new(),
             scheduler,
             waiters: HashMap::new(),
             any_waiters: HashMap::new(),
@@ -88,24 +93,21 @@ impl Runtime {
 
             match result {
                 RunResult::Done => {
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    if process.parent.is_some() {
-                        // Child results cross a process boundary when awaited, so they must be
-                        // sendable. Root processes run in-place and may finish with local values.
-                        let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                        match serialize(val, &process.vm.heap) {
-                            Ok(sv) => process.result = Some(sv),
-                            Err(e) => {
-                                process.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                                    format!("child result not sendable: {e}"),
-                                ));
-                                self.scheduler.remove(pid);
-                                self.wake_and_deliver_results(pid);
-                                continue;
+                    let outcome = {
+                        let process = self.processes.get(&pid).unwrap();
+                        if process.parent.is_some() {
+                            let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+                            match serialize(val, &process.vm.heap) {
+                                Ok(sv) => ChildOutcome::Ok(sv),
+                                Err(e) => ChildOutcome::Err(ProcessFailure::runtime(format!(
+                                    "child result not sendable: {e}"
+                                ))),
                             }
+                        } else {
+                            ChildOutcome::Ok(SendableValue::Unit)
                         }
-                    }
-                    process.status = ProcessStatus::Done;
+                    };
+                    self.make_terminal(pid, outcome);
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -113,32 +115,26 @@ impl Runtime {
                     self.scheduler.enqueue(pid);
                 }
                 RunResult::Failed(failure) => {
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    process.status = ProcessStatus::Failed(failure);
+                    self.make_terminal(pid, ChildOutcome::Err(failure));
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
                 RunResult::Spawn {
                     proto_idx,
                     captures,
-                } => {
-                    match self.handle_spawn(pid, proto_idx, captures) {
-                        Ok(child_pid) => {
-                            // Resume parent with child pid
-                            let process = self.processes.get_mut(&pid).unwrap();
-                            // Replace the Unit placeholder with the actual Pid
-                            process.vm.stack.pop();
-                            process.vm.push_value(Value::Pid(child_pid.0));
-                            self.scheduler.enqueue(pid);
-                        }
-                        Err(failure) => {
-                            let process = self.processes.get_mut(&pid).unwrap();
-                            process.status = ProcessStatus::Failed(failure);
-                            self.scheduler.remove(pid);
-                            self.wake_and_deliver_results(pid);
-                        }
+                } => match self.handle_spawn(pid, proto_idx, captures) {
+                    Ok(child_pid) => {
+                        let process = self.processes.get_mut(&pid).unwrap();
+                        process.vm.stack.pop();
+                        process.vm.push_value(Value::Pid(child_pid.0));
+                        self.scheduler.enqueue(pid);
                     }
-                }
+                    Err(failure) => {
+                        self.make_terminal(pid, ChildOutcome::Err(failure));
+                        self.scheduler.remove(pid);
+                        self.wake_and_deliver_results(pid);
+                    }
+                },
                 RunResult::Await(child_pid_val) => {
                     let child_pid = Pid(child_pid_val);
                     self.handle_await(pid, child_pid, AwaitKind::Raw);
@@ -156,14 +152,15 @@ impl Runtime {
                     self.handle_wait_any(pid, child_pids);
                 }
                 RunResult::Io(_req) => {
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    process.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                        "async I/O requires ThreadedRuntime",
-                    ));
+                    self.make_terminal(
+                        pid,
+                        ChildOutcome::Err(ProcessFailure::runtime(
+                            "async I/O requires ThreadedRuntime",
+                        )),
+                    );
                 }
                 RunResult::Cancelled => {
-                    let process = self.processes.get_mut(&pid).unwrap();
-                    process.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
+                    self.make_terminal(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
                     self.scheduler.remove(pid);
                     self.wake_and_deliver_results(pid);
                 }
@@ -195,158 +192,137 @@ impl Runtime {
         Ok(child_pid)
     }
 
-    /// Handle an await request: block parent or resume with result.
-    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid, await_kind: AwaitKind) {
-        // Extract child state as an owned value to avoid borrow conflicts
-        enum ChildState {
-            Done,
-            Failed(ProcessFailure),
-            Running,
-            NotFound,
-            NotChild,
+    /// Transition a process to terminal state. For children, creates a compact
+    /// tombstone and frees the full Process (VM/heap/stack). For root processes,
+    /// just sets the status.
+    fn make_terminal(&mut self, pid: Pid, outcome: ChildOutcome) {
+        let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
+        if let Some(parent_pid) = parent_pid {
+            self.tombstones.insert(
+                pid,
+                ChildRecord::Ready {
+                    parent: parent_pid,
+                    outcome,
+                },
+            );
+            self.processes.remove(&pid);
+        } else if let Some(process) = self.processes.get_mut(&pid) {
+            match outcome {
+                ChildOutcome::Ok(_) => process.status = ProcessStatus::Done,
+                ChildOutcome::Err(failure) => process.status = ProcessStatus::Failed(failure),
+            }
         }
+    }
 
-        if self
-            .processes
-            .get(&parent_pid)
-            .is_some_and(|parent| parent.consumed_children.contains(&child_pid))
-        {
-            let parent = self.processes.get_mut(&parent_pid).unwrap();
-            match await_kind {
-                AwaitKind::Raw => {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                        "await: child result already consumed",
-                    ));
-                    self.scheduler.remove(parent_pid);
+    /// Handle an await request: check tombstones first, then live processes.
+    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid, await_kind: AwaitKind) {
+        // Check tombstone first (child already finished and freed)
+        let tombstone = self.tombstones.get(&child_pid).cloned();
+        if let Some(record) = tombstone {
+            match record {
+                ChildRecord::Consumed { parent } => {
+                    if parent != parent_pid {
+                        let p = self.processes.get_mut(&parent_pid).unwrap();
+                        p.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                            "await: process {:?} is not a child of {:?}",
+                            child_pid, parent_pid
+                        )));
+                        self.scheduler.remove(parent_pid);
+                        return;
+                    }
+                    let p = self.processes.get_mut(&parent_pid).unwrap();
+                    match await_kind {
+                        AwaitKind::Raw => {
+                            p.status = ProcessStatus::Failed(ProcessFailure::runtime(
+                                "await: child result already consumed",
+                            ));
+                            self.scheduler.remove(parent_pid);
+                        }
+                        AwaitKind::Result => {
+                            match crate::runtime_ops::deliver_join_result_to_parent(
+                                &mut p.vm,
+                                Err(FiberJoinError::AlreadyJoined),
+                            ) {
+                                Ok(()) => {
+                                    p.status = ProcessStatus::Runnable;
+                                    self.scheduler.enqueue(parent_pid);
+                                }
+                                Err(failure) => {
+                                    p.status = ProcessStatus::Failed(failure);
+                                    self.scheduler.remove(parent_pid);
+                                }
+                            }
+                        }
+                    }
                 }
-                AwaitKind::Result => {
-                    match crate::runtime_ops::deliver_join_result_to_parent(
-                        &mut parent.vm,
-                        Err(FiberJoinError::AlreadyJoined),
-                    ) {
+                ChildRecord::Ready { parent, outcome } => {
+                    if parent != parent_pid {
+                        let p = self.processes.get_mut(&parent_pid).unwrap();
+                        p.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                            "await: process {:?} is not a child of {:?}",
+                            child_pid, parent_pid
+                        )));
+                        self.scheduler.remove(parent_pid);
+                        return;
+                    }
+                    let p = self.processes.get_mut(&parent_pid).unwrap();
+                    let delivered = match (&await_kind, &outcome) {
+                        (AwaitKind::Raw, ChildOutcome::Ok(sv)) => {
+                            crate::runtime_ops::deliver_result_to_parent(&mut p.vm, sv.clone())
+                        }
+                        (AwaitKind::Raw, ChildOutcome::Err(failure)) => {
+                            p.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
+                                Box::new(failure.clone()),
+                            ));
+                            self.scheduler.remove(parent_pid);
+                            self.tombstones
+                                .insert(child_pid, ChildRecord::Consumed { parent });
+                            return;
+                        }
+                        (AwaitKind::Result, ChildOutcome::Ok(sv)) => {
+                            crate::runtime_ops::deliver_join_result_to_parent(
+                                &mut p.vm,
+                                Ok(sv.clone()),
+                            )
+                        }
+                        (AwaitKind::Result, ChildOutcome::Err(failure)) => {
+                            crate::runtime_ops::deliver_join_result_to_parent(
+                                &mut p.vm,
+                                Err(FiberJoinError::from_process_failure(failure.clone())),
+                            )
+                        }
+                    };
+                    match delivered {
                         Ok(()) => {
-                            parent.status = ProcessStatus::Runnable;
+                            p.status = ProcessStatus::Runnable;
                             self.scheduler.enqueue(parent_pid);
                         }
                         Err(failure) => {
-                            parent.status = ProcessStatus::Failed(failure);
+                            p.status = ProcessStatus::Failed(failure);
                             self.scheduler.remove(parent_pid);
                         }
                     }
+                    self.tombstones
+                        .insert(child_pid, ChildRecord::Consumed { parent });
                 }
             }
             return;
         }
 
+        // Check live processes (child still running)
+        enum ChildState {
+            Running,
+            NotFound,
+            NotChild,
+        }
+
         let child_state = match self.processes.get(&child_pid) {
             None => ChildState::NotFound,
-            Some(child) => {
-                // Parent-only await: only the spawning parent may await
-                if child.parent != Some(parent_pid) {
-                    ChildState::NotChild
-                } else {
-                    match &child.status {
-                        ProcessStatus::Done => ChildState::Done,
-                        ProcessStatus::Failed(msg) => ChildState::Failed(msg.clone()),
-                        _ => ChildState::Running,
-                    }
-                }
-            }
+            Some(child) if child.parent != Some(parent_pid) => ChildState::NotChild,
+            _ => ChildState::Running,
         };
 
         match child_state {
-            ChildState::Done => {
-                // Take result (consume once — second await will fail)
-                let sendable = match self
-                    .processes
-                    .get_mut(&child_pid)
-                    .and_then(|c| c.result.take())
-                {
-                    Some(sv) => sv,
-                    None => {
-                        let parent = self.processes.get_mut(&parent_pid).unwrap();
-                        match await_kind {
-                            AwaitKind::Raw => {
-                                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                                    "await: child result already consumed",
-                                ));
-                                self.scheduler.remove(parent_pid);
-                            }
-                            AwaitKind::Result => {
-                                match crate::runtime_ops::deliver_join_result_to_parent(
-                                    &mut parent.vm,
-                                    Err(FiberJoinError::AlreadyJoined),
-                                ) {
-                                    Ok(()) => {
-                                        parent.status = ProcessStatus::Runnable;
-                                        parent.consumed_children.insert(child_pid);
-                                        self.scheduler.enqueue(parent_pid);
-                                    }
-                                    Err(failure) => {
-                                        parent.status = ProcessStatus::Failed(failure);
-                                        self.scheduler.remove(parent_pid);
-                                    }
-                                }
-                            }
-                        }
-                        return;
-                    }
-                };
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                let delivery = match await_kind {
-                    AwaitKind::Raw => {
-                        crate::runtime_ops::deliver_result_to_parent(&mut parent.vm, sendable)
-                    }
-                    AwaitKind::Result => crate::runtime_ops::deliver_join_result_to_parent(
-                        &mut parent.vm,
-                        Ok(sendable),
-                    ),
-                };
-                match delivery {
-                    Ok(()) => {
-                        parent.status = ProcessStatus::Runnable;
-                        parent.consumed_children.insert(child_pid);
-                        self.scheduler.enqueue(parent_pid);
-                        self.processes.remove(&child_pid);
-                        self.waiters.remove(&child_pid);
-                    }
-                    Err(failure) => {
-                        parent.status = ProcessStatus::Failed(failure);
-                        self.scheduler.remove(parent_pid);
-                        self.processes.remove(&child_pid);
-                        self.waiters.remove(&child_pid);
-                    }
-                }
-            }
-            ChildState::Failed(failure) => {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                match await_kind {
-                    AwaitKind::Raw => {
-                        parent.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
-                            Box::new(failure),
-                        ));
-                        self.scheduler.remove(parent_pid);
-                    }
-                    AwaitKind::Result => {
-                        match crate::runtime_ops::deliver_join_result_to_parent(
-                            &mut parent.vm,
-                            Err(FiberJoinError::from_process_failure(failure)),
-                        ) {
-                            Ok(()) => {
-                                parent.status = ProcessStatus::Runnable;
-                                parent.consumed_children.insert(child_pid);
-                                self.scheduler.enqueue(parent_pid);
-                            }
-                            Err(delivery_failure) => {
-                                parent.status = ProcessStatus::Failed(delivery_failure);
-                                self.scheduler.remove(parent_pid);
-                            }
-                        }
-                    }
-                }
-                self.processes.remove(&child_pid);
-                self.waiters.remove(&child_pid);
-            }
             ChildState::Running => {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status = ProcessStatus::Blocked(BlockReason::Await {
@@ -375,10 +351,30 @@ impl Runtime {
     }
 
     fn handle_cancel(&mut self, parent_pid: Pid, child_pid: Pid) {
+        // Check tombstone first — child already terminal
+        let tombstone_parent = self.tombstones.get(&child_pid).map(|r| r.parent());
+        if let Some(tombstone_parent) = tombstone_parent {
+            if tombstone_parent != parent_pid {
+                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                    "cancel: process {:?} is not a child of {:?}",
+                    child_pid, parent_pid
+                )));
+                self.scheduler.remove(parent_pid);
+                return;
+            }
+            // Already terminal — cancel is no-op
+            let parent = self.processes.get_mut(&parent_pid).unwrap();
+            parent.vm.stack.pop();
+            parent.vm.push_value(Value::Unit);
+            parent.status = ProcessStatus::Runnable;
+            self.scheduler.enqueue(parent_pid);
+            return;
+        }
+
+        // Check live processes
         enum CancelState {
             Running,
-            Done,
-            Failed,
             NotFound,
             NotChild,
         }
@@ -386,11 +382,7 @@ impl Runtime {
         let child_state = match self.processes.get(&child_pid) {
             None => CancelState::NotFound,
             Some(child) if child.parent != Some(parent_pid) => CancelState::NotChild,
-            Some(child) => match child.status {
-                ProcessStatus::Done => CancelState::Done,
-                ProcessStatus::Failed(_) => CancelState::Failed,
-                _ => CancelState::Running,
-            },
+            _ => CancelState::Running,
         };
 
         match child_state {
@@ -399,14 +391,6 @@ impl Runtime {
                 if let Some(parent) = self.processes.get_mut(&parent_pid) {
                     self.scheduler.enqueue(parent_pid);
                     parent.status = ProcessStatus::Runnable;
-                }
-            }
-            CancelState::Done | CancelState::Failed => {
-                if let Some(parent) = self.processes.get_mut(&parent_pid) {
-                    parent.vm.stack.pop();
-                    parent.vm.push_value(Value::Unit);
-                    parent.status = ProcessStatus::Runnable;
-                    self.scheduler.enqueue(parent_pid);
                 }
             }
             CancelState::NotFound => {
@@ -441,6 +425,22 @@ impl Runtime {
 
         let mut first_finished = None;
         for &child_pid in &child_pids {
+            // Check tombstone first — child already finished
+            if let Some(record) = self.tombstones.get(&child_pid) {
+                if record.parent() != parent_pid {
+                    let parent = self.processes.get_mut(&parent_pid).unwrap();
+                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                        "wait_any: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )));
+                    self.scheduler.remove(parent_pid);
+                    return;
+                }
+                first_finished = Some(child_pid);
+                break;
+            }
+
+            // Check live process
             let Some(child) = self.processes.get(&child_pid) else {
                 let parent = self.processes.get_mut(&parent_pid).unwrap();
                 parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
@@ -458,10 +458,6 @@ impl Runtime {
                 )));
                 self.scheduler.remove(parent_pid);
                 return;
-            }
-            if matches!(child.status, ProcessStatus::Done | ProcessStatus::Failed(_)) {
-                first_finished = Some(child_pid);
-                break;
             }
         }
 
@@ -485,18 +481,13 @@ impl Runtime {
 
     fn cancel_process(&mut self, pid: Pid) {
         let block_reason = match self.processes.get_mut(&pid) {
-            Some(process) => {
-                let block_reason = match &process.status {
-                    ProcessStatus::Blocked(reason) => Some(reason.clone()),
-                    _ => None,
-                };
-                if block_reason.is_some() {
-                    process.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
-                } else {
+            Some(process) => match &process.status {
+                ProcessStatus::Blocked(reason) => Some(reason.clone()),
+                _ => {
                     process.cancelled = true;
+                    None
                 }
-                block_reason
-            }
+            },
             None => return,
         };
 
@@ -511,6 +502,7 @@ impl Runtime {
                 }
                 BlockReason::Io(_) => {}
             }
+            self.make_terminal(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
             self.wake_any_waiters(pid);
             self.wake_join_waiters(pid);
         }
@@ -559,17 +551,13 @@ impl Runtime {
             None => return,
         };
 
-        // Serialize the finished process's result once, before borrowing waiters
-        let child = &self.processes[&finished_pid];
-        let delivery = match &child.status {
-            ProcessStatus::Done => {
-                let val = child.vm.stack.last().copied().unwrap_or(Value::Unit);
-                let sendable =
-                    serialize(val, &child.vm.heap).unwrap_or(crate::sendable::SendableValue::Unit);
-                Ok(sendable)
-            }
-            ProcessStatus::Failed(msg) => Err(msg.clone()),
-            _ => Err(ProcessFailure::runtime("child not finished")),
+        // Read delivery payload from the tombstone
+        let delivery = match self.tombstones.get(&finished_pid) {
+            Some(ChildRecord::Ready { outcome, .. }) => match outcome {
+                ChildOutcome::Ok(sv) => Ok(sv.clone()),
+                ChildOutcome::Err(failure) => Err(failure.clone()),
+            },
+            _ => return,
         };
 
         for waiter in waiter_pids {
@@ -594,7 +582,6 @@ impl Runtime {
                         ) {
                             Ok(()) => {
                                 process.status = ProcessStatus::Runnable;
-                                process.consumed_children.insert(finished_pid);
                                 self.scheduler.enqueue(waiter);
                             }
                             Err(failure) => {
@@ -614,7 +601,6 @@ impl Runtime {
                         ) {
                             Ok(()) => {
                                 process.status = ProcessStatus::Runnable;
-                                process.consumed_children.insert(finished_pid);
                                 self.scheduler.enqueue(waiter);
                             }
                             Err(failure) => {
@@ -629,7 +615,6 @@ impl Runtime {
                         ) {
                             Ok(()) => {
                                 process.status = ProcessStatus::Runnable;
-                                process.consumed_children.insert(finished_pid);
                                 self.scheduler.enqueue(waiter);
                             }
                             Err(failure) => {
@@ -641,7 +626,12 @@ impl Runtime {
             }
         }
 
-        self.processes.remove(&finished_pid);
+        // Mark tombstone as consumed after all deliveries
+        if let Some(ChildRecord::Ready { parent, .. }) = self.tombstones.get(&finished_pid) {
+            let parent = *parent;
+            self.tombstones
+                .insert(finished_pid, ChildRecord::Consumed { parent });
+        }
     }
 
     /// Try to dequeue a runnable process without blocking.
