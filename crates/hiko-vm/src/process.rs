@@ -2,7 +2,6 @@
 
 use crate::sendable::SendableValue;
 use crate::vm::VM;
-use std::any::Any;
 use std::fmt;
 
 /// Unique process identifier.
@@ -137,19 +136,6 @@ impl ProcessFailure {
         }
 
         Self::RuntimeError(message)
-    }
-
-    pub fn from_heap_limit_panic(payload: &(dyn Any + Send)) -> Option<Self> {
-        let message = if let Some(message) = payload.downcast_ref::<String>() {
-            message.as_str()
-        } else if let Some(message) = payload.downcast_ref::<&'static str>() {
-            message
-        } else {
-            return None;
-        };
-
-        parse_heap_limit_message(message)
-            .map(|(live, limit)| Self::HeapObjectLimitExceeded { limit, live })
     }
 }
 

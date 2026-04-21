@@ -2,14 +2,14 @@ use super::*;
 
 pub(super) fn int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Int(n) => Ok(Value::Heap(heap.alloc(HeapObject::String(n.to_string())))),
+        Value::Int(n) => heap_alloc(heap, HeapObject::String(n.to_string())),
         _ => Err("int_to_string: expected Int".into()),
     }
 }
 
 pub(super) fn float_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Float(f) => Ok(Value::Heap(heap.alloc(HeapObject::String(f.to_string())))),
+        Value::Float(f) => heap_alloc(heap, HeapObject::String(f.to_string())),
         _ => Err("float_to_string: expected Float".into()),
     }
 }

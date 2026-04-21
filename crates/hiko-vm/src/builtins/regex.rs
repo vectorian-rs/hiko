@@ -57,7 +57,8 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
         _ => return Err("regex_replace: expected String".into()),
     };
     let re = Regex::new(pattern).map_err(|e| format!("regex_replace: {e}"))?;
-    Ok(Value::Heap(heap.alloc(HeapObject::String(
-        re.replace_all(s, replacement).into_owned(),
-    ))))
+    heap_alloc(
+        heap,
+        HeapObject::String(re.replace_all(s, replacement).into_owned()),
+    )
 }

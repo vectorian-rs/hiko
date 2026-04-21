@@ -5,7 +5,7 @@ pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     match &args[0] {
         Value::Int(n) if *n >= 0 => {
             let buf = dryoc::rng::randombytes_buf(*n as usize);
-            Ok(Value::Heap(heap.alloc(HeapObject::Bytes(buf))))
+            heap_alloc(heap, HeapObject::Bytes(buf))
         }
         Value::Int(_) => Err("random_bytes: length must be non-negative".into()),
         _ => Err("random_bytes: expected Int".into()),
@@ -42,7 +42,7 @@ pub(super) fn rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     inc |= 1;
     let (_, state) = pcg_next(state, inc);
     let (_, state) = pcg_next(state, inc);
-    Ok(Value::Heap(heap.alloc(HeapObject::Rng { state, inc })))
+    heap_alloc(heap, HeapObject::Rng { state, inc })
 }
 
 pub(super) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -75,11 +75,9 @@ pub(super) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String
             output.push(b);
         }
     }
-    let bytes_val = Value::Heap(heap.alloc(HeapObject::Bytes(output)));
-    let rng_val = Value::Heap(heap.alloc(HeapObject::Rng { state, inc }));
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::Tuple(smallvec![bytes_val, rng_val])),
-    ))
+    let bytes_val = heap_alloc(heap, HeapObject::Bytes(output))?;
+    let rng_val = heap_alloc(heap, HeapObject::Rng { state, inc })?;
+    heap_alloc(heap, HeapObject::Tuple(smallvec![bytes_val, rng_val]))
 }
 
 pub(super) fn rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -103,12 +101,15 @@ pub(super) fn rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
     };
     let (word, new_state) = pcg_next(state, inc);
     let value = (word as i64).abs() % bound;
-    let rng_val = Value::Heap(heap.alloc(HeapObject::Rng {
-        state: new_state,
-        inc,
-    }));
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        Value::Int(value),
-        rng_val
-    ]))))
+    let rng_val = heap_alloc(
+        heap,
+        HeapObject::Rng {
+            state: new_state,
+            inc,
+        },
+    )?;
+    heap_alloc(
+        heap,
+        HeapObject::Tuple(smallvec![Value::Int(value), rng_val]),
+    )
 }

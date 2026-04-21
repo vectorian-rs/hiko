@@ -4,6 +4,23 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "builtin-http")]
 use url::Url;
 
+/// Error returned when a heap allocation exceeds the configured object limit.
+#[derive(Debug, Clone)]
+pub struct HeapLimitExceeded {
+    pub live: usize,
+    pub limit: usize,
+}
+
+impl std::fmt::Display for HeapLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "heap limit exceeded: {} objects (max {})",
+            self.live, self.limit
+        )
+    }
+}
+
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
     marks: Vec<bool>,
@@ -164,11 +181,11 @@ impl Heap {
         self.max_objects
     }
 
-    pub fn alloc(&mut self, obj: HeapObject) -> GcRef {
+    pub fn alloc(&mut self, obj: HeapObject) -> Result<GcRef, HeapLimitExceeded> {
         if let Some(max) = self.max_objects {
             let live = self.objects.len() - self.free_list.len();
             if live >= max {
-                panic!("heap limit exceeded: {live} objects (max {max})");
+                return Err(HeapLimitExceeded { live, limit: max });
             }
         }
         self.alloc_since_gc += 1;
@@ -181,7 +198,7 @@ impl Heap {
             self.marks.push(false);
             idx
         };
-        GcRef(idx)
+        Ok(GcRef(idx))
     }
 
     pub fn get(&self, r: GcRef) -> Result<&HeapObject, &'static str> {

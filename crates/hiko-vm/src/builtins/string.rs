@@ -34,7 +34,7 @@ pub(super) fn substring(args: &[Value], heap: &mut Heap) -> Result<Value, String
             if result.chars().count() < len {
                 Err("substring: out of bounds".to_string())
             } else {
-                Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+                heap_alloc(heap, HeapObject::String(result))
             }
         }
         _ => Err("substring: expected (String, Int, Int)".into()),
@@ -69,9 +69,7 @@ pub(super) fn string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, 
 pub(super) fn trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Heap(
-                heap.alloc(HeapObject::String(s.trim().to_string())),
-            )),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.trim().to_string())),
             _ => Err("trim: expected String".into()),
         },
         _ => Err("trim: expected String".into()),
@@ -100,11 +98,11 @@ pub(super) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         },
         _ => return Err("split: expected String".into()),
     };
-    let parts: Vec<Value> = s
-        .split(&sep)
-        .map(|p| Value::Heap(heap.alloc(HeapObject::String(p.to_string()))))
-        .collect();
-    Ok(alloc_list(heap, parts))
+    let mut parts = Vec::new();
+    for p in s.split(&sep) {
+        parts.push(heap_alloc(heap, HeapObject::String(p.to_string()))?);
+    }
+    alloc_list(heap, parts)
 }
 
 pub(super) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -136,9 +134,7 @@ pub(super) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, S
         },
         _ => return Err("string_replace: expected String".into()),
     };
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::String(s.replace(&from, &to))),
-    ))
+    heap_alloc(heap, HeapObject::String(s.replace(&from, &to)))
 }
 
 pub(super) fn starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -194,9 +190,7 @@ pub(super) fn ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, String
 pub(super) fn to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Heap(
-                heap.alloc(HeapObject::String(s.to_uppercase())),
-            )),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_uppercase())),
             _ => Err("to_upper: expected String".into()),
         },
         _ => Err("to_upper: expected String".into()),
@@ -206,9 +200,7 @@ pub(super) fn to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String>
 pub(super) fn to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Heap(
-                heap.alloc(HeapObject::String(s.to_lowercase())),
-            )),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_lowercase())),
             _ => Err("to_lower: expected String".into()),
         },
         _ => Err("to_lower: expected String".into()),
@@ -241,7 +233,5 @@ pub(super) fn string_join(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
             _ => return Err("string_join: list elements must be strings".into()),
         }
     }
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::String(parts.join(&sep))),
-    ))
+    heap_alloc(heap, HeapObject::String(parts.join(&sep)))
 }

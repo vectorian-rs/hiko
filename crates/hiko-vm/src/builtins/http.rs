@@ -4,12 +4,12 @@ use smallvec::smallvec;
 fn collect_headers(
     header_pairs: impl IntoIterator<Item = (String, String)>,
     heap: &mut Heap,
-) -> Value {
+) -> Result<Value, String> {
     let mut header_values: Vec<Value> = Vec::new();
     for (k, v) in header_pairs {
-        let k = Value::Heap(heap.alloc(HeapObject::String(k)));
-        let v = Value::Heap(heap.alloc(HeapObject::String(v)));
-        let pair = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![k, v])));
+        let k = heap_alloc(heap, HeapObject::String(k))?;
+        let v = heap_alloc(heap, HeapObject::String(v))?;
+        let pair = heap_alloc(heap, HeapObject::Tuple(smallvec![k, v]))?;
         header_values.push(pair);
     }
     alloc_list(heap, header_values)
@@ -34,7 +34,7 @@ fn do_http_request(
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string())),
         heap,
-    );
+    )?;
     let reader = Box::new(response.into_body().into_reader()) as Box<dyn std::io::Read + Send>;
     Ok((status, resp_headers, reader))
 }
@@ -45,10 +45,8 @@ pub(super) fn http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     let mut body_str = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body_str)
         .map_err(|e| format!("http_get: {e}"))?;
-    let body = Value::Heap(heap.alloc(HeapObject::String(body_str)));
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        status, headers, body
-    ]))))
+    let body = heap_alloc(heap, HeapObject::String(body_str))?;
+    heap_alloc(heap, HeapObject::Tuple(smallvec![status, headers, body]))
 }
 
 pub(super) fn http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -57,12 +55,11 @@ pub(super) fn http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         do_http_request(&method, &url, &req_headers, &body, "http", heap)?;
     let mut body_str = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body_str).map_err(|e| format!("http: {e}"))?;
-    let resp_body = Value::Heap(heap.alloc(HeapObject::String(body_str)));
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        status,
-        resp_headers,
-        resp_body
-    ]))))
+    let resp_body = heap_alloc(heap, HeapObject::String(body_str))?;
+    heap_alloc(
+        heap,
+        HeapObject::Tuple(smallvec![status, resp_headers, resp_body]),
+    )
 }
 
 pub(super) fn http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -74,12 +71,11 @@ pub(super) fn http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String
         .map_err(|e| format!("http_json: {e}"))?;
     let parsed: serde_json::Value =
         serde_json::from_str(&body_str).map_err(|e| format!("http_json: {e}"))?;
-    let resp_body = json_to_hiko(&parsed, heap);
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        status,
-        resp_headers,
-        resp_body
-    ]))))
+    let resp_body = json_to_hiko(&parsed, heap)?;
+    heap_alloc(
+        heap,
+        HeapObject::Tuple(smallvec![status, resp_headers, resp_body]),
+    )
 }
 
 pub(super) fn http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -88,12 +84,11 @@ pub(super) fn http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, Str
         do_http_request(&method, &url, &req_headers, &body, "http_msgpack", heap)?;
     let parsed: serde_json::Value =
         rmp_serde::from_read(reader).map_err(|e| format!("http_msgpack: {e}"))?;
-    let resp_body = json_to_hiko(&parsed, heap);
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        status,
-        resp_headers,
-        resp_body
-    ]))))
+    let resp_body = json_to_hiko(&parsed, heap)?;
+    heap_alloc(
+        heap,
+        HeapObject::Tuple(smallvec![status, resp_headers, resp_body]),
+    )
 }
 
 pub(super) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -102,10 +97,9 @@ pub(super) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         do_http_request(&method, &url, &req_headers, &body, "http_bytes", heap)?;
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut buf).map_err(|e| format!("http_bytes: {e}"))?;
-    let resp_body = Value::Heap(heap.alloc(HeapObject::Bytes(buf)));
-    Ok(Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-        status,
-        resp_headers,
-        resp_body
-    ]))))
+    let resp_body = heap_alloc(heap, HeapObject::Bytes(buf))?;
+    heap_alloc(
+        heap,
+        HeapObject::Tuple(smallvec![status, resp_headers, resp_body]),
+    )
 }

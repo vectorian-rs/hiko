@@ -1007,9 +1007,7 @@ impl Compiler {
 
         let CachedImportedProgram { base_dir, decls } =
             self.imported_programs.remove(&key).ok_or_else(|| {
-                CompileError::codegen(format!(
-                    "import not found during compilation: {key:?}"
-                ))
+                CompileError::codegen(format!("import not found during compilation: {key:?}"))
             })?;
 
         let old_base = self.base_dir.clone();

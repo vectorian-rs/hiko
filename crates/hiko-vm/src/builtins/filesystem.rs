@@ -12,7 +12,7 @@ pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String
         .check_fs_path_for("read_file", &path)
         .map_err(|e| format!("read_file: {e}"))?;
     let contents = std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file: {e}"))?;
-    Ok(Value::Heap(heap.alloc(HeapObject::String(contents))))
+    heap_alloc(heap, HeapObject::String(contents))
 }
 
 pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -27,7 +27,7 @@ pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
         .check_fs_path_for("read_file_bytes", &path)
         .map_err(|e| format!("read_file_bytes: {e}"))?;
     let contents = std::fs::read(&checked_path).map_err(|e| format!("read_file_bytes: {e}"))?;
-    Ok(Value::Heap(heap.alloc(HeapObject::Bytes(contents))))
+    heap_alloc(heap, HeapObject::Bytes(contents))
 }
 
 pub(super) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -85,17 +85,16 @@ pub(super) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     let checked_path = heap
         .check_fs_path_for("list_dir", &path)
         .map_err(|e| format!("list_dir: {e}"))?;
-    let entries: Vec<Value> = std::fs::read_dir(&checked_path)
-        .map_err(|e| format!("list_dir: {e}"))?
-        .filter_map(|entry| {
-            entry.ok().map(|e| {
-                Value::Heap(heap.alloc(HeapObject::String(
-                    e.file_name().to_string_lossy().to_string(),
-                )))
-            })
-        })
-        .collect();
-    Ok(alloc_list(heap, entries))
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&checked_path).map_err(|e| format!("list_dir: {e}"))? {
+        if let Ok(e) = entry {
+            entries.push(heap_alloc(
+                heap,
+                HeapObject::String(e.file_name().to_string_lossy().to_string()),
+            )?);
+        }
+    }
+    alloc_list(heap, entries)
 }
 
 pub(super) fn remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -219,7 +218,7 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         out.push_str(&format!("{}:{}\t{}\n", i + 1, tag_str, line));
     }
 
-    Ok(Value::Heap(heap.alloc(HeapObject::String(out))))
+    heap_alloc(heap, HeapObject::String(out))
 }
 
 pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -320,7 +319,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
 
     if !errors.is_empty() {
         let msg = format!("REJECTED: {}", errors.join("; "));
-        return Ok(Value::Heap(heap.alloc(HeapObject::String(msg))));
+        return heap_alloc(heap, HeapObject::String(msg));
     }
 
     let mut result: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
@@ -348,7 +347,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     std::fs::write(&checked_path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
 
     let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
-    Ok(Value::Heap(heap.alloc(HeapObject::String(msg))))
+    heap_alloc(heap, HeapObject::String(msg))
 }
 
 pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -370,7 +369,7 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let path = entry.map_err(|e| format!("glob: {e}"))?;
             let text = path.to_string_lossy().to_string();
             if seen.insert(text.clone()) {
-                paths.push(Value::Heap(heap.alloc(HeapObject::String(text))));
+                paths.push(heap_alloc(heap, HeapObject::String(text))?);
             }
         }
     } else if std::path::Path::new(&pattern).is_absolute() {
@@ -381,7 +380,7 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
                 .map_err(|e| format!("glob: {e}"))?;
             let text = checked.to_string_lossy().to_string();
             if seen.insert(text.clone()) {
-                paths.push(Value::Heap(heap.alloc(HeapObject::String(text))));
+                paths.push(heap_alloc(heap, HeapObject::String(text))?);
             }
         }
     } else {
@@ -394,12 +393,12 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
                     .map_err(|e| format!("glob: {e}"))?;
                 let text = checked.to_string_lossy().to_string();
                 if seen.insert(text.clone()) {
-                    paths.push(Value::Heap(heap.alloc(HeapObject::String(text))));
+                    paths.push(heap_alloc(heap, HeapObject::String(text))?);
                 }
             }
         }
     }
-    Ok(alloc_list(heap, paths))
+    alloc_list(heap, paths)
 }
 
 pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -430,9 +429,9 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     }
     let mut files = Vec::new();
     walk(&checked_dir, heap, &mut files)?;
-    let values: Vec<Value> = files
-        .into_iter()
-        .map(|f| Value::Heap(heap.alloc(HeapObject::String(f))))
-        .collect();
-    Ok(alloc_list(heap, values))
+    let mut values = Vec::with_capacity(files.len());
+    for f in files {
+        values.push(heap_alloc(heap, HeapObject::String(f))?);
+    }
+    alloc_list(heap, values)
 }

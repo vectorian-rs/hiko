@@ -1,7 +1,5 @@
 use smallvec::smallvec;
-use std::any::Any;
 use std::collections::HashMap;
-use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -79,20 +77,6 @@ impl RuntimeError {
     pub fn is_heap_limit(&self) -> bool {
         self.message.starts_with("heap limit exceeded")
     }
-}
-
-fn heap_limit_panic_message(payload: &(dyn Any + Send)) -> Option<String> {
-    let message = if let Some(message) = payload.downcast_ref::<String>() {
-        message.as_str()
-    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
-        message
-    } else {
-        return None;
-    };
-
-    message
-        .starts_with("heap limit exceeded")
-        .then(|| message.to_string())
 }
 
 struct ResolvedExec {
@@ -694,30 +678,22 @@ impl VM {
             .map_err(|e| RuntimeError { message: e.into() })
     }
 
-    fn alloc(&mut self, obj: HeapObject) -> Value {
+    fn alloc(&mut self, obj: HeapObject) -> Result<Value, RuntimeError> {
         if self.heap.should_collect() {
             let mut extra_roots = Vec::new();
             obj.for_each_gc_ref(|r| extra_roots.push(r));
             self.gc_collect_with_extra_roots(extra_roots);
         }
-        Value::Heap(self.heap.alloc(obj))
+        self.heap
+            .alloc(obj)
+            .map(Value::Heap)
+            .map_err(|e| RuntimeError {
+                message: e.to_string(),
+            })
     }
 
-    fn alloc_string(&mut self, s: String) -> Value {
+    fn alloc_string(&mut self, s: String) -> Result<Value, RuntimeError> {
         self.alloc(HeapObject::String(s))
-    }
-
-    fn dispatch_catching_heap_limit(&mut self) -> Result<(), RuntimeError> {
-        match panic::catch_unwind(AssertUnwindSafe(|| self.dispatch())) {
-            Ok(result) => result,
-            Err(payload) => {
-                if let Some(message) = heap_limit_panic_message(payload.as_ref()) {
-                    Err(RuntimeError { message })
-                } else {
-                    panic::resume_unwind(payload);
-                }
-            }
-        }
     }
 
     fn checked_relative_ip(
@@ -879,7 +855,7 @@ impl VM {
             base: 0,
             captures: Arc::from([]),
         });
-        self.dispatch_catching_heap_limit()
+        self.dispatch()
     }
 
     /// Run for up to `reductions` opcodes, then yield.
@@ -919,7 +895,7 @@ impl VM {
             });
         }
 
-        let result = self.dispatch_catching_heap_limit();
+        let result = self.dispatch();
 
         // Update persistent fuel budget: deduct consumed reductions
         if let Some(ref mut remaining) = self.max_fuel_remaining {
@@ -1362,12 +1338,21 @@ impl VM {
         let stderr_str = stderr_handle.join().unwrap_or_default();
 
         let exit_code = Value::Int(status.code().unwrap_or(-1) as i64);
-        let stdout = Value::Heap(self.heap.alloc(HeapObject::String(stdout_str)));
-        let stderr = Value::Heap(self.heap.alloc(HeapObject::String(stderr_str)));
+        let stdout = Value::Heap(
+            self.heap
+                .alloc(HeapObject::String(stdout_str))
+                .map_err(|e| e.to_string())?,
+        );
+        let stderr = Value::Heap(
+            self.heap
+                .alloc(HeapObject::String(stderr_str))
+                .map_err(|e| e.to_string())?,
+        );
 
-        Ok(Value::Heap(self.heap.alloc(HeapObject::Tuple(smallvec![
-            exit_code, stdout, stderr
-        ]))))
+        self.heap
+            .alloc(HeapObject::Tuple(smallvec![exit_code, stdout, stderr]))
+            .map(Value::Heap)
+            .map_err(|e| e.to_string())
     }
 
     // ── Dispatch loop ────────────────────────────────────────────────
@@ -1415,7 +1400,7 @@ impl VM {
                             if let Some(&cached) = self.string_cache.get(&key) {
                                 Value::Heap(cached)
                             } else {
-                                let v = self.alloc_string(s.clone());
+                                let v = self.alloc_string(s.clone())?;
                                 if let Value::Heap(r) = v {
                                     self.string_cache.insert(key, r);
                                 }
@@ -1536,7 +1521,7 @@ impl VM {
                     let mut result = String::with_capacity(a_s.len() + b_s.len());
                     result.push_str(a_s);
                     result.push_str(b_s);
-                    let val = self.alloc_string(result);
+                    let val = self.alloc_string(result)?;
                     self.push(val)?;
                 }
                 Op::Not => {
@@ -1549,7 +1534,7 @@ impl VM {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
                     let elems: Fields = self.stack.drain(start..).collect();
-                    let val = self.alloc(HeapObject::Tuple(elems));
+                    let val = self.alloc(HeapObject::Tuple(elems))?;
                     self.push(val)?;
                 }
                 Op::GetField => {
@@ -1577,7 +1562,7 @@ impl VM {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack.len() - arity;
                     let fields: Fields = self.stack.drain(start..).collect();
-                    let val = self.alloc(HeapObject::Data { tag, fields });
+                    let val = self.alloc(HeapObject::Data { tag, fields })?;
                     self.push(val)?;
                 }
                 Op::GetTag => {
@@ -1632,7 +1617,7 @@ impl VM {
                     let val = self.alloc(HeapObject::Closure {
                         proto_idx: func_proto_idx,
                         captures,
-                    });
+                    })?;
                     self.push(val)?;
                 }
 
@@ -1908,7 +1893,7 @@ impl VM {
                                 locals_offset,
                                 handler_count_before,
                             }),
-                        });
+                        })?;
 
                         self.frames.truncate(handler.call_frame_idx + 1);
 
@@ -2184,16 +2169,22 @@ mod tests {
     }
 
     fn build_int_list(heap: &mut Heap, len: usize) -> Value {
-        let mut list = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_NIL,
-            fields: smallvec![],
-        }));
+        let mut list = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: smallvec![],
+            })
+            .unwrap(),
+        );
 
         for i in (0..len).rev() {
-            list = Value::Heap(heap.alloc(HeapObject::Data {
-                tag: TAG_CONS,
-                fields: smallvec![Value::Int(i as i64), list],
-            }));
+            list = Value::Heap(
+                heap.alloc(HeapObject::Data {
+                    tag: TAG_CONS,
+                    fields: smallvec![Value::Int(i as i64), list],
+                })
+                .unwrap(),
+            );
         }
 
         list
@@ -2617,7 +2608,8 @@ mod tests {
         let mut vm = compile_vm("val _ = ()");
         let bogus = vm
             .heap
-            .alloc(HeapObject::String("not a continuation".into()));
+            .alloc(HeapObject::String("not a continuation".into()))
+            .unwrap();
         vm.blocked_continuation = Some(bogus);
 
         let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
@@ -2629,24 +2621,27 @@ mod tests {
     fn test_resume_blocked_rejects_saved_frame_base_overflow() {
         let mut vm = compile_vm("val _ = ()");
         vm.stack.push(Value::Unit);
-        let cont = vm.heap.alloc(HeapObject::Continuation {
-            saved_frames: vec![
-                SavedFrame {
-                    proto_idx: usize::MAX,
-                    ip: 0,
-                    base_offset: 0,
-                    captures: Arc::from([]),
-                },
-                SavedFrame {
-                    proto_idx: usize::MAX,
-                    ip: 0,
-                    base_offset: usize::MAX,
-                    captures: Arc::from([]),
-                },
-            ],
-            saved_stack: vec![Value::Unit],
-            saved_handler: None,
-        });
+        let cont = vm
+            .heap
+            .alloc(HeapObject::Continuation {
+                saved_frames: vec![
+                    SavedFrame {
+                        proto_idx: usize::MAX,
+                        ip: 0,
+                        base_offset: 0,
+                        captures: Arc::from([]),
+                    },
+                    SavedFrame {
+                        proto_idx: usize::MAX,
+                        ip: 0,
+                        base_offset: usize::MAX,
+                        captures: Arc::from([]),
+                    },
+                ],
+                saved_stack: vec![Value::Unit],
+                saved_handler: None,
+            })
+            .unwrap();
         vm.blocked_continuation = Some(cont);
 
         let err = vm.resume_blocked(Value::Int(1)).unwrap_err();

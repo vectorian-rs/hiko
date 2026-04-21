@@ -5,13 +5,20 @@ use smallvec::smallvec;
 
 static TEMPORAL_PARSER: DateTimeParser = DateTimeParser::new();
 
-fn alloc_string(heap: &mut Heap, text: impl Into<String>) -> Value {
-    Value::Heap(heap.alloc(HeapObject::String(text.into())))
+fn alloc_string(heap: &mut Heap, text: impl Into<String>) -> Result<Value, String> {
+    heap_alloc(heap, HeapObject::String(text.into()))
 }
 
-fn make_bool_string_pair(heap: &mut Heap, ok: bool, text: impl Into<String>) -> Value {
-    let text_value = alloc_string(heap, text);
-    Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![Value::Bool(ok), text_value,])))
+fn make_bool_string_pair(
+    heap: &mut Heap,
+    ok: bool,
+    text: impl Into<String>,
+) -> Result<Value, String> {
+    let text_value = alloc_string(heap, text)?;
+    heap_alloc(
+        heap,
+        HeapObject::Tuple(smallvec![Value::Bool(ok), text_value,]),
+    )
 }
 
 fn extract_string_value(value: Value, heap: &Heap, name: &str) -> Result<String, String> {
@@ -199,25 +206,21 @@ fn extract_rfc3339_offset(input: &str) -> Result<TimeZone, String> {
 }
 
 pub(super) fn utc_tz(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    Ok(alloc_string(heap, "UTC"))
+    alloc_string(heap, "UTC")
 }
 
 pub(super) fn local_tz(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match canonical_timezone_from_time_zone(&TimeZone::system()) {
-        Ok(text) => Ok(make_bool_string_pair(heap, true, text)),
-        Err(_) => Ok(make_bool_string_pair(heap, false, "")),
+        Ok(text) => make_bool_string_pair(heap, true, text),
+        Err(_) => make_bool_string_pair(heap, false, ""),
     }
 }
 
 pub(super) fn timezone_of(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let name = extract_string_arg(args, heap, "date_timezone_of")?;
     match TimeZone::get(&name) {
-        Ok(tz) => Ok(make_bool_string_pair(
-            heap,
-            true,
-            canonical_timezone_from_time_zone(&tz)?,
-        )),
-        Err(_) => Ok(make_bool_string_pair(heap, false, "")),
+        Ok(tz) => make_bool_string_pair(heap, true, canonical_timezone_from_time_zone(&tz)?),
+        Err(_) => make_bool_string_pair(heap, false, ""),
     }
 }
 
@@ -226,22 +229,16 @@ pub(super) fn fixed_offset(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     let minutes = i32::try_from(minutes)
         .map_err(|_| format!("date_fixed_offset: offset out of range: {minutes}"))?;
     let _ = offset_from_minutes(minutes)?;
-    Ok(alloc_string(heap, format_offset_minutes(minutes)))
+    alloc_string(heap, format_offset_minutes(minutes))
 }
 
 pub(super) fn utc_now(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    Ok(alloc_string(
-        heap,
-        Timestamp::now().to_zoned(TimeZone::UTC).to_string(),
-    ))
+    alloc_string(heap, Timestamp::now().to_zoned(TimeZone::UTC).to_string())
 }
 
 pub(super) fn now_in(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let tz = extract_timezone_arg(args, heap, "date_now_in")?;
-    Ok(alloc_string(
-        heap,
-        Timestamp::now().to_zoned(tz).to_string(),
-    ))
+    alloc_string(heap, Timestamp::now().to_zoned(tz).to_string())
 }
 
 pub(super) fn from_instant(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -249,7 +246,7 @@ pub(super) fn from_instant(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     let ts =
         Timestamp::from_millisecond(epoch_ms).map_err(|e| format!("date_from_instant: {e}"))?;
     let tz = parse_timezone_canonical(&tz_text)?;
-    Ok(alloc_string(heap, ts.to_zoned(tz).to_string()))
+    alloc_string(heap, ts.to_zoned(tz).to_string())
 }
 
 pub(super) fn to_epoch_ms(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -259,21 +256,21 @@ pub(super) fn to_epoch_ms(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
 
 pub(super) fn to_timezone(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let zoned = extract_date_arg(args, heap, "date_to_timezone")?;
-    Ok(alloc_string(
+    alloc_string(
         heap,
         zoned
             .time_zone()
             .iana_name()
             .map(ToString::to_string)
             .unwrap_or_else(|| canonical_offset_string(zoned.offset())),
-    ))
+    )
 }
 
 pub(super) fn in_timezone(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (date_text, tz_text) = extract_string_pair(args, heap, "date_in_timezone")?;
     let zoned = parse_date_canonical(&date_text, "date_in_timezone")?;
     let tz = parse_timezone_canonical(&tz_text)?;
-    Ok(alloc_string(heap, zoned.with_time_zone(tz).to_string()))
+    alloc_string(heap, zoned.with_time_zone(tz).to_string())
 }
 
 pub(super) fn year(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -331,43 +328,39 @@ pub(super) fn to_rfc3339(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     let zoned = extract_date_arg(args, heap, "date_to_rfc3339")?;
     let text = strtime::format("%Y-%m-%dT%H:%M:%S%.3f%:z", &zoned)
         .map_err(|e| format!("date_to_rfc3339: {e}"))?;
-    Ok(alloc_string(heap, text))
+    alloc_string(heap, text)
 }
 
 pub(super) fn to_rfc2822(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let zoned = extract_date_arg(args, heap, "date_to_rfc2822")?;
     let text = strtime::format("%a, %d %b %Y %H:%M:%S %z", &zoned)
         .map_err(|e| format!("date_to_rfc2822: {e}"))?;
-    Ok(alloc_string(heap, text))
+    alloc_string(heap, text)
 }
 
 pub(super) fn format(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (pattern, date_text) = extract_string_pair(args, heap, "date_format")?;
     let zoned = parse_date_canonical(&date_text, "date_format")?;
     let text = strtime::format(pattern, &zoned).map_err(|e| format!("date_format: {e}"))?;
-    Ok(alloc_string(heap, text))
+    alloc_string(heap, text)
 }
 
 pub(super) fn parse_rfc3339(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let input = extract_string_arg(args, heap, "date_parse_rfc3339")?;
     match TEMPORAL_PARSER.parse_timestamp(&input) {
         Ok(timestamp) => match extract_rfc3339_offset(&input) {
-            Ok(tz) => Ok(make_bool_string_pair(
-                heap,
-                true,
-                timestamp.to_zoned(tz).to_string(),
-            )),
-            Err(_) => Ok(make_bool_string_pair(heap, false, "")),
+            Ok(tz) => make_bool_string_pair(heap, true, timestamp.to_zoned(tz).to_string()),
+            Err(_) => make_bool_string_pair(heap, false, ""),
         },
-        Err(_) => Ok(make_bool_string_pair(heap, false, "")),
+        Err(_) => make_bool_string_pair(heap, false, ""),
     }
 }
 
 pub(super) fn parse_rfc9557(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let input = extract_string_arg(args, heap, "date_parse_rfc9557")?;
     match input.parse::<Zoned>() {
-        Ok(zoned) => Ok(make_bool_string_pair(heap, true, zoned.to_string())),
-        Err(_) => Ok(make_bool_string_pair(heap, false, "")),
+        Ok(zoned) => make_bool_string_pair(heap, true, zoned.to_string()),
+        Err(_) => make_bool_string_pair(heap, false, ""),
     }
 }
 
@@ -402,11 +395,11 @@ mod tests {
     }
 
     fn string_arg(heap: &mut Heap, text: &str) -> Value {
-        alloc_string(heap, text)
+        alloc_string(heap, text).unwrap()
     }
 
     fn tuple2(heap: &mut Heap, left: Value, right: Value) -> Value {
-        Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![left, right])))
+        heap_alloc(heap, HeapObject::Tuple(smallvec![left, right])).unwrap()
     }
 
     #[test]

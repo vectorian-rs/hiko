@@ -13,9 +13,10 @@ pub(super) fn bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, Str
 pub(super) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::Bytes(b) => Ok(Value::Heap(
-                heap.alloc(HeapObject::String(String::from_utf8_lossy(b).into_owned())),
-            )),
+            HeapObject::Bytes(b) => heap_alloc(
+                heap,
+                HeapObject::String(String::from_utf8_lossy(b).into_owned()),
+            ),
             _ => Err("bytes_to_string: expected Bytes".into()),
         },
         _ => Err("bytes_to_string: expected Bytes".into()),
@@ -25,9 +26,7 @@ pub(super) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, 
 pub(super) fn string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Heap(
-                heap.alloc(HeapObject::Bytes(s.as_bytes().to_vec())),
-            )),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::Bytes(s.as_bytes().to_vec())),
             _ => Err("string_to_bytes: expected String".into()),
         },
         _ => Err("string_to_bytes: expected String".into()),
@@ -91,7 +90,5 @@ pub(super) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let end = (start + len).min(bytes.len());
     let start = start.min(bytes.len());
-    Ok(Value::Heap(
-        heap.alloc(HeapObject::Bytes(bytes[start..end].to_vec())),
-    ))
+    heap_alloc(heap, HeapObject::Bytes(bytes[start..end].to_vec()))
 }

@@ -23,7 +23,8 @@ pub(super) fn path_join(args: &[Value], heap: &mut Heap) -> Result<Value, String
         _ => return Err("path_join: expected String".into()),
     };
     let joined = std::path::Path::new(&a).join(&b);
-    Ok(Value::Heap(heap.alloc(HeapObject::String(
-        joined.to_string_lossy().to_string(),
-    ))))
+    heap_alloc(
+        heap,
+        HeapObject::String(joined.to_string_lossy().to_string()),
+    )
 }

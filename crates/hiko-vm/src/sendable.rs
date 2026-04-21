@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::heap::Heap;
+use crate::heap::{Heap, HeapLimitExceeded};
 use crate::value::{GcRef, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 
@@ -102,45 +102,49 @@ fn serialize_list(head: Value, tail: Value, heap: &Heap) -> Result<SendableValue
 }
 
 /// Deserialize a SendableValue into a VM Value, allocating into the given heap.
-pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Value {
+pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLimitExceeded> {
     use smallvec::smallvec;
 
     match msg {
-        SendableValue::Int(n) => Value::Int(n),
-        SendableValue::Pid(pid) => Value::Pid(pid),
-        SendableValue::Float(f) => Value::Float(f),
-        SendableValue::Bool(b) => Value::Bool(b),
-        SendableValue::Char(c) => Value::Char(c),
-        SendableValue::Unit => Value::Unit,
-        SendableValue::String(s) => Value::Heap(heap.alloc(HeapObject::String(s.to_string()))),
-        SendableValue::Bytes(b) => Value::Heap(heap.alloc(HeapObject::Bytes(b.to_vec()))),
+        SendableValue::Int(n) => Ok(Value::Int(n)),
+        SendableValue::Pid(pid) => Ok(Value::Pid(pid)),
+        SendableValue::Float(f) => Ok(Value::Float(f)),
+        SendableValue::Bool(b) => Ok(Value::Bool(b)),
+        SendableValue::Char(c) => Ok(Value::Char(c)),
+        SendableValue::Unit => Ok(Value::Unit),
+        SendableValue::String(s) => Ok(Value::Heap(heap.alloc(HeapObject::String(s.to_string()))?)),
+        SendableValue::Bytes(b) => Ok(Value::Heap(heap.alloc(HeapObject::Bytes(b.to_vec()))?)),
         SendableValue::Tuple(fields) => {
-            let values: smallvec::SmallVec<[Value; 2]> =
-                fields.into_iter().map(|v| deserialize(v, heap)).collect();
-            Value::Heap(heap.alloc(HeapObject::Tuple(values)))
+            let mut values = smallvec::SmallVec::<[Value; 2]>::with_capacity(fields.len());
+            for v in fields {
+                values.push(deserialize(v, heap)?);
+            }
+            Ok(Value::Heap(heap.alloc(HeapObject::Tuple(values))?))
         }
         SendableValue::List(items) => {
             // Build cons-list in reverse
             let mut list = Value::Heap(heap.alloc(HeapObject::Data {
                 tag: TAG_NIL,
                 fields: smallvec![],
-            }));
+            })?);
             for item in items.into_iter().rev() {
-                let val = deserialize(item, heap);
+                let val = deserialize(item, heap)?;
                 list = Value::Heap(heap.alloc(HeapObject::Data {
                     tag: TAG_CONS,
                     fields: smallvec![val, list],
-                }));
+                })?);
             }
-            list
+            Ok(list)
         }
         SendableValue::Data { tag, fields } => {
-            let values: smallvec::SmallVec<[Value; 2]> =
-                fields.into_iter().map(|v| deserialize(v, heap)).collect();
-            Value::Heap(heap.alloc(HeapObject::Data {
+            let mut values = smallvec::SmallVec::<[Value; 2]>::with_capacity(fields.len());
+            for v in fields {
+                values.push(deserialize(v, heap)?);
+            }
+            Ok(Value::Heap(heap.alloc(HeapObject::Data {
                 tag,
                 fields: values,
-            }))
+            })?))
         }
     }
 }
@@ -156,7 +160,7 @@ mod tests {
     fn round_trip(value: Value, heap: &Heap) -> Value {
         let sendable = serialize(value, heap).expect("serialize failed");
         let mut new_heap = Heap::new();
-        deserialize(sendable, &mut new_heap)
+        deserialize(sendable, &mut new_heap).unwrap()
     }
 
     #[test]
@@ -217,10 +221,13 @@ mod tests {
     #[test]
     fn test_string() {
         let mut heap = Heap::new();
-        let s = Value::Heap(heap.alloc(HeapObject::String("hello world".to_string())));
+        let s = Value::Heap(
+            heap.alloc(HeapObject::String("hello world".to_string()))
+                .unwrap(),
+        );
         let sendable = serialize(s, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap);
+        let result = deserialize(sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::String(s)) => assert_eq!(s, "hello world"),
@@ -233,10 +240,10 @@ mod tests {
     #[test]
     fn test_bytes() {
         let mut heap = Heap::new();
-        let b = Value::Heap(heap.alloc(HeapObject::Bytes(vec![1, 2, 3])));
+        let b = Value::Heap(heap.alloc(HeapObject::Bytes(vec![1, 2, 3])).unwrap());
         let sendable = serialize(b, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap);
+        let result = deserialize(sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::Bytes(b)) => assert_eq!(b, &[1, 2, 3]),
@@ -249,13 +256,16 @@ mod tests {
     #[test]
     fn test_tuple() {
         let mut heap = Heap::new();
-        let t = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![
-            Value::Int(1),
-            Value::Bool(true)
-        ])));
+        let t = Value::Heap(
+            heap.alloc(HeapObject::Tuple(smallvec![
+                Value::Int(1),
+                Value::Bool(true)
+            ]))
+            .unwrap(),
+        );
         let sendable = serialize(t, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap);
+        let result = deserialize(sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::Tuple(fields)) => {
@@ -273,22 +283,34 @@ mod tests {
     fn test_list() {
         let mut heap = Heap::new();
         // Build [1, 2, 3]
-        let nil = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_NIL,
-            fields: smallvec![],
-        }));
-        let c3 = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_CONS,
-            fields: smallvec![Value::Int(3), nil],
-        }));
-        let c2 = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_CONS,
-            fields: smallvec![Value::Int(2), c3],
-        }));
-        let c1 = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_CONS,
-            fields: smallvec![Value::Int(1), c2],
-        }));
+        let nil = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: smallvec![],
+            })
+            .unwrap(),
+        );
+        let c3 = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![Value::Int(3), nil],
+            })
+            .unwrap(),
+        );
+        let c2 = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![Value::Int(2), c3],
+            })
+            .unwrap(),
+        );
+        let c1 = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![Value::Int(1), c2],
+            })
+            .unwrap(),
+        );
 
         let sendable = serialize(c1, &heap).unwrap();
 
@@ -302,7 +324,7 @@ mod tests {
 
         // Deserialize into new heap and verify
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap);
+        let result = deserialize(sendable, &mut new_heap).unwrap();
         // Walk the cons-list
         let mut cur = result;
         let mut values = vec![];
@@ -328,13 +350,16 @@ mod tests {
     fn test_data() {
         let mut heap = Heap::new();
         // Some(42) — tag 1, one field
-        let data = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: 1,
-            fields: smallvec![Value::Int(42)],
-        }));
+        let data = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: 1,
+                fields: smallvec![Value::Int(42)],
+            })
+            .unwrap(),
+        );
         let sendable = serialize(data, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap);
+        let result = deserialize(sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::Data { tag, fields }) => {
@@ -351,8 +376,11 @@ mod tests {
     #[test]
     fn test_nested_tuple_with_string() {
         let mut heap = Heap::new();
-        let s = Value::Heap(heap.alloc(HeapObject::String("hello".to_string())));
-        let t = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![Value::Int(1), s])));
+        let s = Value::Heap(heap.alloc(HeapObject::String("hello".to_string())).unwrap());
+        let t = Value::Heap(
+            heap.alloc(HeapObject::Tuple(smallvec![Value::Int(1), s]))
+                .unwrap(),
+        );
         let sendable = serialize(t, &heap).unwrap();
 
         // Verify Arc<str> in serialized form
@@ -367,10 +395,13 @@ mod tests {
     #[test]
     fn test_closure_rejected() {
         let mut heap = Heap::new();
-        let closure = Value::Heap(heap.alloc(HeapObject::Closure {
-            proto_idx: 0,
-            captures: Arc::from(vec![].into_boxed_slice()),
-        }));
+        let closure = Value::Heap(
+            heap.alloc(HeapObject::Closure {
+                proto_idx: 0,
+                captures: Arc::from(vec![].into_boxed_slice()),
+            })
+            .unwrap(),
+        );
         let result = serialize(closure, &heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("closure"));
@@ -379,11 +410,14 @@ mod tests {
     #[test]
     fn test_continuation_rejected() {
         let mut heap = Heap::new();
-        let cont = Value::Heap(heap.alloc(HeapObject::Continuation {
-            saved_frames: vec![],
-            saved_stack: vec![],
-            saved_handler: None,
-        }));
+        let cont = Value::Heap(
+            heap.alloc(HeapObject::Continuation {
+                saved_frames: vec![],
+                saved_stack: vec![],
+                saved_handler: None,
+            })
+            .unwrap(),
+        );
         let result = serialize(cont, &heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("continuation"));
@@ -392,7 +426,7 @@ mod tests {
     #[test]
     fn test_rng_rejected() {
         let mut heap = Heap::new();
-        let rng = Value::Heap(heap.alloc(HeapObject::Rng { state: 0, inc: 1 }));
+        let rng = Value::Heap(heap.alloc(HeapObject::Rng { state: 0, inc: 1 }).unwrap());
         let result = serialize(rng, &heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Rng"));
@@ -409,10 +443,13 @@ mod tests {
     #[test]
     fn test_empty_list() {
         let mut heap = Heap::new();
-        let nil = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_NIL,
-            fields: smallvec![],
-        }));
+        let nil = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: smallvec![],
+            })
+            .unwrap(),
+        );
         let sendable = serialize(nil, &heap).unwrap();
         match &sendable {
             SendableValue::List(items) => assert!(items.is_empty()),
@@ -423,20 +460,29 @@ mod tests {
     #[test]
     fn test_list_with_strings() {
         let mut heap = Heap::new();
-        let s1 = Value::Heap(heap.alloc(HeapObject::String("a".to_string())));
-        let s2 = Value::Heap(heap.alloc(HeapObject::String("b".to_string())));
-        let nil = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_NIL,
-            fields: smallvec![],
-        }));
-        let c2 = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_CONS,
-            fields: smallvec![s2, nil],
-        }));
-        let c1 = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_CONS,
-            fields: smallvec![s1, c2],
-        }));
+        let s1 = Value::Heap(heap.alloc(HeapObject::String("a".to_string())).unwrap());
+        let s2 = Value::Heap(heap.alloc(HeapObject::String("b".to_string())).unwrap());
+        let nil = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: smallvec![],
+            })
+            .unwrap(),
+        );
+        let c2 = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![s2, nil],
+            })
+            .unwrap(),
+        );
+        let c1 = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![s1, c2],
+            })
+            .unwrap(),
+        );
 
         let sendable = serialize(c1, &heap).unwrap();
         match &sendable {
@@ -452,11 +498,17 @@ mod tests {
     #[test]
     fn test_tuple_with_closure_rejected() {
         let mut heap = Heap::new();
-        let closure = Value::Heap(heap.alloc(HeapObject::Closure {
-            proto_idx: 0,
-            captures: Arc::from(vec![].into_boxed_slice()),
-        }));
-        let t = Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![Value::Int(1), closure])));
+        let closure = Value::Heap(
+            heap.alloc(HeapObject::Closure {
+                proto_idx: 0,
+                captures: Arc::from(vec![].into_boxed_slice()),
+            })
+            .unwrap(),
+        );
+        let t = Value::Heap(
+            heap.alloc(HeapObject::Tuple(smallvec![Value::Int(1), closure]))
+                .unwrap(),
+        );
         let result = serialize(t, &heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("closure"));

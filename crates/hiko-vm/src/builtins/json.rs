@@ -10,12 +10,12 @@ pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     };
     let parsed: serde_json::Value =
         serde_json::from_str(json_str).map_err(|e| format!("json_parse: {e}"))?;
-    Ok(json_to_hiko(&parsed, heap))
+    json_to_hiko(&parsed, heap)
 }
 
 pub(super) fn json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let result = hiko_to_json_string(args[0], heap)?;
-    Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+    heap_alloc(heap, HeapObject::String(result))
 }
 
 pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -59,7 +59,7 @@ pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         other => other.to_string(),
     };
 
-    Ok(Value::Heap(heap.alloc(HeapObject::String(result))))
+    heap_alloc(heap, HeapObject::String(result))
 }
 
 pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -75,14 +75,17 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
         serde_json::from_str(json_str).map_err(|e| format!("json_keys: {e}"))?;
 
     let keys: Vec<Value> = match &parsed {
-        serde_json::Value::Object(map) => map
-            .keys()
-            .map(|k| Value::Heap(heap.alloc(HeapObject::String(k.clone()))))
-            .collect(),
+        serde_json::Value::Object(map) => {
+            let mut keys = Vec::with_capacity(map.len());
+            for k in map.keys() {
+                keys.push(heap_alloc(heap, HeapObject::String(k.clone()))?);
+            }
+            keys
+        }
         _ => Vec::new(),
     };
 
-    Ok(alloc_list(heap, keys))
+    alloc_list(heap, keys)
 }
 
 pub(super) fn json_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {

@@ -16,10 +16,10 @@ pub(super) fn read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     if line.ends_with('\n') {
         line.pop();
     }
-    Ok(Value::Heap(heap.alloc(HeapObject::String(line))))
+    heap_alloc(heap, HeapObject::String(line))
 }
 
 pub(super) fn read_stdin(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let input = heap.read_stdin()?;
-    Ok(Value::Heap(heap.alloc(HeapObject::String(input))))
+    heap_alloc(heap, HeapObject::String(input))
 }

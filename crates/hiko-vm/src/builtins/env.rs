@@ -9,7 +9,7 @@ pub(super) fn getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         _ => return Err("getenv: expected String".into()),
     };
     match std::env::var(&name) {
-        Ok(val) => Ok(Value::Heap(heap.alloc(HeapObject::String(val)))),
-        Err(_) => Ok(Value::Heap(heap.alloc(HeapObject::String(String::new())))),
+        Ok(val) => heap_alloc(heap, HeapObject::String(val)),
+        Err(_) => heap_alloc(heap, HeapObject::String(String::new())),
     }
 }

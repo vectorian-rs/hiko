@@ -1,7 +1,6 @@
 //! Shared process operation logic used by both single-threaded and multi-threaded runtimes.
 
 use smallvec::smallvec;
-use std::panic::{self, AssertUnwindSafe};
 
 use crate::process::{FiberJoinError, Pid, ProcessFailure};
 use crate::sendable::{SendableValue, deserialize};
@@ -131,32 +130,22 @@ fn alloc_heap_value(
     heap: &mut crate::heap::Heap,
     object: HeapObject,
 ) -> Result<Value, ProcessFailure> {
-    match panic::catch_unwind(AssertUnwindSafe(|| heap.alloc(object))) {
-        Ok(reference) => Ok(Value::Heap(reference)),
-        Err(payload) => {
-            if let Some(failure) = ProcessFailure::from_heap_limit_panic(payload.as_ref()) {
-                Err(failure)
-            } else {
-                panic::resume_unwind(payload);
-            }
-        }
-    }
+    heap.alloc(object)
+        .map(Value::Heap)
+        .map_err(|e| ProcessFailure::HeapObjectLimitExceeded {
+            limit: e.limit,
+            live: e.live,
+        })
 }
 
 fn deserialize_with_heap_limit(
     sendable: SendableValue,
     heap: &mut crate::heap::Heap,
 ) -> Result<Value, ProcessFailure> {
-    match panic::catch_unwind(AssertUnwindSafe(|| deserialize(sendable, heap))) {
-        Ok(value) => Ok(value),
-        Err(payload) => {
-            if let Some(failure) = ProcessFailure::from_heap_limit_panic(payload.as_ref()) {
-                Err(failure)
-            } else {
-                panic::resume_unwind(payload);
-            }
-        }
-    }
+    deserialize(sendable, heap).map_err(|e| ProcessFailure::HeapObjectLimitExceeded {
+        limit: e.limit,
+        live: e.live,
+    })
 }
 
 /// Deduplicate a pid list, preserving order.

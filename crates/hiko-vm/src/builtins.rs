@@ -3,6 +3,11 @@ use crate::value::{BuiltinFn, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 use smallvec::smallvec;
 
+/// Allocate a heap object and wrap it as a Value, converting HeapLimitExceeded to String.
+fn heap_alloc(heap: &mut Heap, obj: HeapObject) -> Result<Value, String> {
+    heap.alloc(obj).map(Value::Heap).map_err(|e| e.to_string())
+}
+
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -42,18 +47,24 @@ mod testing;
 #[cfg(feature = "builtin-time")]
 mod time;
 
-fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Value {
-    let mut list = Value::Heap(heap.alloc(HeapObject::Data {
-        tag: TAG_NIL,
-        fields: smallvec![],
-    }));
+fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Result<Value, String> {
+    let mut list = heap_alloc(
+        heap,
+        HeapObject::Data {
+            tag: TAG_NIL,
+            fields: smallvec![],
+        },
+    )?;
     for elem in elems.into_iter().rev() {
-        list = Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_CONS,
-            fields: smallvec![elem, list],
-        }));
+        list = heap_alloc(
+            heap,
+            HeapObject::Data {
+                tag: TAG_CONS,
+                fields: smallvec![elem, list],
+            },
+        )?;
     }
-    list
+    Ok(list)
 }
 
 /// FNV-1a hash of a line, returned as 2-char base62.
@@ -122,63 +133,88 @@ const TAG_JARRAY: u16 = 5;
 const TAG_JOBJECT: u16 = 6;
 
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Value {
+fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<Value, String> {
     match val {
-        serde_json::Value::Null => Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_JNULL,
-            fields: smallvec![],
-        })),
-        serde_json::Value::Bool(b) => Value::Heap(heap.alloc(HeapObject::Data {
-            tag: TAG_JBOOL,
-            fields: smallvec![Value::Bool(*b)],
-        })),
+        serde_json::Value::Null => heap_alloc(
+            heap,
+            HeapObject::Data {
+                tag: TAG_JNULL,
+                fields: smallvec![],
+            },
+        ),
+        serde_json::Value::Bool(b) => heap_alloc(
+            heap,
+            HeapObject::Data {
+                tag: TAG_JBOOL,
+                fields: smallvec![Value::Bool(*b)],
+            },
+        ),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Value::Heap(heap.alloc(HeapObject::Data {
-                    tag: TAG_JINT,
-                    fields: smallvec![Value::Int(i)],
-                }))
+                heap_alloc(
+                    heap,
+                    HeapObject::Data {
+                        tag: TAG_JINT,
+                        fields: smallvec![Value::Int(i)],
+                    },
+                )
             } else if let Some(f) = n.as_f64() {
-                Value::Heap(heap.alloc(HeapObject::Data {
-                    tag: TAG_JFLOAT,
-                    fields: smallvec![Value::Float(f)],
-                }))
+                heap_alloc(
+                    heap,
+                    HeapObject::Data {
+                        tag: TAG_JFLOAT,
+                        fields: smallvec![Value::Float(f)],
+                    },
+                )
             } else {
-                Value::Heap(heap.alloc(HeapObject::Data {
-                    tag: TAG_JNULL,
-                    fields: smallvec![],
-                }))
+                heap_alloc(
+                    heap,
+                    HeapObject::Data {
+                        tag: TAG_JNULL,
+                        fields: smallvec![],
+                    },
+                )
             }
         }
         serde_json::Value::String(s) => {
-            let sv = Value::Heap(heap.alloc(HeapObject::String(s.clone())));
-            Value::Heap(heap.alloc(HeapObject::Data {
-                tag: TAG_JSTR,
-                fields: smallvec![sv],
-            }))
+            let sv = heap_alloc(heap, HeapObject::String(s.clone()))?;
+            heap_alloc(
+                heap,
+                HeapObject::Data {
+                    tag: TAG_JSTR,
+                    fields: smallvec![sv],
+                },
+            )
         }
         serde_json::Value::Array(arr) => {
-            let elems: Vec<Value> = arr.iter().map(|v| json_to_hiko(v, heap)).collect();
-            let list = alloc_list(heap, elems);
-            Value::Heap(heap.alloc(HeapObject::Data {
-                tag: TAG_JARRAY,
-                fields: smallvec![list],
-            }))
+            let mut elems = Vec::with_capacity(arr.len());
+            for v in arr {
+                elems.push(json_to_hiko(v, heap)?);
+            }
+            let list = alloc_list(heap, elems)?;
+            heap_alloc(
+                heap,
+                HeapObject::Data {
+                    tag: TAG_JARRAY,
+                    fields: smallvec![list],
+                },
+            )
         }
         serde_json::Value::Object(map) => {
-            let pairs: Vec<Value> = map
-                .iter()
-                .map(|(k, v)| {
-                    let key = Value::Heap(heap.alloc(HeapObject::String(k.clone())));
-                    let val = json_to_hiko(v, heap);
-                    Value::Heap(heap.alloc(HeapObject::Tuple(smallvec![key, val])))
-                })
-                .collect();
-            let list = alloc_list(heap, pairs);
-            Value::Heap(heap.alloc(HeapObject::Data {
-                tag: TAG_JOBJECT,
-                fields: smallvec![list],
-            }))
+            let mut pairs = Vec::with_capacity(map.len());
+            for (k, v) in map {
+                let key = heap_alloc(heap, HeapObject::String(k.clone()))?;
+                let val = json_to_hiko(v, heap)?;
+                pairs.push(heap_alloc(heap, HeapObject::Tuple(smallvec![key, val]))?);
+            }
+            let list = alloc_list(heap, pairs)?;
+            heap_alloc(
+                heap,
+                HeapObject::Data {
+                    tag: TAG_JOBJECT,
+                    fields: smallvec![list],
+                },
+            )
         }
     }
 }
