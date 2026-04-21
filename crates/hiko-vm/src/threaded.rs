@@ -553,6 +553,7 @@ fn handle_await(
                                 parent: tombstone_parent,
                             },
                         );
+                        table.child_parents.remove(&child_pid);
                         table.return_process(parent);
                         return;
                     }
@@ -583,6 +584,7 @@ fn handle_await(
                         parent: tombstone_parent,
                     },
                 );
+                table.child_parents.remove(&child_pid);
                 return;
             }
         }
@@ -976,6 +978,7 @@ fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_p
         table
             .tombstones
             .insert(finished_pid, ChildRecord::Consumed { parent });
+        table.child_parents.remove(&finished_pid);
     }
 }
 
