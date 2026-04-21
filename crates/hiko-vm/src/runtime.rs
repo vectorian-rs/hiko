@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::process::{AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus};
+use crate::process::{
+    AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus,
+};
+use crate::runtime_ops::dedup_pids;
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::sendable::{SendableValue, serialize};
 use crate::value::Value;
@@ -664,16 +667,6 @@ impl Runtime {
     pub fn process_count(&self) -> usize {
         self.processes.len()
     }
-}
-
-fn dedup_pids(child_pids: Vec<Pid>) -> Vec<Pid> {
-    let mut unique = Vec::with_capacity(child_pids.len());
-    for pid in child_pids {
-        if !unique.contains(&pid) {
-            unique.push(pid);
-        }
-    }
-    unique
 }
 
 fn remove_waiter(waiters: &mut HashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: Pid) {

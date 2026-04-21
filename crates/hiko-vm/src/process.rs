@@ -3,8 +3,8 @@
 use crate::sendable::SendableValue;
 use crate::vm::VM;
 use std::any::Any;
-use std::fmt;
 use std::collections::HashSet;
+use std::fmt;
 
 /// Unique process identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -26,10 +26,7 @@ pub struct Scope {
 #[derive(Clone, Debug)]
 pub enum BlockReason {
     /// Waiting for a child process to complete.
-    Await {
-        child: Pid,
-        kind: AwaitKind,
-    },
+    Await { child: Pid, kind: AwaitKind },
     /// Waiting for any child in the set to complete.
     WaitAny(Vec<Pid>),
     /// Waiting for an I/O operation to complete.

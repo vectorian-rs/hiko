@@ -143,16 +143,16 @@ fn encode_join_error(
             alloc_data_value(heap, PROCESS_JOIN_ERROR_ALREADY_JOINED_TAG, smallvec![])
         }
         FiberJoinError::HeapObjectLimitExceeded { live, limit } => {
-            let pair = alloc_tuple_value(heap, smallvec![Value::Int(live as i64), Value::Int(limit as i64)])?;
+            let pair = alloc_tuple_value(
+                heap,
+                smallvec![Value::Int(live as i64), Value::Int(limit as i64)],
+            )?;
             alloc_data_value(heap, PROCESS_JOIN_ERROR_HEAP_LIMIT_TAG, smallvec![pair])
         }
     }
 }
 
-fn alloc_string_value(
-    heap: &mut crate::heap::Heap,
-    text: String,
-) -> Result<Value, ProcessFailure> {
+fn alloc_string_value(heap: &mut crate::heap::Heap, text: String) -> Result<Value, ProcessFailure> {
     alloc_heap_value(heap, HeapObject::String(text))
 }
 
@@ -201,4 +201,16 @@ fn deserialize_with_heap_limit(
             }
         }
     }
+}
+
+/// Deduplicate a pid list, preserving order.
+pub fn dedup_pids(child_pids: Vec<Pid>) -> Vec<Pid> {
+    let mut seen = std::collections::HashSet::with_capacity(child_pids.len());
+    let mut unique = Vec::with_capacity(child_pids.len());
+    for pid in child_pids {
+        if seen.insert(pid) {
+            unique.push(pid);
+        }
+    }
+    unique
 }

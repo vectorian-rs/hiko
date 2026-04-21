@@ -10,7 +10,7 @@ use crate::process::{
     AwaitKind, BlockReason, FiberJoinError, Pid, Process, ProcessFailure, ProcessStatus, Scope,
     ScopeId,
 };
-use crate::runtime_ops::{deliver_join_result_to_parent, deliver_result_to_parent};
+use crate::runtime_ops::{dedup_pids, deliver_join_result_to_parent, deliver_result_to_parent};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
@@ -666,22 +666,25 @@ fn wake_any_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pi
     };
 
     for waiter_pid in waiter_pids {
-        let child_pids = match table.processes.get(&waiter_pid) {
-            Some(waiter) => match &waiter.status {
-                ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => child_pids.clone(),
+        // Use a single get_mut() to check status and deliver atomically,
+        // avoiding a TOCTOU race where two children finishing concurrently
+        // could both deliver to the same waiter.
+        let child_pids = match table.processes.get_mut(&waiter_pid) {
+            Some(mut waiter) => match &waiter.status {
+                ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => {
+                    let child_pids = child_pids.clone();
+                    crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, finished_pid);
+                    waiter.status = ProcessStatus::Runnable;
+                    drop(waiter);
+                    scheduler.enqueue(waiter_pid);
+                    child_pids
+                }
                 _ => continue,
             },
             None => continue,
         };
 
         remove_any_waiter_registration(table, waiter_pid, &child_pids);
-
-        if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
-            crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, finished_pid);
-            waiter.status = ProcessStatus::Runnable;
-            drop(waiter);
-            scheduler.enqueue(waiter_pid);
-        }
     }
 }
 
@@ -705,19 +708,18 @@ fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_p
     };
 
     for waiter_pid in waiter_pids {
-        let await_kind = match table.processes.get(&waiter_pid) {
-            Some(waiter) => match &waiter.status {
+        // Single get_mut() to check status and deliver atomically,
+        // avoiding a TOCTOU race if the waiter is concurrently cancelled.
+        if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
+            let await_kind = match &waiter.status {
                 ProcessStatus::Blocked(BlockReason::Await { child, kind })
                     if *child == finished_pid =>
                 {
                     *kind
                 }
                 _ => continue,
-            },
-            None => continue,
-        };
+            };
 
-        if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
             match (await_kind, &delivery) {
                 (AwaitKind::Raw, Ok(sendable)) => {
                     match deliver_result_to_parent(&mut waiter.vm, sendable.clone()) {
@@ -781,16 +783,6 @@ fn clear_blocked_registration(table: &ProcessTable, pid: Pid, reason: &BlockReas
             table.io_waiters.remove(token);
         }
     }
-}
-
-fn dedup_pids(child_pids: Vec<Pid>) -> Vec<Pid> {
-    let mut unique = Vec::with_capacity(child_pids.len());
-    for pid in child_pids {
-        if !unique.contains(&pid) {
-            unique.push(pid);
-        }
-    }
-    unique
 }
 
 fn remove_any_waiter_registration(table: &ProcessTable, waiter_pid: Pid, child_pids: &[Pid]) {
