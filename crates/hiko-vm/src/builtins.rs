@@ -527,3 +527,27 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
 
     entries
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn builtin_names_are_unique() {
+        let entries = builtin_entries();
+        let mut seen = HashSet::new();
+        let mut duplicates = Vec::new();
+        for (name, _) in &entries {
+            if !seen.insert(name) {
+                duplicates.push(*name);
+            }
+        }
+        assert!(
+            duplicates.is_empty(),
+            "duplicate builtin names: {:?}",
+            duplicates
+        );
+        assert_eq!(seen.len(), entries.len());
+    }
+}
