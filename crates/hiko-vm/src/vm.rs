@@ -1011,10 +1011,16 @@ impl VM {
         }
     }
 
-    fn read_const_string(&self, proto_idx: usize, idx: usize) -> &str {
-        match &self.chunk_for(proto_idx).constants[idx] {
-            Constant::String(s) => s,
-            _ => panic!("expected string constant"),
+    fn read_const_string(&self, proto_idx: usize, idx: usize) -> Result<&str, RuntimeError> {
+        let chunk = self.chunk_for(proto_idx);
+        match chunk.constants.get(idx) {
+            Some(Constant::String(s)) => Ok(s),
+            Some(_) => Err(RuntimeError {
+                message: format!("expected string constant at index {idx}"),
+            }),
+            None => Err(RuntimeError {
+                message: format!("constant index out of bounds: {idx}"),
+            }),
         }
     }
 
@@ -1443,7 +1449,7 @@ impl VM {
                 }
                 Op::GetGlobal => {
                     let idx = self.read_u16()? as usize;
-                    let name = self.read_const_string(proto_idx, idx);
+                    let name = self.read_const_string(proto_idx, idx)?;
                     let slot = *self.global_names.get(name).ok_or_else(|| RuntimeError {
                         message: format!("undefined global: {name}"),
                     })?;
@@ -1452,7 +1458,7 @@ impl VM {
                 }
                 Op::SetGlobal => {
                     let idx = self.read_u16()? as usize;
-                    let name = self.read_const_string(proto_idx, idx).to_string();
+                    let name = self.read_const_string(proto_idx, idx)?.to_string();
                     let val = self.pop()?;
                     let slot = self.global_slot(name);
                     self.globals[slot] = val;
@@ -1777,7 +1783,7 @@ impl VM {
 
                 Op::Panic => {
                     let idx = self.read_u16()? as usize;
-                    let msg = self.read_const_string(proto_idx, idx).to_string();
+                    let msg = self.read_const_string(proto_idx, idx)?.to_string();
                     return Err(RuntimeError { message: msg });
                 }
 
