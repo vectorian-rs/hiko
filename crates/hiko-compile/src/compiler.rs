@@ -1005,13 +1005,12 @@ impl Compiler {
             return Ok(());
         }
 
-        let CachedImportedProgram { base_dir, decls } = self
-            .imported_programs
-            .remove(&key)
-            .unwrap_or(CachedImportedProgram {
-                base_dir: self.base_dir.clone(),
-                decls: Vec::new(),
-            });
+        let CachedImportedProgram { base_dir, decls } =
+            self.imported_programs.remove(&key).ok_or_else(|| {
+                CompileError::codegen(format!(
+                    "import not found during compilation: {key:?}"
+                ))
+            })?;
 
         let old_base = self.base_dir.clone();
         self.base_dir = base_dir;
@@ -2136,6 +2135,30 @@ Filesystem = "blake3:deadbeef"
                 assert!(message.contains("__Builtin"));
             }
             other => panic!("expected reserved package validation failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn use_rejects_nonexistent_file() {
+        let project_dir = unique_temp_dir("use-bad-path");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &entry_path,
+            "use \"./no_such_module.hml\"\nval answer = 1\n",
+        );
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(
+                    message.contains("cannot resolve local use"),
+                    "expected 'cannot resolve local use' in error, got: {message}"
+                );
+            }
+            other => panic!("expected compile error for missing use path, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&project_dir).ok();
