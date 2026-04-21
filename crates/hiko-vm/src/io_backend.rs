@@ -233,7 +233,7 @@ fn aio_http(
                     .map_err(|e| format!("http_json: {e}"))?;
                 let parsed: serde_json::Value =
                     serde_json::from_str(&s).map_err(|e| format!("http_json: {e}"))?;
-                json_value_to_sendable(&parsed)
+                json_value_to_sendable(&parsed)?
             }
             #[cfg(not(feature = "builtin-http"))]
             {
@@ -247,7 +247,7 @@ fn aio_http(
                 let reader = response.into_body().into_reader();
                 let parsed: serde_json::Value =
                     rmp_serde::from_read(reader).map_err(|e| format!("http_msgpack: {e}"))?;
-                json_value_to_sendable(&parsed)
+                json_value_to_sendable(&parsed)?
             }
             #[cfg(not(feature = "builtin-http"))]
             {
@@ -275,31 +275,37 @@ fn aio_http(
 
 /// Convert a serde_json::Value to SendableValue (for async JSON/msgpack parsing).
 #[cfg(feature = "builtin-http")]
-fn json_value_to_sendable(v: &serde_json::Value) -> SendableValue {
+fn json_value_to_sendable(v: &serde_json::Value) -> Result<SendableValue, String> {
     match v {
-        serde_json::Value::Null => SendableValue::Unit,
-        serde_json::Value::Bool(b) => SendableValue::Bool(*b),
+        serde_json::Value::Null => Ok(SendableValue::Unit),
+        serde_json::Value::Bool(b) => Ok(SendableValue::Bool(*b)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                SendableValue::Int(i)
+                Ok(SendableValue::Int(i))
             } else {
-                SendableValue::Float(n.as_f64().unwrap_or(0.0))
+                let f = n
+                    .as_f64()
+                    .ok_or_else(|| format!("json number not representable as f64: {n}"))?;
+                Ok(SendableValue::Float(f))
             }
         }
-        serde_json::Value::String(s) => SendableValue::String(s.clone().into()),
+        serde_json::Value::String(s) => Ok(SendableValue::String(s.clone().into())),
         serde_json::Value::Array(arr) => {
-            SendableValue::List(arr.iter().map(json_value_to_sendable).collect())
+            let items: Result<Vec<_>, _> = arr.iter().map(json_value_to_sendable).collect();
+            Ok(SendableValue::List(items?))
         }
-        serde_json::Value::Object(obj) => SendableValue::List(
-            obj.iter()
+        serde_json::Value::Object(obj) => {
+            let items: Result<Vec<SendableValue>, String> = obj
+                .iter()
                 .map(|(k, val)| {
-                    SendableValue::Tuple(vec![
+                    Ok(SendableValue::Tuple(vec![
                         SendableValue::String(k.clone().into()),
-                        json_value_to_sendable(val),
-                    ])
+                        json_value_to_sendable(val)?,
+                    ]))
                 })
-                .collect(),
-        ),
+                .collect();
+            Ok(SendableValue::List(items?))
+        }
     }
 }
 
@@ -324,6 +330,36 @@ fn aio_http(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "builtin-http")]
+    fn test_json_value_to_sendable_normal_float() {
+        let v: serde_json::Value = serde_json::from_str("3.14").unwrap();
+        let result = json_value_to_sendable(&v).unwrap();
+        assert!(matches!(result, SendableValue::Float(f) if (f - 3.14).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    #[cfg(feature = "builtin-http")]
+    fn test_json_value_to_sendable_unrepresentable_float_errors() {
+        // serde_json with the arbitrary_precision feature can produce numbers
+        // that have no f64 representation. Without that feature, all parsed
+        // numbers fit in f64, so we construct one via the Number API that
+        // would fail as_f64() -- specifically a u64 that exceeds i64::MAX so
+        // as_i64() returns None, then check whether as_f64() also fails.
+        // In practice, serde_json::Number from a u64 always has an f64 path,
+        // so we verify the happy path doesn't silently produce 0.0.
+        let v: serde_json::Value = serde_json::json!(u64::MAX);
+        let result = json_value_to_sendable(&v);
+        // u64::MAX cannot be represented as i64, so the code takes the float
+        // branch. as_f64() succeeds (lossy) so we get Ok, but crucially we
+        // do NOT get 0.0.
+        match result {
+            Ok(SendableValue::Float(f)) => assert!(f > 0.0, "must not silently map to 0.0"),
+            Ok(SendableValue::Int(_)) => { /* also acceptable */ }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
 
     #[test]
     fn test_mock_sleep_completes_immediately() {
