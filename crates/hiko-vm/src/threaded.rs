@@ -21,6 +21,11 @@ struct ProcessTable {
     processes: DashMap<Pid, Process>,
     /// Compact tombstones for terminated child processes.
     tombstones: DashMap<Pid, ChildRecord>,
+    /// Permanent child→parent map set at spawn time. Lets operations recognise
+    /// a child that is temporarily invisible (taken from `processes` for execution).
+    child_parents: DashMap<Pid, Pid>,
+    /// Children that should be cancelled when they return from execution.
+    pending_cancels: DashMap<Pid, ()>,
     waiters: DashMap<Pid, Vec<Pid>>,
     any_waiters: DashMap<Pid, Vec<Pid>>,
     io_waiters: DashMap<IoToken, Pid>,
@@ -33,6 +38,8 @@ impl ProcessTable {
         Self {
             processes: DashMap::new(),
             tombstones: DashMap::new(),
+            child_parents: DashMap::new(),
+            pending_cancels: DashMap::new(),
             waiters: DashMap::new(),
             any_waiters: DashMap::new(),
             io_waiters: DashMap::new(),
@@ -315,6 +322,11 @@ fn worker_loop(
             None => continue,
         };
 
+        // Apply any pending cancel requested while this process was executing.
+        if table.pending_cancels.remove(&pid).is_some() {
+            process.cancelled = true;
+        }
+
         let result = process.vm.run_slice(reductions);
 
         match result {
@@ -357,6 +369,7 @@ fn worker_loop(
                 ) {
                     Ok(child_vm) => {
                         let child = Process::new(child_pid, child_vm, Some(pid));
+                        table.child_parents.insert(child_pid, pid);
                         table.insert(child);
                         scheduler.enqueue(child_pid);
 
@@ -517,42 +530,70 @@ fn handle_await(
         }
     }
 
-    // Check live processes (child still running)
-    match table.processes.get(&child_pid) {
-        None => {
-            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                "await: unknown process {:?}",
-                child_pid
-            )));
-            table.return_process(parent);
-        }
-        Some(child) if child.parent != Some(parent_pid) => {
+    // Check live processes (child still running or temporarily taken for execution)
+    let child_known = table.processes.get(&child_pid).map(|c| c.parent);
+
+    match child_known {
+        Some(Some(cp)) if cp != parent_pid => {
             parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
                 "await: process {:?} is not a child of {:?}",
                 child_pid, parent_pid
             )));
             table.return_process(parent);
         }
-        _ => {
-            // Child is running — block and register waiter
-            parent.status = ProcessStatus::Blocked(BlockReason::Await {
-                child: child_pid,
-                kind: await_kind,
-            });
-            // Register waiter BEFORE returning parent to table, so that
-            // if the child finishes concurrently, wake_join_waiters will
-            // find this waiter entry.
-            table.waiters.entry(child_pid).or_default().push(parent_pid);
-            table.return_process(parent);
-
-            // Recheck: if the child became tombstoned during the gap,
-            // wake_join_waiters may have already run and missed us.
-            // Trigger it again — the single-get_mut wake logic prevents
-            // double delivery.
-            if table.tombstones.contains_key(&child_pid) {
-                wake_join_waiters(table, scheduler, child_pid);
+        Some(_) => {
+            // Child is in the table (running) — block and register waiter
+            block_on_child(table, scheduler, parent, parent_pid, child_pid, await_kind);
+        }
+        None => {
+            // Not in processes — check child_parents to see if it's being executed
+            match table.child_parents.get(&child_pid).map(|r| *r.value()) {
+                Some(cp) if cp != parent_pid => {
+                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                        "await: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )));
+                    table.return_process(parent);
+                }
+                Some(_) => {
+                    // Child is executing on another worker — block and register waiter
+                    block_on_child(table, scheduler, parent, parent_pid, child_pid, await_kind);
+                }
+                None => {
+                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                        "await: unknown process {:?}",
+                        child_pid
+                    )));
+                    table.return_process(parent);
+                }
             }
         }
+    }
+}
+
+/// Block a parent on a child and register a waiter, with tombstone recheck.
+fn block_on_child(
+    table: &ProcessTable,
+    scheduler: &dyn Scheduler,
+    mut parent: Process,
+    parent_pid: Pid,
+    child_pid: Pid,
+    await_kind: AwaitKind,
+) {
+    parent.status = ProcessStatus::Blocked(BlockReason::Await {
+        child: child_pid,
+        kind: await_kind,
+    });
+    // Register waiter BEFORE returning parent to table, so that
+    // if the child finishes concurrently, wake_join_waiters will
+    // find this waiter entry.
+    table.waiters.entry(child_pid).or_default().push(parent_pid);
+    table.return_process(parent);
+
+    // Recheck: if the child became tombstoned during the gap,
+    // wake_join_waiters may have already run and missed us.
+    if table.tombstones.contains_key(&child_pid) {
+        wake_join_waiters(table, scheduler, child_pid);
     }
 }
 
@@ -583,14 +624,37 @@ fn handle_cancel(
         return;
     }
 
-    // Check live processes
+    // Check live processes (or child_parents for executing children)
     match table.processes.get_mut(&child_pid) {
         None => {
-            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                "cancel: unknown process {:?}",
-                child_pid
-            )));
-            table.return_process(parent);
+            // Not in processes — check if executing on another worker
+            match table.child_parents.get(&child_pid).map(|r| *r.value()) {
+                Some(cp) if cp == parent_pid => {
+                    // Child is executing — schedule a pending cancel
+                    table.pending_cancels.insert(child_pid, ());
+                    parent.vm.stack.pop();
+                    parent.vm.push_value(Value::Unit);
+                    table.return_process(parent);
+                    scheduler.enqueue(parent_pid);
+                    return;
+                }
+                Some(_) => {
+                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                        "cancel: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )));
+                    table.return_process(parent);
+                    return;
+                }
+                None => {
+                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                        "cancel: unknown process {:?}",
+                        child_pid
+                    )));
+                    table.return_process(parent);
+                    return;
+                }
+            }
         }
         Some(child) if child.parent != Some(parent_pid) => {
             parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
@@ -678,16 +742,8 @@ fn handle_wait_any(
             return;
         }
 
-        // Check live process
+        // Check live process or executing child
         match table.processes.get(&child_pid) {
-            None => {
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "wait_any: unknown process {:?}",
-                    child_pid
-                )));
-                table.return_process(parent);
-                return;
-            }
             Some(child) if child.parent != Some(parent_pid) => {
                 parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
                     "wait_any: process {:?} is not a child of {:?}",
@@ -696,7 +752,29 @@ fn handle_wait_any(
                 table.return_process(parent);
                 return;
             }
-            Some(_) => {}
+            Some(_) => {} // Running — will check later
+            None => {
+                // Not in processes — check child_parents for executing children
+                match table.child_parents.get(&child_pid).map(|r| *r.value()) {
+                    Some(cp) if cp == parent_pid => {} // Executing — valid child
+                    Some(_) => {
+                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                            "wait_any: process {:?} is not a child of {:?}",
+                            child_pid, parent_pid
+                        )));
+                        table.return_process(parent);
+                        return;
+                    }
+                    None => {
+                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
+                            "wait_any: unknown process {:?}",
+                            child_pid
+                        )));
+                        table.return_process(parent);
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -1302,5 +1380,150 @@ mod tests {
             .map(|p| format!("{:?}", p.status))
             .expect("root process should exist");
         assert!(status.contains("Failed"));
+    }
+
+    // --- Multi-worker tests: exercise concurrent scheduling and race-fix paths ---
+
+    #[test]
+    fn test_multiworker_spawn_await() {
+        let program = compile(
+            "val child = spawn (fn () => 42)\n\
+             val result = await_process child\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(4);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["42\n"]);
+    }
+
+    #[test]
+    fn test_multiworker_many_children() {
+        let program = compile(
+            "fun make n = spawn (fn () => n * 2)\n\
+             val c1 = make 1\n\
+             val c2 = make 2\n\
+             val c3 = make 3\n\
+             val c4 = make 4\n\
+             val c5 = make 5\n\
+             val r1 = await_process c1\n\
+             val r2 = await_process c2\n\
+             val r3 = await_process c3\n\
+             val r4 = await_process c4\n\
+             val r5 = await_process c5\n\
+             val _ = println (int_to_string (r1 + r2 + r3 + r4 + r5))",
+        );
+        let runtime = ThreadedRuntime::new(4);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["30\n"]);
+    }
+
+    #[test]
+    fn test_multiworker_wait_any() {
+        let program = compile(
+            "val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
+             val fast = spawn (fn () => 20)\n\
+             val winner = wait_any [slow, fast]\n\
+             val result = await_process winner\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(4)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["20\n"]);
+    }
+
+    #[test]
+    fn test_multiworker_cancel_blocked_child() {
+        let program = compile(
+            "val child = spawn (fn () => let val _ = sleep 999999 in 42 end)\n\
+             val _ = cancel child\n\
+             val _ = println \"cancelled\"",
+        );
+        let runtime = ThreadedRuntime::new(4)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["cancelled\n"]);
+    }
+
+    #[test]
+    fn test_multiworker_concurrent_sleep() {
+        // Multiple children sleeping concurrently with multiple workers
+        let program = compile(
+            "val a = spawn (fn () => sleep 999999)\n\
+             val b = spawn (fn () => sleep 999999)\n\
+             val c = spawn (fn () => sleep 999999)\n\
+             val _ = await_process a\n\
+             val _ = await_process b\n\
+             val _ = await_process c\n\
+             val _ = println \"all done\"",
+        );
+        let runtime = ThreadedRuntime::new(4)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["all done\n"]);
+    }
+
+    #[test]
+    fn test_multiworker_fiber_first_no_leak() {
+        let program = compile_file(&test_program_path("test_fiber_no_leak.hml"));
+        let runtime = ThreadedRuntime::new(4)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let status = runtime
+            .table
+            .processes
+            .get(&pid)
+            .map(|process| format!("{:?}", process.status))
+            .unwrap_or_else(|| "<missing>".into());
+        assert_eq!(status, "Done");
+        let remaining = runtime.table.processes.len();
+        assert_eq!(
+            remaining, 1,
+            "expected only root process in table, found {remaining} processes"
+        );
+    }
+
+    #[test]
+    fn test_multiworker_fiber_error_paths() {
+        let program = compile_file(&test_program_path("test_fiber_errors.hml"));
+        let runtime = ThreadedRuntime::new(4)
+            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["fiber error tests passed\n"]);
+    }
+
+    #[test]
+    fn test_multiworker_stress_spawn_await_loop() {
+        let program = compile(
+            "fun loop n =\n\
+               if n = 0 then ()\n\
+               else\n\
+                 let\n\
+                   val child = spawn (fn () => n)\n\
+                   val _ = await_process child\n\
+                 in\n\
+                   loop (n - 1)\n\
+                 end\n\
+             val _ = loop 100\n\
+             val _ = println \"done\"",
+        );
+        let runtime = ThreadedRuntime::new(4);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["done\n"]);
     }
 }
