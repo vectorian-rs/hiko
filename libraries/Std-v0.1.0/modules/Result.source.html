@@ -1,0 +1,44 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Result source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Result</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Result</span></code></pre><p class="meta">Narrative docs: <a href="./Result.html">Result.html</a><br>Raw source: <a href="./Result.hml">Result.hml</a><br>BLAKE3: <code title="blake3:3114810752950227240b2fa1275536d902ed0d32354064458d6643125b3641cd">blake3:31148107...5b3641cd</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>result</strong> <span class="meta">Ok | Err</span></li><li><code>fun</code> <strong>is_ok</strong></li><li><code>fun</code> <strong>is_err</strong></li><li><code>fun</code> <strong>map</strong></li><li><code>fun</code> <strong>map_err</strong></li><li><code>fun</code> <strong>and_then</strong></li><li><code>fun</code> <strong>or_else</strong></li><li><code>fun</code> <strong>unwrap_or</strong></li><li><code>fun</code> <strong>unwrap_or_else</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">structure</span> <span class="tok-module">Result</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">datatype</span> (<span class="tok-type-definition">&#39;a</span>, <span class="tok-type-definition">&#39;e</span>) <span class="tok-type">result</span> = <span class="tok-constructor">Ok</span> <span class="tok-keyword">of</span> <span class="tok-type-definition">&#39;a</span> | <span class="tok-constructor">Err</span> <span class="tok-keyword">of</span> <span class="tok-type-definition">&#39;e</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">is_ok</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> _  =&gt; <span class="tok-constant-builtin-boolean">true</span>
+    | <span class="tok-constructor">Err</span> _ =&gt; <span class="tok-constant-builtin-boolean">false</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">is_err</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> _  =&gt; <span class="tok-constant-builtin-boolean">false</span>
+    | <span class="tok-constructor">Err</span> _ =&gt; <span class="tok-constant-builtin-boolean">true</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">map</span> <span class="tok-variable">f</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-constructor">Ok</span> (<span class="tok-variable">f</span> <span class="tok-variable">value</span>)
+    | <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>  =&gt; <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">map_err</span> <span class="tok-variable">f</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span>
+    | <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>  =&gt; <span class="tok-constructor">Err</span> (<span class="tok-variable">f</span> <span class="tok-variable">err</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">and_then</span> <span class="tok-variable">f</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-variable">f</span> <span class="tok-variable">value</span>
+    | <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>  =&gt; <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">or_else</span> <span class="tok-variable">f</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span>
+    | <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>  =&gt; <span class="tok-variable">f</span> <span class="tok-variable">err</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">unwrap_or</span> <span class="tok-variable">default</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-variable">value</span>
+    | <span class="tok-constructor">Err</span> _    =&gt; <span class="tok-variable">default</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">unwrap_or_else</span> <span class="tok-variable">f</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+      <span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-variable">value</span>
+    | <span class="tok-constructor">Err</span> <span class="tok-variable">err</span>  =&gt; <span class="tok-variable">f</span> <span class="tok-variable">err</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

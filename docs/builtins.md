@@ -149,10 +149,14 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 
 ## Concurrency (threaded runtime)
 
-| Builtin         | Type                  | Description                                            |
-| --------------- | --------------------- | ------------------------------------------------------ |
-| `spawn`         | `(unit -> 'a) -> pid` | Spawn isolated process, returns a typed process handle |
-| `await_process` | `pid -> 'a`           | Block until process completes, returns result          |
+| Builtin         | Type                    | Description                                          |
+| --------------- | ----------------------- | ---------------------------------------------------- |
+| `spawn`         | `(unit -> 'a) -> pid`   | Spawn an isolated process                            |
+| `await_process` | `pid -> 'a`             | Block until a child process completes                |
+| `cancel`        | `pid -> unit`           | Cooperatively cancel a child process                 |
+| `wait_any`      | `pid list -> pid`       | Wait until any child in the set finishes             |
+
+The raw builtins are intended to sit under `Std.Fiber`, which provides the user-facing structured-concurrency surface (`Fiber.spawn`, `Fiber.join`, `Fiber.first`, `Fiber.any`).
 
 ## Testing
 

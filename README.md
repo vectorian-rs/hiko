@@ -246,6 +246,8 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 - **`libraries/Std-v0.1.0/modules/List.hml`**: `map`, `filter`, `foldl`, `foldr`, `length`, `reverse`, `append`, `nth`, `zip`, `take`, `drop`, `all`, `any`, `find`
 - **`libraries/Std-v0.1.0/modules/Option.hml`**: `is_some`, `is_none`, `map_option`, `get_or`, `flat_map_option`
 - **`libraries/Std-v0.1.0/modules/Either.hml`**: `map_right`, `map_left`, `is_left`, `is_right`, `from_left`, `from_right`
+- **`libraries/Std-v0.1.0/modules/Result.hml`**: `Ok` / `Err`, `map`, `map_err`, `and_then`, `or_else`, `unwrap_or`
+- **`libraries/Std-v0.1.0/modules/Fiber.hml`**: `spawn`, `join`, `cancel`, `both`, `all`, `first`, `any`
 
 ## Examples
 
@@ -260,7 +262,9 @@ The `examples/` directory includes programs demonstrating:
 | `list_ops.hml` | Map, filter, fold over lists |
 | `option.hml` | Algebraic data types |
 | `either.hml` | Sum types for error handling |
+| `result.hml` | Canonical success/error datatype |
 | `error_handling.hml` | Error handling via algebraic effects |
+| `spawn_stress.hml` | Isolated-process concurrency stress test |
 | `expr_eval.hml` | Recursive expression evaluator |
 | `math.hml` | float arithmetic, sqrt |
 | `string_ops.hml` | string manipulation builtins |

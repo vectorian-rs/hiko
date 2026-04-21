@@ -1,0 +1,109 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Date source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Date</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Date</span></code></pre><p class="meta">Raw source: <a href="./Date.hml">Date.hml</a><br>BLAKE3: <code title="blake3:beeabff99f71e055fc0da05df07465270fd88450ad42722a81dc7a8afc801d37">blake3:beeabff9...fc801d37</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>timezone</strong> <span class="meta">Tz</span></li><li><code>datatype</code> <strong>date</strong> <span class="meta">Dt</span></li><li><code>val</code> <strong>utc</strong></li><li><code>fun</code> <strong>local_timezone</strong></li><li><code>fun</code> <strong>timezone_of</strong></li><li><code>fun</code> <strong>fixed_offset</strong></li><li><code>fun</code> <strong>timezone_name</strong></li><li><code>fun</code> <strong>utc_now</strong></li><li><code>fun</code> <strong>now_in</strong></li><li><code>fun</code> <strong>from_instant</strong></li><li><code>fun</code> <strong>to_instant</strong></li><li><code>fun</code> <strong>to_timezone</strong></li><li><code>fun</code> <strong>in_timezone</strong></li><li><code>fun</code> <strong>year</strong></li><li><code>fun</code> <strong>month</strong></li><li><code>fun</code> <strong>day</strong></li><li><code>fun</code> <strong>hour</strong></li><li><code>fun</code> <strong>minute</strong></li><li><code>fun</code> <strong>second</strong></li><li><code>fun</code> <strong>millisecond</strong></li><li><code>fun</code> <strong>weekday</strong></li><li><code>fun</code> <strong>to_rfc9557</strong></li><li><code>fun</code> <strong>to_rfc3339</strong></li><li><code>fun</code> <strong>to_rfc2822</strong></li><li><code>fun</code> <strong>format</strong></li><li><code>fun</code> <strong>parse_rfc3339</strong></li><li><code>fun</code> <strong>parse_rfc9557</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Option</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Time</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">Date</span>
+
+<span class="tok-keyword">structure</span> <span class="tok-module">Date</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">datatype</span> <span class="tok-type">timezone</span> = <span class="tok-constructor">Tz</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+  <span class="tok-keyword">datatype</span> <span class="tok-type">date</span> = <span class="tok-constructor">Dt</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+
+  <span class="tok-keyword">val</span> <span class="tok-variable">utc</span> = <span class="tok-constructor">Tz</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">utc_tz_raw</span> ())
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">local_timezone</span> () =
+    <span class="tok-keyword">case</span> <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">local_tz_raw</span> () <span class="tok-keyword">of</span>
+      (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">text</span>) =&gt;
+        <span class="tok-keyword">let</span>
+          <span class="tok-keyword">val</span> <span class="tok-variable">tz</span> = <span class="tok-constructor">Tz</span> <span class="tok-variable">text</span>
+        <span class="tok-keyword">in</span>
+          <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-variable">tz</span>
+        <span class="tok-keyword">end</span>
+    | (<span class="tok-constant-builtin-boolean">false</span>, _) =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">None</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">timezone_of</span> <span class="tok-variable">name</span> =
+    <span class="tok-keyword">case</span> <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">timezone_of_raw</span> <span class="tok-variable">name</span> <span class="tok-keyword">of</span>
+      (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">text</span>) =&gt;
+        <span class="tok-keyword">let</span>
+          <span class="tok-keyword">val</span> <span class="tok-variable">tz</span> = <span class="tok-constructor">Tz</span> <span class="tok-variable">text</span>
+        <span class="tok-keyword">in</span>
+          <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-variable">tz</span>
+        <span class="tok-keyword">end</span>
+    | (<span class="tok-constant-builtin-boolean">false</span>, _) =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">None</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">fixed_offset</span> <span class="tok-variable">minutes</span> =
+    <span class="tok-constructor">Tz</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">fixed_offset_raw</span> <span class="tok-variable">minutes</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">timezone_name</span> (<span class="tok-constructor">Tz</span> <span class="tok-variable">text</span>) = <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">utc_now</span> () =
+    <span class="tok-constructor">Dt</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">utc_now_raw</span> ())
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">now_in</span> (<span class="tok-constructor">Tz</span> <span class="tok-variable">text</span>) =
+    <span class="tok-constructor">Dt</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">now_in_raw</span> <span class="tok-variable">text</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">from_instant</span> (<span class="tok-variable">instant</span>, <span class="tok-constructor">Tz</span> <span class="tok-variable">text</span>) =
+    <span class="tok-constructor">Dt</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">from_instant_raw</span> (<span class="tok-namespace">Time</span>.<span class="tok-variable-member">to_epoch_ms</span> <span class="tok-variable">instant</span>, <span class="tok-variable">text</span>))
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_instant</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">Time</span>.<span class="tok-variable-member">of_epoch_ms</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">to_epoch_ms_raw</span> <span class="tok-variable">text</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_timezone</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-constructor">Tz</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">to_timezone_raw</span> <span class="tok-variable">text</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">in_timezone</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">date_text</span>, <span class="tok-constructor">Tz</span> <span class="tok-variable">tz_text</span>) =
+    <span class="tok-constructor">Dt</span> (<span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">in_timezone_raw</span> (<span class="tok-variable">date_text</span>, <span class="tok-variable">tz_text</span>))
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">year</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">year_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">month</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">month_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">day</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">day_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">hour</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">hour_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">minute</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">minute_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">second</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">second_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">millisecond</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">millisecond_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">weekday</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">weekday_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_rfc9557</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) = <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_rfc3339</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">to_rfc3339_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_rfc2822</span> (<span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">to_rfc2822_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">format</span> (<span class="tok-variable">pattern</span>, <span class="tok-constructor">Dt</span> <span class="tok-variable">text</span>) =
+    <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">format_raw</span> (<span class="tok-variable">pattern</span>, <span class="tok-variable">text</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">parse_rfc3339</span> <span class="tok-variable">text</span> =
+    <span class="tok-keyword">case</span> <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">parse_rfc3339_raw</span> <span class="tok-variable">text</span> <span class="tok-keyword">of</span>
+      (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">canonical</span>) =&gt;
+        <span class="tok-keyword">let</span>
+          <span class="tok-keyword">val</span> <span class="tok-variable">date</span> = <span class="tok-constructor">Dt</span> <span class="tok-variable">canonical</span>
+        <span class="tok-keyword">in</span>
+          <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-variable">date</span>
+        <span class="tok-keyword">end</span>
+    | (<span class="tok-constant-builtin-boolean">false</span>, _) =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">None</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">parse_rfc9557</span> <span class="tok-variable">text</span> =
+    <span class="tok-keyword">case</span> <span class="tok-namespace">BuiltinDate</span>.<span class="tok-variable-member">parse_rfc9557_raw</span> <span class="tok-variable">text</span> <span class="tok-keyword">of</span>
+      (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">canonical</span>) =&gt;
+        <span class="tok-keyword">let</span>
+          <span class="tok-keyword">val</span> <span class="tok-variable">date</span> = <span class="tok-constructor">Dt</span> <span class="tok-variable">canonical</span>
+        <span class="tok-keyword">in</span>
+          <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-variable">date</span>
+        <span class="tok-keyword">end</span>
+    | (<span class="tok-constant-builtin-boolean">false</span>, _) =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">None</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

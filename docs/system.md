@@ -12,7 +12,7 @@ The language semantics are anchored in Core SML (Standard ML), with Hindley-Miln
 - **230 tests** (lexer, parser, type inference, exhaustiveness, VM, stdlib)
 - **67 builtins** (string, math, file, HTTP, JSON, regex, exec, RNG, bytes)
 - **57 bytecode opcodes** including tail calls and algebraic effects
-- **48 examples**, 6 benchmarks, 7 tool scripts, 4 stdlib modules
+- **48 examples**, 6 benchmarks, 7 tool scripts, 9 stdlib modules
 - **Published on crates.io** as v0.7.0
 
 ## Crate architecture
@@ -118,6 +118,12 @@ Hindley-Milner with the SML-97 value restriction.
 Generalization at `val` bindings of syntactic values only. Type annotations supported. No overloading — monomorphic operators (`+` for `int`, `+.` for `float`, `^` for `string`).
 
 Hiko also has a left-associative pipeline operator `|>`, which desugars to ordinary application (`x |> f` means `f x`). Application still binds tighter, so `x |> f a` means `(f a) x`.
+
+### Standard conventions
+
+- Recoverable failures use `Std.Result` with `Ok` / `Err`.
+- `Std.Result` helpers are data-last so they compose naturally with `|>`.
+- Structured concurrency lives in `Std.Fiber`, which wraps raw runtime process primitives (`spawn`, `join`, `cancel`, `first`, `any`) without introducing function coloring.
 
 ## Runtime representation
 

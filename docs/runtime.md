@@ -1,14 +1,14 @@
-# Hiko Runtime: Effect-Based Async with Isolated Processes
+# Hiko Runtime: Direct-Style Async with Isolated Processes
 
 ## Overview
 
 Hiko's runtime executes many **isolated processes** on a fixed pool of worker threads. Each process has its own VM, heap, stack, and effect handlers. No mutable state is shared between processes.
 
-The system exposes **effect-based async I/O with structured concurrency (`spawn` / `await`)**, without function coloring.
+The system exposes **runtime-managed async I/O with structured concurrency**, without function coloring.
 
 This design combines:
 
-- **Algebraic effects** for direct-style async
+- **Algebraic effects** for process-local control flow
 - **Process isolation** for safety and simple GC
 - **Per-process heaps and GC**
 - **Arc-shared immutable leaves** for efficient data transfer at process boundaries
@@ -20,11 +20,11 @@ This design combines:
 | Concurrency unit      | Isolated process (own heap)    | Fiber (shared heap)    | Process (own heap)       |
 | Communication model   | Structured (`spawn` / `await`) | Shared memory          | Message passing          |
 | GC                    | Per-process, independent       | Global, stop-the-world | Per-process, independent |
-| Async style           | Effects (no coloring)          | Effects (no coloring)  | Receive loops            |
+| Async style           | Runtime-managed suspension     | Effects (no coloring)  | Receive loops            |
 | Continuations         | Local to process               | Local to fiber         | None                     |
 | Large payload passing | Zero-copy via `Arc<str>`       | Zero-copy (same heap)  | Deep copy                |
 
-We borrow from Eio: direct-style async via effects.
+We borrow from Eio: direct-style async ergonomics.
 We borrow from Erlang: isolated processes and per-process GC.
 We **do not adopt the actor/message-passing programming model**.
 
@@ -124,18 +124,15 @@ Use a mock I/O backend (`MockIoBackend`) for deterministic testing. The backend 
 
 ### Error handling
 
-I/O builtins return result ADTs:
+Builtin and library APIs should model recoverable failure with `Std.Result`:
 
 ```sml
-val result = http_get "https://api.example.com"
-case result of
-  IoOk body => ...
-| IoErr e   => ...
+val loaded =
+  Json.parse text
+  |> Result.map_err Config.Parse
 ```
 
-### Rule
-
-> The runtime never kills a process for I/O failure. It always returns a result.
+Process joins are not `Result`-typed yet; child failure still propagates as a process failure today.
 
 ---
 
@@ -201,15 +198,30 @@ Includes:
 
 ### API
 
+The raw runtime builtins are:
+
 ```sml
 val pid = spawn (fn () => http_get url)
-val res = await pid
+val winner = wait_any [pid]
+val _ = cancel pid
+val res = await_process pid
+```
+
+The intended user-facing layer is `Std.Fiber`:
+
+```sml
+import Std.Fiber
+
+val fast = Fiber.first (
+  (fn () => http_get url_a),
+  (fn () => http_get url_b)
+)
 ```
 
 ### Semantics
 
 - `spawn` creates a new isolated process
-- `await` blocks until completion
+- `join`/`await_process` block until completion
 - result is delivered exactly once
 
 ---
