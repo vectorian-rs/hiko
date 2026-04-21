@@ -57,7 +57,7 @@ impl Type {
                 n.as_str(),
                 "Int" | "Float" | "Bool" | "String" | "Char" | "Unit" | "Bytes" | "Pid"
             ),
-            Type::Var(_) => true, // allow equality on polymorphic variables
+            Type::Var(_) => false, // conservative: block until resolved to a concrete equality type
             Type::Tuple(elems) => elems.iter().all(|e| e.is_equality()),
             _ => false,
         }

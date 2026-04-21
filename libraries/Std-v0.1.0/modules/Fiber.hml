@@ -17,7 +17,7 @@ structure FiberInternal = struct
           cancel_all rest
         end
 
-  fun remove_first target fibers =
+  fun remove_first (target : pid) (fibers : pid list) =
     case fibers of
       []            => []
     | fiber :: rest =>

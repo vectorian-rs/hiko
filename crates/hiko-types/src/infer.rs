@@ -2041,11 +2041,17 @@ mod tests {
     // ── Equality on polymorphic vars ─────────────────────────────────
 
     #[test]
-    fn test_equality_polymorphic_allowed() {
-        let ctx = infer("fun f x y = x = y");
-        let ty = type_of(&ctx, "f");
-        // Type variable names vary; check the shape: 'X -> 'X -> bool
-        assert!(ty.ends_with("-> bool"), "got: {ty}");
+    fn test_equality_polymorphic_rejected() {
+        // Polymorphic equality (unresolved type variables) is unsound:
+        // it would allow comparing functions. Conservative fix: reject.
+        let msg = infer_err("fun f x y = x = y");
+        assert!(msg.contains("equality"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_equality_on_functions_rejected() {
+        let msg = infer_err("val b = (fn x => x) = (fn x => x)");
+        assert!(msg.contains("equality"), "got: {msg}");
     }
 
     #[test]
