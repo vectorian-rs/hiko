@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use crate::io_backend::{IoBackend, IoToken, ThreadPoolIoBackend};
 use crate::process::{
@@ -25,7 +25,7 @@ struct ProcessTable {
     /// a child that is temporarily invisible (taken from `processes` for execution).
     child_parents: DashMap<Pid, Pid>,
     /// Children that should be cancelled when they return from execution.
-    pending_cancels: DashMap<Pid, ()>,
+    pending_cancels: DashSet<Pid>,
     waiters: DashMap<Pid, Vec<Pid>>,
     any_waiters: DashMap<Pid, Vec<Pid>>,
     io_waiters: DashMap<IoToken, Pid>,
@@ -39,7 +39,7 @@ impl ProcessTable {
             processes: DashMap::new(),
             tombstones: DashMap::new(),
             child_parents: DashMap::new(),
-            pending_cancels: DashMap::new(),
+            pending_cancels: DashSet::new(),
             waiters: DashMap::new(),
             any_waiters: DashMap::new(),
             io_waiters: DashMap::new(),
@@ -340,7 +340,7 @@ fn cancel_scope_children(table: &ProcessTable, scheduler: &dyn Scheduler, parent
             },
             None => {
                 // Being executed by another worker — schedule pending cancel
-                table.pending_cancels.insert(child_pid, ());
+                table.pending_cancels.insert(child_pid);
             }
         }
     }
@@ -691,7 +691,7 @@ fn handle_cancel(
             match table.child_parents.get(&child_pid).map(|r| *r.value()) {
                 Some(cp) if cp == parent_pid => {
                     // Child is executing — schedule a pending cancel
-                    table.pending_cancels.insert(child_pid, ());
+                    table.pending_cancels.insert(child_pid);
                     parent.vm.stack.pop();
                     parent.vm.push_value(Value::Unit);
                     table.return_process(parent);
