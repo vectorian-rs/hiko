@@ -177,20 +177,61 @@ Examples of failures that are not ordinary HML-level recoverable errors:
 
 These are host/runtime failures, not ordinary library outcomes.
 
-## Current Runtime Caveat
+## Fiber Joins
 
-`Std.Fiber.join` is not `Result`-typed yet.
-
-Today, the low-level process runtime still treats child failure as a process
-failure during `await_process`, and `Std.Fiber.join` currently forwards that
-behavior.
-
-That is a temporary mismatch with the general `Result` rule. The intended
-direction is:
+`Std.Fiber.join` follows the same rule: child/process outcomes are recoverable
+values, not parent process failure.
 
 ```sml
 val join : 'a Fiber.t -> ('a, Fiber.error) Result.result
 ```
 
-with process failure, cancellation, and resource exhaustion represented as
-structured fiber/process errors.
+This lets callers distinguish:
+
+- child success
+- child/domain failure returned by the child itself
+- runtime/process failure such as cancellation or fuel exhaustion
+
+That means joins often produce nested `Result` values:
+
+```sml
+val child : (summary, App.error) Result.result Fiber.t = ...
+val joined : ((summary, App.error) Result.result, Fiber.error) Result.result =
+  Fiber.join child
+```
+
+The usual pattern is:
+
+1. lift `Fiber.error` into your application error type
+2. flatten the two `Result` layers
+
+```sml
+structure App = struct
+  datatype error =
+      Runtime of Fiber.error
+    | S3 of string * Cloud.S3.error
+    | Parquet of string * Data.Parquet.error
+    | Stats of Stats.error
+end
+
+val summary =
+  Fiber.spawn (fn () => App.compute_summary bucket key)
+  |> Fiber.join
+  |> Result.map_err App.Runtime
+  |> Result.flatten
+```
+
+`Fiber.render_error : Fiber.error -> string` provides the default human-readable
+rendering for process-level failures.
+
+## Fiber Cancellation
+
+Current `Std.Fiber` cancellation rules are:
+
+- `Fiber.cancel fiber` is fire-and-forget
+- the child observes cancellation at the next suspension point
+- `Fiber.cancel` on an already-finished child is a no-op
+- after cancellation, `Fiber.join fiber` returns `Result.Err ...`
+
+For fail-fast scripts, `Fiber.join_or_fail` unwraps `Fiber.join` and panics with
+the rendered fiber error.

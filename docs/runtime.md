@@ -132,7 +132,17 @@ val loaded =
   |> Result.map_err Config.Parse
 ```
 
-Process joins are not `Result`-typed yet; child failure still propagates as a process failure today.
+`Std.Fiber.join` follows the same rule:
+
+```sml
+case Fiber.join child of
+    Result.Ok value => ...
+  | Result.Err err => println (Fiber.render_error err)
+```
+
+Joining a child no longer fails the parent process. Process-level outcomes such
+as cancellation, fuel exhaustion, heap exhaustion, and runtime failure are
+returned as `Fiber.error`.
 
 See [error-handling.md](error-handling.md) for the standard library/application error-layering pattern.
 
@@ -214,11 +224,23 @@ The intended user-facing layer is `Std.Fiber`:
 ```sml
 import Std.Fiber
 
-val fast = Fiber.first (
+val fast =
+  Fiber.first (
   (fn () => http_get url_a),
   (fn () => http_get url_b)
 )
+
+case fast of
+    Result.Ok response => response
+  | Result.Err err => panic (Fiber.render_error err)
 ```
+
+Cancellation is cooperative:
+
+- `Fiber.cancel` is fire-and-forget
+- the child observes it at the next suspension point
+- cancelling an already-finished child is a no-op
+- `Fiber.join` on a cancelled child returns `Result.Err ...`
 
 ### Semantics
 

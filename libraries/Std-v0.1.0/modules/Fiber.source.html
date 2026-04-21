@@ -1,15 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Fiber source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Fiber</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Fiber</span></code></pre><p class="meta">Narrative docs: <a href="./Fiber.html">Fiber.html</a><br>Raw source: <a href="./Fiber.hml">Fiber.hml</a><br>BLAKE3: <code title="blake3:16bc2100b4f7217c28efe2f3b351aa2a68859d326147abb66b20cff4c1827780">blake3:16bc2100...c1827780</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>fun</code> <strong>spawn_all</strong></li><li><code>fun</code> <strong>join_all</strong></li><li><code>fun</code> <strong>cancel_all</strong></li><li><code>fun</code> <strong>remove_first</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">Process</span>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Fiber source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Fiber</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Fiber</span></code></pre><p class="meta">Narrative docs: <a href="./Fiber.html">Fiber.html</a><br>Raw source: <a href="./Fiber.hml">Fiber.hml</a><br>BLAKE3: <code title="blake3:e64e2ad7f213753f0a77d92c2dd20e954072950a429193c38c5a52b91171e718">blake3:e64e2ad7...1171e718</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>fun</code> <strong>spawn_all</strong></li><li><code>fun</code> <strong>cancel_all</strong></li><li><code>fun</code> <strong>remove_first</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">use</span> <span class="tok-string">&quot;./Result.hml&quot;</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">Process</span>
 
 <span class="tok-keyword">structure</span> <span class="tok-module">FiberInternal</span> = <span class="tok-keyword">struct</span>
   <span class="tok-keyword">fun</span> <span class="tok-function">spawn_all</span> <span class="tok-variable">fs</span> =
     <span class="tok-keyword">case</span> <span class="tok-variable">fs</span> <span class="tok-keyword">of</span>
       []        =&gt; []
     | <span class="tok-variable">f</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">spawn_raw</span> <span class="tok-variable">f</span> :: <span class="tok-variable">spawn_all</span> <span class="tok-variable">rest</span>
-
-  <span class="tok-keyword">fun</span> <span class="tok-function">join_all</span> <span class="tok-variable">fibers</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">fibers</span> <span class="tok-keyword">of</span>
-      []            =&gt; []
-    | <span class="tok-variable">fiber</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_raw</span> <span class="tok-variable">fiber</span> :: <span class="tok-variable">join_all</span> <span class="tok-variable">rest</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">cancel_all</span> <span class="tok-variable">fibers</span> =
     <span class="tok-keyword">case</span> <span class="tok-variable">fibers</span> <span class="tok-keyword">of</span>
@@ -31,12 +27,33 @@
 
 <span class="tok-keyword">structure</span> <span class="tok-module">Fiber</span> = <span class="tok-keyword">struct</span>
   <span class="tok-keyword">type</span> <span class="tok-type-definition">&#39;a</span> <span class="tok-type">t</span> = <span class="tok-type">pid</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">error</span> = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">error</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">render_error</span> <span class="tok-variable">err</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">err</span> <span class="tok-keyword">of</span>
+      <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">RuntimeError</span> <span class="tok-variable">msg</span> =&gt; <span class="tok-variable">msg</span>
+    | <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">Cancelled</span> =&gt; <span class="tok-string">&quot;cancelled&quot;</span>
+    | <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">FuelExhausted</span> =&gt; <span class="tok-string">&quot;fuel exhausted&quot;</span>
+    | <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">AlreadyJoined</span> =&gt; <span class="tok-string">&quot;fiber already joined&quot;</span>
+    | <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">HeapObjectLimitExceeded</span> (<span class="tok-variable">live</span>, <span class="tok-variable">limit</span>) =&gt;
+        <span class="tok-string">&quot;heap limit exceeded: &quot;</span>
+        ^ <span class="tok-variable">int_to_string</span> <span class="tok-variable">live</span>
+        ^ <span class="tok-string">&quot; objects (max &quot;</span>
+        ^ <span class="tok-variable">int_to_string</span> <span class="tok-variable">limit</span>
+        ^ <span class="tok-string">&quot;)&quot;</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">spawn</span> <span class="tok-variable">f</span> =
     <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">spawn_raw</span> <span class="tok-variable">f</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">join</span> <span class="tok-variable">fiber</span> =
-    <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_raw</span> <span class="tok-variable">fiber</span>
+    <span class="tok-keyword">case</span> <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_result_raw</span> <span class="tok-variable">fiber</span> <span class="tok-keyword">of</span>
+      <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> <span class="tok-variable">value</span>
+    | <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span> =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">err</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">join_or_fail</span> <span class="tok-variable">fiber</span> =
+    <span class="tok-keyword">case</span> <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join</span> <span class="tok-variable">fiber</span> <span class="tok-keyword">of</span>
+      <span class="tok-namespace">Result</span>.<span class="tok-constructor">Ok</span> <span class="tok-variable">value</span> =&gt; <span class="tok-variable">value</span>
+    | <span class="tok-namespace">Result</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span> =&gt; <span class="tok-variable">panic</span> (<span class="tok-string">&quot;Fiber.join_or_fail: &quot;</span> ^ <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">render_error</span> <span class="tok-variable">err</span>)
 
   <span class="tok-keyword">fun</span> <span class="tok-function">cancel</span> <span class="tok-variable">fiber</span> =
     <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">cancel_raw</span> <span class="tok-variable">fiber</span>
@@ -45,14 +62,32 @@
     <span class="tok-keyword">let</span>
       <span class="tok-keyword">val</span> <span class="tok-variable">left</span> = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">spawn_raw</span> <span class="tok-variable">f</span>
       <span class="tok-keyword">val</span> <span class="tok-variable">right</span> = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">spawn_raw</span> <span class="tok-variable">g</span>
-      <span class="tok-keyword">val</span> <span class="tok-variable">left_result</span> = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_raw</span> <span class="tok-variable">left</span>
-      <span class="tok-keyword">val</span> <span class="tok-variable">right_result</span> = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_raw</span> <span class="tok-variable">right</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">left_result</span> = <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join</span> <span class="tok-variable">left</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">right_result</span> = <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join</span> <span class="tok-variable">right</span>
     <span class="tok-keyword">in</span>
-      (<span class="tok-variable">left_result</span>, <span class="tok-variable">right_result</span>)
+      <span class="tok-keyword">case</span> (<span class="tok-variable">left_result</span>, <span class="tok-variable">right_result</span>) <span class="tok-keyword">of</span>
+        (<span class="tok-namespace">Result</span>.<span class="tok-constructor">Ok</span> <span class="tok-variable">left_value</span>, <span class="tok-namespace">Result</span>.<span class="tok-constructor">Ok</span> <span class="tok-variable">right_value</span>) =&gt;
+          <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> (<span class="tok-variable">left_value</span>, <span class="tok-variable">right_value</span>)
+      | (<span class="tok-namespace">Result</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span>, _) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">err</span>
+      | (_, <span class="tok-namespace">Result</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">err</span>
     <span class="tok-keyword">end</span>
 
+  <span class="tok-keyword">fun</span> <span class="tok-function">join_all</span> <span class="tok-variable">fibers</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">fibers</span> <span class="tok-keyword">of</span>
+      [] =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> []
+    | <span class="tok-variable">fiber</span> :: <span class="tok-variable">rest</span> =&gt;
+        <span class="tok-keyword">let</span>
+          <span class="tok-keyword">val</span> <span class="tok-variable">head</span> = <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join</span> <span class="tok-variable">fiber</span>
+          <span class="tok-keyword">val</span> <span class="tok-variable">tail</span> = <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join_all</span> <span class="tok-variable">rest</span>
+        <span class="tok-keyword">in</span>
+          <span class="tok-keyword">case</span> (<span class="tok-variable">head</span>, <span class="tok-variable">tail</span>) <span class="tok-keyword">of</span>
+            (<span class="tok-namespace">Result</span>.<span class="tok-constructor">Ok</span> <span class="tok-variable">value</span>, <span class="tok-namespace">Result</span>.<span class="tok-constructor">Ok</span> <span class="tok-variable">values</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> (<span class="tok-variable">value</span> :: <span class="tok-variable">values</span>)
+          | (<span class="tok-namespace">Result</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span>, _) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">err</span>
+          | (_, <span class="tok-namespace">Result</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">err</span>
+        <span class="tok-keyword">end</span>
+
   <span class="tok-keyword">fun</span> <span class="tok-function">all</span> <span class="tok-variable">fs</span> =
-    <span class="tok-namespace">FiberInternal</span>.<span class="tok-variable-member">join_all</span> (<span class="tok-namespace">FiberInternal</span>.<span class="tok-variable-member">spawn_all</span> <span class="tok-variable">fs</span>)
+    <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join_all</span> (<span class="tok-namespace">FiberInternal</span>.<span class="tok-variable-member">spawn_all</span> <span class="tok-variable">fs</span>)
 
   <span class="tok-keyword">fun</span> <span class="tok-function">first</span> (<span class="tok-variable">f</span>, <span class="tok-variable">g</span>) =
     <span class="tok-keyword">let</span>
@@ -64,7 +99,7 @@
         <span class="tok-keyword">else</span> <span class="tok-variable">left</span>
       <span class="tok-keyword">val</span> _ = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">cancel_raw</span> <span class="tok-variable">loser</span>
     <span class="tok-keyword">in</span>
-      <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_raw</span> <span class="tok-variable">winner</span>
+      <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join</span> <span class="tok-variable">winner</span>
     <span class="tok-keyword">end</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">any</span> <span class="tok-variable">fs</span> =
@@ -72,14 +107,14 @@
       <span class="tok-keyword">val</span> <span class="tok-variable">fibers</span> = <span class="tok-namespace">FiberInternal</span>.<span class="tok-variable-member">spawn_all</span> <span class="tok-variable">fs</span>
     <span class="tok-keyword">in</span>
       <span class="tok-keyword">case</span> <span class="tok-variable">fibers</span> <span class="tok-keyword">of</span>
-        [] =&gt; <span class="tok-variable">panic</span> <span class="tok-string">&quot;Fiber.any: empty list&quot;</span>
+        [] =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> (<span class="tok-namespace">BuiltinProcess</span>.<span class="tok-module">RuntimeError</span> <span class="tok-string">&quot;Fiber.any: empty list&quot;</span>)
       | _ =&gt;
           <span class="tok-keyword">let</span>
             <span class="tok-keyword">val</span> <span class="tok-variable">winner</span> = <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">wait_any_raw</span> <span class="tok-variable">fibers</span>
             <span class="tok-keyword">val</span> <span class="tok-variable">losers</span> = <span class="tok-namespace">FiberInternal</span>.<span class="tok-variable-member">remove_first</span> <span class="tok-variable">winner</span> <span class="tok-variable">fibers</span>
             <span class="tok-keyword">val</span> _ = <span class="tok-namespace">FiberInternal</span>.<span class="tok-variable-member">cancel_all</span> <span class="tok-variable">losers</span>
           <span class="tok-keyword">in</span>
-            <span class="tok-namespace">BuiltinProcess</span>.<span class="tok-variable-member">await_raw</span> <span class="tok-variable">winner</span>
+            <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">join</span> <span class="tok-variable">winner</span>
           <span class="tok-keyword">end</span>
     <span class="tok-keyword">end</span>
 <span class="tok-keyword">end</span>

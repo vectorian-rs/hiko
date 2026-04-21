@@ -59,30 +59,37 @@
       <h2>Public surface</h2>
       <ul class="siglist">
         <li><code>spawn : (unit -&gt; 'a) -&gt; 'a Fiber.t</code></li>
-        <li><code>join : 'a Fiber.t -&gt; 'a</code></li>
+        <li><code>join : 'a Fiber.t -&gt; ('a, Fiber.error) Result.result</code></li>
+        <li><code>join_or_fail : 'a Fiber.t -&gt; 'a</code></li>
         <li><code>cancel : 'a Fiber.t -&gt; unit</code></li>
-        <li><code>both : ((unit -&gt; 'a) * (unit -&gt; 'b)) -&gt; ('a * 'b)</code></li>
-        <li><code>all : (unit -&gt; 'a) list -&gt; 'a list</code></li>
-        <li><code>first : ((unit -&gt; 'a) * (unit -&gt; 'a)) -&gt; 'a</code></li>
-        <li><code>any : (unit -&gt; 'a) list -&gt; 'a</code></li>
+        <li><code>render_error : Fiber.error -&gt; string</code></li>
+        <li><code>both : ((unit -&gt; 'a) * (unit -&gt; 'b)) -&gt; (('a * 'b), Fiber.error) Result.result</code></li>
+        <li><code>all : (unit -&gt; 'a) list -&gt; ('a list, Fiber.error) Result.result</code></li>
+        <li><code>first : ((unit -&gt; 'a) * (unit -&gt; 'a)) -&gt; ('a, Fiber.error) Result.result</code></li>
+        <li><code>any : (unit -&gt; 'a) list -&gt; ('a, Fiber.error) Result.result</code></li>
       </ul>
     </section>
 
     <section class="panel">
       <h2>Semantics</h2>
       <p><code>Std.Fiber</code> is the user-facing layer for real concurrent work. Algebraic effects remain local control-flow tools; runtime scheduling, suspension, and capability checks still belong to the VM/runtime layer.</p>
-      <p class="meta">Current implementation note: <code>join</code> still propagates child failure as a process failure. Typed <code>Result</code>-based joins will come when structured process errors are surfaced to HML.</p>
+      <p class="meta"><code>join</code> is <code>Result</code>-typed. Child/runtime failure is returned as a value rather than propagating failure to the parent process.</p>
     </section>
 
     <section class="panel">
       <h2>Example</h2>
-      <pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Fiber</span>
+<pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Fiber</span>
 
 <span class="tok-keyword">val</span> <span class="tok-variable">response</span> =
   <span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">first</span> (
     (<span class="tok-keyword">fn</span> () =&gt; <span class="tok-variable">http_get</span> <span class="tok-string">&quot;https://example.com/a&quot;</span>),
     (<span class="tok-keyword">fn</span> () =&gt; <span class="tok-variable">http_get</span> <span class="tok-string">&quot;https://example.com/b&quot;</span>)
-  )</code></pre>
+  )
+
+<span class="tok-keyword">val</span> <span class="tok-variable">body</span> =
+  <span class="tok-keyword">case</span> <span class="tok-variable">response</span> <span class="tok-keyword">of</span>
+      <span class="tok-namespace">Result</span>.<span class="tok-constructor">Ok</span> (<span class="tok-variable">status</span>, <span class="tok-variable">headers</span>, <span class="tok-variable">body</span>) =&gt; <span class="tok-variable">body</span>
+    | <span class="tok-namespace">Result</span>.<span class="tok-constructor">Err</span> <span class="tok-variable">err</span> =&gt; <span class="tok-variable">panic</span> (<span class="tok-namespace">Fiber</span>.<span class="tok-variable-member">render_error</span> <span class="tok-variable">err</span>)</code></pre>
     </section>
   </main>
 </body>

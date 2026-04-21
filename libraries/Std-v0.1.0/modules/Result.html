@@ -68,6 +68,8 @@
         <li><code>map : ('a -&gt; 'b) -&gt; ('a, 'e) result -&gt; ('b, 'e) result</code></li>
         <li><code>map_err : ('e1 -&gt; 'e2) -&gt; ('a, 'e1) result -&gt; ('a, 'e2) result</code></li>
         <li><code>and_then : ('a -&gt; ('b, 'e) result) -&gt; ('a, 'e) result -&gt; ('b, 'e) result</code></li>
+        <li><code>flatten : (('a, 'e) result, 'e) result -&gt; ('a, 'e) result</code></li>
+        <li><code>fold : ('a -&gt; 'b) -&gt; ('e -&gt; 'b) -&gt; ('a, 'e) result -&gt; 'b</code></li>
         <li><code>or_else : ('e1 -&gt; ('a, 'e2) result) -&gt; ('a, 'e1) result -&gt; ('a, 'e2) result</code></li>
         <li><code>unwrap_or : 'a -&gt; ('a, 'e) result -&gt; 'a</code></li>
         <li><code>unwrap_or_else : ('e -&gt; 'a) -&gt; ('a, 'e) result -&gt; 'a</code></li>
@@ -85,7 +87,11 @@
 
 <span class="tok-keyword">val</span> <span class="tok-variable">answer</span> =
   <span class="tok-variable">loaded</span>
-  |&gt; <span class="tok-namespace">Result</span>.<span class="tok-variable-member">unwrap_or</span> <span class="tok-number">0</span></code></pre>
+  |&gt; <span class="tok-namespace">Result</span>.<span class="tok-variable-member">unwrap_or</span> <span class="tok-number">0</span>
+
+<span class="tok-keyword">val</span> <span class="tok-variable">flattened</span> =
+  <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> (<span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> <span class="tok-number">42</span>)
+  |&gt; <span class="tok-namespace">Result</span>.<span class="tok-variable-member">flatten</span></code></pre>
     </section>
   </main>
 </body>
