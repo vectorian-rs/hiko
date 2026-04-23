@@ -16,11 +16,14 @@ use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::compiler::{CompileError, Compiler};
 use hiko_compile::op::Op;
+use hiko_syntax::format::{FormatError, format_source};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
 use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
+use hiko_vm::process::ProcessStatus;
+use hiko_vm::runtime::Runtime;
 use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
 
@@ -36,6 +39,8 @@ fn main() {
         eprintln!(
             "  check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>  Type-check without executing"
         );
+        eprintln!("  fmt [--check] <file.hml>...  Format Hiko source files");
+        eprintln!("  inspect-work <file.hml>  Print static bytecode opcode counts");
         #[cfg(feature = "cli-hash")]
         eprintln!("  hash <file>...  Print BLAKE3 hashes for files");
         eprintln!("  build-vm <config.toml>  Generate a custom VM from a run config");
@@ -50,6 +55,14 @@ fn main() {
         "check" => {
             let options = parse_check_args(&args[2..]);
             check_file(&options);
+        }
+        "fmt" => {
+            let options = parse_fmt_args(&args[2..]);
+            fmt_files(&options);
+        }
+        "inspect-work" => {
+            let path = parse_inspect_work_args(&args[2..]);
+            inspect_work_file(&path);
         }
         "hash" => {
             #[cfg(feature = "cli-hash")]
@@ -136,6 +149,12 @@ struct ScriptOptions {
     policy_name: Option<String>,
     script_path: Option<String>,
     strict: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FmtOptions {
+    check: bool,
+    paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -472,6 +491,40 @@ fn parse_check_args(args: &[String]) -> ScriptOptions {
     )
 }
 
+fn parse_fmt_args(args: &[String]) -> FmtOptions {
+    let usage = "Usage: hiko fmt [--check] <file.hml>...";
+    let mut check = false;
+    let mut paths = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--check" => check = true,
+            _ if arg.starts_with('-') => {
+                eprintln!("Unknown option: {arg}");
+                eprintln!("{usage}");
+                process::exit(1);
+            }
+            _ => paths.push(arg.clone()),
+        }
+    }
+
+    if paths.is_empty() {
+        eprintln!("{usage}");
+        process::exit(1);
+    }
+
+    FmtOptions { check, paths }
+}
+
+fn parse_inspect_work_args(args: &[String]) -> String {
+    let usage = "Usage: hiko inspect-work <file.hml>";
+    if args.len() != 1 || args[0].starts_with('-') {
+        eprintln!("{usage}");
+        process::exit(1);
+    }
+    args[0].clone()
+}
+
 fn resolve_run_target(config: Option<&RunConfig>, script_path: Option<&str>) -> String {
     if let Some(path) = script_path {
         return path.to_string();
@@ -737,6 +790,159 @@ fn runtime_error_message(message: &str, surface: &RuntimeSurface) -> String {
 
 // ── Commands ─────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FunctionWorkStat {
+    name: Option<String>,
+    arity: u8,
+    static_opcodes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkInspection {
+    main_static_opcodes: usize,
+    functions: Vec<FunctionWorkStat>,
+}
+
+impl WorkInspection {
+    fn total_static_opcodes(&self) -> usize {
+        self.main_static_opcodes
+            + self
+                .functions
+                .iter()
+                .map(|function| function.static_opcodes)
+                .sum::<usize>()
+    }
+}
+
+fn count_chunk_opcodes(chunk: &Chunk) -> Result<usize, String> {
+    let mut ip = 0usize;
+    let code = &chunk.code;
+    let mut count = 0usize;
+
+    while ip < code.len() {
+        count += 1;
+        let op = Op::try_from(read_u8(code, &mut ip)?)
+            .map_err(|byte| format!("invalid opcode while counting bytecode: {byte}"))?;
+        match op {
+            Op::Const
+            | Op::GetLocal
+            | Op::SetLocal
+            | Op::GetUpvalue
+            | Op::GetGlobal
+            | Op::SetGlobal
+            | Op::Jump
+            | Op::JumpIfFalse
+            | Op::CallDirect
+            | Op::TailCallDirect
+            | Op::Panic
+            | Op::Perform => {
+                skip_bytes(code, &mut ip, 2)?;
+            }
+            Op::GetField | Op::Call | Op::TailCall | Op::MakeTuple => {
+                skip_bytes(code, &mut ip, 1)?;
+            }
+            Op::MakeData => {
+                skip_bytes(code, &mut ip, 3)?;
+            }
+            Op::MakeClosure => {
+                let _proto_idx = read_u16(code, &mut ip)?;
+                let n_captures = read_u8(code, &mut ip)? as usize;
+                skip_bytes(code, &mut ip, n_captures * 3)?;
+            }
+            Op::InstallHandler => {
+                let n_clauses = read_u16(code, &mut ip)? as usize;
+                skip_bytes(code, &mut ip, n_clauses * 4)?;
+            }
+            Op::Unit
+            | Op::True
+            | Op::False
+            | Op::Pop
+            | Op::AddInt
+            | Op::SubInt
+            | Op::MulInt
+            | Op::DivInt
+            | Op::ModInt
+            | Op::Neg
+            | Op::AddFloat
+            | Op::SubFloat
+            | Op::MulFloat
+            | Op::DivFloat
+            | Op::NegFloat
+            | Op::Eq
+            | Op::Ne
+            | Op::LtInt
+            | Op::GtInt
+            | Op::LeInt
+            | Op::GeInt
+            | Op::LtFloat
+            | Op::GtFloat
+            | Op::LeFloat
+            | Op::GeFloat
+            | Op::ConcatString
+            | Op::Not
+            | Op::GetTag
+            | Op::Return
+            | Op::Halt
+            | Op::RemoveHandler
+            | Op::Resume => {}
+        }
+    }
+
+    Ok(count)
+}
+
+fn inspect_program_work(program: &CompiledProgram) -> Result<WorkInspection, String> {
+    let main_static_opcodes = count_chunk_opcodes(&program.main)?;
+    let mut functions = Vec::with_capacity(program.functions.len());
+
+    for proto in &*program.functions {
+        functions.push(FunctionWorkStat {
+            name: proto.name.clone(),
+            arity: proto.arity,
+            static_opcodes: count_chunk_opcodes(&proto.chunk)?,
+        });
+    }
+
+    Ok(WorkInspection {
+        main_static_opcodes,
+        functions,
+    })
+}
+
+fn inspect_work_file(path: &str) {
+    let compiled = match compile_source(path) {
+        Ok(compiled) => compiled,
+        Err(()) => process::exit(1),
+    };
+
+    for warning in &compiled.warnings {
+        compiled.ctx.warning(&warning.message, Some(warning.span));
+    }
+
+    let inspection = inspect_program_work(&compiled.program).unwrap_or_else(|message| {
+        eprintln!("error: {message}");
+        process::exit(1);
+    });
+
+    println!("file: {path}");
+    println!("main_static_opcodes: {}", inspection.main_static_opcodes);
+    println!("function_count: {}", inspection.functions.len());
+    for (idx, function) in inspection.functions.iter().enumerate() {
+        let name = function.name.as_deref().unwrap_or("<lambda>");
+        println!(
+            "function[{idx}]: name={name} arity={} static_opcodes={}",
+            function.arity, function.static_opcodes
+        );
+    }
+    println!(
+        "total_static_opcodes: {}",
+        inspection.total_static_opcodes()
+    );
+    println!(
+        "note: max_work currently counts executed opcodes, so loops, recursion, and repeated calls can consume more work than these static totals."
+    );
+}
+
 fn run_file(options: &ScriptOptions) {
     let surface = resolve_runtime_surface(options);
     eprintln!("info: {}", surface.describe());
@@ -765,12 +971,35 @@ fn run_file(options: &ScriptOptions) {
         process::exit(1);
     }
 
+    let output_sink = Arc::new(StdoutOutputSink::default());
+    if config.as_ref().is_some_and(RunConfig::requires_runtime) {
+        let mut vm = config
+            .as_ref()
+            .expect("runtime-backed execution requires an active config")
+            .build_vm(compiled.program);
+        vm.set_output_sink(output_sink);
+
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root_vm(vm);
+        if let Err(message) = runtime.run_to_completion() {
+            compiled.ctx.error(&message, None);
+            process::exit(1);
+        }
+
+        if let Some(ProcessStatus::Failed(failure)) = runtime.get_status(pid) {
+            let message = runtime_error_message(&failure.to_string(), &surface);
+            compiled.ctx.error(&message, runtime.get_error_span(pid));
+            process::exit(1);
+        }
+        return;
+    }
+
     let mut vm = if let Some(config) = &config {
         config.build_vm(compiled.program)
     } else {
         VMBuilder::new(compiled.program).with_core().build()
     };
-    vm.set_output_sink(Arc::new(StdoutOutputSink::default()));
+    vm.set_output_sink(output_sink);
     match vm.run() {
         Ok(()) => {}
         Err(e) => {
@@ -813,6 +1042,52 @@ fn check_file(options: &ScriptOptions) {
     }
 
     println!("OK");
+}
+
+fn fmt_files(options: &FmtOptions) {
+    let mut had_error = false;
+    let mut needs_formatting = false;
+
+    for path in &options.paths {
+        let source = fs::read_to_string(path).unwrap_or_else(|error| {
+            eprintln!("error: cannot read {path}: {error}");
+            process::exit(1);
+        });
+        let ctx = DiagCtx::new(path, source.clone());
+        let formatted = match format_source(&source, 0) {
+            Ok(formatted) => formatted,
+            Err(FormatError::Lex(error)) => {
+                ctx.error(&error.message, Some(error.span));
+                had_error = true;
+                continue;
+            }
+            Err(FormatError::Parse(error)) => {
+                ctx.error(&error.message, Some(error.span));
+                had_error = true;
+                continue;
+            }
+        };
+
+        if formatted == source {
+            continue;
+        }
+
+        if options.check {
+            println!("{path}");
+            needs_formatting = true;
+            continue;
+        }
+
+        fs::write(path, formatted).unwrap_or_else(|error| {
+            eprintln!("error: cannot write {path}: {error}");
+            process::exit(1);
+        });
+        println!("formatted {path}");
+    }
+
+    if had_error || (options.check && needs_formatting) {
+        process::exit(1);
+    }
 }
 
 fn build_vm(config_path: &str) {
@@ -867,8 +1142,9 @@ hiko-vm = "{version}"
 #[cfg(test)]
 mod tests {
     use super::{
-        Compiled, DiagCtx, ManifestSource, ResolvedPolicy, RuntimeSurface, ScriptOptions,
-        parse_check_args, parse_run_args, resolve_policy_from_manifest, resolve_run_target,
+        Compiled, DiagCtx, FmtOptions, ManifestSource, ResolvedPolicy, RuntimeSurface,
+        ScriptOptions, inspect_program_work, parse_check_args, parse_fmt_args,
+        parse_inspect_work_args, parse_run_args, resolve_policy_from_manifest, resolve_run_target,
         runtime_error_message, strict_message, strict_violations, validate_strict_surface,
     };
     use hiko_builtin_meta::core_builtin_names;
@@ -989,6 +1265,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_fmt_args_file_list() {
+        let args = vec![
+            "examples/hello.hml".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_fmt_args(&args),
+            FmtOptions {
+                check: false,
+                paths: vec![
+                    "examples/hello.hml".to_string(),
+                    "tools/read.hml".to_string()
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_fmt_args_with_check() {
+        let args = vec![
+            "--check".to_string(),
+            "examples/hello.hml".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_fmt_args(&args),
+            FmtOptions {
+                check: true,
+                paths: vec![
+                    "examples/hello.hml".to_string(),
+                    "tools/read.hml".to_string()
+                ],
+            }
+        );
+    }
+
+    #[test]
     fn parse_run_args_with_config_and_policy() {
         let args = vec![
             "--config".to_string(),
@@ -1023,6 +1336,15 @@ mod tests {
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
             }
+        );
+    }
+
+    #[test]
+    fn parse_inspect_work_args_file_only() {
+        let args = vec!["examples/work_budget_demo.hml".to_string()];
+        assert_eq!(
+            parse_inspect_work_args(&args),
+            "examples/work_budget_demo.hml".to_string()
         );
     }
 
@@ -1092,6 +1414,24 @@ enabled = true
         )
         .expect("config should parse");
         assert!(validate_strict_surface(&compiled, Some(&config)).is_ok());
+    }
+
+    #[test]
+    fn inspect_program_work_reports_named_function_counts() {
+        let program = compile_program(
+            r#"
+fun inc x = x + 1
+val answer = inc 41
+"#,
+        );
+        let inspection = inspect_program_work(&program).expect("inspect should succeed");
+        assert!(inspection.main_static_opcodes > 0);
+        assert_eq!(inspection.functions.len(), 1);
+        assert_eq!(inspection.functions[0].name.as_deref(), Some("inc"));
+        assert_eq!(
+            inspection.total_static_opcodes(),
+            inspection.main_static_opcodes + inspection.functions[0].static_opcodes
+        );
     }
 
     #[test]

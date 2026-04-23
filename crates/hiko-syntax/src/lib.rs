@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod constfold;
 pub mod desugar;
+pub mod format;
 pub mod intern;
 pub mod lexer;
 pub mod parser;
