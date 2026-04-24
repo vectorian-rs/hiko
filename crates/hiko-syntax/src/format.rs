@@ -50,11 +50,17 @@ struct Insertion {
     text: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LeadingComment<'a> {
+    comment: &'a Comment,
+    blank_after: bool,
+}
+
 pub fn format_source(source: &str, file_id: u32) -> Result<String, FormatError> {
     let comments = collect_comments(source, file_id);
     let tokens = Lexer::new(source, file_id).tokenize()?;
     let program = Parser::new(tokens).parse_program()?;
-    let pretty = TrackedPrettyPrinter::new(&program.interner).pretty_program(&program);
+    let pretty = TrackedPrettyPrinter::new(source, &program.interner).pretty_program(&program);
     let mut formatted = if comments.is_empty() {
         pretty.text
     } else {
@@ -177,13 +183,14 @@ fn insert_comments(
     comments: &[Comment],
     source: &str,
 ) -> String {
-    let mut leading_groups: BTreeMap<usize, Vec<&Comment>> = BTreeMap::new();
+    let mut leading_groups: BTreeMap<usize, Vec<LeadingComment<'_>>> = BTreeMap::new();
     let mut trailing_groups: BTreeMap<usize, Vec<&Comment>> = BTreeMap::new();
     let mut eof_comments = Vec::new();
 
-    for comment in comments {
+    for (idx, comment) in comments.iter().enumerate() {
         let prev = find_prev_anchor(anchors, comment.span.start as usize);
         let next = find_next_anchor(anchors, comment.span.end as usize);
+        let next_significant = find_next_significant_start(anchors, comments, idx);
         let can_attach_trailing = prev.is_some_and(|anchor| {
             is_horizontal_trivia_only(
                 source,
@@ -215,7 +222,12 @@ fn insert_comments(
             leading_groups
                 .entry(line_start_offset(formatted, anchor.output_start))
                 .or_default()
-                .push(comment);
+                .push(LeadingComment {
+                    comment,
+                    blank_after: next_significant.is_some_and(|start| {
+                        gap_has_blank_line(source, comment.span.end as usize, start)
+                    }),
+                });
             continue;
         }
 
@@ -223,7 +235,12 @@ fn insert_comments(
             leading_groups
                 .entry(line_start_offset(formatted, anchor.output_start))
                 .or_default()
-                .push(comment);
+                .push(LeadingComment {
+                    comment,
+                    blank_after: next_significant.is_some_and(|start| {
+                        gap_has_blank_line(source, comment.span.end as usize, start)
+                    }),
+                });
         } else if let Some(anchor) = prev {
             trailing_groups
                 .entry(anchor.output_end)
@@ -239,9 +256,12 @@ fn insert_comments(
     for (offset, group) in leading_groups {
         let indent = line_indent_at(formatted, offset);
         let mut text = String::new();
-        for comment in group {
-            text.push_str(&indent_comment(&comment.text, indent));
+        for placed in group {
+            text.push_str(&indent_comment(&placed.comment.text, indent));
             text.push('\n');
+            if placed.blank_after {
+                text.push('\n');
+            }
         }
         insertions.push(Insertion {
             offset,
@@ -302,6 +322,31 @@ fn insert_comments(
         result.insert_str(insertion.offset, &insertion.text);
     }
     result
+}
+
+fn find_next_significant_start(
+    anchors: &[Anchor],
+    comments: &[Comment],
+    comment_idx: usize,
+) -> Option<usize> {
+    let comment_end = comments[comment_idx].span.end as usize;
+    let next_comment_start = comments
+        .iter()
+        .skip(comment_idx + 1)
+        .map(|comment| comment.span.start as usize)
+        .next();
+    let next_anchor_start = anchors
+        .iter()
+        .filter(|anchor| anchor.span.start as usize >= comment_end)
+        .map(|anchor| anchor.span.start as usize)
+        .min();
+
+    match (next_comment_start, next_anchor_start) {
+        (Some(comment_start), Some(anchor_start)) => Some(comment_start.min(anchor_start)),
+        (Some(comment_start), None) => Some(comment_start),
+        (None, Some(anchor_start)) => Some(anchor_start),
+        (None, None) => None,
+    }
 }
 
 fn find_prev_anchor(anchors: &[Anchor], pos: usize) -> Option<Anchor> {
@@ -393,28 +438,44 @@ fn indent_comment(comment: &str, indent: usize) -> String {
     out
 }
 
+fn gap_has_blank_line(source: &str, start: usize, end: usize) -> bool {
+    let mut after_newline = false;
+    let mut current_line_has_content = false;
+
+    for byte in source.as_bytes()[start..end].iter().copied() {
+        if byte == b'\n' {
+            if after_newline && !current_line_has_content {
+                return true;
+            }
+            after_newline = true;
+            current_line_has_content = false;
+        } else if !matches!(byte, b' ' | b'\t' | b'\r') {
+            current_line_has_content = true;
+        }
+    }
+
+    false
+}
+
 struct TrackedPrettyPrinter<'a> {
     buf: String,
     anchors: Vec<Anchor>,
+    source: &'a str,
     interner: &'a StringInterner,
 }
 
 impl<'a> TrackedPrettyPrinter<'a> {
-    fn new(interner: &'a StringInterner) -> Self {
+    fn new(source: &'a str, interner: &'a StringInterner) -> Self {
         Self {
             buf: String::new(),
             anchors: Vec::new(),
+            source,
             interner,
         }
     }
 
     fn pretty_program(mut self, prog: &Program) -> PrettyOutput {
-        for (idx, decl) in prog.decls.iter().enumerate() {
-            if idx > 0 {
-                self.buf.push('\n');
-            }
-            self.pretty_decl(decl, 0);
-        }
+        self.pretty_decl_block(&prog.decls, 0);
         PrettyOutput {
             text: self.buf,
             anchors: self.anchors,
@@ -434,6 +495,28 @@ impl<'a> TrackedPrettyPrinter<'a> {
                 output_start: start,
                 output_end: end,
             });
+        }
+    }
+
+    fn pretty_decl_block(&mut self, decls: &[Decl], indent: usize) {
+        for (idx, decl) in decls.iter().enumerate() {
+            if idx > 0 {
+                if indent == 0 {
+                    self.buf.push_str("\n\n");
+                } else {
+                    let prev = &decls[idx - 1];
+                    if gap_has_blank_line(
+                        self.source,
+                        prev.span.end as usize,
+                        decl.span.start as usize,
+                    ) {
+                        self.buf.push_str("\n\n");
+                    } else {
+                        self.buf.push('\n');
+                    }
+                }
+            }
+            self.pretty_decl(decl, indent);
         }
     }
 
@@ -489,16 +572,12 @@ impl<'a> TrackedPrettyPrinter<'a> {
             DeclKind::Local(locals, body) => {
                 write_indent(&mut this.buf, indent);
                 this.buf.push_str("local\n");
-                for decl in locals {
-                    this.pretty_decl(decl, indent + 2);
-                    this.buf.push('\n');
-                }
+                this.pretty_decl_block(locals, indent + 2);
+                this.buf.push('\n');
                 write_indent(&mut this.buf, indent);
                 this.buf.push_str("in\n");
-                for decl in body {
-                    this.pretty_decl(decl, indent + 2);
-                    this.buf.push('\n');
-                }
+                this.pretty_decl_block(body, indent + 2);
+                this.buf.push('\n');
                 write_indent(&mut this.buf, indent);
                 this.buf.push_str("end");
             }
@@ -553,10 +632,8 @@ impl<'a> TrackedPrettyPrinter<'a> {
                     }
                 }
                 this.buf.push_str(" = struct\n");
-                for decl in decls {
-                    this.pretty_decl(decl, indent + 2);
-                    this.buf.push('\n');
-                }
+                this.pretty_decl_block(decls, indent + 2);
+                this.buf.push('\n');
                 write_indent(&mut this.buf, indent);
                 this.buf.push_str("end");
             }
@@ -715,10 +792,8 @@ impl<'a> TrackedPrettyPrinter<'a> {
             }
             ExprKind::Let(decls, body) => {
                 this.buf.push_str("let\n");
-                for decl in decls {
-                    this.pretty_decl(decl, indent + 2);
-                    this.buf.push('\n');
-                }
+                this.pretty_decl_block(decls, indent + 2);
+                this.buf.push('\n');
                 write_indent(&mut this.buf, indent);
                 this.buf.push_str("in\n");
                 write_indent(&mut this.buf, indent + 2);
@@ -1157,7 +1232,7 @@ mod tests {
         let source = "val s = \"(* not a comment *)\"\n(* real comment *)\nval _ = println s\n";
         assert_eq!(
             fmt(source),
-            "val s = \"(* not a comment *)\"\n(* real comment *)\nval _ = println s\n"
+            "val s = \"(* not a comment *)\"\n\n(* real comment *)\nval _ = println s\n"
         );
     }
 
@@ -1173,5 +1248,32 @@ mod tests {
     fn formats_comment_only_files() {
         let source = "(* hello *)\n(* world *)\n";
         assert_eq!(fmt(source), "(* hello *)\n(* world *)\n");
+    }
+
+    #[test]
+    fn preserves_single_blank_lines_between_comment_groups() {
+        let source = "(* header *)\n\n(* section *)\nval x=1\n\n(* next *)\nval y=2\n";
+        assert_eq!(
+            fmt(source),
+            "(* header *)\n\n(* section *)\nval x = 1\n\n(* next *)\nval y = 2\n"
+        );
+    }
+
+    #[test]
+    fn preserves_single_blank_lines_between_top_level_decls() {
+        let source = "import Std.List\nval answer=41\nfun inc x=x+1\nfun dec x=x-1\n";
+        assert_eq!(
+            fmt(source),
+            "import Std.List\n\nval answer = 41\n\nfun inc x = x + 1\n\nfun dec x = x - 1\n"
+        );
+    }
+
+    #[test]
+    fn nested_let_decls_do_not_gain_forced_blank_lines() {
+        let source = "val x = let\n  val a=1\n  val b=2\nin\n  a + b\nend\n";
+        assert_eq!(
+            fmt(source),
+            "val x = let\n  val a = 1\n  val b = 2\nin\n  a + b\nend\n"
+        );
     }
 }
