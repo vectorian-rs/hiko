@@ -75,7 +75,8 @@ EmptyProc(parent) ==
      block_targets    |-> {},
      cancel_requested |-> FALSE,
      delivered_kind   |-> DelNone,
-     delivered_pid    |-> 0]
+     delivered_pid    |-> 0,
+     delivered_wait_any_targets |-> <<>>]
 
 ClearBlock(proc) ==
     [proc EXCEPT
@@ -87,6 +88,10 @@ WithDelivered(proc, kind, pid) ==
     [proc EXCEPT
         !.delivered_kind = kind,
         !.delivered_pid = pid]
+
+WithWaitAnyDelivered(proc, children) ==
+    [WithDelivered(proc, DelPid, LeftmostTerminal(children)) EXCEPT
+        !.delivered_wait_any_targets = children]
 
 SetStatus(proc, status) == [proc EXCEPT !.status = status]
 
@@ -199,7 +204,7 @@ WaitAnyInputs == UNION {[1..n -> 1..MaxProcesses] : n \in 1..MaxProcesses}
 
 WakeAnyParent(proc, child) ==
     LET ignored_child == child IN
-    WithDelivered(ClearBlock(SetStatus(proc, Runnable)), DelPid, LeftmostTerminal(proc.block_targets))
+    WithWaitAnyDelivered(ClearBlock(SetStatus(proc, Runnable)), proc.block_targets)
 
 CanWakeFromJoinState(child) ==
     /\ procs[child].status \in {Done, Failed}
@@ -481,7 +486,7 @@ WaitAnyReady(parent, children) ==
     /\ AtHead(parent)
     /\ WaitAnyChildrenValid(parent, children)
     /\ \E i \in 1..Len(children) : procs[children[i]].status \in {Done, Failed}
-    /\ procs' = [procs EXCEPT ![parent] = WithDelivered(procs[parent], DelPid, LeftmostTerminal(children))]
+    /\ procs' = [procs EXCEPT ![parent] = WithWaitAnyDelivered(procs[parent], children)]
     /\ runqueue' = Tail(runqueue) \o <<parent>>
     /\ step' = step + 1
     /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
@@ -864,6 +869,7 @@ TypeOK ==
             DelJoinErrRuntime, DelJoinErrCancelled, DelJoinErrAlreadyJoined, DelUnit
         }
         /\ procs[p].delivered_pid \in Nat \union {0}
+        /\ procs[p].delivered_wait_any_targets \in {<<>>} \union WaitAnyInputs
 
 AllKnownPidsBelowNext ==
     \A p \in DOMAIN procs : p < next_pid
@@ -937,6 +943,12 @@ AtMostOneAnyWaiterPerChild ==
     \A child \in DOMAIN any_waiters :
         Cardinality(any_waiters[child]) <= 1
 
+WaitAnyDeliversLeftmost ==
+    \A p \in DOMAIN procs :
+        procs[p].delivered_kind = DelPid =>
+            /\ procs[p].delivered_wait_any_targets \in WaitAnyInputs
+            /\ procs[p].delivered_pid = LeftmostTerminal(procs[p].delivered_wait_any_targets)
+
 IoBlockedHasPending ==
     \A p \in DOMAIN procs :
         (procs[p].status = Blocked /\ procs[p].block_reason = BkIo) =>
@@ -970,6 +982,7 @@ SafetyInvariant ==
     /\ AtMostOneWaiterPerChild
     /\ AnyWaitersConsistent
     /\ AtMostOneAnyWaiterPerChild
+    /\ WaitAnyDeliversLeftmost
     /\ IoBlockedHasPending
     /\ NoOrphanedIo
     /\ NoBlockedParentOnJoinReady
