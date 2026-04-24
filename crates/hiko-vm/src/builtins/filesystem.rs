@@ -12,6 +12,8 @@ pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String
         .check_fs_path_for("read_file", &path)
         .map_err(|e| format!("read_file: {e}"))?;
     let contents = std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file: {e}"))?;
+    heap.charge_io_bytes(contents.len() as u64)
+        .map_err(|e| format!("read_file: {e}"))?;
     heap_alloc(heap, HeapObject::String(contents))
 }
 
@@ -27,6 +29,8 @@ pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
         .check_fs_path_for("read_file_bytes", &path)
         .map_err(|e| format!("read_file_bytes: {e}"))?;
     let contents = std::fs::read(&checked_path).map_err(|e| format!("read_file_bytes: {e}"))?;
+    heap.charge_io_bytes(contents.len() as u64)
+        .map_err(|e| format!("read_file_bytes: {e}"))?;
     heap_alloc(heap, HeapObject::Bytes(contents))
 }
 
@@ -54,6 +58,8 @@ pub(super) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     };
     let checked_path = heap
         .check_fs_path_for("write_file", &path)
+        .map_err(|e| format!("write_file: {e}"))?;
+    heap.charge_io_bytes(contents.len() as u64)
         .map_err(|e| format!("write_file: {e}"))?;
     std::fs::write(&checked_path, &contents).map_err(|e| format!("write_file: {e}"))?;
     Ok(Value::Unit)
@@ -87,12 +93,11 @@ pub(super) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         .map_err(|e| format!("list_dir: {e}"))?;
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(&checked_path).map_err(|e| format!("list_dir: {e}"))? {
-        if let Ok(e) = entry {
-            entries.push(heap_alloc(
-                heap,
-                HeapObject::String(e.file_name().to_string_lossy().to_string()),
-            )?);
-        }
+        let entry = entry.map_err(|e| format!("list_dir: {e}"))?;
+        let text = entry.file_name().to_string_lossy().to_string();
+        heap.charge_io_bytes(text.len() as u64)
+            .map_err(|e| format!("list_dir: {e}"))?;
+        entries.push(heap_alloc(heap, HeapObject::String(text))?);
     }
     alloc_list(heap, entries)
 }
@@ -198,6 +203,8 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         .map_err(|e| format!("read_file_tagged: {e}"))?;
     let content =
         std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?;
+    heap.charge_io_bytes(content.len() as u64)
+        .map_err(|e| format!("read_file_tagged: {e}"))?;
 
     let lines: Vec<&str> = content.lines().collect();
     let start = if offset > 0 {
@@ -249,6 +256,8 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
     let content =
         std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    heap.charge_io_bytes(content.len() as u64)
+        .map_err(|e| format!("edit_file_tagged: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
     let hashes: Vec<String> = lines
         .iter()
@@ -344,6 +353,8 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     } else {
         output
     };
+    heap.charge_io_bytes(final_output.len() as u64)
+        .map_err(|e| format!("edit_file_tagged: {e}"))?;
     std::fs::write(&checked_path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
 
     let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
@@ -369,6 +380,8 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             let path = entry.map_err(|e| format!("glob: {e}"))?;
             let text = path.to_string_lossy().to_string();
             if seen.insert(text.clone()) {
+                heap.charge_io_bytes(text.len() as u64)
+                    .map_err(|e| format!("glob: {e}"))?;
                 paths.push(heap_alloc(heap, HeapObject::String(text))?);
             }
         }
@@ -380,6 +393,8 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
                 .map_err(|e| format!("glob: {e}"))?;
             let text = checked.to_string_lossy().to_string();
             if seen.insert(text.clone()) {
+                heap.charge_io_bytes(text.len() as u64)
+                    .map_err(|e| format!("glob: {e}"))?;
                 paths.push(heap_alloc(heap, HeapObject::String(text))?);
             }
         }
@@ -393,6 +408,8 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
                     .map_err(|e| format!("glob: {e}"))?;
                 let text = checked.to_string_lossy().to_string();
                 if seen.insert(text.clone()) {
+                    heap.charge_io_bytes(text.len() as u64)
+                        .map_err(|e| format!("glob: {e}"))?;
                     paths.push(heap_alloc(heap, HeapObject::String(text))?);
                 }
             }
@@ -431,6 +448,8 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     walk(&checked_dir, heap, &mut files)?;
     let mut values = Vec::with_capacity(files.len());
     for f in files {
+        heap.charge_io_bytes(f.len() as u64)
+            .map_err(|e| format!("walk_dir: {e}"))?;
         values.push(heap_alloc(heap, HeapObject::String(f))?);
     }
     alloc_list(heap, values)

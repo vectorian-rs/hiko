@@ -18,3 +18,12 @@ path = "policies/harness-tools.policy.toml"
 
 [policies.test-runner]
 path = "policies/test-runner.policy.toml"
+
+[policies.should-fail-io]
+path = "policies/should-fail-io.policy.toml"
+
+[policies.work-demo-tight]
+path = "policies/work-demo-tight.policy.toml"
+
+[policies.work-demo-enough]
+path = "policies/work-demo-enough.policy.toml"

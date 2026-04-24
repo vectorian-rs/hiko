@@ -1,9 +1,9 @@
 module ProcessLifecycle {
-  /// Literal Quint port of `specs/tla/ProcessLifecycle.tla`.
+  /// Legacy Quint port of an older `specs/tla/ProcessLifecycle.tla`.
   ///
-  /// Note: this intentionally preserves the mailbox send/receive actions that
-  /// still exist in the TLA+ source, even though Hiko's current runtime surface
-  /// has already moved away from public mailbox messaging.
+  /// The TLA+ lifecycle model has since been refactored to remove mailbox
+  /// modeling and add cancellation / `wait_any` / `await_result` semantics.
+  /// Prefer the TLA+ file as source of truth until this Quint port is refreshed.
 
   type ProcStatus = Runnable | Blocked | Done | Failed
   type BlockReason = BkNone | BkAwait | BkIo | BkReceive

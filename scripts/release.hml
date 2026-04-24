@@ -9,52 +9,51 @@
 use "../libraries/Std-v0.1.0/modules/List.hml"
 
 (* All crate Cargo.toml paths relative to repo root *)
-val crate_paths = [
-  "crates/hiko-syntax/Cargo.toml",
-  "crates/hiko-types/Cargo.toml",
-  "crates/hiko-compile/Cargo.toml",
-  "crates/hiko-vm/Cargo.toml",
-  "crates/hiko-cli/Cargo.toml"
-]
+val crate_paths = ["crates/hiko-syntax/Cargo.toml", "crates/hiko-types/Cargo.toml", "crates/hiko-compile/Cargo.toml", "crates/hiko-vm/Cargo.toml", "crates/hiko-cli/Cargo.toml"]
 
-(* Read the current version from the first crate *)
-val content = read_file "crates/hiko-syntax/Cargo.toml"
-val lines = split (content, "\n")
+fun lines s = split (s, "\n")
 
 fun find_version xs = case xs of
-    []      => "unknown"
-  | l :: rest =>
-      if string_contains (l, "version = \"")
-      then let
+      [] => "unknown"
+    | l :: rest => if string_contains (l, "version = \"") then let
         val after = split (l, "\"")
-      in case after of
-          _ :: v :: _ => v
-        | _ => find_version rest
-      end
-      else find_version rest
+      in
+        case after of
+            _ :: v :: _ => v
+          | _ => find_version rest
+      end else find_version rest
 
-val current = find_version lines
+val current = "crates/hiko-syntax/Cargo.toml" |> read_file |> lines |> find_version
 
 val _ = println ("Current version: " ^ current)
+
 val _ = print "New version: "
+
 val new_version = read_line ()
 
 val old_str = "version = \"" ^ current ^ "\""
+
 val new_str = "version = \"" ^ new_version ^ "\""
 
-fun update_file path =
-  let
-    val content = read_file path
-    val updated = string_replace (content, old_str, new_str)
+fun replace_version content = string_replace (content, old_str, new_str)
+
+fun update_file path = let
+    val updated = path |> read_file |> replace_version
     val _ = write_file (path, updated)
   in
     println ("  updated " ^ path)
   end
 
 val _ = println "Updating Cargo.toml files:"
-val _ = List.map update_file crate_paths
+
+val _ = crate_paths |> List.map update_file
+
 val _ = println ""
+
 val _ = println ("Done. All crates now at " ^ new_version)
+
 val _ = println "Next steps:"
+
 val _ = println ("  git add -A && git commit -m \"Bump version to " ^ new_version ^ "\"")
+
 val _ = println ("  git tag v" ^ new_version)

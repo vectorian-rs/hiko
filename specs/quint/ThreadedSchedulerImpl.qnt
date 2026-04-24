@@ -1,7 +1,7 @@
 module ThreadedSchedulerImpl {
   /// Literal Quint port of `specs/tla/ThreadedSchedulerImpl.tla`.
 
-  type ProcStatus = Runnable | Running | BlockedAwait | BlockedReceive | BlockedIo | Done | Failed
+  type ProcStatus = Runnable | Running | BlockedAwait | BlockedIo | Done | Failed
   type Proc = { status: ProcStatus, parent: int, target: int }
   type IoEntry = { pid: int, token: int }
   type WorkerId = W1 | W2
@@ -51,12 +51,9 @@ module ThreadedSchedulerImpl {
 
   val stuckPids =
     knownPids.filter(p =>
-      procs.get(p).status == BlockedReceive or
-      (
-        procs.get(p).status == BlockedAwait and
-        procs.get(p).target.in(knownPids) and
-        procs.get(procs.get(p).target).status.in(Set(BlockedAwait, BlockedReceive, Failed))
-      )
+      procs.get(p).status == BlockedAwait and
+      procs.get(p).target.in(knownPids) and
+      procs.get(procs.get(p).target).status.in(Set(BlockedAwait, Failed))
     )
 
   pure def heldBy(workers, pid): ((WorkerId -> int), int) => Set[WorkerId] =
@@ -176,7 +173,7 @@ module ThreadedSchedulerImpl {
         not(shutdown),
         procs.get(workers.get(w)).status == Running,
         procs.get(child).parent == workers.get(w),
-        procs.get(child).status.in(Set(Runnable, Running, BlockedAwait, BlockedReceive, BlockedIo)),
+        procs.get(child).status.in(Set(Runnable, Running, BlockedAwait, BlockedIo)),
         procs' = procs.set(
           workers.get(w),
           withTarget(withStatus(procs.get(workers.get(w)), BlockedAwait), child)
@@ -184,24 +181,6 @@ module ThreadedSchedulerImpl {
         queue' = queue,
         workers' = workers.set(w, 0),
         waiters' = waiters.set(child, waiters.get(child).union(Set(workers.get(w)))),
-        io_waiters' = io_waiters,
-        next_pid' = next_pid,
-        next_token' = next_token,
-        shutdown' = shutdown,
-        step_count' = step_count + 1,
-      }
-    else disabled
-
-  action workerBlockReceive(w) =
-    if (workers.get(w).in(knownPids))
-      all {
-        stepOk,
-        not(shutdown),
-        procs.get(workers.get(w)).status == Running,
-        procs' = procs.set(workers.get(w), withStatus(procs.get(workers.get(w)), BlockedReceive)),
-        queue' = queue,
-        workers' = workers.set(w, 0),
-        waiters' = waiters,
         io_waiters' = io_waiters,
         next_pid' = next_pid,
         next_token' = next_token,
@@ -401,7 +380,6 @@ module ThreadedSchedulerImpl {
   action workerYieldAny = { nondet w = workerUniverse.oneOf(); workerYield(w) }
   action workerSpawnAny = { nondet w = workerUniverse.oneOf(); workerSpawn(w) }
   action workerAwaitBlockAny = { nondet w = workerUniverse.oneOf(); nondet child = pidUniverse.oneOf(); workerAwaitBlock(w, child) }
-  action workerBlockReceiveAny = { nondet w = workerUniverse.oneOf(); workerBlockReceive(w) }
   action workerRequestIoAny = { nondet w = workerUniverse.oneOf(); workerRequestIo(w) }
   action workerDoneAny = { nondet w = workerUniverse.oneOf(); workerDone(w) }
   action workerFailAny = { nondet w = workerUniverse.oneOf(); workerFail(w) }
@@ -414,7 +392,6 @@ module ThreadedSchedulerImpl {
     workerYieldAny,
     workerSpawnAny,
     workerAwaitBlockAny,
-    workerBlockReceiveAny,
     workerRequestIoAny,
     workerDoneAny,
     workerFailAny,
@@ -429,7 +406,7 @@ module ThreadedSchedulerImpl {
     step_count >= 0 and
     shutdown.in(Bool) and
     knownPids.forall(p =>
-      procs.get(p).status.in(Set(Runnable, Running, BlockedAwait, BlockedReceive, BlockedIo, Done, Failed)) and
+      procs.get(p).status.in(Set(Runnable, Running, BlockedAwait, BlockedIo, Done, Failed)) and
       (procs.get(p).parent == 0 or procs.get(p).parent.in(knownPids)) and
       procs.get(p).target >= 0
     ) and
@@ -450,7 +427,7 @@ module ThreadedSchedulerImpl {
 
   val blockedNeverHeld =
     knownPids.forall(p =>
-      not(procs.get(p).status.in(Set(BlockedAwait, BlockedReceive, BlockedIo, Done, Failed))) or
+      not(procs.get(p).status.in(Set(BlockedAwait, BlockedIo, Done, Failed))) or
       not(isHeld(workers, p))
     )
 

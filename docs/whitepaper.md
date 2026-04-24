@@ -55,7 +55,19 @@ The right way to read the document is:
 - treat exact keywords and package syntax as provisional unless they are
   already heavily exercised in the repository
 
-### 1.1 Verification map
+### 1.1 Status markers used in this document
+
+This whitepaper uses three labels on purpose:
+
+- `current`: behavior or structure that exists in the checked-in repository now
+- `intended`: direction that is consistent with current docs/code, but still
+  leaves some surface or packaging details unsettled
+- `open`: unresolved design space; do not implement from this whitepaper alone
+
+If a section does not use these markers explicitly, read it as "current unless
+the text clearly says otherwise".
+
+### 1.2 Verification map
 
 This document is a design summary, not the only source of truth. For actual
 changes or reviews, verify each area against the maintained docs and source:
@@ -73,11 +85,12 @@ changes or reviews, verify each area against the maintained docs and source:
 | Runtime lifecycle and join/cancel state        | [../crates/hiko-vm/src/process.rs](../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../crates/hiko-vm/src/threaded.rs)                                                           |
 | Process-boundary transfer                      | [../crates/hiko-vm/src/sendable.rs](../crates/hiko-vm/src/sendable.rs)                                                                                                                                                                                                       |
 | VM execution transitions                       | [../crates/hiko-vm/src/vm/runtime_bridge.rs](../crates/hiko-vm/src/vm/runtime_bridge.rs)                                                                                                                                                                                     |
+| Formal verification status                     | [verification-tla.md](verification-tla.md), [../specs/tla/ProcessLifecycle.tla](../specs/tla/ProcessLifecycle.tla), [../specs/tla/ThreadedSchedulerImpl.tla](../specs/tla/ThreadedSchedulerImpl.tla), [../specs/quint/README.md](../specs/quint/README.md)               |
 
 If this whitepaper and those files disagree, the code and the maintained
 implementation docs win.
 
-### 1.2 If you are changing something specific
+### 1.3 If you are changing something specific
 
 Use this document for meaning, then load the narrower source-of-truth docs:
 
@@ -88,7 +101,23 @@ Use this document for meaning, then load the narrower source-of-truth docs:
 - VM slice transitions, async suspension, and child creation: [vm.md](vm.md), [../crates/hiko-vm/src/vm/runtime_bridge.rs](../crates/hiko-vm/src/vm/runtime_bridge.rs), [../crates/hiko-vm/src/runtime_ops.rs](../crates/hiko-vm/src/runtime_ops.rs)
 - current stdlib concurrency surface: [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml)
 
-### 1.3 Semantic layers
+### 1.4 Documentation update obligations
+
+When a semantic change lands, update the narrow docs and specs immediately. In
+practice:
+
+- change `spawn`, join, cancel, `wait_any`, or child-result consumption:
+  update [runtime.md](runtime.md), [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml), [../crates/hiko-vm/src/process.rs](../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../crates/hiko-vm/src/threaded.rs), and [../specs/tla/ProcessLifecycle.tla](../specs/tla/ProcessLifecycle.tla)
+- change the VM/runtime seam or add/remove a `RunResult` transition:
+  update [vm.md](vm.md), [../crates/hiko-vm/src/vm/runtime_bridge.rs](../crates/hiko-vm/src/vm/runtime_bridge.rs), the affected runtime implementations, and the threaded spec if the transition is concurrency-visible
+- change package/module semantics:
+  update [modules.md](modules.md), [system.md](system.md), and the syntax reference if parsing or import shape changes
+- change the visible process/fiber error surface:
+  update [error-handling.md](error-handling.md), [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml), and the join/cancellation sections of this paper
+- change formal-model coverage or trust boundaries:
+  update [verification-tla.md](verification-tla.md), [../specs/quint/README.md](../specs/quint/README.md), and the formal-verification section here
+
+### 1.5 Semantic layers
 
 One recurring source of confusion in Hiko is mixing together language,
 stdlib, VM, and runtime decisions. The ownership split is:
@@ -816,10 +845,16 @@ library chooses the more compositional surface.
 
 ### 10.4 Scope cleanup
 
-When a parent process terminates, the runtime cancels outstanding child
-processes in its scope. This matters because Hiko wants process lifetimes to be
-natural reclamation boundaries. The runtime should not keep orphaned child VMs
-alive longer than their owner.
+Current runtime behavior is:
+
+- when a process terminates, the runtime cancels its still-live direct children
+- those children then perform the same cleanup for their own children as they
+  become terminal
+
+So descendant cleanup is achieved by cascade, not by a single whole-tree
+mutation. This matters because Hiko wants process lifetimes to be natural
+reclamation boundaries without requiring cross-tree heap mutation from one
+runtime step.
 
 ## 11. Hiko Async I/O vs Eio-Style Shared-Heap Async
 
@@ -844,6 +879,9 @@ This separation has practical consequences:
 - I/O can stay direct-style without exposing scheduler internals
 - the same guest code can run on a simple blocking runtime or a threaded async
   runtime
+- actual overlap of blocked I/O with other runnable work only appears on
+  `ThreadedRuntime`; the single-threaded runtime preserves the same source-level
+  API but does not provide the same overlap
 - capability checks remain centralized
 - local reasoning about heaps stays local
 
@@ -915,7 +953,126 @@ When reviewing a change against this design, ask:
 If the answer to one of these is "no" or "not sure", the change probably needs
 design-level discussion rather than a local implementation tweak.
 
-## 13. Open Ends and Future Work
+## 13. Formal Verification
+
+Hiko uses formal models to constrain the runtime design, but the verification
+story is intentionally narrow and explicit.
+
+The formal models are there to make lifecycle and scheduler behavior easier to
+reason about, especially around:
+
+- parent/child ownership
+- join and consumed-join behavior
+- cancellation and wakeup rules
+- queue / waiter / I/O registration consistency
+- deadlock detection and shutdown conditions
+
+They are **not** a claim that the entire implementation is formally verified.
+
+### 13.1 Current source of truth
+
+The current formal verification source of truth is:
+
+- [verification-tla.md](verification-tla.md) for coverage/status
+- [../specs/tla/ProcessLifecycle.tla](../specs/tla/ProcessLifecycle.tla) for
+  semantic lifecycle behavior
+- [../specs/tla/ThreadedSchedulerImpl.tla](../specs/tla/ThreadedSchedulerImpl.tla)
+  for lower-level worker/scheduler structure
+
+The trust order is:
+
+1. current Rust source
+2. maintained prose docs in `docs/`
+3. TLA+ specs in `specs/tla`
+4. lagging ports or older review artifacts
+
+That order matters because the formal models are still being expanded.
+
+### 13.2 What is modeled today
+
+The semantic lifecycle model currently covers the user-visible meaning of:
+
+- `spawn`
+- `await`
+- `await_result`
+- `wait_any`
+- cooperative cancellation
+- parent-exit cleanup of direct children
+- I/O blocking/completion
+- single-consumption join state
+
+The lower-level threaded model currently covers a smaller implementation slice:
+
+- worker ownership of running processes
+- runnable queue behavior and stale queue entries
+- join waiter consistency
+- I/O waiter consistency
+- shutdown-on-deadlock structure
+
+### 13.3 What is not fully modeled yet
+
+The formal story is still incomplete for parts of the current threaded runtime.
+In particular, the lower-level model is still behind the Rust implementation on
+items such as:
+
+- `child_parents`
+- `pending_cancels`
+- tombstones and consumed-child records as stored runtime data
+- `any_waiters`
+- publish/recheck TOCTOU mitigation paths in `threaded.rs`
+- the full threaded realization of the newer lifecycle semantics
+
+The Quint story is also uneven:
+
+- `ThreadedSchedulerImpl.qnt` is currently the more trustworthy Quint port
+- `ProcessLifecycle.qnt` lags the refactored TLA+ lifecycle model and should
+  not be treated as the primary semantic source of truth
+
+### 13.4 What the formal models are for
+
+The models are most useful as design pressure and regression traps.
+
+They help answer questions like:
+
+- can a blocked parent be lost from the wakeup path?
+- can waiter tables become inconsistent?
+- can deadlock cleanup leave stale registrations behind?
+- do the semantic rules for join, cancel, and `wait_any` stay coherent as the
+  runtime evolves?
+
+This is exactly the kind of logic where prose is too weak and tests alone tend
+to miss the bad interleavings.
+
+### 13.5 What the formal models do not prove
+
+The models do **not** currently prove:
+
+- full correctness of the Rust implementation
+- GC correctness
+- bytecode verifier correctness
+- parser or typechecker correctness
+- capability-policy correctness
+- memory-ordering correctness of the threaded implementation
+- that every runtime feature has already been ported into the lower-level model
+
+They also use bounded checking in practice, so they are good at finding bugs
+and sharpening invariants, not at turning Hiko into a fully proved system.
+
+### 13.6 Why this still matters
+
+Even partial formalization is high value here because Hiko's runtime model is a
+deliberate part of the language design.
+
+The point is not "formal methods for prestige". The point is:
+
+- make concurrency and lifecycle rules explicit
+- keep the VM/runtime seam narrow enough to model
+- force ambiguous behavior to become concrete
+- give future reviewers and agents a stronger tool than prose alone
+
+For Hiko, that is a design-quality tool first and a proof artifact second.
+
+## 14. Open Ends and Future Work
 
 Several areas are intentionally unfinished:
 
@@ -933,7 +1090,7 @@ shape:
 - cross-process sharing remains explicit
 - new conveniences should reduce boilerplate without adding hidden semantics
 
-### 13.1 Current vs intended vs open
+### 14.1 Current vs intended vs open
 
 The highest-risk documentation failure for Hiko is to blur implemented behavior
 with intended direction. The current boundary is:
@@ -949,7 +1106,7 @@ with intended direction. The current boundary is:
 | Async I/O                                  | runtime-managed suspension via builtins and `RunResult`/`RuntimeRequest`       | preserve fixed runtime ownership of async behavior        | backend and packaging evolution, not the semantic split                                |
 | Process handles and structured concurrency | raw runtime builtins plus `Std.Fiber` library layer                            | keep `Fiber` as the main user-facing concurrency surface  | exact future surface for typed handles and richer combinators                          |
 
-## 14. Conclusion
+## 15. Conclusion
 
 Hiko explores a design in which algebraic effects and isolated-process
 execution are deliberately assigned different responsibilities. Effects provide

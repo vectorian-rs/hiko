@@ -1,0 +1,2 @@
+(* Expected to fail under policies/should-fail-io.policy.toml before creating the file. *)
+val _ = write_file ("examples/should_fail_io_output.txt", "abcdef")

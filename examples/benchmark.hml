@@ -1,45 +1,32 @@
-import Std.Filesystem
-import Std.List
+(* benchmark.hml -- Walk .git recursively, hash every file. *)
 
-(* Hash a single file *)
-fun hash_file path =
-  let
+import Std.Filesystem
+
+val target_dir = ".git"
+
+fun hash_file path = let
     val bytes = Filesystem.read_bytes path
     val hash = blake3 bytes
   in
-    hash ^ "  " ^ path
+    hash ^ "  " ^ int_to_string (bytes_length bytes) ^ "  " ^ path
   end
 
-(* Walk a path: file or directory *)
-fun walk_path path =
-  if Filesystem.is_regular_file path then
-    [hash_file path]
-  else if Filesystem.is_directory path then
-    walk_entries path (Filesystem.list_entries path)
-  else
-    []
+fun print_hashes_count files count = case files of
+      [] => count
+    | path :: rest => let
+        val _ = println (hash_file path)
+      in
+        print_hashes_count rest (count + 1)
+      end
 
-(* Walk all entries in a directory *)
-and walk_entries dir entries =
-  case entries of
-      [] => []
-    | name :: rest =>
-        List.append
-          (walk_path (Filesystem.join (dir, name)))
-          (walk_entries dir rest)
+val t0 = monotonic_ms ()
 
-(* Run the program with a filesystem handler *)
-val results = Filesystem.run (fn () => walk_path ".")
+val count = Filesystem.run (fn () => let
+  val files = Filesystem.walk target_dir
+in
+  print_hashes_count files 0
+end)
 
-(* Print results *)
-fun print_lines xs =
-  case xs of
-      [] => ()
-    | x :: rest =>
-        let
-          val _ = println x
-        in
-          print_lines rest
-        end
+val elapsed = monotonic_ms () - t0
 
-val _ = print_lines results
+val _ = println ("  " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")

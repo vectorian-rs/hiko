@@ -6,28 +6,67 @@ use url::Url;
 
 /// Error returned when a heap allocation exceeds the configured object limit.
 #[derive(Debug, Clone)]
-pub struct HeapLimitExceeded {
-    pub live: usize,
-    pub limit: usize,
+pub enum HeapLimitExceeded {
+    Objects {
+        live: usize,
+        limit: usize,
+    },
+    Bytes {
+        used_bytes: usize,
+        limit_bytes: usize,
+        attempted_bytes: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct IoLimitExceeded {
+    pub used_bytes: u64,
+    pub limit_bytes: u64,
+    pub attempted_bytes: u64,
 }
 
 impl std::fmt::Display for HeapLimitExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Objects { live, limit } => {
+                write!(f, "heap limit exceeded: {live} objects (max {limit})")
+            }
+            Self::Bytes {
+                used_bytes,
+                limit_bytes,
+                attempted_bytes,
+            } => write!(
+                f,
+                "memory limit exceeded: {} bytes used + {} requested (max {})",
+                used_bytes, attempted_bytes, limit_bytes
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for IoLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "heap limit exceeded: {} objects (max {})",
-            self.live, self.limit
+            "io limit exceeded: {} bytes used + {} requested (max {})",
+            self.used_bytes, self.attempted_bytes, self.limit_bytes
         )
     }
 }
 
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
+    object_bytes: Vec<usize>,
     marks: Vec<bool>,
     free_list: Vec<u32>,
     alloc_since_gc: usize,
     gc_threshold: usize,
     max_objects: Option<usize>,
+    max_bytes: Option<usize>,
+    current_bytes: usize,
+    peak_bytes: usize,
+    io_bytes_used: u64,
+    max_io_bytes: Option<u64>,
     /// Filesystem root for path enforcement (empty = unrestricted).
     pub fs_root: String,
     /// Per-builtin filesystem folder allowlists.
@@ -51,11 +90,17 @@ impl Heap {
     pub fn new() -> Self {
         Heap {
             objects: Vec::new(),
+            object_bytes: Vec::new(),
             marks: Vec::new(),
             free_list: Vec::new(),
             alloc_since_gc: 0,
             gc_threshold: 1024,
             max_objects: None,
+            max_bytes: None,
+            current_bytes: 0,
+            peak_bytes: 0,
+            io_bytes_used: 0,
+            max_io_bytes: None,
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
@@ -73,6 +118,8 @@ impl Heap {
     pub fn read_stdin(&mut self) -> Result<String, String> {
         if let Some(input) = self.stdin_override.take() {
             self.stdin_override_consumed = true;
+            self.charge_io_bytes(input.len() as u64)
+                .map_err(|e| format!("read_stdin: {e}"))?;
             return Ok(input);
         }
         if self.stdin_override_consumed {
@@ -84,6 +131,8 @@ impl Heap {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
+            .map_err(|e| format!("read_stdin: {e}"))?;
+        self.charge_io_bytes(buf.len() as u64)
             .map_err(|e| format!("read_stdin: {e}"))?;
         Ok(buf)
     }
@@ -181,23 +230,81 @@ impl Heap {
         self.max_objects
     }
 
+    pub fn set_max_bytes(&mut self, max: usize) {
+        self.max_bytes = Some(max);
+    }
+
+    pub fn max_bytes(&self) -> Option<usize> {
+        self.max_bytes
+    }
+
+    pub fn live_bytes(&self) -> usize {
+        self.current_bytes
+    }
+
+    pub fn peak_bytes(&self) -> usize {
+        self.peak_bytes
+    }
+
+    pub fn set_max_io_bytes(&mut self, max: u64) {
+        self.max_io_bytes = Some(max);
+    }
+
+    pub fn io_bytes_used(&self) -> u64 {
+        self.io_bytes_used
+    }
+
+    pub fn max_io_bytes(&self) -> Option<u64> {
+        self.max_io_bytes
+    }
+
+    pub fn charge_io_bytes(&mut self, bytes: u64) -> Result<(), IoLimitExceeded> {
+        let next = self.io_bytes_used.saturating_add(bytes);
+        if let Some(limit_bytes) = self.max_io_bytes
+            && next > limit_bytes
+        {
+            return Err(IoLimitExceeded {
+                used_bytes: self.io_bytes_used,
+                limit_bytes,
+                attempted_bytes: bytes,
+            });
+        }
+        self.io_bytes_used = next;
+        Ok(())
+    }
+
     pub fn alloc(&mut self, obj: HeapObject) -> Result<GcRef, HeapLimitExceeded> {
+        let object_bytes = obj.estimated_bytes();
         if let Some(max) = self.max_objects {
             let live = self.objects.len() - self.free_list.len();
             if live >= max {
-                return Err(HeapLimitExceeded { live, limit: max });
+                return Err(HeapLimitExceeded::Objects { live, limit: max });
+            }
+        }
+        if let Some(limit_bytes) = self.max_bytes {
+            let next_bytes = self.current_bytes.saturating_add(object_bytes);
+            if next_bytes > limit_bytes {
+                return Err(HeapLimitExceeded::Bytes {
+                    used_bytes: self.current_bytes,
+                    limit_bytes,
+                    attempted_bytes: object_bytes,
+                });
             }
         }
         self.alloc_since_gc += 1;
         let idx = if let Some(idx) = self.free_list.pop() {
             self.objects[idx as usize] = Some(obj);
+            self.object_bytes[idx as usize] = object_bytes;
             idx
         } else {
             let idx = self.objects.len() as u32;
             self.objects.push(Some(obj));
+            self.object_bytes.push(object_bytes);
             self.marks.push(false);
             idx
         };
+        self.current_bytes = self.current_bytes.saturating_add(object_bytes);
+        self.peak_bytes = self.peak_bytes.max(self.current_bytes);
         Ok(GcRef(idx))
     }
 
@@ -264,7 +371,9 @@ impl Heap {
         self.free_list.clear();
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
+                self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);
                 self.objects[i] = None;
+                self.object_bytes[i] = 0;
                 self.free_list.push(i as u32);
             }
         }

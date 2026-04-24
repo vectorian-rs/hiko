@@ -1,23 +1,30 @@
 (* json_local.hml -- Parse a local JSON file, same as curl | python but no network *)
 
 import Std.Json
+
 import Std.List
 
-val body = read_file "/tmp/repo_contents.json"
+val body = read_file "examples/json_local_fixture.json"
 
-fun lookup key fs = case fs of
-    [] => Json.JNull
-  | (k, v) :: rest =>
-      if k = key then v else lookup key rest
+fun lookup (key : string) (fs : (string * Json.json) list) = case fs of
+      [] => Json.JNull
+    | (k, v) :: rest => if k = key then v else lookup key rest
 
 val _ = case json_parse body of
-    Json.JArray items =>
-      List.map (fn item => case item of
-          Json.JObject fields =>
-            let
-              val name = case lookup "name" fields of Json.JStr s => s | _ => "?"
-              val typ = case lookup "type" fields of Json.JStr s => s | _ => "?"
-            in println (name ^ " " ^ typ) end
-        | _ => ()
-      ) items
-  | _ => let val _ = println "not an array" in [] end
+    Json.JArray items => List.map (fn item => case item of
+        Json.JObject fields => let
+          val name = case lookup "name" fields of
+              Json.JStr s => s
+            | _ => "?"
+          val typ = case lookup "type" fields of
+              Json.JStr s => s
+            | _ => "?"
+        in
+          println (name ^ " " ^ typ)
+        end
+      | _ => ()) items
+  | _ => let
+      val _ = println "not an array"
+    in
+      []
+    end

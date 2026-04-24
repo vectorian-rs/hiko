@@ -14,7 +14,9 @@
 entry = "scripts/example.hml"
 
 [limits]
-max_fuel = 100_000_000
+max_work = 100_000_000
+max_memory_bytes = 268435456
+max_io_bytes = 67108864
 max_heap = 1_000_000
 
 # Standard input/output builtins.

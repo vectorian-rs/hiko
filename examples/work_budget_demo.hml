@@ -1,0 +1,15 @@
+(* Example:
+ *   hiko inspect-work examples/work_budget_demo.hml
+ *   hiko run --policy work-demo-tight examples/work_budget_demo.hml
+ *   hiko run --policy work-demo-enough examples/work_budget_demo.hml
+ *
+ * `inspect-work` reports static opcode counts for the compiled bytecode.
+ * `max_work` currently counts executed opcodes, so straight-line code can use
+ * a budget close to the reported total while loops/recursion need more.
+ *)
+
+fun inc x = x + 1
+
+val answer = inc 41
+
+val _ = println (int_to_string answer)

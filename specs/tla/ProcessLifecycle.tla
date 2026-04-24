@@ -1,107 +1,212 @@
 ---- MODULE ProcessLifecycle ----
-\* TLA+ specification for Hiko runtime process lifecycle.
+\* Semantic TLA+ specification for Hiko process lifecycle.
 \*
-\* Models the full concurrency surface:
-\*   - Scheduler with runnable queue, worker dequeue, yield
-\*   - Spawn with parent-child relationship
-\*   - Await with single-consumption, result delivery to parent
-\*   - I/O blocking, backend completion, resume
-\*   - Send/Receive with FIFO mailbox, direct delivery to blocked receiver
-\*   - Failure propagation from child to awaiting parent
-\*   - Deadlock detection (permanently blocked with no waker)
-\*   - Unknown pid and non-child await cases
+\* Focus:
+\*   - FIFO scheduler with runnable queue
+\*   - Spawn with parent-child ownership
+\*   - Await/AwaitResult with single-consumption join state
+\*   - wait_any over a parent-owned child set
+\*   - Cooperative cancellation and parent-exit scope cleanup
+\*   - I/O blocking and completion
+\*   - Deadlock detection for permanently blocked processes
 \*
-\* Liveness properties with weak fairness.
+\* This spec models user-visible behavior. It does not model the threaded
+\* runtime tables (`child_parents`, tombstones, pending_cancels, publishing
+\* windows); those belong in ThreadedSchedulerImpl.tla.
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     MaxProcesses,
     MaxSteps,
-    MaxMessages,
     MaxIoOps
 
 VARIABLES
-    \* Process state: Pid -> record
     procs,
-    \* Scheduler: runnable queue (sequence of pids)
     runqueue,
-    \* Mailboxes: Pid -> Seq(Nat)
-    mailboxes,
-    \* Await waiters: child Pid -> Set of parent Pids waiting
     waiters,
-    \* I/O: set of [pid, token] records for in-flight operations
+    any_waiters,
     io_pending,
-    \* Allocation counters
     next_pid,
     io_next_token,
-    \* Bounds
-    msg_count,
     io_count,
     step
 
-vars == <<procs, runqueue, mailboxes, waiters, io_pending,
-          next_pid, io_next_token, msg_count, io_count, step>>
+vars ==
+    <<procs, runqueue, waiters, any_waiters, io_pending,
+      next_pid, io_next_token, io_count, step>>
 
-\* ── Status and block reasons ────────────────────────────────
+\* ── Status / runtime surface ────────────────────────────────
 
 Runnable == "runnable"
+Blocked  == "blocked"
 Done     == "done"
 Failed   == "failed"
-Blocked  == "blocked"
 
-BkNone    == "none"
-BkAwait   == "await"
-BkIo      == "io"
-BkReceive == "receive"
+BkNone        == "none"
+BkAwaitRaw    == "await_raw"
+BkAwaitResult == "await_result"
+BkWaitAny     == "wait_any"
+BkIo          == "io"
 
-\* ── Process record constructor ──────────────────────────────
+JoinNone           == "join_none"
+JoinReadyOk        == "join_ready_ok"
+JoinReadyErr       == "join_ready_err"
+JoinReadyCancelled == "join_ready_cancelled"
+JoinConsumed       == "join_consumed"
+
+DelNone                 == "del_none"
+DelValue                == "del_value"
+DelPid                  == "del_pid"
+DelJoinOk               == "del_join_ok"
+DelJoinErrRuntime       == "del_join_err_runtime"
+DelJoinErrCancelled     == "del_join_err_cancelled"
+DelJoinErrAlreadyJoined == "del_join_err_already_joined"
+DelUnit                 == "del_unit"
+
+\* ── Process record ──────────────────────────────────────────
 
 EmptyProc(parent) ==
-    [status       |-> Runnable,
-     parent       |-> parent,
-     result       |-> -1,          \* -1 = no result yet
-     delivered_to |-> 0,           \* pid that consumed the result, 0 = nobody
-     block_reason |-> BkNone,
-     block_target |-> 0]
+    [status           |-> Runnable,
+     parent           |-> parent,
+     join_state       |-> JoinNone,
+     block_reason     |-> BkNone,
+     block_target     |-> 0,
+     block_targets    |-> {},
+     cancel_requested |-> FALSE,
+     delivered_kind   |-> DelNone,
+     delivered_pid    |-> 0]
+
+ClearBlock(proc) ==
+    [proc EXCEPT
+        !.block_reason = BkNone,
+        !.block_target = 0,
+        !.block_targets = {}]
+
+WithDelivered(proc, kind, pid) ==
+    [proc EXCEPT
+        !.delivered_kind = kind,
+        !.delivered_pid = pid]
+
+SetStatus(proc, status) == [proc EXCEPT !.status = status]
+
+SetJoinState(proc, join_state) == [proc EXCEPT !.join_state = join_state]
+
+SetCancelRequested(proc, requested) == [proc EXCEPT !.cancel_requested = requested]
+
+BlockOnAwait(proc, reason, child) ==
+    [proc EXCEPT
+        !.status = Blocked,
+        !.block_reason = reason,
+        !.block_target = child,
+        !.block_targets = {}]
+
+BlockOnWaitAny(proc, children) ==
+    [proc EXCEPT
+        !.status = Blocked,
+        !.block_reason = BkWaitAny,
+        !.block_target = 0,
+        !.block_targets = children]
+
+BlockOnIo(proc, token) ==
+    [proc EXCEPT
+        !.status = Blocked,
+        !.block_reason = BkIo,
+        !.block_target = token,
+        !.block_targets = {}]
+
+JoinReadyStates == {JoinReadyOk, JoinReadyErr, JoinReadyCancelled}
 
 \* ── Initial state ───────────────────────────────────────────
 
 Init ==
     /\ procs = 1 :> EmptyProc(0)
     /\ runqueue = <<1>>
-    /\ mailboxes = 1 :> <<>>
     /\ waiters = 1 :> {}
+    /\ any_waiters = 1 :> {}
     /\ io_pending = {}
     /\ next_pid = 2
     /\ io_next_token = 1
-    /\ msg_count = 0
     /\ io_count = 0
     /\ step = 0
 
 \* ── Helpers ─────────────────────────────────────────────────
 
-\* Remove first occurrence of e from sequence s
-RemoveFirst(s, e) ==
-    IF s = <<>> THEN <<>>
-    ELSE IF Head(s) = e THEN Tail(s)
-    ELSE <<Head(s)>> \o RemoveFirst(Tail(s), e)
+Step == step < MaxSteps
+
+KnownPid(pid) == pid \in DOMAIN procs
+
+AtHead(pid) == runqueue # <<>> /\ Head(runqueue) = pid
 
 InRunqueue(pid) == \E i \in 1..Len(runqueue) : runqueue[i] = pid
 
-\* Scheduler actions execute the pid at the front of the queue.
-AtHead(pid) == runqueue # <<>> /\ Head(runqueue) = pid
+UnknownPid(pid) == pid \in 1..MaxProcesses /\ pid \notin DOMAIN procs
 
-Enqueue(pid) == Append(runqueue, pid)
+RunnableChildrenOf(parent) ==
+    {child \in DOMAIN procs :
+        /\ procs[child].parent = parent
+        /\ procs[child].status = Runnable}
 
-\* Dequeue: pick from front (FIFO scheduling)
-Dequeue == IF runqueue = <<>> THEN 0 ELSE Head(runqueue)
+BlockedChildrenOf(parent) ==
+    {child \in DOMAIN procs :
+        /\ procs[child].parent = parent
+        /\ procs[child].status = Blocked}
 
-\* ── Guard: step bound ───────────────────────────────────────
+TerminalChildrenOf(parent) ==
+    {child \in DOMAIN procs :
+        /\ procs[child].parent = parent
+        /\ procs[child].status \in {Done, Failed}}
 
-Step == step < MaxSteps
+JoinWaiter(child) ==
+    IF waiters[child] = {} THEN 0 ELSE CHOOSE parent \in waiters[child] : TRUE
 
-\* ── Spawn ───────────────────────────────────────────────────
+AnyWaiter(child) ==
+    IF any_waiters[child] = {} THEN 0 ELSE CHOOSE parent \in any_waiters[child] : TRUE
+
+WakeJoinParent(proc, join_state, child) ==
+    IF proc.block_reason = BkAwaitRaw
+    THEN
+        IF join_state = JoinReadyOk
+        THEN WithDelivered(ClearBlock(SetStatus(proc, Runnable)), DelValue, child)
+        ELSE ClearBlock(SetStatus(proc, Failed))
+    ELSE
+        IF join_state = JoinReadyOk
+        THEN WithDelivered(ClearBlock(SetStatus(proc, Runnable)), DelJoinOk, child)
+        ELSE IF join_state = JoinReadyCancelled
+             THEN WithDelivered(
+                      ClearBlock(SetStatus(proc, Runnable)),
+                      DelJoinErrCancelled,
+                      child
+                  )
+             ELSE WithDelivered(
+                      ClearBlock(SetStatus(proc, Runnable)),
+                      DelJoinErrRuntime,
+                      child
+                  )
+
+WakeAnyParent(proc, child) ==
+    WithDelivered(ClearBlock(SetStatus(proc, Runnable)), DelPid, child)
+
+CanWakeFromJoinState(child) ==
+    /\ procs[child].status \in {Done, Failed}
+    /\ procs[child].join_state \in JoinReadyStates
+
+JoinStateForFailure(cancelled) ==
+    IF cancelled THEN JoinReadyCancelled ELSE JoinReadyErr
+
+IsTerminal(pid) == procs[pid].status \in {Done, Failed}
+
+TerminalParent(pid) ==
+    /\ KnownPid(pid)
+    /\ procs[pid].status \in {Done, Failed}
+
+WaitAnyChildrenValid(parent, children) ==
+    /\ children # {}
+    /\ \A child \in children :
+        /\ KnownPid(child)
+        /\ procs[child].parent = parent
+
+\* ── Spawn / yield ───────────────────────────────────────────
 
 Spawn(pid) ==
     /\ Step
@@ -110,223 +215,434 @@ Spawn(pid) ==
     /\ next_pid <= MaxProcesses
     /\ LET child == next_pid IN
         /\ procs' = procs @@ (child :> EmptyProc(pid))
-        \* Matches runtime: child is enqueued first, then parent resumes.
         /\ runqueue' = Tail(runqueue) \o <<child, pid>>
-        /\ mailboxes' = mailboxes @@ (child :> <<>>)
         /\ waiters' = waiters @@ (child :> {})
+        /\ any_waiters' = any_waiters @@ (child :> {})
         /\ next_pid' = next_pid + 1
         /\ step' = step + 1
-        /\ UNCHANGED <<io_pending, io_next_token, msg_count, io_count>>
-
-\* ── Complete ────────────────────────────────────────────────
-
-\* Complete: atomically wake waiters with result delivery.
-\* Matches implementation: worker sets Done, serializes result,
-\* then calls wake_waiters in the same loop iteration.
-Complete(pid) ==
-    /\ Step
-    /\ procs[pid].status = Runnable
-    /\ AtHead(pid)
-    /\ IF waiters[pid] = {}
-       THEN
-          /\ procs' = [procs EXCEPT ![pid].status = Done,
-                                     ![pid].result = pid * 10]
-          /\ runqueue' = Tail(runqueue)
-          /\ waiters' = waiters
-       ELSE
-          /\ LET parent == CHOOSE p \in waiters[pid] : TRUE IN
-              \* Matches runtime: completion wakes the blocked parent and
-              \* consumes the child's result in the same worker iteration.
-              /\ procs' = [p \in DOMAIN procs |->
-                  IF p = pid
-                  THEN [procs[p] EXCEPT !.status = Done,
-                                         !.result = -1,
-                                         !.delivered_to = parent]
-                  ELSE IF p = parent
-                  THEN [procs[p] EXCEPT !.status = Runnable,
-                                         !.block_reason = BkNone,
-                                         !.block_target = 0]
-                  ELSE procs[p]]
-              /\ runqueue' = Tail(runqueue) \o <<parent>>
-              /\ waiters' = [waiters EXCEPT ![pid] = {}]
-    /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, io_pending, io_next_token, msg_count, io_count>>
-
-\* ── CompleteBadResult ────────────────────────────────────────
-\* Process completes but its return value is not sendable
-\* (closure, continuation, Rng). Serialization fails.
-\* The child is marked Failed, NOT Done with Unit.
-\* Matches implementation: serialize() returns Err, worker sets
-\* Failed and calls wake_waiters.
-\*
-\* This prevents the old bug where unwrap_or(SendableValue::Unit)
-\* silently delivered Unit to the parent instead of failing.
-
-CompleteBadResult(pid) ==
-    /\ Step
-    /\ procs[pid].status = Runnable
-    /\ AtHead(pid)
-    /\ LET wake_set == waiters[pid] IN
-        /\ procs' = [p \in DOMAIN procs |->
-            IF p = pid
-            THEN [procs[p] EXCEPT !.status = Failed]
-            ELSE IF p \in wake_set
-            THEN [procs[p] EXCEPT !.status = Failed,
-                                   !.block_reason = BkNone,
-                                   !.block_target = 0]
-            ELSE procs[p]]
-        /\ runqueue' = Tail(runqueue)
-        /\ waiters' = [waiters EXCEPT ![pid] = {}]
-        /\ step' = step + 1
-        /\ UNCHANGED <<next_pid, mailboxes, io_pending, io_next_token, msg_count, io_count>>
-
-\* ── Fail ────────────────────────────────────────────────────
-\* Fail: atomically propagate failure to all waiters.
-\* Matches implementation: worker sets Failed, then calls
-\* wake_waiters which marks waiters as Failed.
-
-Fail(pid) ==
-    /\ Step
-    /\ procs[pid].status = Runnable
-    /\ AtHead(pid)
-    /\ LET wake_set == waiters[pid] IN
-        /\ procs' = [p \in DOMAIN procs |->
-            IF p = pid
-            THEN [procs[p] EXCEPT !.status = Failed]
-            ELSE IF p \in wake_set
-            THEN [procs[p] EXCEPT !.status = Failed,
-                                   !.block_reason = BkNone,
-                                   !.block_target = 0]
-            ELSE procs[p]]
-        /\ runqueue' = Tail(runqueue)
-        /\ waiters' = [waiters EXCEPT ![pid] = {}]
-        /\ step' = step + 1
-        /\ UNCHANGED <<next_pid, mailboxes, io_pending, io_next_token, msg_count, io_count>>
-
-\* ── Yield ───────────────────────────────────────────────────
-\* Process gives up its time slice, goes to back of queue.
+        /\ UNCHANGED <<io_pending, io_next_token, io_count>>
 
 Yield(pid) ==
     /\ Step
     /\ procs[pid].status = Runnable
+    /\ ~procs[pid].cancel_requested
     /\ AtHead(pid)
     /\ runqueue' = Tail(runqueue) \o <<pid>>
     /\ step' = step + 1
-    /\ UNCHANGED <<procs, next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<procs, waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
-\* ── Await (child done, result available) ────────────────────
+\* ── Terminal transitions (atomic waiter wakeup) ─────────────
 
-AwaitDone(parent, child) ==
+Complete(pid) ==
+    /\ Step
+    /\ procs[pid].status = Runnable
+    /\ ~procs[pid].cancel_requested
+    /\ AtHead(pid)
+    /\ LET join_parent == JoinWaiter(pid)
+           any_parent == AnyWaiter(pid)
+           child_join_state ==
+               IF procs[pid].parent = 0
+               THEN JoinNone
+               ELSE IF join_parent = 0 THEN JoinReadyOk ELSE JoinConsumed
+           woken_parent ==
+               IF join_parent # 0 /\ procs[join_parent].block_reason \in {BkAwaitRaw, BkAwaitResult}
+               THEN join_parent
+               ELSE IF any_parent # 0 /\ procs[any_parent].block_reason = BkWaitAny
+                    THEN any_parent
+                    ELSE 0
+       IN
+        /\ procs' = [p \in DOMAIN procs |->
+            IF p = pid
+            THEN SetCancelRequested(
+                    SetJoinState(SetStatus(ClearBlock(procs[p]), Done), child_join_state),
+                    FALSE
+                 )
+            ELSE IF p = join_parent
+            THEN WakeJoinParent(procs[p], JoinReadyOk, pid)
+            ELSE IF p = any_parent
+            THEN WakeAnyParent(procs[p], pid)
+            ELSE procs[p]]
+        /\ runqueue' =
+            IF woken_parent = 0
+            THEN Tail(runqueue)
+            ELSE Tail(runqueue) \o <<woken_parent>>
+        /\ waiters' = [waiters EXCEPT ![pid] = {}]
+        /\ any_waiters' =
+            [child \in DOMAIN any_waiters |->
+                any_waiters[child] \ (IF any_parent = 0 THEN {} ELSE {any_parent})]
+        /\ step' = step + 1
+        /\ UNCHANGED <<io_pending, next_pid, io_next_token, io_count>>
+
+Fail(pid) ==
+    /\ Step
+    /\ procs[pid].status = Runnable
+    /\ ~procs[pid].cancel_requested
+    /\ AtHead(pid)
+    /\ LET join_parent == JoinWaiter(pid)
+           any_parent == AnyWaiter(pid)
+           child_join_state ==
+               IF procs[pid].parent = 0
+               THEN JoinNone
+               ELSE IF join_parent = 0 THEN JoinReadyErr ELSE JoinConsumed
+           woken_parent ==
+               IF join_parent # 0 /\ procs[join_parent].block_reason \in {BkAwaitRaw, BkAwaitResult}
+               THEN join_parent
+               ELSE IF any_parent # 0 /\ procs[any_parent].block_reason = BkWaitAny
+                    THEN any_parent
+                    ELSE 0
+       IN
+        /\ procs' = [p \in DOMAIN procs |->
+            IF p = pid
+            THEN SetCancelRequested(
+                    SetJoinState(SetStatus(ClearBlock(procs[p]), Failed), child_join_state),
+                    FALSE
+                 )
+            ELSE IF p = join_parent
+            THEN WakeJoinParent(procs[p], JoinReadyErr, pid)
+            ELSE IF p = any_parent
+            THEN WakeAnyParent(procs[p], pid)
+            ELSE procs[p]]
+        /\ runqueue' =
+            IF join_parent # 0 /\ procs[join_parent].block_reason = BkAwaitRaw
+            THEN Tail(runqueue)
+            ELSE IF woken_parent = 0
+                 THEN Tail(runqueue)
+                 ELSE Tail(runqueue) \o <<woken_parent>>
+        /\ waiters' = [waiters EXCEPT ![pid] = {}]
+        /\ any_waiters' =
+            [child \in DOMAIN any_waiters |->
+                any_waiters[child] \ (IF any_parent = 0 THEN {} ELSE {any_parent})]
+        /\ step' = step + 1
+        /\ UNCHANGED <<io_pending, next_pid, io_next_token, io_count>>
+
+ObserveCancel(pid) ==
+    /\ Step
+    /\ procs[pid].status = Runnable
+    /\ procs[pid].cancel_requested
+    /\ AtHead(pid)
+    /\ LET join_parent == JoinWaiter(pid)
+           any_parent == AnyWaiter(pid)
+           child_join_state ==
+               IF procs[pid].parent = 0
+               THEN JoinNone
+               ELSE IF join_parent = 0 THEN JoinReadyCancelled ELSE JoinConsumed
+           woken_parent ==
+               IF join_parent # 0 /\ procs[join_parent].block_reason \in {BkAwaitRaw, BkAwaitResult}
+               THEN join_parent
+               ELSE IF any_parent # 0 /\ procs[any_parent].block_reason = BkWaitAny
+                    THEN any_parent
+                    ELSE 0
+       IN
+        /\ procs' = [p \in DOMAIN procs |->
+            IF p = pid
+            THEN SetCancelRequested(
+                    SetJoinState(SetStatus(ClearBlock(procs[p]), Failed), child_join_state),
+                    FALSE
+                 )
+            ELSE IF p = join_parent
+            THEN WakeJoinParent(procs[p], JoinReadyCancelled, pid)
+            ELSE IF p = any_parent
+            THEN WakeAnyParent(procs[p], pid)
+            ELSE procs[p]]
+        /\ runqueue' =
+            IF join_parent # 0 /\ procs[join_parent].block_reason = BkAwaitRaw
+            THEN Tail(runqueue)
+            ELSE IF woken_parent = 0
+                 THEN Tail(runqueue)
+                 ELSE Tail(runqueue) \o <<woken_parent>>
+        /\ waiters' = [waiters EXCEPT ![pid] = {}]
+        /\ any_waiters' =
+            [child \in DOMAIN any_waiters |->
+                any_waiters[child] \ (IF any_parent = 0 THEN {} ELSE {any_parent})]
+        /\ step' = step + 1
+        /\ UNCHANGED <<io_pending, next_pid, io_next_token, io_count>>
+
+\* ── Await / await_result ────────────────────────────────────
+
+AwaitReadyRaw(parent, child) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ child \in DOMAIN procs
+    /\ KnownPid(child)
     /\ procs[child].parent = parent
-    /\ procs[child].status = Done
-    /\ procs[child].result # -1
-    /\ procs[child].delivered_to = 0
-    \* Deliver: parent stays runnable, child result consumed
-    /\ procs' = [procs EXCEPT ![child].result = -1,
-                               ![child].delivered_to = parent]
+    /\ procs[child].join_state = JoinReadyOk
+    /\ procs' = [p \in DOMAIN procs |->
+        IF p = parent
+        THEN WithDelivered(procs[p], DelValue, child)
+        ELSE IF p = child
+             THEN SetJoinState(procs[p], JoinConsumed)
+             ELSE procs[p]]
     /\ runqueue' = Tail(runqueue) \o <<parent>>
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
-\* ── Await (child done, result already consumed) ─────────────
-
-AwaitConsumed(parent, child) ==
+AwaitReadyResult(parent, child) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ child \in DOMAIN procs
+    /\ KnownPid(child)
     /\ procs[child].parent = parent
-    /\ procs[child].status = Done
-    /\ procs[child].delivered_to # 0     \* already consumed
-    /\ procs' = [procs EXCEPT ![parent].status = Failed]
+    /\ procs[child].join_state \in {JoinReadyOk, JoinReadyErr, JoinReadyCancelled}
+    /\ LET delivered ==
+           IF procs[child].join_state = JoinReadyOk
+           THEN DelJoinOk
+           ELSE IF procs[child].join_state = JoinReadyCancelled
+                THEN DelJoinErrCancelled
+                ELSE DelJoinErrRuntime
+       IN
+        /\ procs' = [p \in DOMAIN procs |->
+            IF p = parent
+            THEN WithDelivered(procs[p], delivered, child)
+            ELSE IF p = child
+                 THEN SetJoinState(procs[p], JoinConsumed)
+                 ELSE procs[p]]
+        /\ runqueue' = Tail(runqueue) \o <<parent>>
+        /\ step' = step + 1
+        /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+AwaitConsumedRaw(parent, child) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent = parent
+    /\ procs[child].join_state = JoinConsumed
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
     /\ runqueue' = Tail(runqueue)
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
-\* ── Await (child failed) ────────────────────────────────────
-
-AwaitFailed(parent, child) ==
+AwaitConsumedResult(parent, child) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ child \in DOMAIN procs
+    /\ KnownPid(child)
     /\ procs[child].parent = parent
-    /\ procs[child].status = Failed
-    /\ procs' = [procs EXCEPT ![parent].status = Failed]
-    /\ runqueue' = Tail(runqueue)
+    /\ procs[child].join_state = JoinConsumed
+    /\ procs' = [procs EXCEPT ![parent] = WithDelivered(procs[parent], DelJoinErrAlreadyJoined, child)]
+    /\ runqueue' = Tail(runqueue) \o <<parent>>
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
-\* ── Await (child still running — block parent) ──────────────
-
-AwaitBlock(parent, child) ==
+AwaitBlock(parent, child, reason) ==
     /\ Step
+    /\ reason \in {BkAwaitRaw, BkAwaitResult}
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ child \in DOMAIN procs
+    /\ KnownPid(child)
     /\ procs[child].parent = parent
     /\ procs[child].status \in {Runnable, Blocked}
-    /\ procs' = [procs EXCEPT ![parent].status = Blocked,
-                               ![parent].block_reason = BkAwait,
-                               ![parent].block_target = child]
+    /\ procs' = [procs EXCEPT ![parent] = BlockOnAwait(procs[parent], reason, child)]
     /\ runqueue' = Tail(runqueue)
     /\ waiters' = [waiters EXCEPT ![child] = @ \union {parent}]
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, io_pending, io_next_token, msg_count, io_count>>
-
-\* ── Await (unknown pid — not in process table) ──────────────
+    /\ UNCHANGED <<any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
 AwaitUnknown(parent, child_pid) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ child_pid \notin DOMAIN procs
-    /\ child_pid \in 1..MaxProcesses      \* plausible pid range
-    /\ procs' = [procs EXCEPT ![parent].status = Failed]
+    /\ UnknownPid(child_pid)
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
     /\ runqueue' = Tail(runqueue)
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
-
-\* ── Await (not parent's child) ──────────────────────────────
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
 AwaitNotChild(parent, child) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ child \in DOMAIN procs
+    /\ KnownPid(child)
     /\ procs[child].parent # parent
-    /\ procs' = [procs EXCEPT ![parent].status = Failed]
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
     /\ runqueue' = Tail(runqueue)
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
-\* Note: WakeDone/WakeFailed are handled atomically inside
-\* Complete/Fail above, matching the implementation where
-\* wake_waiters is called in the same worker loop iteration.
+\* ── wait_any ────────────────────────────────────────────────
 
-\* ── I/O: request ────────────────────────────────────────────
+WaitAnyReady(parent, children, winner) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ WaitAnyChildrenValid(parent, children)
+    /\ winner \in children
+    /\ procs[winner].status \in {Done, Failed}
+    /\ procs' = [procs EXCEPT ![parent] = WithDelivered(procs[parent], DelPid, winner)]
+    /\ runqueue' = Tail(runqueue) \o <<parent>>
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+WaitAnyBlock(parent, children) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ WaitAnyChildrenValid(parent, children)
+    /\ \A child \in children : procs[child].status \notin {Done, Failed}
+    /\ procs' = [procs EXCEPT ![parent] = BlockOnWaitAny(procs[parent], children)]
+    /\ runqueue' = Tail(runqueue)
+    /\ any_waiters' =
+        [child \in DOMAIN any_waiters |->
+            IF child \in children
+            THEN any_waiters[child] \union {parent}
+            ELSE any_waiters[child]]
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, io_pending, next_pid, io_next_token, io_count>>
+
+WaitAnyEmpty(parent) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
+    /\ runqueue' = Tail(runqueue)
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+WaitAnyNotChild(parent, children) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ children # {}
+    /\ \E child \in children :
+        /\ KnownPid(child)
+        /\ procs[child].parent # parent
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
+    /\ runqueue' = Tail(runqueue)
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+WaitAnyUnknown(parent, children) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ children # {}
+    /\ \E child \in children : UnknownPid(child)
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
+    /\ runqueue' = Tail(runqueue)
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+\* ── cancel ──────────────────────────────────────────────────
+
+CancelTerminal(parent, child) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent = parent
+    /\ procs[child].status \in {Done, Failed}
+    /\ procs' = [procs EXCEPT ![parent] = WithDelivered(procs[parent], DelUnit, 0)]
+    /\ runqueue' = Tail(runqueue) \o <<parent>>
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+CancelRunnable(parent, child) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent = parent
+    /\ procs[child].status = Runnable
+    /\ procs' = [p \in DOMAIN procs |->
+        IF p = parent
+        THEN WithDelivered(procs[p], DelUnit, 0)
+        ELSE IF p = child
+             THEN SetCancelRequested(procs[p], TRUE)
+             ELSE procs[p]]
+    /\ runqueue' = Tail(runqueue) \o <<parent>>
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+CancelBlocked(parent, child) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent = parent
+    /\ procs[child].status = Blocked
+    /\ LET join_parent == JoinWaiter(child)
+           any_parent == AnyWaiter(child)
+           child_join_state == IF join_parent = 0 THEN JoinReadyCancelled ELSE JoinConsumed
+           cleared_waiters ==
+               IF procs[child].block_reason = BkAwaitRaw \/ procs[child].block_reason = BkAwaitResult
+               THEN [waiters EXCEPT ![procs[child].block_target] = @ \ {child}]
+               ELSE waiters
+           cleared_any_waiters ==
+               IF procs[child].block_reason = BkWaitAny
+               THEN [pid \in DOMAIN any_waiters |->
+                       IF pid \in procs[child].block_targets
+                       THEN any_waiters[pid] \ {child}
+                       ELSE any_waiters[pid]]
+               ELSE any_waiters
+           cleared_io_pending ==
+               IF procs[child].block_reason = BkIo
+               THEN io_pending \ {[pid |-> child, token |-> procs[child].block_target]}
+               ELSE io_pending
+       IN
+        /\ procs' = [p \in DOMAIN procs |->
+            IF p = parent
+            THEN WithDelivered(procs[p], DelUnit, 0)
+            ELSE IF p = child
+                 THEN SetCancelRequested(
+                         SetJoinState(SetStatus(ClearBlock(procs[p]), Failed), child_join_state),
+                         FALSE
+                      )
+            ELSE IF p = join_parent
+                 THEN WakeJoinParent(procs[p], JoinReadyCancelled, child)
+            ELSE IF p = any_parent
+                 THEN WakeAnyParent(procs[p], child)
+                 ELSE procs[p]]
+        /\ runqueue' =
+            IF join_parent # 0 /\ procs[join_parent].block_reason = BkAwaitRaw
+            THEN Tail(runqueue) \o <<parent>>
+            ELSE IF any_parent = 0 /\ join_parent = 0
+                 THEN Tail(runqueue) \o <<parent>>
+                 ELSE Tail(runqueue) \o <<parent, IF join_parent # 0 THEN join_parent ELSE any_parent>>
+        /\ waiters' = [cleared_waiters EXCEPT ![child] = {}]
+        /\ any_waiters' =
+            [pid \in DOMAIN cleared_any_waiters |->
+                cleared_any_waiters[pid] \ (IF any_parent = 0 THEN {} ELSE {any_parent})]
+        /\ io_pending' = cleared_io_pending
+        /\ step' = step + 1
+        /\ UNCHANGED <<next_pid, io_next_token, io_count>>
+
+CancelUnknown(parent, child_pid) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ UnknownPid(child_pid)
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
+    /\ runqueue' = Tail(runqueue)
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+CancelNotChild(parent, child) ==
+    /\ Step
+    /\ procs[parent].status = Runnable
+    /\ AtHead(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent # parent
+    /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
+    /\ runqueue' = Tail(runqueue)
+    /\ step' = step + 1
+    /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
+
+\* ── I/O ─────────────────────────────────────────────────────
 
 RequestIo(pid) ==
     /\ Step
     /\ procs[pid].status = Runnable
+    /\ ~procs[pid].cancel_requested
     /\ AtHead(pid)
     /\ io_count < MaxIoOps
     /\ LET token == io_next_token IN
-        /\ procs' = [procs EXCEPT ![pid].status = Blocked,
-                                   ![pid].block_reason = BkIo,
-                                   ![pid].block_target = token]
+        /\ procs' = [procs EXCEPT ![pid] = BlockOnIo(procs[pid], token)]
         /\ runqueue' = Tail(runqueue)
         /\ io_pending' = io_pending \union {[pid |-> pid, token |-> token]}
         /\ io_next_token' = io_next_token + 1
         /\ io_count' = io_count + 1
         /\ step' = step + 1
-        /\ UNCHANGED <<next_pid, mailboxes, waiters, msg_count>>
-
-\* ── I/O: backend completes (success) ────────────────────────
+        /\ UNCHANGED <<waiters, any_waiters, next_pid>>
 
 IoComplete(entry) ==
     /\ Step
@@ -334,15 +650,12 @@ IoComplete(entry) ==
     /\ procs[entry.pid].status = Blocked
     /\ procs[entry.pid].block_reason = BkIo
     /\ procs[entry.pid].block_target = entry.token
-    /\ procs' = [procs EXCEPT ![entry.pid].status = Runnable,
-                               ![entry.pid].block_reason = BkNone,
-                               ![entry.pid].block_target = 0]
-    /\ runqueue' = Append(runqueue, entry.pid)
+    /\ procs' = [procs EXCEPT
+        ![entry.pid] = WithDelivered(ClearBlock(SetStatus(procs[entry.pid], Runnable)), DelValue, entry.pid)]
+    /\ runqueue' = runqueue \o <<entry.pid>>
     /\ io_pending' = io_pending \ {entry}
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_next_token, msg_count, io_count>>
-
-\* ── I/O: backend completes (failure) ────────────────────────
+    /\ UNCHANGED <<waiters, any_waiters, next_pid, io_next_token, io_count>>
 
 IoFail(entry) ==
     /\ Step
@@ -350,320 +663,326 @@ IoFail(entry) ==
     /\ procs[entry.pid].status = Blocked
     /\ procs[entry.pid].block_reason = BkIo
     /\ procs[entry.pid].block_target = entry.token
-    /\ LET wake_set == waiters[entry.pid] IN
+    /\ LET join_parent == JoinWaiter(entry.pid)
+           any_parent == AnyWaiter(entry.pid)
+           child_join_state ==
+               IF procs[entry.pid].parent = 0
+               THEN JoinNone
+               ELSE IF join_parent = 0 THEN JoinReadyErr ELSE JoinConsumed
+           woken_parent ==
+               IF join_parent # 0 /\ procs[join_parent].block_reason \in {BkAwaitRaw, BkAwaitResult}
+               THEN join_parent
+               ELSE IF any_parent # 0 /\ procs[any_parent].block_reason = BkWaitAny
+                    THEN any_parent
+                    ELSE 0
+       IN
         /\ procs' = [p \in DOMAIN procs |->
             IF p = entry.pid
-            THEN [procs[p] EXCEPT !.status = Failed,
-                                   !.block_reason = BkNone,
-                                   !.block_target = 0]
-            ELSE IF p \in wake_set
-            THEN [procs[p] EXCEPT !.status = Failed,
-                                   !.block_reason = BkNone,
-                                   !.block_target = 0]
+            THEN SetCancelRequested(
+                    SetJoinState(SetStatus(ClearBlock(procs[p]), Failed), child_join_state),
+                    FALSE
+                 )
+            ELSE IF p = join_parent
+            THEN WakeJoinParent(procs[p], JoinReadyErr, entry.pid)
+            ELSE IF p = any_parent
+            THEN WakeAnyParent(procs[p], entry.pid)
             ELSE procs[p]]
-    /\ io_pending' = io_pending \ {entry}
-    /\ waiters' = [waiters EXCEPT ![entry.pid] = {}]
-    /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, runqueue, mailboxes, io_next_token, msg_count, io_count>>
-
-\* ── Send ────────────────────────────────────────────────────
-
-Send(sender, target) ==
-    /\ Step
-    /\ procs[sender].status = Runnable
-    /\ AtHead(sender)
-    /\ target \in DOMAIN procs
-    /\ msg_count < MaxMessages
-    /\ LET msg == sender * 100 IN
-        \* Self-send queues into the sender's own mailbox.
-        /\ IF target = sender
-           THEN
-              /\ UNCHANGED procs
-              /\ runqueue' = Tail(runqueue) \o <<sender>>
-              /\ mailboxes' = [mailboxes EXCEPT ![sender] = Append(@, msg)]
-           \* If target is blocked on receive, deliver directly and wake.
-           ELSE IF procs[target].status = Blocked
-                   /\ procs[target].block_reason = BkReceive
-           THEN
-              /\ procs' = [procs EXCEPT ![target].status = Runnable,
-                                         ![target].block_reason = BkNone,
-                                         ![target].block_target = 0]
-              /\ runqueue' = Tail(runqueue) \o <<target, sender>>
-              /\ mailboxes' = mailboxes
-           ELSE
-              /\ UNCHANGED procs
-              /\ runqueue' = Tail(runqueue) \o <<sender>>
-              /\ mailboxes' = [mailboxes EXCEPT ![target] = Append(@, msg)]
-        /\ msg_count' = msg_count + 1
+        /\ runqueue' =
+            IF join_parent # 0 /\ procs[join_parent].block_reason = BkAwaitRaw
+            THEN runqueue
+            ELSE IF woken_parent = 0 THEN runqueue ELSE runqueue \o <<woken_parent>>
+        /\ waiters' = [waiters EXCEPT ![entry.pid] = {}]
+        /\ any_waiters' =
+            [child \in DOMAIN any_waiters |->
+                any_waiters[child] \ (IF any_parent = 0 THEN {} ELSE {any_parent})]
+        /\ io_pending' = io_pending \ {entry}
         /\ step' = step + 1
-        /\ UNCHANGED <<next_pid, waiters, io_pending, io_next_token, io_count>>
+        /\ UNCHANGED <<next_pid, io_next_token, io_count>>
 
-SendUnknown(sender, target_pid) ==
+\* ── Scope cleanup ───────────────────────────────────────────
+
+ScopeCancelRunnable(parent, child) ==
     /\ Step
-    /\ procs[sender].status = Runnable
-    /\ AtHead(sender)
-    /\ target_pid \notin DOMAIN procs
-    /\ target_pid \in 1..MaxProcesses
-    /\ procs' = [procs EXCEPT ![sender].status = Failed]
-    /\ runqueue' = Tail(runqueue)
+    /\ TerminalParent(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent = parent
+    /\ procs[child].status = Runnable
+    /\ ~procs[child].cancel_requested
+    /\ procs' = [procs EXCEPT ![child] = SetCancelRequested(procs[child], TRUE)]
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<runqueue, waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
 
-\* ── Receive (mailbox non-empty) ─────────────────────────────
-
-ReceiveReady(pid) ==
+ScopeCancelBlocked(parent, child) ==
     /\ Step
-    /\ procs[pid].status = Runnable
-    /\ AtHead(pid)
-    /\ Len(mailboxes[pid]) > 0
-    /\ mailboxes' = [mailboxes EXCEPT ![pid] = Tail(@)]
-    /\ runqueue' = Tail(runqueue) \o <<pid>>
-    /\ step' = step + 1
-    /\ UNCHANGED <<procs, next_pid, waiters, io_pending, io_next_token, msg_count, io_count>>
-
-\* ── Receive (mailbox empty — block) ─────────────────────────
-
-ReceiveBlock(pid) ==
-    /\ Step
-    /\ procs[pid].status = Runnable
-    /\ AtHead(pid)
-    /\ Len(mailboxes[pid]) = 0
-    /\ procs' = [procs EXCEPT ![pid].status = Blocked,
-                               ![pid].block_reason = BkReceive,
-                               ![pid].block_target = 0]
-    /\ runqueue' = Tail(runqueue)
-    /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, mailboxes, waiters, io_pending, io_next_token, msg_count, io_count>>
+    /\ TerminalParent(parent)
+    /\ KnownPid(child)
+    /\ procs[child].parent = parent
+    /\ procs[child].status = Blocked
+    /\ LET join_parent == JoinWaiter(child)
+           any_parent == AnyWaiter(child)
+           child_join_state == IF join_parent = 0 THEN JoinReadyCancelled ELSE JoinConsumed
+           cleared_waiters ==
+               IF procs[child].block_reason = BkAwaitRaw \/ procs[child].block_reason = BkAwaitResult
+               THEN [waiters EXCEPT ![procs[child].block_target] = @ \ {child}]
+               ELSE waiters
+           cleared_any_waiters ==
+               IF procs[child].block_reason = BkWaitAny
+               THEN [pid \in DOMAIN any_waiters |->
+                       IF pid \in procs[child].block_targets
+                       THEN any_waiters[pid] \ {child}
+                       ELSE any_waiters[pid]]
+               ELSE any_waiters
+           cleared_io_pending ==
+               IF procs[child].block_reason = BkIo
+               THEN io_pending \ {[pid |-> child, token |-> procs[child].block_target]}
+               ELSE io_pending
+           woken_parent ==
+               IF join_parent # 0 /\ procs[join_parent].block_reason \in {BkAwaitRaw, BkAwaitResult}
+               THEN join_parent
+               ELSE IF any_parent # 0 /\ procs[any_parent].block_reason = BkWaitAny
+                    THEN any_parent
+                    ELSE 0
+       IN
+        /\ procs' = [p \in DOMAIN procs |->
+            IF p = child
+            THEN SetCancelRequested(
+                    SetJoinState(SetStatus(ClearBlock(procs[p]), Failed), child_join_state),
+                    FALSE
+                 )
+            ELSE IF p = join_parent
+            THEN WakeJoinParent(procs[p], JoinReadyCancelled, child)
+            ELSE IF p = any_parent
+            THEN WakeAnyParent(procs[p], child)
+            ELSE procs[p]]
+        /\ runqueue' = IF woken_parent = 0 THEN runqueue ELSE runqueue \o <<woken_parent>>
+        /\ waiters' = [cleared_waiters EXCEPT ![child] = {}]
+        /\ any_waiters' =
+            [pid \in DOMAIN cleared_any_waiters |->
+                cleared_any_waiters[pid] \ (IF any_parent = 0 THEN {} ELSE {any_parent})]
+        /\ io_pending' = cleared_io_pending
+        /\ step' = step + 1
+        /\ UNCHANGED <<next_pid, io_next_token, io_count>>
 
 \* ── Deadlock detection ──────────────────────────────────────
-\* If a process is blocked and cannot possibly be woken:
-\*   - Blocked on Await: child is also blocked/failed with no waker
-\*   - Blocked on Receive: no runnable process can send to it
-\*   - Blocked on Io: always has a waker (io_pending entry), so never permanently stuck
-\* The monitor marks permanently blocked processes as Failed.
 
 DetectDeadlock(pid) ==
     /\ Step
     /\ procs[pid].status = Blocked
-    /\ runqueue = <<>>          \* no runnable processes
-    /\ io_pending = {}          \* no pending I/O that could resume anything
-    \* This process has no possible waker
-    /\ \/ procs[pid].block_reason = BkReceive
-       \/ /\ procs[pid].block_reason = BkAwait
-          /\ LET child == procs[pid].block_target IN
-              procs[child].status \in {Blocked, Failed}
-    /\ procs' = [procs EXCEPT ![pid].status = Failed,
-                               ![pid].block_reason = BkNone,
-                               ![pid].block_target = 0]
+    /\ runqueue = <<>>
+    /\ io_pending = {}
+    /\ \/ /\ procs[pid].block_reason \in {BkAwaitRaw, BkAwaitResult}
+          /\ procs[procs[pid].block_target].status = Blocked
+       \/ /\ procs[pid].block_reason = BkWaitAny
+          /\ \A child \in procs[pid].block_targets : procs[child].status = Blocked
+    /\ procs' = [procs EXCEPT ![pid] = ClearBlock(SetStatus(procs[pid], Failed))]
     /\ waiters' =
-        IF procs[pid].block_reason = BkAwait
-        THEN LET child == procs[pid].block_target IN
-             [waiters EXCEPT ![child] = @ \ {pid}]
+        IF procs[pid].block_reason \in {BkAwaitRaw, BkAwaitResult}
+        THEN [waiters EXCEPT ![procs[pid].block_target] = @ \ {pid}]
         ELSE waiters
+    /\ any_waiters' =
+        IF procs[pid].block_reason = BkWaitAny
+        THEN [child \in DOMAIN any_waiters |->
+                IF child \in procs[pid].block_targets
+                THEN any_waiters[child] \ {pid}
+                ELSE any_waiters[child]]
+        ELSE any_waiters
+    /\ runqueue' = runqueue
     /\ step' = step + 1
-    /\ UNCHANGED <<next_pid, runqueue, mailboxes, io_pending, io_next_token, msg_count, io_count>>
+    /\ UNCHANGED <<io_pending, next_pid, io_next_token, io_count>>
 
-\* ── Next state relation ─────────────────────────────────────
+\* ── Next ────────────────────────────────────────────────────
 
 Next ==
     \/ \E pid \in DOMAIN procs :
         \/ Spawn(pid)
         \/ Complete(pid)
-        \/ CompleteBadResult(pid)
         \/ Fail(pid)
+        \/ ObserveCancel(pid)
         \/ Yield(pid)
         \/ RequestIo(pid)
-        \/ ReceiveReady(pid)
-        \/ ReceiveBlock(pid)
+        \/ \E child \in DOMAIN procs :
+            \/ AwaitReadyRaw(pid, child)
+            \/ AwaitReadyResult(pid, child)
+            \/ AwaitConsumedRaw(pid, child)
+            \/ AwaitConsumedResult(pid, child)
+            \/ AwaitBlock(pid, child, BkAwaitRaw)
+            \/ AwaitBlock(pid, child, BkAwaitResult)
+            \/ CancelTerminal(pid, child)
+            \/ CancelRunnable(pid, child)
+            \/ CancelBlocked(pid, child)
+            \/ ScopeCancelRunnable(pid, child)
+            \/ ScopeCancelBlocked(pid, child)
+        \/ \E child_pid \in 1..MaxProcesses :
+            \/ AwaitUnknown(pid, child_pid)
+            \/ CancelUnknown(pid, child_pid)
+        \/ \E child \in DOMAIN procs :
+            \/ AwaitNotChild(pid, child)
+            \/ CancelNotChild(pid, child)
+        \/ WaitAnyEmpty(pid)
+        \/ \E children \in SUBSET (1..MaxProcesses) :
+            \/ \E winner \in children : WaitAnyReady(pid, children, winner)
+            \/ WaitAnyBlock(pid, children)
+            \/ WaitAnyNotChild(pid, children)
+            \/ WaitAnyUnknown(pid, children)
         \/ DetectDeadlock(pid)
-        \/ \E child \in DOMAIN procs : AwaitDone(pid, child)
-        \/ \E child \in DOMAIN procs : AwaitConsumed(pid, child)
-        \/ \E child \in DOMAIN procs : AwaitFailed(pid, child)
-        \/ \E child \in DOMAIN procs : AwaitBlock(pid, child)
-        \/ \E child \in DOMAIN procs : AwaitNotChild(pid, child)
-        \/ \E target \in DOMAIN procs : Send(pid, target)
-        \/ \E child_pid \in 1..MaxProcesses : AwaitUnknown(pid, child_pid)
-        \/ \E target_pid \in 1..MaxProcesses : SendUnknown(pid, target_pid)
     \/ \E entry \in io_pending :
         \/ IoComplete(entry)
         \/ IoFail(entry)
 
-\* ── Safety invariants ───────────────────────────────────────
+\* ── Invariants ──────────────────────────────────────────────
 
-\* All fields in valid ranges
 TypeOK ==
     /\ next_pid \in Nat
     /\ io_next_token \in Nat
-    /\ msg_count \in Nat
     /\ io_count \in Nat
     /\ step \in Nat
     /\ \A p \in DOMAIN procs :
-        /\ procs[p].status \in {Runnable, Done, Failed, Blocked}
-        /\ procs[p].parent \in (DOMAIN procs) \union {0}
-        /\ procs[p].result \in Nat \union {-1}
-        /\ procs[p].delivered_to \in (DOMAIN procs) \union {0}
-        /\ procs[p].block_reason \in {BkNone, BkAwait, BkIo, BkReceive}
+        /\ procs[p].status \in {Runnable, Blocked, Done, Failed}
+        /\ procs[p].parent \in (1..MaxProcesses) \union {0}
+        /\ procs[p].join_state \in {JoinNone, JoinReadyOk, JoinReadyErr, JoinReadyCancelled, JoinConsumed}
+        /\ procs[p].block_reason \in {BkNone, BkAwaitRaw, BkAwaitResult, BkWaitAny, BkIo}
         /\ procs[p].block_target \in Nat \union {0}
+        /\ procs[p].block_targets \subseteq 1..MaxProcesses
+        /\ procs[p].cancel_requested \in BOOLEAN
+        /\ procs[p].delivered_kind \in {
+            DelNone, DelValue, DelPid, DelJoinOk,
+            DelJoinErrRuntime, DelJoinErrCancelled, DelJoinErrAlreadyJoined, DelUnit
+        }
+        /\ procs[p].delivered_pid \in Nat \union {0}
 
-\* Result delivered to exactly one parent (if delivered at all)
-ResultDeliveredToParentOnly ==
-    \A p \in DOMAIN procs :
-        procs[p].delivered_to # 0 =>
-            procs[p].delivered_to = procs[p].parent
+AllKnownPidsBelowNext ==
+    \A p \in DOMAIN procs : p < next_pid
 
-\* Result delivered at most once
-ResultDeliveredAtMostOnce ==
-    \A p \in DOMAIN procs :
-        procs[p].status = Done /\ procs[p].delivered_to # 0 =>
-            procs[p].result = -1
-
-\* Runnable processes are in the runqueue
 RunnableInQueue ==
     \A p \in DOMAIN procs :
         procs[p].status = Runnable => InRunqueue(p)
 
-\* Blocked processes are NOT in the runqueue
-BlockedNotInQueue ==
+BlockedOrTerminalNotInQueue ==
     \A p \in DOMAIN procs :
         procs[p].status \in {Blocked, Done, Failed} => ~InRunqueue(p)
 
-\* Blocked process has a valid block reason
-BlockedIsConsistent ==
-    \A p \in DOMAIN procs :
-        /\ procs[p].status = Blocked =>
-            procs[p].block_reason \in {BkAwait, BkIo, BkReceive}
-        /\ procs[p].status # Blocked =>
-            procs[p].block_reason = BkNone
+NoDuplicateRunqueuePids ==
+    \A i, j \in 1..Len(runqueue) :
+        i # j => runqueue[i] # runqueue[j]
 
-\* Only parent can await (await target is parent's child)
+JoinStateMatchesStatus ==
+    \A p \in DOMAIN procs :
+        /\ procs[p].status \in {Runnable, Blocked} => procs[p].join_state = JoinNone
+        /\ procs[p].parent = 0 => procs[p].join_state \in {JoinNone}
+
+TerminalStatesAbsorbing ==
+    \A p \in DOMAIN procs :
+        procs[p].status \in {Done, Failed} =>
+            /\ procs[p].block_reason = BkNone
+            /\ procs[p].block_target = 0
+            /\ procs[p].block_targets = {}
+
 OnlyParentAwaits ==
     \A p \in DOMAIN procs :
-        (procs[p].status = Blocked /\ procs[p].block_reason = BkAwait) =>
+        (procs[p].status = Blocked /\ procs[p].block_reason \in {BkAwaitRaw, BkAwaitResult}) =>
             LET child == procs[p].block_target IN
                 /\ child \in DOMAIN procs
                 /\ procs[child].parent = p
 
-\* No circular await
-NoCircularAwait ==
-    \A p, q \in DOMAIN procs :
-        ~(procs[p].status = Blocked /\ procs[p].block_reason = BkAwait
-          /\ procs[p].block_target = q
-          /\ procs[q].status = Blocked /\ procs[q].block_reason = BkAwait
-          /\ procs[q].block_target = p)
+OnlyParentWaitsAny ==
+    \A p \in DOMAIN procs :
+        (procs[p].status = Blocked /\ procs[p].block_reason = BkWaitAny) =>
+            /\ procs[p].block_targets # {}
+            /\ \A child \in procs[p].block_targets :
+                /\ child \in DOMAIN procs
+                /\ procs[child].parent = p
 
-\* Every I/O-blocked process has a matching pending entry
+WaitersConsistent ==
+    \A child \in DOMAIN waiters :
+        \A parent \in waiters[child] :
+            /\ parent \in DOMAIN procs
+            /\ procs[parent].status = Blocked
+            /\ procs[parent].block_reason \in {BkAwaitRaw, BkAwaitResult}
+            /\ procs[parent].block_target = child
+
+BlockedAwaitListed ==
+    \A parent \in DOMAIN procs :
+        (procs[parent].status = Blocked /\ procs[parent].block_reason \in {BkAwaitRaw, BkAwaitResult}) =>
+            parent \in waiters[procs[parent].block_target]
+
+AtMostOneWaiterPerChild ==
+    \A child \in DOMAIN waiters :
+        Cardinality(waiters[child]) <= 1
+
+AnyWaitersConsistent ==
+    \A child \in DOMAIN any_waiters :
+        \A parent \in any_waiters[child] :
+            /\ parent \in DOMAIN procs
+            /\ procs[parent].status = Blocked
+            /\ procs[parent].block_reason = BkWaitAny
+            /\ child \in procs[parent].block_targets
+            /\ procs[child].parent = parent
+
+AtMostOneAnyWaiterPerChild ==
+    \A child \in DOMAIN any_waiters :
+        Cardinality(any_waiters[child]) <= 1
+
 IoBlockedHasPending ==
     \A p \in DOMAIN procs :
         (procs[p].status = Blocked /\ procs[p].block_reason = BkIo) =>
             \E entry \in io_pending :
                 entry.pid = p /\ entry.token = procs[p].block_target
 
-\* Every pending I/O has a blocked process
 NoOrphanedIo ==
     \A entry \in io_pending :
         /\ entry.pid \in DOMAIN procs
         /\ procs[entry.pid].status = Blocked
         /\ procs[entry.pid].block_reason = BkIo
 
-\* Every process has a mailbox
-MailboxExists ==
-    \A p \in DOMAIN procs : p \in DOMAIN mailboxes
-
-\* Every process has a waiters set
-WaitersExists ==
-    \A p \in DOMAIN procs : p \in DOMAIN waiters
-
-\* Waiters are consistent: every waiter is blocked on that child
-WaitersConsistent ==
-    \A child \in DOMAIN waiters :
-        \A parent \in waiters[child] :
-            /\ parent \in DOMAIN procs
-            /\ procs[parent].status = Blocked
-            /\ procs[parent].block_reason = BkAwait
-            /\ procs[parent].block_target = child
-
-\* A non-sendable result never sneaks through as Done.
-\* If serialization fails, the process must be Failed, not Done.
-\* This prevents the old bug: unwrap_or(Unit) silently delivering Unit.
-NoSilentSerializationFailure ==
+NoBlockedParentOnJoinReady ==
     \A p \in DOMAIN procs :
-        procs[p].status = Done =>
-            \/ procs[p].result # -1          \* has a valid result
-            \/ procs[p].delivered_to # 0     \* result was already consumed
+        (procs[p].status = Blocked /\ procs[p].block_reason \in {BkAwaitRaw, BkAwaitResult}) =>
+            LET child == procs[p].block_target IN
+                procs[child].join_state \notin JoinReadyStates
 
-\* Every blocked await is registered under its child.
-BlockedAwaitListed ==
-    \A parent \in DOMAIN procs :
-        (procs[parent].status = Blocked /\ procs[parent].block_reason = BkAwait) =>
-            LET child == procs[parent].block_target IN
-                /\ child \in DOMAIN waiters
-                /\ parent \in waiters[child]
+SafetyInvariant ==
+    /\ TypeOK
+    /\ AllKnownPidsBelowNext
+    /\ RunnableInQueue
+    /\ BlockedOrTerminalNotInQueue
+    /\ NoDuplicateRunqueuePids
+    /\ JoinStateMatchesStatus
+    /\ TerminalStatesAbsorbing
+    /\ OnlyParentAwaits
+    /\ OnlyParentWaitsAny
+    /\ WaitersConsistent
+    /\ BlockedAwaitListed
+    /\ AtMostOneWaiterPerChild
+    /\ AnyWaitersConsistent
+    /\ AtMostOneAnyWaiterPerChild
+    /\ IoBlockedHasPending
+    /\ NoOrphanedIo
+    /\ NoBlockedParentOnJoinReady
 
-\* Parent-only await implies at most one waiter per child.
-AtMostOneWaiterPerChild ==
-    \A child \in DOMAIN waiters :
-        Cardinality(waiters[child]) <= 1
+\* ── Liveness ────────────────────────────────────────────────
 
-\* ── Liveness (use --check-liveness for SCC analysis) ────────
-
-\* Any pending I/O eventually resolves, either with success or failure.
 ResolveIo(entry) == IoComplete(entry) \/ IoFail(entry)
 
+ObserveCancelEnabled(pid) ==
+    IF pid \in DOMAIN procs THEN ObserveCancel(pid) ELSE FALSE
+
+ResolveIoEnabled(entry) ==
+    IF entry \in io_pending THEN ResolveIo(entry) ELSE FALSE
+
 Fairness ==
-    /\ \A pid \in 1..MaxProcesses :
-        /\ WF_vars(DetectDeadlock(pid))
+    /\ \A pid \in 1..MaxProcesses : WF_vars(ObserveCancelEnabled(pid))
     /\ \A entry \in [pid : 1..MaxProcesses, token : 1..MaxIoOps] :
-        WF_vars(ResolveIo(entry))
+        WF_vars(ResolveIoEnabled(entry))
 
-\* Safety-only step relation for cfg files that use INIT/NEXT.
-SafetySpec == Init /\ [][Next]_vars
+Spec == Init /\ [][Next]_vars /\ Fairness
 
-\* Fair spec used by tla-checker liveness extraction.
-Spec == SafetySpec /\ Fairness
-
-\* Helpers keep the liveness formulas defined for as-yet-unallocated pids.
-ParentWaitingOnTerminalChild(parent, child) ==
-    IF /\ parent \in DOMAIN procs
-       /\ child \in DOMAIN procs
-    THEN /\ procs[parent].status = Blocked
-         /\ procs[parent].block_reason = BkAwait
-         /\ procs[parent].block_target = child
-         /\ procs[child].status \in {Done, Failed}
-    ELSE FALSE
-
-ParentUnblockedOrGone(parent) ==
-    IF parent \in DOMAIN procs
-    THEN procs[parent].status # Blocked
-    ELSE TRUE
-
-ParentEventuallyWoken ==
-    \A child \in 1..MaxProcesses :
-        \A parent \in 1..MaxProcesses :
-            ParentWaitingOnTerminalChild(parent, child)
-                ~> ParentUnblockedOrGone(parent)
+CancelRequestedEventuallySettles ==
+    \A pid \in 1..MaxProcesses :
+        [](pid \in DOMAIN procs /\ procs[pid].cancel_requested
+           ~> procs[pid].status \in {Done, Failed})
 
 IoEventuallyCompletes ==
     \A entry \in [pid : 1..MaxProcesses, token : 1..MaxIoOps] :
         entry \in io_pending ~> entry \notin io_pending
-
-\* ── Combined invariant ──────────────────────────────────────
-
-SafetyInvariant ==
-    /\ TypeOK
-    /\ ResultDeliveredToParentOnly
-    /\ ResultDeliveredAtMostOnce
-    /\ RunnableInQueue
-    /\ BlockedNotInQueue
-    /\ BlockedIsConsistent
-    /\ OnlyParentAwaits
-    /\ NoCircularAwait
-    /\ IoBlockedHasPending
-    /\ NoOrphanedIo
-    /\ MailboxExists
-    /\ WaitersExists
-    /\ WaitersConsistent
-    /\ BlockedAwaitListed
-    /\ AtMostOneWaiterPerChild
-    /\ NoSilentSerializationFailure
 
 ====

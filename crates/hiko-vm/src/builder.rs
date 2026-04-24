@@ -36,7 +36,9 @@ pub struct VMBuilder {
     http_allowed_hosts: Vec<String>,
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
     max_heap: Option<usize>,
-    max_fuel: Option<u64>,
+    max_memory_bytes: Option<usize>,
+    max_io_bytes: Option<u64>,
+    max_work: Option<u64>,
 }
 
 fn find_builtin(name: &str) -> Option<BuiltinFn> {
@@ -58,7 +60,9 @@ impl VMBuilder {
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
             max_heap: None,
-            max_fuel: None,
+            max_memory_bytes: None,
+            max_io_bytes: None,
+            max_work: None,
         }
     }
 
@@ -194,13 +198,32 @@ impl VMBuilder {
         self
     }
 
-    /// Set maximum fuel (opcode executions before timeout).
+    /// Set maximum work, currently measured in opcode executions.
     ///
     /// Separate fixed runtime guards still apply to the VM value stack and
     /// call-frame stack; see `hiko_vm::DEFAULT_MAX_STACK_SLOTS` and
     /// `hiko_vm::DEFAULT_MAX_CALL_FRAMES`.
-    pub fn max_fuel(mut self, fuel: u64) -> Self {
-        self.max_fuel = Some(fuel);
+    pub fn max_work(mut self, work: u64) -> Self {
+        self.max_work = Some(work);
+        self
+    }
+
+    /// Set maximum fuel, currently measured in opcode executions.
+    ///
+    /// This remains as a compatibility alias for `max_work`.
+    pub fn max_fuel(self, fuel: u64) -> Self {
+        self.max_work(fuel)
+    }
+
+    /// Set maximum tracked heap memory in bytes.
+    pub fn max_memory_bytes(mut self, bytes: usize) -> Self {
+        self.max_memory_bytes = Some(bytes);
+        self
+    }
+
+    /// Set maximum cumulative I/O bytes charged to the VM.
+    pub fn max_io_bytes(mut self, bytes: u64) -> Self {
+        self.max_io_bytes = Some(bytes);
         self
     }
 
@@ -222,8 +245,14 @@ impl VMBuilder {
         if let Some(max) = self.max_heap {
             vm.set_max_heap(max);
         }
-        if let Some(fuel) = self.max_fuel {
-            vm.set_fuel(fuel);
+        if let Some(max_memory_bytes) = self.max_memory_bytes {
+            vm.set_max_memory_bytes(max_memory_bytes);
+        }
+        if let Some(max_io_bytes) = self.max_io_bytes {
+            vm.set_max_io_bytes(max_io_bytes);
+        }
+        if let Some(work) = self.max_work {
+            vm.set_max_work(work);
         }
 
         vm

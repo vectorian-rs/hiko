@@ -46,7 +46,7 @@ pub enum IoRequest {
 #[derive(Debug, Clone)]
 pub enum IoResult {
     /// Operation completed successfully with a value.
-    Ok(SendableValue),
+    Ok { value: SendableValue, io_bytes: u64 },
     /// Operation failed with an error message.
     Err(String),
 }
@@ -86,20 +86,33 @@ impl IoBackend for MockIoBackend {
     fn register(&self, token: IoToken, request: IoRequest) {
         // Mock: complete immediately with canned responses
         let result = match request {
-            IoRequest::Sleep(_) => IoResult::Ok(SendableValue::Unit),
-            IoRequest::HttpGet { url } => IoResult::Ok(SendableValue::Tuple(vec![
-                SendableValue::Int(200),
-                SendableValue::List(vec![]),
-                SendableValue::String(format!("mock response from {url}").into()),
-            ])),
-            IoRequest::Http { url, method, .. } => IoResult::Ok(SendableValue::Tuple(vec![
-                SendableValue::Int(200),
-                SendableValue::List(vec![]),
-                SendableValue::String(format!("mock {method} {url}").into()),
-            ])),
-            IoRequest::ReadFile { path } => IoResult::Ok(SendableValue::String(
-                format!("mock contents of {path}").into(),
-            )),
+            IoRequest::Sleep(_) => IoResult::Ok {
+                value: SendableValue::Unit,
+                io_bytes: 0,
+            },
+            IoRequest::HttpGet { url } => {
+                let value = SendableValue::Tuple(vec![
+                    SendableValue::Int(200),
+                    SendableValue::List(vec![]),
+                    SendableValue::String(format!("mock response from {url}").into()),
+                ]);
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
+            IoRequest::Http { url, method, .. } => {
+                let value = SendableValue::Tuple(vec![
+                    SendableValue::Int(200),
+                    SendableValue::List(vec![]),
+                    SendableValue::String(format!("mock {method} {url}").into()),
+                ]);
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
+            IoRequest::ReadFile { path } => {
+                let value = SendableValue::String(format!("mock contents of {path}").into());
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
         };
         self.completed.lock().unwrap().push((token, result));
     }
@@ -163,10 +176,13 @@ fn execute_io_request(request: IoRequest) -> IoResult {
     match request {
         IoRequest::Sleep(duration) => {
             std::thread::sleep(duration);
-            IoResult::Ok(SendableValue::Unit)
+            IoResult::Ok {
+                value: SendableValue::Unit,
+                io_bytes: 0,
+            }
         }
         IoRequest::HttpGet { url } => match aio_http_get(&url) {
-            Ok(sv) => IoResult::Ok(sv),
+            Ok((value, io_bytes)) => IoResult::Ok { value, io_bytes },
             Err(e) => IoResult::Err(e),
         },
         IoRequest::Http {
@@ -176,11 +192,14 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             body,
             format,
         } => match aio_http(&method, &url, &headers, &body, format) {
-            Ok(sv) => IoResult::Ok(sv),
+            Ok((value, io_bytes)) => IoResult::Ok { value, io_bytes },
             Err(e) => IoResult::Err(e),
         },
         IoRequest::ReadFile { path } => match std::fs::read_to_string(&path) {
-            Ok(contents) => IoResult::Ok(SendableValue::String(contents.into())),
+            Ok(contents) => IoResult::Ok {
+                io_bytes: contents.len() as u64,
+                value: SendableValue::String(contents.into()),
+            },
             Err(e) => IoResult::Err(format!("read_file: {e}")),
         },
     }
@@ -188,7 +207,7 @@ fn execute_io_request(request: IoRequest) -> IoResult {
 
 /// Async HTTP GET — runs on I/O pool thread.
 #[cfg(feature = "builtin-http")]
-fn aio_http_get(url: &str) -> Result<SendableValue, String> {
+fn aio_http_get(url: &str) -> Result<(SendableValue, u64), String> {
     aio_http("GET", url, &[], "", HttpResponseFormat::Text)
 }
 
@@ -200,7 +219,7 @@ fn aio_http(
     req_headers: &[(String, String)],
     body: &str,
     format: HttpResponseFormat,
-) -> Result<SendableValue, String> {
+) -> Result<(SendableValue, u64), String> {
     let response = hiko_common::dispatch_ureq(method, url, req_headers, body)?;
 
     let status = SendableValue::Int(response.status().as_u16() as i64);
@@ -216,13 +235,14 @@ fn aio_http(
         })
         .collect();
 
-    let resp_body = match format {
+    let (resp_body, io_bytes) = match format {
         HttpResponseFormat::Text => {
             let s = response
                 .into_body()
                 .read_to_string()
                 .map_err(|e| format!("http: {e}"))?;
-            SendableValue::String(s.into())
+            let io_bytes = s.len() as u64;
+            (SendableValue::String(s.into()), io_bytes)
         }
         HttpResponseFormat::Json => {
             #[cfg(feature = "builtin-http")]
@@ -233,7 +253,7 @@ fn aio_http(
                     .map_err(|e| format!("http_json: {e}"))?;
                 let parsed: serde_json::Value =
                     serde_json::from_str(&s).map_err(|e| format!("http_json: {e}"))?;
-                json_value_to_sendable(&parsed)?
+                (json_value_to_sendable(&parsed)?, s.len() as u64)
             }
             #[cfg(not(feature = "builtin-http"))]
             {
@@ -244,10 +264,14 @@ fn aio_http(
         HttpResponseFormat::Msgpack => {
             #[cfg(feature = "builtin-http")]
             {
-                let reader = response.into_body().into_reader();
+                let mut reader = response.into_body().into_reader();
+                let mut buf = Vec::new();
+                reader
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("http_msgpack: {e}"))?;
                 let parsed: serde_json::Value =
-                    rmp_serde::from_read(reader).map_err(|e| format!("http_msgpack: {e}"))?;
-                json_value_to_sendable(&parsed)?
+                    rmp_serde::from_slice(&buf).map_err(|e| format!("http_msgpack: {e}"))?;
+                (json_value_to_sendable(&parsed)?, buf.len() as u64)
             }
             #[cfg(not(feature = "builtin-http"))]
             {
@@ -262,15 +286,15 @@ fn aio_http(
                 .into_reader()
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("http_bytes: {e}"))?;
-            SendableValue::Bytes(buf.into())
+            let io_bytes = buf.len() as u64;
+            (SendableValue::Bytes(buf.into()), io_bytes)
         }
     };
 
-    Ok(SendableValue::Tuple(vec![
-        status,
-        SendableValue::List(headers),
-        resp_body,
-    ]))
+    Ok((
+        SendableValue::Tuple(vec![status, SendableValue::List(headers), resp_body]),
+        io_bytes,
+    ))
 }
 
 /// Convert a serde_json::Value to SendableValue (for async JSON/msgpack parsing).
@@ -310,7 +334,7 @@ fn json_value_to_sendable(v: &serde_json::Value) -> Result<SendableValue, String
 }
 
 #[cfg(not(feature = "builtin-http"))]
-fn aio_http_get(url: &str) -> Result<SendableValue, String> {
+fn aio_http_get(url: &str) -> Result<(SendableValue, u64), String> {
     let _ = url;
     Err("http_get is not available in this build".into())
 }
@@ -322,7 +346,7 @@ fn aio_http(
     req_headers: &[(String, String)],
     body: &str,
     format: HttpResponseFormat,
-) -> Result<SendableValue, String> {
+) -> Result<(SendableValue, u64), String> {
     let _ = (method, url, req_headers, body, format);
     Err("HTTP builtins are not available in this build".into())
 }
@@ -334,9 +358,9 @@ mod tests {
     #[test]
     #[cfg(feature = "builtin-http")]
     fn test_json_value_to_sendable_normal_float() {
-        let v: serde_json::Value = serde_json::from_str("3.14").unwrap();
+        let v: serde_json::Value = serde_json::from_str("3.5").unwrap();
         let result = json_value_to_sendable(&v).unwrap();
-        assert!(matches!(result, SendableValue::Float(f) if (f - 3.14).abs() < f64::EPSILON));
+        assert!(matches!(result, SendableValue::Float(f) if (f - 3.5).abs() < f64::EPSILON));
     }
 
     #[test]
@@ -368,7 +392,13 @@ mod tests {
         let results = backend.poll();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, IoToken(1));
-        assert!(matches!(results[0].1, IoResult::Ok(SendableValue::Unit)));
+        assert!(matches!(
+            results[0].1,
+            IoResult::Ok {
+                value: SendableValue::Unit,
+                io_bytes: 0
+            }
+        ));
     }
 
     #[test]

@@ -137,7 +137,7 @@ impl ThreadedRuntime {
         let pid = self.new_pid();
         let mut vm = VM::new(program);
         vm.enable_output_capture();
-        vm.async_io = true;
+        vm.set_async_io(true);
         let process = Process::new(pid, vm, None);
         self.table.insert(process);
         self.scheduler.enqueue(pid);
@@ -179,8 +179,14 @@ impl ThreadedRuntime {
                     && let Some(mut process) = self.table.processes.get_mut(&pid)
                 {
                     match result {
-                        crate::io_backend::IoResult::Ok(sv) => {
-                            match deliver_result_to_parent(&mut process.vm, sv) {
+                        crate::io_backend::IoResult::Ok { value, io_bytes } => {
+                            match process
+                                .vm
+                                .heap
+                                .charge_io_bytes(io_bytes)
+                                .map_err(|e| ProcessFailure::runtime(e.to_string()))
+                                .and_then(|()| deliver_result_to_parent(&mut process.vm, value))
+                            {
                                 Ok(()) => {
                                     process.status = ProcessStatus::Runnable;
                                     drop(process);
@@ -196,7 +202,13 @@ impl ThreadedRuntime {
                             }
                         }
                         crate::io_backend::IoResult::Err(msg) => {
-                            process.status = ProcessStatus::Failed(ProcessFailure::runtime(msg));
+                            process.status = match process.vm.heap.charge_io_bytes(msg.len() as u64)
+                            {
+                                Ok(()) => ProcessStatus::Failed(ProcessFailure::runtime(msg)),
+                                Err(err) => {
+                                    ProcessStatus::Failed(ProcessFailure::runtime(err.to_string()))
+                                }
+                            };
                             drop(process);
                             self.scheduler.remove(pid);
                             wake_any_waiters(&self.table, &*self.scheduler, pid);
@@ -331,7 +343,7 @@ fn cancel_scope_children(table: &ProcessTable, scheduler: &dyn Scheduler, parent
                     wake_join_waiters(table, scheduler, child_pid);
                 }
                 ProcessStatus::Runnable => {
-                    child.cancelled = true;
+                    child.vm.request_cancellation();
                     drop(child);
                 }
                 _ => {
@@ -354,6 +366,11 @@ fn worker_loop(
     active_workers: &std::sync::atomic::AtomicUsize,
     io_backend: &dyn IoBackend,
 ) {
+    // Ownership model:
+    // - runnable/blocked processes live in `table.processes`
+    // - the currently executing process is temporarily removed from the table
+    // - terminal children are replaced by tombstones so await/cancel can still
+    //   observe parent/child relationships without keeping the full VM alive
     struct ActiveSlice<'a>(&'a std::sync::atomic::AtomicUsize);
 
     impl Drop for ActiveSlice<'_> {
@@ -377,9 +394,11 @@ fn worker_loop(
             None => continue,
         };
 
-        // Apply any pending cancel requested while this process was executing.
+        // Cooperative cancellation is owned by the VM. A concurrent cancel
+        // request can only mark intent here; the interpreter observes it at the
+        // next slice boundary and returns `RunResult::Cancelled`.
         if table.pending_cancels.remove(&pid).is_some() {
-            process.cancelled = true;
+            process.vm.request_cancellation();
         }
 
         let result = process.vm.run_slice(reductions);
@@ -640,6 +659,12 @@ fn block_on_child(
     child_pid: Pid,
     await_kind: AwaitKind,
 ) {
+    // Transition:
+    // runnable parent -> blocked parent registered under `waiters[child_pid]`
+    //
+    // Registration happens before the parent is re-published so a racing child
+    // completion can still discover the waiter and deliver the tombstoned
+    // result.
     parent.status = ProcessStatus::Blocked(BlockReason::Await {
         child: child_pid,
         kind: await_kind,
@@ -696,7 +721,6 @@ fn handle_cancel(
                     parent.vm.push_value(Value::Unit);
                     table.return_process(parent);
                     scheduler.enqueue(parent_pid);
-                    return;
                 }
                 Some(_) => {
                     parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
@@ -704,7 +728,6 @@ fn handle_cancel(
                         child_pid, parent_pid
                     )));
                     table.return_process(parent);
-                    return;
                 }
                 None => {
                     parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
@@ -712,7 +735,6 @@ fn handle_cancel(
                         child_pid
                     )));
                     table.return_process(parent);
-                    return;
                 }
             }
         }
@@ -752,7 +774,7 @@ fn handle_cancel(
                     wake_join_waiters(table, scheduler, child_pid);
                 }
                 ProcessStatus::Runnable => {
-                    child.cancelled = true;
+                    child.vm.request_cancellation();
                     drop(child);
                 }
             }
@@ -838,6 +860,11 @@ fn handle_wait_any(
         }
     }
 
+    // Transition:
+    // runnable parent -> blocked on an arbitrary child completion
+    //
+    // The parent is registered with every child pid so the first child that
+    // reaches a tombstone can wake and resume it.
     parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
     // Register all waiters BEFORE returning parent to table, so that
     // if a child finishes concurrently, wake_any_waiters will find
@@ -1298,6 +1325,43 @@ mod tests {
     }
 
     #[test]
+    fn test_async_read_file_respects_io_limit() {
+        let root = temp_path("async-read-file-io-limit");
+        let data = root.join("data.txt");
+        let root_str = root.to_string_lossy();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&data, "hello").unwrap();
+
+        let program = compile("val _ = read_file \"data.txt\"");
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.new_pid();
+        let mut vm = VM::new(program);
+        vm.enable_output_capture();
+        vm.set_async_io(true);
+        vm.set_fs_root(root_str.to_string());
+        vm.set_max_io_bytes(4);
+        let process = Process::new(pid, vm, None);
+        runtime.table.insert(process);
+        runtime.scheduler.enqueue(pid);
+
+        runtime.run_to_completion().unwrap();
+
+        let process = runtime
+            .table
+            .processes
+            .get(&pid)
+            .expect("root process missing");
+        match &process.status {
+            ProcessStatus::Failed(ProcessFailure::RuntimeError(message)) => {
+                assert!(message.starts_with("io limit exceeded:"));
+            }
+            other => panic!("expected io limit failure, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn test_double_await_fails() {
         // Second await on the same child should fail (result consumed)
         let program = compile(
@@ -1341,7 +1405,7 @@ mod tests {
         let pid = runtime.new_pid();
         let mut vm = VM::new(program);
         vm.enable_output_capture();
-        vm.async_io = true;
+        vm.set_async_io(true);
         vm.set_fs_root(root_str.to_string());
         let process = Process::new(pid, vm, None);
         runtime.table.insert(process);

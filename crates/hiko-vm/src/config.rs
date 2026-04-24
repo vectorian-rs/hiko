@@ -22,8 +22,11 @@ pub struct RunConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
+    pub max_work: Option<u64>,
     pub max_fuel: Option<u64>,
     pub max_heap: Option<usize>,
+    pub max_memory_bytes: Option<usize>,
+    pub max_io_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -317,13 +320,6 @@ enabled_family!(DateCapabilities {
     parse_rfc9557 => "date_parse_rfc9557",
 });
 
-enabled_family!(ProcessCapabilities {
-    spawn => "spawn",
-    await_process => "await_process",
-    cancel => "cancel",
-    wait_any => "wait_any",
-});
-
 enabled_family!(PathCapabilities {
     path_join => "path_join",
 });
@@ -368,6 +364,67 @@ pub struct ExecCapabilities {
     exec: Option<ExecLeaf>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessCapabilities {
+    spawn: Option<EnabledLeaf>,
+    await_process: Option<EnabledLeaf>,
+    cancel: Option<EnabledLeaf>,
+    wait_any: Option<EnabledLeaf>,
+}
+
+impl ProcessCapabilities {
+    fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
+        if self.spawn.as_ref().is_some_and(|leaf| leaf.enabled) {
+            builder = builder.register_builtin_name("spawn");
+        }
+        if self.await_process.as_ref().is_some_and(|leaf| leaf.enabled) {
+            builder = builder
+                .register_builtin_name("await_process")
+                .register_builtin_name("await_process_result");
+        }
+        if self.cancel.as_ref().is_some_and(|leaf| leaf.enabled) {
+            builder = builder.register_builtin_name("cancel");
+        }
+        if self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled) {
+            builder = builder.register_builtin_name("wait_any");
+        }
+        builder
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        if self.spawn.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.insert("spawn");
+        }
+        if self.await_process.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.insert("await_process");
+            out.insert("await_process_result");
+        }
+        if self.cancel.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.insert("cancel");
+        }
+        if self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.insert("wait_any");
+        }
+    }
+
+    fn emit(&self, out: &mut String) {
+        if self.spawn.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.push_str("            .register_builtin_name(\"spawn\")\n");
+        }
+        if self.await_process.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.push_str("            .register_builtin_name(\"await_process\")\n");
+            out.push_str("            .register_builtin_name(\"await_process_result\")\n");
+        }
+        if self.cancel.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.push_str("            .register_builtin_name(\"cancel\")\n");
+        }
+        if self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled) {
+            out.push_str("            .register_builtin_name(\"wait_any\")\n");
+        }
+    }
+}
+
 impl ExecCapabilities {
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
         if let Some(leaf) = &self.exec
@@ -402,6 +459,15 @@ impl ExecCapabilities {
         {
             out.insert("exec");
         }
+    }
+}
+
+impl ProcessCapabilities {
+    fn requires_runtime(&self) -> bool {
+        self.spawn.as_ref().is_some_and(|leaf| leaf.enabled)
+            || self.await_process.as_ref().is_some_and(|leaf| leaf.enabled)
+            || self.cancel.as_ref().is_some_and(|leaf| leaf.enabled)
+            || self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled)
     }
 }
 
@@ -516,6 +582,10 @@ impl Capabilities {
         self.testing.extend_enabled(&mut out);
         out
     }
+
+    fn requires_runtime(&self) -> bool {
+        self.process.requires_runtime()
+    }
 }
 
 fn rust_string_vec(values: &[String]) -> String {
@@ -593,11 +663,17 @@ impl RunConfig {
     pub fn apply_to_builder(&self, builder: VMBuilder) -> VMBuilder {
         let mut builder = self.capabilities.apply(builder);
 
-        if let Some(fuel) = self.limits.max_fuel {
-            builder = builder.max_fuel(fuel);
+        if let Some(work) = self.limits.max_work.or(self.limits.max_fuel) {
+            builder = builder.max_work(work);
         }
         if let Some(heap) = self.limits.max_heap {
             builder = builder.max_heap(heap);
+        }
+        if let Some(max_memory_bytes) = self.limits.max_memory_bytes {
+            builder = builder.max_memory_bytes(max_memory_bytes);
+        }
+        if let Some(max_io_bytes) = self.limits.max_io_bytes {
+            builder = builder.max_io_bytes(max_io_bytes);
         }
 
         builder
@@ -611,6 +687,12 @@ impl RunConfig {
     /// Return the public builtin names enabled by this run config.
     pub fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
         self.capabilities.enabled_builtin_names()
+    }
+
+    /// Return whether this config enables process builtins that need the
+    /// runtime scheduler instead of direct `VM::run()`.
+    pub fn requires_runtime(&self) -> bool {
+        self.capabilities.requires_runtime()
     }
 
     /// Return the config leaf path that enables a builtin, if it is modeled
@@ -648,11 +730,19 @@ impl RunConfig {
         s.push_str("    let mut vm = {\n");
         s.push_str("        let builder = VMBuilder::new(compiled)\n");
         self.capabilities.emit(&mut s);
-        if let Some(fuel) = self.limits.max_fuel {
-            s.push_str(&format!("            .max_fuel({fuel})\n"));
+        if let Some(work) = self.limits.max_work.or(self.limits.max_fuel) {
+            s.push_str(&format!("            .max_work({work})\n"));
         }
         if let Some(heap) = self.limits.max_heap {
             s.push_str(&format!("            .max_heap({heap})\n"));
+        }
+        if let Some(max_memory_bytes) = self.limits.max_memory_bytes {
+            s.push_str(&format!(
+                "            .max_memory_bytes({max_memory_bytes})\n"
+            ));
+        }
+        if let Some(max_io_bytes) = self.limits.max_io_bytes {
+            s.push_str(&format!("            .max_io_bytes({max_io_bytes})\n"));
         }
         s.push_str("            ;\n");
         s.push_str("        builder.build()\n");
@@ -763,7 +853,43 @@ folders = ["."]
             .join("../../policies/software-developer-role.policy.toml");
         let text =
             std::fs::read_to_string(path).expect("software developer role policy should exist");
-        RunConfig::from_toml(&text).expect("software developer role policy should parse");
+        let config =
+            RunConfig::from_toml(&text).expect("software developer role policy should parse");
+        assert!(config.requires_runtime());
+    }
+
+    #[test]
+    fn parse_should_fail_io_policy() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policies/should-fail-io.policy.toml");
+        let text = std::fs::read_to_string(path).expect("should-fail-io policy should exist");
+        RunConfig::from_toml(&text).expect("should-fail-io policy should parse");
+    }
+
+    #[test]
+    fn parse_work_demo_policies() {
+        for policy in [
+            "work-demo-tight.policy.toml",
+            "work-demo-enough.policy.toml",
+        ] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../policies")
+                .join(policy);
+            let text = std::fs::read_to_string(path).expect("work demo policy should exist");
+            RunConfig::from_toml(&text).expect("work demo policy should parse");
+        }
+    }
+
+    #[test]
+    fn config_without_process_capabilities_does_not_require_runtime() {
+        let config = RunConfig::from_toml(
+            r#"
+[capabilities.stdio.println]
+enabled = true
+"#,
+        )
+        .expect("config should parse");
+        assert!(!config.requires_runtime());
     }
 
     #[test]

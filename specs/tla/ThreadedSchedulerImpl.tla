@@ -36,7 +36,6 @@ vars == <<procs, queue, workers, waiters, io_waiters, next_pid, next_token, shut
 Runnable       == "runnable"
 Running        == "running"
 BlockedAwait   == "blocked_await"
-BlockedReceive == "blocked_receive"
 BlockedIo      == "blocked_io"
 Done           == "done"
 Failed         == "failed"
@@ -68,10 +67,9 @@ IsHeld(pid) == HeldBy(pid) # {}
 
 StuckPids ==
     {p \in DOMAIN procs :
-        \/ procs[p].status = BlockedReceive
-        \/ /\ procs[p].status = BlockedAwait
-           /\ procs[p].target \in DOMAIN procs
-           /\ procs[procs[p].target].status \in {BlockedAwait, BlockedReceive, Failed}}
+        /\ procs[p].status = BlockedAwait
+        /\ procs[p].target \in DOMAIN procs
+        /\ procs[procs[p].target].status \in {BlockedAwait, Failed}}
 
 \* Rebuild waiters for deadlock cleanup.
 FilteredWaiters(dead) ==
@@ -143,24 +141,13 @@ WorkerAwaitBlock(w, child) ==
     /\ LET parent == workers[w] IN
         /\ procs[parent].status = Running
         /\ procs[child].parent = parent
-        /\ procs[child].status \in {Runnable, Running, BlockedAwait, BlockedReceive, BlockedIo}
+        /\ procs[child].status \in {Runnable, Running, BlockedAwait, BlockedIo}
         /\ procs' = [procs EXCEPT ![parent].status = BlockedAwait,
                                    ![parent].target = child]
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ waiters' = [waiters EXCEPT ![child] = @ \union {parent}]
         /\ step' = step + 1
         /\ UNCHANGED <<queue, io_waiters, next_pid, next_token, shutdown>>
-
-WorkerBlockReceive(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ LET pid == workers[w] IN
-        /\ procs[pid].status = Running
-        /\ procs' = [procs EXCEPT ![pid].status = BlockedReceive]
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ step' = step + 1
-        /\ UNCHANGED <<queue, waiters, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerRequestIo(w) ==
     /\ StepOK
@@ -278,7 +265,6 @@ Next ==
         \/ \E pid \in DOMAIN procs : DequeueStale(w, pid)
         \/ WorkerYield(w)
         \/ WorkerSpawn(w)
-        \/ WorkerBlockReceive(w)
         \/ WorkerRequestIo(w)
         \/ WorkerDone(w)
         \/ WorkerFail(w)
@@ -295,7 +281,7 @@ TypeOK ==
     /\ step \in Nat
     /\ shutdown \in BOOLEAN
     /\ \A p \in DOMAIN procs :
-        /\ procs[p].status \in {Runnable, Running, BlockedAwait, BlockedReceive, BlockedIo, Done, Failed}
+        /\ procs[p].status \in {Runnable, Running, BlockedAwait, BlockedIo, Done, Failed}
         /\ procs[p].parent \in (DOMAIN procs) \union {0}
         /\ procs[p].target \in Nat \union {0}
     /\ \A w \in Workers : workers[w] \in (DOMAIN procs) \union {0}
@@ -313,7 +299,7 @@ OnlyHeldProcessesAreRunning ==
 
 BlockedNeverHeld ==
     \A p \in DOMAIN procs :
-        (procs[p].status \in {BlockedAwait, BlockedReceive, BlockedIo, Done, Failed}) =>
+        (procs[p].status \in {BlockedAwait, BlockedIo, Done, Failed}) =>
             ~IsHeld(p)
 
 AtMostOneWaiterPerChild ==
@@ -367,13 +353,24 @@ ImplFairness ==
 
 LiveSpec == Init /\ [][Next]_vars /\ ImplFairness
 
+ImplParentWaitingOnTerminalChild(parent, child) ==
+    IF /\ parent \in DOMAIN procs
+       /\ child \in DOMAIN procs
+    THEN /\ procs[child].status \in {Done, Failed}
+         /\ parent \in waiters[child]
+    ELSE FALSE
+
+ImplParentUnblockedOrFailed(parent) ==
+    IF parent \in DOMAIN procs
+    THEN procs[parent].status \in {Runnable, Running, Failed}
+    ELSE TRUE
+
 \* If a parent is blocked awaiting a child that finished, it eventually unblocks
 ImplParentEventuallyWoken ==
     \A child \in 1..MaxProcesses :
         \A parent \in 1..MaxProcesses :
-            [](procs[child].status \in {Done, Failed}
-               /\ parent \in waiters[child]
-               ~> procs[parent].status \in {Runnable, Running, Failed})
+            ImplParentWaitingOnTerminalChild(parent, child)
+                ~> ImplParentUnblockedOrFailed(parent)
 
 \* Every pending I/O entry eventually resolves
 ImplIoEventuallyCompletes ==

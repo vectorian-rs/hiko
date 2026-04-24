@@ -168,8 +168,6 @@ pub struct Process {
     pub parent: Option<Pid>,
     /// The scope this process belongs to.
     pub scope_id: Option<ScopeId>,
-    /// Cooperative cancellation flag. Checked at suspension/resume points.
-    pub cancelled: bool,
 }
 
 impl Process {
@@ -180,7 +178,6 @@ impl Process {
             status: ProcessStatus::Runnable,
             parent,
             scope_id: None,
-            cancelled: false,
         }
     }
 
@@ -191,7 +188,6 @@ impl Process {
             status: ProcessStatus::Runnable,
             parent,
             scope_id: Some(scope_id),
-            cancelled: false,
         }
     }
 

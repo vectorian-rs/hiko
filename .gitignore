@@ -1,3 +1,6 @@
+node_modules/
+.crush/
+.claude/
 target/
 .qwen/
 _apalache-out/

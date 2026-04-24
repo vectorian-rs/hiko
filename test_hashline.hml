@@ -1,0 +1,5 @@
+use "./libraries/Std-v0.1.0/modules/Hashline.hml"
+
+val result = Hashline.run (fn () => Hashline.read_all "examples/hello.hml")
+
+val _ = print result

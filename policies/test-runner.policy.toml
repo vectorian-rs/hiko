@@ -39,5 +39,12 @@ folders = ["."]
 
 [capabilities.exec.exec]
 enabled = true
-allowed_commands = ["./target/release/hiko-cli", "./target/release/hiko-vm-hiko-run-all-policy"]
+allowed_commands = [
+  "./target/release/hiko-cli",
+  "./target/release/hiko-vm-hiko-run-all-policy",
+  "./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy",
+]
 timeout = 30
+
+[capabilities.testing.panic]
+enabled = true

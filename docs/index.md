@@ -61,9 +61,11 @@ Audit snapshot on 2026-04-21:
 
 ## Verification / Testing Docs
 
-- [verification-tla.md](verification-tla.md): TLA+ specs and findings for
-  process lifecycle and threaded runtime behavior; open for deadlock, wakeup,
-  cancellation, or scheduler-correctness work.
+- [verification-tla.md](verification-tla.md): current verification status and
+  trust boundaries for the TLA+/Quint specs; open first for deadlock, wakeup,
+  cancellation, or scheduler-correctness work. The semantic TLA+ lifecycle spec
+  is ahead of the Quint lifecycle port, and the lower-level threaded spec is
+  still partial.
 
 ## Migration / User Guidance Docs
 
@@ -125,6 +127,7 @@ Audit snapshot on 2026-04-21:
 2. [vm.md](vm.md)
 3. [verification-tla.md](verification-tla.md)
 4. [sml-deltas.md](sml-deltas.md) if semantics or language rules are involved
+5. Prefer `specs/tla` over `specs/quint` if you need the current formal model
 
 ### Middleware Work
 

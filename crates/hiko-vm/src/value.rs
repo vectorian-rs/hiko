@@ -1,5 +1,6 @@
 use smallvec::SmallVec;
 use std::fmt;
+use std::mem::size_of;
 use std::sync::Arc;
 
 /// Inline storage for up to 2 Values (32 bytes) without heap allocation.
@@ -70,6 +71,44 @@ pub struct SavedFrame {
 }
 
 impl HeapObject {
+    /// Approximate bytes retained by this heap object.
+    ///
+    /// This is a first-pass accounting model for VM memory limits. It counts
+    /// the object storage itself plus directly owned dynamic buffers, but it
+    /// deliberately does not attempt to de-duplicate shared `Arc` payloads.
+    pub fn estimated_bytes(&self) -> usize {
+        fn spilled_value_bytes(fields: &Fields) -> usize {
+            if fields.spilled() {
+                fields.capacity() * size_of::<Value>()
+            } else {
+                0
+            }
+        }
+
+        let base = size_of::<HeapObject>();
+        match self {
+            HeapObject::String(s) => base + s.capacity(),
+            HeapObject::Tuple(fields) => base + spilled_value_bytes(fields),
+            HeapObject::Data { fields, .. } => base + spilled_value_bytes(fields),
+            HeapObject::Closure { .. } => base,
+            HeapObject::Bytes(bytes) => base + bytes.capacity(),
+            HeapObject::Rng { .. } => base,
+            HeapObject::Continuation {
+                saved_frames,
+                saved_stack,
+                saved_handler,
+            } => {
+                let handler_clause_bytes = saved_handler
+                    .as_ref()
+                    .map(|handler| handler.clauses.capacity() * size_of::<(u16, usize)>())
+                    .unwrap_or(0);
+                base + saved_frames.capacity() * size_of::<SavedFrame>()
+                    + saved_stack.capacity() * size_of::<Value>()
+                    + handler_clause_bytes
+            }
+        }
+    }
+
     /// Visit all GcRefs directly contained in this object.
     pub fn for_each_gc_ref(&self, mut f: impl FnMut(GcRef)) {
         let visit = |values: &[Value], f: &mut dyn FnMut(GcRef)| {

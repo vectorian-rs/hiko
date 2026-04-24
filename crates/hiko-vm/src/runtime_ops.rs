@@ -61,6 +61,16 @@ pub fn deliver_pid_to_parent(parent_vm: &mut VM, pid: Pid) {
 }
 
 /// Create a child VM that inherits capabilities from the parent VM.
+///
+/// Process creation currently has four distinct stages:
+///
+/// 1. `VM::create_child()` clones immutable program metadata and rebuilds the
+///    builtin/global tables for a fresh interpreter instance.
+/// 2. Spawn captures are deserialized into the child heap.
+/// 3. `VM::setup_closure_call()` installs the initial frame for the closure.
+/// 4. The runtime wraps the VM in `Process` and inserts it into its table.
+///
+/// Only stages 1-3 happen here. Table insertion remains runtime-specific.
 pub fn create_child_vm_from_parent(
     parent_vm: &VM,
     proto_idx: usize,
@@ -130,21 +140,23 @@ fn alloc_heap_value(
     heap: &mut crate::heap::Heap,
     object: HeapObject,
 ) -> Result<Value, ProcessFailure> {
-    heap.alloc(object)
-        .map(Value::Heap)
-        .map_err(|e| ProcessFailure::HeapObjectLimitExceeded {
-            limit: e.limit,
-            live: e.live,
-        })
+    heap.alloc(object).map(Value::Heap).map_err(|e| match e {
+        crate::heap::HeapLimitExceeded::Objects { limit, live } => {
+            ProcessFailure::HeapObjectLimitExceeded { limit, live }
+        }
+        crate::heap::HeapLimitExceeded::Bytes { .. } => ProcessFailure::runtime(e.to_string()),
+    })
 }
 
 fn deserialize_with_heap_limit(
     sendable: SendableValue,
     heap: &mut crate::heap::Heap,
 ) -> Result<Value, ProcessFailure> {
-    deserialize(sendable, heap).map_err(|e| ProcessFailure::HeapObjectLimitExceeded {
-        limit: e.limit,
-        live: e.live,
+    deserialize(sendable, heap).map_err(|e| match e {
+        crate::heap::HeapLimitExceeded::Objects { limit, live } => {
+            ProcessFailure::HeapObjectLimitExceeded { limit, live }
+        }
+        crate::heap::HeapLimitExceeded::Bytes { .. } => ProcessFailure::runtime(e.to_string()),
     })
 }
 

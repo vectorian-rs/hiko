@@ -1,0 +1,2 @@
+(* Expected to fail under policies/should-fail-io.policy.toml. *)
+val _ = read_file_tagged ("examples/should_fail_io_fixture.txt", 0, 0)

@@ -503,7 +503,7 @@ impl Runtime {
             Some(process) => match &process.status {
                 ProcessStatus::Blocked(reason) => Some(reason.clone()),
                 _ => {
-                    process.cancelled = true;
+                    process.vm.request_cancellation();
                     None
                 }
             },
@@ -671,6 +671,11 @@ impl Runtime {
     /// Get the current lifecycle status of a process.
     pub fn get_status(&self, pid: Pid) -> Option<&ProcessStatus> {
         self.processes.get(&pid).map(|p| &p.status)
+    }
+
+    /// Get the root VM's last error span, if any.
+    pub fn get_error_span(&self, pid: Pid) -> Option<hiko_syntax::span::Span> {
+        self.processes.get(&pid).and_then(|p| p.vm.error_span())
     }
 
     /// Get the number of processes.

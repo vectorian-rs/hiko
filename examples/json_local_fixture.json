@@ -1,0 +1,14 @@
+[
+  {
+    "name": "README.md",
+    "type": "file"
+  },
+  {
+    "name": "examples",
+    "type": "dir"
+  },
+  {
+    "name": "crates",
+    "type": "dir"
+  }
+]

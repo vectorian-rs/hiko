@@ -1,0 +1,2 @@
+(* Expected to fail under policies/should-fail-io.policy.toml. *)
+val _ = println "abcdef"

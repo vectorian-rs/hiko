@@ -14,7 +14,7 @@ def hash_fn(data):
     return _blake3.blake3(data).hexdigest()
 
 SKIP = set()
-TARGET_DIR = "/Users/l1x/code/home/vectorian-rs/hiko/.git"
+TARGET_DIR = ".git"
 
 t0 = time.monotonic()
 results = []

@@ -1,0 +1,5 @@
+(* Expected to fail under policies/should-fail-io.policy.toml.
+ * Example:
+ *   printf 'abcdef' | hiko run --config policies/should-fail-io.policy.toml examples/should_fail_io_stdin.hml
+ *)
+val _ = read_stdin ()

@@ -25,6 +25,8 @@ fn do_http_request(
 ) -> Result<(Value, Value, Box<dyn std::io::Read + Send>), String> {
     heap.check_http_host_for(name, url)
         .map_err(|e| format!("{name}: {e}"))?;
+    heap.charge_io_bytes(body.len() as u64)
+        .map_err(|e| format!("{name}: {e}"))?;
     let response = hiko_common::dispatch_ureq(method, url, headers, body)
         .map_err(|e| format!("{name}: {e}"))?;
     let status = Value::Int(response.status().as_u16() as i64);
@@ -45,6 +47,8 @@ pub(super) fn http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     let mut body_str = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body_str)
         .map_err(|e| format!("http_get: {e}"))?;
+    heap.charge_io_bytes(body_str.len() as u64)
+        .map_err(|e| format!("http_get: {e}"))?;
     let body = heap_alloc(heap, HeapObject::String(body_str))?;
     heap_alloc(heap, HeapObject::Tuple(smallvec![status, headers, body]))
 }
@@ -55,6 +59,8 @@ pub(super) fn http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         do_http_request(&method, &url, &req_headers, &body, "http", heap)?;
     let mut body_str = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body_str).map_err(|e| format!("http: {e}"))?;
+    heap.charge_io_bytes(body_str.len() as u64)
+        .map_err(|e| format!("http: {e}"))?;
     let resp_body = heap_alloc(heap, HeapObject::String(body_str))?;
     heap_alloc(
         heap,
@@ -69,6 +75,8 @@ pub(super) fn http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String
     let mut body_str = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body_str)
         .map_err(|e| format!("http_json: {e}"))?;
+    heap.charge_io_bytes(body_str.len() as u64)
+        .map_err(|e| format!("http_json: {e}"))?;
     let parsed: serde_json::Value =
         serde_json::from_str(&body_str).map_err(|e| format!("http_json: {e}"))?;
     let resp_body = json_to_hiko(&parsed, heap)?;
@@ -80,10 +88,14 @@ pub(super) fn http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String
 
 pub(super) fn http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (method, url, req_headers, body) = extract_http_args(args, heap, "http_msgpack")?;
-    let (status, resp_headers, reader) =
+    let (status, resp_headers, mut reader) =
         do_http_request(&method, &url, &req_headers, &body, "http_msgpack", heap)?;
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut buf).map_err(|e| format!("http_msgpack: {e}"))?;
+    heap.charge_io_bytes(buf.len() as u64)
+        .map_err(|e| format!("http_msgpack: {e}"))?;
     let parsed: serde_json::Value =
-        rmp_serde::from_read(reader).map_err(|e| format!("http_msgpack: {e}"))?;
+        rmp_serde::from_slice(&buf).map_err(|e| format!("http_msgpack: {e}"))?;
     let resp_body = json_to_hiko(&parsed, heap)?;
     heap_alloc(
         heap,
@@ -97,6 +109,8 @@ pub(super) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         do_http_request(&method, &url, &req_headers, &body, "http_bytes", heap)?;
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut buf).map_err(|e| format!("http_bytes: {e}"))?;
+    heap.charge_io_bytes(buf.len() as u64)
+        .map_err(|e| format!("http_bytes: {e}"))?;
     let resp_body = heap_alloc(heap, HeapObject::Bytes(buf))?;
     heap_alloc(
         heap,

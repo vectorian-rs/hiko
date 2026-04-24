@@ -1,0 +1,42 @@
+# Intentionally tiny I/O budget for limit-failure examples.
+# Use with examples/should_fail_io_*.hml to verify that byte-charged
+# host-boundary operations fail cleanly once they exceed the configured limit.
+
+[limits]
+max_work = 10_000_000
+max_io_bytes = 4
+max_heap = 100_000
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.stdio.read_stdin]
+enabled = true
+
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_bytes]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.write_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.list_dir]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_tagged]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.glob]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.walk_dir]
+enabled = true
+folders = ["."]

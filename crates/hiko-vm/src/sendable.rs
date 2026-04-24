@@ -29,6 +29,24 @@ pub enum SendableValue {
     },
 }
 
+impl SendableValue {
+    /// Approximate payload bytes represented by this value.
+    pub fn estimated_bytes(&self) -> usize {
+        match self {
+            SendableValue::Int(_) | SendableValue::Pid(_) | SendableValue::Float(_) => 8,
+            SendableValue::Bool(_) => 1,
+            SendableValue::Char(_) => 4,
+            SendableValue::Unit => 0,
+            SendableValue::String(text) => text.len(),
+            SendableValue::Bytes(bytes) => bytes.len(),
+            SendableValue::Tuple(fields) | SendableValue::List(fields) => {
+                fields.iter().map(Self::estimated_bytes).sum()
+            }
+            SendableValue::Data { fields, .. } => fields.iter().map(Self::estimated_bytes).sum(),
+        }
+    }
+}
+
 /// Serialize a VM Value into a SendableValue.
 /// Returns Err if the value contains non-sendable types
 /// (closures, continuations, Rng).

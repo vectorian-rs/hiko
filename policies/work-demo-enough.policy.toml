@@ -1,0 +1,11 @@
+# Enough work for examples/work_budget_demo.hml.
+
+[limits]
+max_work = 16
+max_heap = 100_000
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.convert.int_to_string]
+enabled = true

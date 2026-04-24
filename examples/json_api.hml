@@ -1,61 +1,64 @@
 (* json_api.hml -- Typed JSON with pattern matching *)
 
 import Std.Json
+
 import Std.List
 
 (* Build JSON programmatically *)
-val config = Json.JObject [
-  ("name", Json.JStr "hiko"),
-  ("version", Json.JStr "0.2.0"),
-  ("features", Json.JArray [Json.JStr "effects", Json.JStr "types", Json.JStr "vm"]),
-  ("limits", Json.JObject [
-    ("max_fuel", Json.JInt 10000000),
-    ("max_heap", Json.JInt 500000)
-  ]),
-  ("active", Json.JBool true),
-  ("pi", Json.JFloat 3.14159)
-]
+val config = Json.JObject [("name", Json.JStr "hiko"), ("version", Json.JStr "0.2.0"), ("features", Json.JArray [Json.JStr "effects", Json.JStr "types", Json.JStr "vm"]), ("limits", Json.JObject [("max_fuel", Json.JInt 10000000), ("max_heap", Json.JInt 500000)]), ("active", Json.JBool true), ("pi", Json.JFloat 3.14159)]
 
 (* Serialize to string *)
 val json_str = json_to_string config
+
 val _ = println "=== Serialized ==="
+
 val _ = println json_str
 
 (* Parse it back *)
 val parsed = json_parse json_str
 
 (* Helper to look up a key in a JSON object *)
-fun get key obj = case obj of
-    Json.JObject fields => (case List.filter (fn (k, _) => k = key) fields of
-        (_, v) :: _ => v
-      | [] => Json.JNull)
-  | _ => Json.JNull
+fun lookup_field (key : string) (fields : (string * Json.json) list) = case fields of
+      [] => Json.JNull
+    | (k, v) :: rest => if k = key then v else lookup_field key rest
+
+fun get (key : string) (obj : Json.json) = case obj of
+      Json.JObject fields => lookup_field key fields
+    | _ => Json.JNull
 
 (* Extract values with pattern matching *)
 val _ = println "\n=== Extracted ==="
+
 val _ = case get "name" parsed of
     Json.JStr s => println ("name: " ^ s)
   | _ => println "name: ?"
 
 val _ = case get "limits" parsed of
-    Json.JObject _ =>
-      let val fuel = case get "max_fuel" (get "limits" parsed) of
-              Json.JInt n => int_to_string n
-            | _ => "?"
-      in println ("max_fuel: " ^ fuel) end
+    Json.JObject _ => let
+      val fuel = case get "max_fuel" (get "limits" parsed) of
+          Json.JInt n => int_to_string n
+        | _ => "?"
+    in
+      println ("max_fuel: " ^ fuel)
+    end
   | _ => println "limits: ?"
 
 val _ = case get "features" parsed of
-    Json.JArray items =>
-      let
-        val _ = println ("features (" ^ int_to_string (List.length items) ^ "):")
-        val _ = List.map (fn f => case f of Json.JStr s => println ("  - " ^ s) | _ => ()) items
-      in () end
+    Json.JArray items => let
+      val _ = println ("features (" ^ int_to_string (List.length items) ^ "):")
+      val _ = List.map (fn f => case f of
+          Json.JStr s => println ("  - " ^ s)
+        | _ => ()) items
+    in
+      ()
+    end
   | _ => println "features: ?"
 
 (* Transform JSON: add a field *)
 val updated = case parsed of
     Json.JObject fields => Json.JObject (("timestamp", Json.JInt (epoch ())) :: fields)
   | other => other
+
 val _ = println "\n=== With timestamp ==="
+
 val _ = println (json_to_string updated)

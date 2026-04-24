@@ -254,7 +254,9 @@ Run configs define VM capabilities at compile time for generated binaries. A con
 
 ```toml
 [limits]
-max_fuel = 10_000_000
+max_work = 10_000_000
+max_memory_bytes = 268_435_456
+max_io_bytes = 67_108_864
 max_heap = 500_000
 
 [capabilities.stdio.println]
@@ -295,15 +297,32 @@ VMBuilder::new(compiled)
     .with_http(policy)              // all HTTP builtins
     .with_exec(policy)              // whitelisted commands + timeout
     .with_exit()                    // exit builtin
-    .max_fuel(10_000_000)           // opcode execution limit
-    .max_heap(500_000)              // heap object limit
+    .max_work(10_000_000)           // currently counted as opcode executions
+    .max_memory_bytes(256 * 1024 * 1024)
+    .max_io_bytes(64 * 1024 * 1024)
+    .max_heap(500_000)              // optional object-count guard
     .build()
 ```
 
-Heap size and fuel are configurable. The VM also enforces fixed hard guards of
-`hiko_vm::DEFAULT_MAX_STACK_SLOTS` (`65536` value-stack slots) and
-`hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536` call frames). Those two limits are
-currently runtime constants rather than config or `VMBuilder` settings.
+`max_work`, `max_memory_bytes`, and `max_io_bytes` are the primary bytecode,
+memory, and host-I/O limits. `max_fuel` remains accepted as a compatibility
+alias for `max_work`, and `max_heap` remains available as a separate
+object-count guard.
+
+To inspect the static bytecode size of a script, use:
+
+```bash
+hiko inspect-work examples/work_budget_demo.hml
+```
+
+That reports the number of compiled opcodes in `main` and each function. It is
+useful for straight-line code and small call graphs, but actual runtime
+`max_work` use still depends on how many times code paths execute.
+
+The VM also enforces fixed hard guards of `hiko_vm::DEFAULT_MAX_STACK_SLOTS`
+(`65536` value-stack slots) and `hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536`
+call frames). Those two limits are currently runtime constants rather than
+config or `VMBuilder` settings.
 
 ## Hashline edit system
 
