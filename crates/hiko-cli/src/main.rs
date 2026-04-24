@@ -39,7 +39,7 @@ fn main() {
         eprintln!(
             "  check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>  Type-check without executing"
         );
-        eprintln!("  fmt [--check] <file.hml>...  Format Hiko source files");
+        eprintln!("  fmt [--check] [--recurse] <file.hml|dir>...  Format Hiko source files");
         eprintln!("  inspect-work <file.hml>  Print static bytecode opcode counts");
         #[cfg(feature = "cli-hash")]
         eprintln!("  hash <file>...  Print BLAKE3 hashes for files");
@@ -154,6 +154,7 @@ struct ScriptOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FmtOptions {
     check: bool,
+    recurse: bool,
     paths: Vec<String>,
 }
 
@@ -492,13 +493,15 @@ fn parse_check_args(args: &[String]) -> ScriptOptions {
 }
 
 fn parse_fmt_args(args: &[String]) -> FmtOptions {
-    let usage = "Usage: hiko fmt [--check] <file.hml>...";
+    let usage = "Usage: hiko fmt [--check] [--recurse] <file.hml|dir>...";
     let mut check = false;
+    let mut recurse = false;
     let mut paths = Vec::new();
 
     for arg in args {
         match arg.as_str() {
             "--check" => check = true,
+            "--recurse" => recurse = true,
             _ if arg.starts_with('-') => {
                 eprintln!("Unknown option: {arg}");
                 eprintln!("{usage}");
@@ -513,7 +516,11 @@ fn parse_fmt_args(args: &[String]) -> FmtOptions {
         process::exit(1);
     }
 
-    FmtOptions { check, paths }
+    FmtOptions {
+        check,
+        recurse,
+        paths,
+    }
 }
 
 fn parse_inspect_work_args(args: &[String]) -> String {
@@ -1048,12 +1055,18 @@ fn fmt_files(options: &FmtOptions) {
     let mut had_error = false;
     let mut needs_formatting = false;
 
-    for path in &options.paths {
+    let paths = resolve_fmt_paths(options).unwrap_or_else(|message| {
+        eprintln!("error: {message}");
+        process::exit(1);
+    });
+
+    for path in &paths {
+        let display_path = path.display().to_string();
         let source = fs::read_to_string(path).unwrap_or_else(|error| {
-            eprintln!("error: cannot read {path}: {error}");
+            eprintln!("error: cannot read {display_path}: {error}");
             process::exit(1);
         });
-        let ctx = DiagCtx::new(path, source.clone());
+        let ctx = DiagCtx::new(&display_path, source.clone());
         let formatted = match format_source(&source, 0) {
             Ok(formatted) => formatted,
             Err(FormatError::Lex(error)) => {
@@ -1073,21 +1086,97 @@ fn fmt_files(options: &FmtOptions) {
         }
 
         if options.check {
-            println!("{path}");
+            println!("{display_path}");
             needs_formatting = true;
             continue;
         }
 
         fs::write(path, formatted).unwrap_or_else(|error| {
-            eprintln!("error: cannot write {path}: {error}");
+            eprintln!("error: cannot write {display_path}: {error}");
             process::exit(1);
         });
-        println!("formatted {path}");
+        println!("formatted {display_path}");
     }
 
     if had_error || (options.check && needs_formatting) {
         process::exit(1);
     }
+}
+
+fn resolve_fmt_paths(options: &FmtOptions) -> Result<Vec<PathBuf>, String> {
+    let mut seen = BTreeSet::new();
+    let mut resolved = Vec::new();
+
+    for raw_path in &options.paths {
+        collect_fmt_path(
+            &PathBuf::from(raw_path),
+            options.recurse,
+            &mut seen,
+            &mut resolved,
+        )?;
+    }
+
+    Ok(resolved)
+}
+
+fn collect_fmt_path(
+    path: &Path,
+    recurse: bool,
+    seen: &mut BTreeSet<PathBuf>,
+    resolved: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("cannot access {}: {error}", path.display()))?;
+
+    if metadata.is_file() {
+        let canonical = path.to_path_buf();
+        if seen.insert(canonical.clone()) {
+            resolved.push(canonical);
+        }
+        return Ok(());
+    }
+
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{} is not a regular file or directory",
+            path.display()
+        ));
+    }
+
+    if !recurse {
+        return Err(format!(
+            "{} is a directory; pass --recurse to format directories",
+            path.display()
+        ));
+    }
+
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let entry_path = entry.path();
+        let entry_metadata = entry
+            .metadata()
+            .map_err(|error| format!("cannot access {}: {error}", entry_path.display()))?;
+        if entry_metadata.is_dir() {
+            collect_fmt_path(&entry_path, true, seen, resolved)?;
+        } else if entry_metadata.is_file()
+            && entry_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "hml")
+        {
+            let canonical = entry_path.to_path_buf();
+            if seen.insert(canonical.clone()) {
+                resolved.push(canonical);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn build_vm(config_path: &str) {
@@ -1274,6 +1363,7 @@ mod tests {
             parse_fmt_args(&args),
             FmtOptions {
                 check: false,
+                recurse: false,
                 paths: vec![
                     "examples/hello.hml".to_string(),
                     "tools/read.hml".to_string()
@@ -1293,12 +1383,66 @@ mod tests {
             parse_fmt_args(&args),
             FmtOptions {
                 check: true,
+                recurse: false,
                 paths: vec![
                     "examples/hello.hml".to_string(),
                     "tools/read.hml".to_string()
                 ],
             }
         );
+    }
+
+    #[test]
+    fn parse_fmt_args_with_recurse() {
+        let args = vec!["--recurse".to_string(), "examples".to_string()];
+        assert_eq!(
+            parse_fmt_args(&args),
+            FmtOptions {
+                check: false,
+                recurse: true,
+                paths: vec!["examples".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_fmt_paths_recurse_collects_hml_files() {
+        let root = temp_dir("fmt-recurse");
+        let subdir = root.join("sub");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(root.join("one.hml"), "val x=1\n").unwrap();
+        fs::write(root.join("skip.txt"), "hello\n").unwrap();
+        fs::write(subdir.join("two.hml"), "val y=2\n").unwrap();
+
+        let paths = super::resolve_fmt_paths(&FmtOptions {
+            check: false,
+            recurse: true,
+            paths: vec![root.to_string_lossy().into_owned()],
+        })
+        .expect("directory resolution should succeed");
+
+        let resolved: Vec<String> = paths
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(resolved, vec!["one.hml", "sub/two.hml"]);
+    }
+
+    #[test]
+    fn resolve_fmt_paths_rejects_directory_without_recurse() {
+        let root = temp_dir("fmt-no-recurse");
+        let error = super::resolve_fmt_paths(&FmtOptions {
+            check: false,
+            recurse: false,
+            paths: vec![root.to_string_lossy().into_owned()],
+        })
+        .expect_err("directory input should require --recurse");
+        assert!(error.contains("pass --recurse"));
     }
 
     #[test]
