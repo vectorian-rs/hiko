@@ -429,7 +429,17 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     let checked_dir = heap
         .check_fs_path_for("walk_dir", &dir)
         .map_err(|e| format!("walk_dir: {e}"))?;
-    fn walk(dir: &std::path::Path, heap: &Heap, out: &mut Vec<String>) -> Result<(), String> {
+    fn walk(
+        dir: &std::path::Path,
+        heap: &Heap,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+        out: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let canonical_dir = std::fs::canonicalize(dir).map_err(|e| format!("walk_dir: {e}"))?;
+        if !visited.insert(canonical_dir) {
+            return Ok(());
+        }
+
         let entries = std::fs::read_dir(dir).map_err(|e| format!("walk_dir: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("walk_dir: {e}"))?;
@@ -437,7 +447,7 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
                 .check_fs_path_for("walk_dir", entry.path().to_string_lossy().as_ref())
                 .map_err(|e| format!("walk_dir: {e}"))?;
             if checked_path.is_dir() {
-                walk(&checked_path, heap, out)?;
+                walk(&checked_path, heap, visited, out)?;
             } else if checked_path.is_file() {
                 out.push(checked_path.to_string_lossy().to_string());
             }
@@ -445,7 +455,8 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         Ok(())
     }
     let mut files = Vec::new();
-    walk(&checked_dir, heap, &mut files)?;
+    let mut visited = std::collections::HashSet::new();
+    walk(&checked_dir, heap, &mut visited, &mut files)?;
     let mut values = Vec::with_capacity(files.len());
     for f in files {
         heap.charge_io_bytes(f.len() as u64)

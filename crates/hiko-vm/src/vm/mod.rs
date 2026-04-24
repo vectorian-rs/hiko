@@ -629,6 +629,35 @@ mod tests {
         }
     }
 
+    fn global_string_list(vm: &VM, name: &str) -> Vec<String> {
+        let mut values = Vec::new();
+        let mut current = *vm
+            .get_global(name)
+            .unwrap_or_else(|| panic!("no global: {name}"));
+
+        loop {
+            match current {
+                Value::Heap(r) => match vm.heap.get(r).unwrap() {
+                    HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
+                    HeapObject::Data { tag, fields } if *tag == TAG_CONS => {
+                        match fields[0] {
+                            Value::Heap(item_ref) => match vm.heap.get(item_ref).unwrap() {
+                                HeapObject::String(s) => values.push(s.clone()),
+                                v => panic!("expected String item for {name}, got {v:?}"),
+                            },
+                            v => panic!("expected String item for {name}, got {v:?}"),
+                        }
+                        current = fields[1];
+                    }
+                    v => panic!("expected list for {name}, got {v:?}"),
+                },
+                v => panic!("expected list for {name}, got {v:?}"),
+            }
+        }
+
+        values
+    }
+
     fn global_bool(vm: &VM, name: &str) -> bool {
         match vm
             .get_global(name)
@@ -1361,5 +1390,33 @@ mod tests {
         assert!(err.message.contains("outside allowed root"));
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fs_root_walk_dir_handles_symlink_cycle() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("fs-root-walk-cycle");
+        fs::write(root.join("file.txt"), "ok").unwrap();
+        symlink(&root, root.join("loop")).unwrap();
+
+        let program = compile_program("val files = walk_dir \".\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        vm.run().unwrap();
+        let files = global_string_list(&vm, "files");
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("file.txt"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }
