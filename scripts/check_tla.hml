@@ -27,9 +27,16 @@ fun run_check name args = let
     if code = 0 then println ("PASS " ^ name) else panic ("TLA check failed: " ^ name)
   end
 
+val trace_dir = "target/tla"
+
+val _ = if file_exists trace_dir then () else create_dir trace_dir
+
 val checks = [
     ("ProcessLifecycle validate", ["specs/tla/ProcessLifecycle.tla", "--config", "specs/tla/ProcessLifecycle.cfg", "--validate"]),
-    ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"])
+    ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"]),
+    ("WaitAnyLeftmost model", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost.trace.json"]),
+    ("WaitAnyLeftmost right-notifier scenario", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--scenario", "@specs/tla/WaitAnyLeftmostRightNotifier.scenario", "--trace-json", "target/tla/wait_any_leftmost_right_notifier.trace.json"]),
+    ("ThreadedSchedulerImpl quick", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--quick", "--allow-deadlock", "--trace-json", "target/tla/threaded_scheduler_impl.trace.json"])
 ]
 
 fun run_all xs = case xs of

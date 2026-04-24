@@ -1,0 +1,3 @@
+step: terminal' = {2}
+step: terminal' = {1, 2}
+step: delivered' = 1
