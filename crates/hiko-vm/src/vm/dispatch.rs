@@ -14,7 +14,7 @@ impl VM {
                 *fuel -= 1;
             }
 
-            let fi = self.frames.len() - 1;
+            let fi = self.current_frame_index()?;
             let proto_idx = self.frames[fi].proto_idx;
             let chunk = self.chunk_for_checked(proto_idx)?;
             let ip = self.frames[fi].ip;
@@ -36,24 +36,31 @@ impl VM {
 
                 Op::Const => {
                     let idx = self.read_u16()? as usize;
-                    let chunk = self.chunk_for_checked(proto_idx)?;
-                    let val = match &chunk.constants[idx] {
-                        Constant::Int(n) => Value::Int(*n),
-                        Constant::Float(f) => Value::Float(*f),
+                    let constant = self
+                        .chunk_for_checked(proto_idx)?
+                        .constants
+                        .get(idx)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            message: format!("Const: constant index {idx} out of bounds"),
+                        })?;
+                    let val = match constant {
+                        Constant::Int(n) => Value::Int(n),
+                        Constant::Float(f) => Value::Float(f),
                         Constant::String(s) => {
                             let key = (proto_idx, idx);
                             if let Some(&cached) = self.string_cache.get(&key) {
                                 Value::Heap(cached)
                             } else {
-                                let v = self.alloc_string(s.clone())?;
+                                let v = self.alloc_string(s)?;
                                 if let Value::Heap(r) = v {
                                     self.string_cache.insert(key, r);
                                 }
                                 v
                             }
                         }
-                        Constant::Char(c) => Value::Char(*c),
-                        Constant::Word(w) => Value::Word(*w),
+                        Constant::Char(c) => Value::Char(c),
+                        Constant::Word(w) => Value::Word(w),
                     };
                     self.push(val)?;
                 }
@@ -63,19 +70,26 @@ impl VM {
 
                 Op::GetLocal => {
                     let slot = self.read_u16()? as usize;
-                    let base = self.frames[fi].base;
-                    let val = self.stack[base + slot];
+                    let idx = self.local_stack_index(fi, slot, "GetLocal")?;
+                    let val = self.stack[idx];
                     self.push(val)?;
                 }
                 Op::SetLocal => {
                     let slot = self.read_u16()? as usize;
-                    let base = self.frames[fi].base;
+                    let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     let val = self.pop()?;
-                    self.stack[base + slot] = val;
+                    self.stack[idx] = val;
                 }
                 Op::GetUpvalue => {
                     let idx = self.read_u16()? as usize;
-                    let val = self.frames[fi].captures[idx];
+                    let val =
+                        self.frames[fi]
+                            .captures
+                            .get(idx)
+                            .copied()
+                            .ok_or_else(|| RuntimeError {
+                                message: format!("GetUpvalue: capture index {idx} out of bounds"),
+                            })?;
                     self.push(val)?;
                 }
                 Op::GetGlobal => {
@@ -196,7 +210,7 @@ impl VM {
 
                 Op::MakeTuple => {
                     let arity = self.read_u8()? as usize;
-                    let start = self.stack.len() - arity;
+                    let start = self.stack_start_for_arity(arity, "MakeTuple")?;
                     let elems: Fields = self.stack.drain(start..).collect();
                     let val = self.alloc(HeapObject::Tuple(elems))?;
                     self.push(val)?;
@@ -206,8 +220,18 @@ impl VM {
                     let val = self.pop()?;
                     match val {
                         Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Tuple(t) => self.push(t[idx])?,
-                            HeapObject::Data { fields, .. } => self.push(fields[idx])?,
+                            HeapObject::Tuple(t) => {
+                                let field = t.get(idx).copied().ok_or_else(|| RuntimeError {
+                                    message: format!("GetField: field index {idx} out of bounds"),
+                                })?;
+                                self.push(field)?
+                            }
+                            HeapObject::Data { fields, .. } => {
+                                let field = fields.get(idx).copied().ok_or_else(|| RuntimeError {
+                                    message: format!("GetField: field index {idx} out of bounds"),
+                                })?;
+                                self.push(field)?
+                            }
                             _ => {
                                 return Err(RuntimeError {
                                     message: "GetField: expected tuple or data".into(),
@@ -224,7 +248,7 @@ impl VM {
                 Op::MakeData => {
                     let tag = self.read_u16()?;
                     let arity = self.read_u8()? as usize;
-                    let start = self.stack.len() - arity;
+                    let start = self.stack_start_for_arity(arity, "MakeData")?;
                     let fields: Fields = self.stack.drain(start..).collect();
                     let val = self.alloc(HeapObject::Data { tag, fields })?;
                     self.push(val)?;
@@ -285,7 +309,7 @@ impl VM {
 
                 Op::Call => {
                     let arity = self.read_u8()? as usize;
-                    let callee_pos = self.stack.len() - 1 - arity;
+                    let callee_pos = self.callee_pos_for_arity(arity, "Call")?;
                     let callee = self.stack[callee_pos];
                     match callee {
                         Value::Heap(r) => {
@@ -338,7 +362,7 @@ impl VM {
 
                 Op::TailCall => {
                     let arity = self.read_u8()? as usize;
-                    let callee_pos = self.stack.len() - 1 - arity;
+                    let callee_pos = self.callee_pos_for_arity(arity, "TailCall")?;
                     let callee = self.stack[callee_pos];
                     match callee {
                         Value::Heap(r) => {
@@ -362,11 +386,13 @@ impl VM {
                                     ),
                                 });
                             }
-                            let fi = self.frames.len() - 1;
+                            let fi = self.current_frame_index()?;
                             let base = self.frames[fi].base;
                             let args_start = callee_pos + 1;
                             for i in 0..arity {
-                                self.stack[base + i] = self.stack[args_start + i];
+                                let dst = self.checked_stack_index(base, i, "TailCall target")?;
+                                let src = self.checked_stack_index(args_start, i, "TailCall args")?;
+                                self.stack[dst] = self.stack[src];
                             }
                             self.stack.truncate(base + arity);
                             self.frames[fi].ip = 0;
@@ -388,7 +414,7 @@ impl VM {
                     let proto_idx = self.read_u16()? as usize;
                     let proto = self.proto(proto_idx)?;
                     let arity = proto.arity as usize;
-                    let arg_start = self.stack.len() - arity;
+                    let arg_start = self.stack_start_for_arity(arity, "CallDirect")?;
                     if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
                         return Err(RuntimeError {
                             message: "stack overflow".into(),
@@ -406,11 +432,13 @@ impl VM {
                     let proto_idx = self.read_u16()? as usize;
                     let proto = self.proto(proto_idx)?;
                     let arity = proto.arity as usize;
-                    let args_start = self.stack.len() - arity;
-                    let fi = self.frames.len() - 1;
+                    let args_start = self.stack_start_for_arity(arity, "TailCallDirect")?;
+                    let fi = self.current_frame_index()?;
                     let base = self.frames[fi].base;
                     for i in 0..arity {
-                        self.stack[base + i] = self.stack[args_start + i];
+                        let dst = self.checked_stack_index(base, i, "TailCallDirect target")?;
+                        let src = self.checked_stack_index(args_start, i, "TailCallDirect args")?;
+                        self.stack[dst] = self.stack[src];
                     }
                     self.stack.truncate(base + arity);
                     self.frames[fi].ip = 0;
@@ -420,7 +448,9 @@ impl VM {
 
                 Op::Return => {
                     let result = self.pop()?;
-                    let frame = self.frames.pop().unwrap();
+                    let frame = self.frames.pop().ok_or_else(|| RuntimeError {
+                        message: "Return: call frame underflow".into(),
+                    })?;
                     self.stack.truncate(frame.base);
                     self.push(result)?;
                     if self.frames.is_empty() {
@@ -765,13 +795,75 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
+    fn current_frame_index(&self) -> Result<usize, RuntimeError> {
+        self.frames.len().checked_sub(1).ok_or_else(|| RuntimeError {
+            message: "call frame underflow".into(),
+        })
+    }
+
+    fn checked_stack_index(
+        &self,
+        base: usize,
+        offset: usize,
+        what: &str,
+    ) -> Result<usize, RuntimeError> {
+        let idx = base.checked_add(offset).ok_or_else(|| RuntimeError {
+            message: format!("{what}: stack index overflow"),
+        })?;
+        if idx >= self.stack.len() {
+            return Err(RuntimeError {
+                message: format!("{what}: stack index {idx} out of bounds"),
+            });
+        }
+        Ok(idx)
+    }
+
+    fn local_stack_index(
+        &self,
+        frame_idx: usize,
+        slot: usize,
+        what: &str,
+    ) -> Result<usize, RuntimeError> {
+        let frame = self.frames.get(frame_idx).ok_or_else(|| RuntimeError {
+            message: format!("{what}: frame index {frame_idx} out of bounds"),
+        })?;
+        self.checked_stack_index(frame.base, slot, what)
+    }
+
+    fn stack_start_for_arity(&self, arity: usize, what: &str) -> Result<usize, RuntimeError> {
+        self.stack
+            .len()
+            .checked_sub(arity)
+            .ok_or_else(|| RuntimeError {
+                message: format!("{what}: stack underflow for arity {arity}"),
+            })
+    }
+
+    fn callee_pos_for_arity(&self, arity: usize, what: &str) -> Result<usize, RuntimeError> {
+        let required = arity.checked_add(1).ok_or_else(|| RuntimeError {
+            message: format!("{what}: arity overflow"),
+        })?;
+        self.stack
+            .len()
+            .checked_sub(required)
+            .ok_or_else(|| RuntimeError {
+                message: format!("{what}: stack underflow for arity {arity}"),
+            })
+    }
+
     fn current_code(&self) -> Result<&[u8], RuntimeError> {
-        let proto_idx = self.frames.last().unwrap().proto_idx;
+        let proto_idx = self
+            .frames
+            .last()
+            .ok_or_else(|| RuntimeError {
+                message: "call frame underflow".into(),
+            })?
+            .proto_idx;
         Ok(&self.chunk_for_checked(proto_idx)?.code)
     }
 
     fn read_u8(&mut self) -> Result<u8, RuntimeError> {
-        let fi = self.frames.len() - 1;
+        let fi = self.current_frame_index()?;
         let ip = self.frames[fi].ip;
         let code = self.current_code()?;
         if ip >= code.len() {
@@ -785,7 +877,7 @@ impl VM {
     }
 
     fn read_u16(&mut self) -> Result<u16, RuntimeError> {
-        let fi = self.frames.len() - 1;
+        let fi = self.current_frame_index()?;
         let ip = self.frames[fi].ip;
         let code = self.current_code()?;
         if ip + 1 >= code.len() {
