@@ -105,4 +105,6 @@ SafetyInvariant ==
 
 Spec == Init /\ [][Next]_vars
 
+IoWaiterEventuallySettles == io_waiter ~> ~io_waiter
+
 ====

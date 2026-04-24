@@ -88,4 +88,6 @@ SafetyInvariant ==
 
 Spec == Init /\ [][Next]_vars
 
+EventuallyDelivered == terminal # {} ~> done
+
 ====

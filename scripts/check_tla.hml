@@ -49,6 +49,8 @@ val checks = [
     ("WaitAnyLeftmost right-notifier scenario", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--scenario", "@specs/tla/WaitAnyLeftmostRightNotifier.scenario", "--trace-json", "target/tla/wait_any_leftmost_right_notifier.trace.json"]),
     ("CancelIoRace model", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race.trace.json"]),
     ("CancelIoRace stale-completion scenario", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--scenario", "@specs/tla/CancelIoRaceStaleCompletion.scenario", "--trace-json", "target/tla/cancel_io_race_stale_completion.trace.json"]),
+    ("WaitAnyLeftmost liveness", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmostLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost_live.trace.json"]),
+    ("CancelIoRace liveness", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRaceLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race_live.trace.json"]),
     ("ThreadedSchedulerImpl quick", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--quick", "--allow-deadlock", "--trace-json", "target/tla/threaded_scheduler_impl.trace.json"])
 ]
 
