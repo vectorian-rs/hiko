@@ -13,7 +13,8 @@ impl VM {
     }
 
     pub(super) fn alloc(&mut self, obj: HeapObject) -> Result<Value, RuntimeError> {
-        if self.heap.should_collect() {
+        let object_bytes = obj.estimated_bytes();
+        if self.heap.should_collect() || self.heap.allocation_would_exceed_limits(object_bytes) {
             let mut extra_roots = Vec::new();
             obj.for_each_gc_ref(|r| extra_roots.push(r));
             self.gc_collect_with_extra_roots(extra_roots);

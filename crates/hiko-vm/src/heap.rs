@@ -273,6 +273,22 @@ impl Heap {
         Ok(())
     }
 
+    pub(crate) fn allocation_would_exceed_limits(&self, object_bytes: usize) -> bool {
+        if let Some(max) = self.max_objects {
+            let live = self.objects.len() - self.free_list.len();
+            if live >= max {
+                return true;
+            }
+        }
+        if let Some(limit_bytes) = self.max_bytes {
+            let next_bytes = self.current_bytes.saturating_add(object_bytes);
+            if next_bytes > limit_bytes {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn alloc(&mut self, obj: HeapObject) -> Result<GcRef, HeapLimitExceeded> {
         let object_bytes = obj.estimated_bytes();
         if let Some(max) = self.max_objects {

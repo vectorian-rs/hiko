@@ -1080,6 +1080,23 @@ mod tests {
     }
 
     #[test]
+    fn test_heap_limit_collects_before_failing() {
+        let mut vm = compile_vm(
+            "fun churn n =
+               if n = 0 then 42
+               else let val _ = (n, n)
+                    in churn (n - 1) end
+             val result = churn 200",
+        );
+        vm.set_max_heap(32);
+
+        vm.run()
+            .expect("unreachable tuples should be collected before heap limit failure");
+        assert_eq!(global_int(&vm, "result"), 42);
+        assert!(vm.heap_live_count() <= 32);
+    }
+
+    #[test]
     fn test_memory_limit_returns_runtime_error() {
         let mut vm = compile_vm("val pair = (1, 2)");
         vm.set_max_memory_bytes(0);
