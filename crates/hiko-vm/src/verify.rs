@@ -77,7 +77,7 @@ fn decode_chunk(
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
 ) -> Result<Vec<DecodedInst>, String> {
-    let mut decoded = Vec::new();
+    let mut decoded = Vec::with_capacity(chunk.code.len() / 2);
     let mut starts = BTreeSet::new();
     let mut ip = 0usize;
 
