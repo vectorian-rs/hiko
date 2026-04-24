@@ -1,16 +1,43 @@
 ---- MODULE ThreadedSchedulerImpl ----
-\* Lower-level TLA+ model of the threaded runtime structure.
+\* # Documentation
 \*
-\* Focus:
+\* ## Why this spec exists
+\*
+\* ProcessLifecycle.tla defines the user-visible process semantics. The threaded
+\* runtime has an additional implementation problem: multiple workers take
+\* processes out of the table, execute them, publish terminal state, wake blocked
+\* parents, and race with the monitor thread that completes I/O. This spec models
+\* those implementation-level ownership and wakeup rules so we can check that the
+\* threaded data structures can preserve the semantic contract.
+\*
+\* ## What we model
+\*
+\* This model focuses on the structure of crates/hiko-vm/src/threaded.rs:
+\*
 \*   - explicit worker ownership of running processes
-\*   - scheduler queue semantics
-\*   - waiters/io waiters as runtime data structures
-\*   - monitor-driven I/O resolution and deadlock shutdown
+\*   - scheduler queue entries, including stale entries
+\*   - process take/return ownership via Running vs table-resident states
+\*   - await waiters and wait_any waiters as runtime data structures
+\*   - deterministic wait_any delivery from the original ordered PID list
+\*   - I/O waiter registration and monitor-driven completion/failure
+\*   - deadlock shutdown when no worker, queue, or I/O can make progress
 \*
-\* This complements ProcessLifecycle.tla:
-\*   - ProcessLifecycle models user-visible process semantics
-\*   - ThreadedSchedulerImpl models the implementation structure
-\*     in crates/hiko-vm/src/threaded.rs
+\* ## What we intentionally abstract
+\*
+\* The model abstracts away bytecode execution, VM stacks, heap objects, actual
+\* DashMap locking, and concrete OS threads. A worker transition represents one
+\* runtime-visible VM slice result such as yield, spawn, await, wait_any, I/O, or
+\* terminal completion. This keeps the state space small enough to model-check
+\* while preserving the race patterns that matter for runtime safety.
+\*
+\* ## Why this is a good idea
+\*
+\* The hardest bugs in the threaded runtime are not type errors; they are lost
+\* wakeups, double deliveries, stale waiter registrations, and cancellation/I/O
+\* races. These are exactly the cases where tests can be flaky or miss rare
+\* interleavings. A lower-level TLA+ model complements Rust tests by exploring
+\* interleavings systematically and by documenting which implementation
+\* invariants must stay true as the runtime evolves.
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -25,31 +52,36 @@ VARIABLES
     queue,
     workers,
     waiters,
+    any_waiters,
     io_waiters,
     next_pid,
     next_token,
     shutdown,
     step
 
-vars == <<procs, queue, workers, waiters, io_waiters, next_pid, next_token, shutdown, step>>
+vars == <<procs, queue, workers, waiters, any_waiters, io_waiters, next_pid, next_token, shutdown, step>>
 
 Runnable       == "runnable"
 Running        == "running"
 BlockedAwait   == "blocked_await"
 BlockedIo      == "blocked_io"
+BlockedAny     == "blocked_any"
 Done           == "done"
 Failed         == "failed"
 
 EmptyProc(parent) ==
     [status |-> Runnable,
      parent |-> parent,
-     target |-> 0]
+     target |-> 0,
+     targets |-> <<>>,
+     delivered_pid |-> 0]
 
 Init ==
     /\ procs = 1 :> EmptyProc(0)
     /\ queue = <<1>>
     /\ workers = [w \in Workers |-> 0]
     /\ waiters = 1 :> {}
+    /\ any_waiters = 1 :> {}
     /\ io_waiters = {}
     /\ next_pid = 2
     /\ next_token = 1
@@ -61,6 +93,30 @@ AtHead(pid) == queue # <<>> /\ Head(queue) = pid
 Idle(w) == workers[w] = 0
 StepOK == step < MaxSteps
 KnownPid(pid) == pid \in DOMAIN procs
+
+SeqSet(seq) == {seq[i] : i \in 1..Len(seq)}
+
+WaitAnyInputs == UNION {[1..n -> 1..MaxProcesses] : n \in 1..MaxProcesses}
+
+TerminalStatus(status) == status \in {Done, Failed}
+
+IsTerminalAfter(done_pid, pid) == pid = done_pid \/ TerminalStatus(procs[pid].status)
+
+LeftmostTerminalAfter(done_pid, children) ==
+    CHOOSE child \in SeqSet(children) :
+        /\ IsTerminalAfter(done_pid, child)
+        /\ \E i \in 1..Len(children) :
+            /\ children[i] = child
+            /\ \A j \in 1..(i - 1) : ~IsTerminalAfter(done_pid, children[j])
+
+AnyWaiter(child) ==
+    IF any_waiters[child] = {} THEN 0 ELSE CHOOSE parent \in any_waiters[child] : TRUE
+
+ClearAnyWaiterRegistrations(parent, targets) ==
+    [child \in DOMAIN any_waiters |->
+        IF child \in SeqSet(targets)
+        THEN any_waiters[child] \ {parent}
+        ELSE any_waiters[child]]
 
 HeldBy(pid) == {w \in Workers : workers[w] = pid}
 IsHeld(pid) == HeldBy(pid) # {}
@@ -91,7 +147,7 @@ DequeueRunnable(w, pid) ==
     /\ queue' = Tail(queue)
     /\ workers' = [workers EXCEPT ![w] = pid]
     /\ step' = step + 1
-    /\ UNCHANGED <<waiters, io_waiters, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<waiters, any_waiters, io_waiters, next_pid, next_token, shutdown>>
 
 \* Scheduler entries can become stale relative to the process table/worker ownership.
 DequeueStale(w, pid) ==
@@ -103,7 +159,7 @@ DequeueStale(w, pid) ==
     /\ procs[pid].status # Runnable
     /\ queue' = Tail(queue)
     /\ step' = step + 1
-    /\ UNCHANGED <<procs, workers, waiters, io_waiters, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<procs, workers, waiters, any_waiters, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerYield(w) ==
     /\ StepOK
@@ -115,7 +171,7 @@ WorkerYield(w) ==
         /\ queue' = Append(queue, pid)
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ step' = step + 1
-        /\ UNCHANGED <<waiters, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<waiters, any_waiters, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerSpawn(w) ==
     /\ StepOK
@@ -129,6 +185,7 @@ WorkerSpawn(w) ==
           /\ queue' = queue \o <<child, pid>>
           /\ workers' = [workers EXCEPT ![w] = 0]
           /\ waiters' = waiters @@ (child :> {})
+          /\ any_waiters' = any_waiters @@ (child :> {})
           /\ next_pid' = next_pid + 1
           /\ step' = step + 1
           /\ UNCHANGED <<io_waiters, next_token, shutdown>>
@@ -147,7 +204,47 @@ WorkerAwaitBlock(w, child) ==
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ waiters' = [waiters EXCEPT ![child] = @ \union {parent}]
         /\ step' = step + 1
-        /\ UNCHANGED <<queue, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<queue, any_waiters, io_waiters, next_pid, next_token, shutdown>>
+
+WorkerWaitAnyReady(w, children) ==
+    /\ StepOK
+    /\ ~shutdown
+    /\ workers[w] # 0
+    /\ children \in WaitAnyInputs
+    /\ LET parent == workers[w] IN
+        /\ procs[parent].status = Running
+        /\ \A i \in 1..Len(children) :
+            /\ KnownPid(children[i])
+            /\ procs[children[i]].parent = parent
+        /\ \E i \in 1..Len(children) : TerminalStatus(procs[children[i]].status)
+        /\ procs' = [procs EXCEPT ![parent].status = Runnable,
+                                   ![parent].delivered_pid = LeftmostTerminalAfter(0, children)]
+        /\ queue' = Append(queue, parent)
+        /\ workers' = [workers EXCEPT ![w] = 0]
+        /\ step' = step + 1
+        /\ UNCHANGED <<waiters, any_waiters, io_waiters, next_pid, next_token, shutdown>>
+
+WorkerWaitAnyBlock(w, children) ==
+    /\ StepOK
+    /\ ~shutdown
+    /\ workers[w] # 0
+    /\ children \in WaitAnyInputs
+    /\ LET parent == workers[w] IN
+        /\ procs[parent].status = Running
+        /\ \A i \in 1..Len(children) :
+            /\ KnownPid(children[i])
+            /\ procs[children[i]].parent = parent
+            /\ ~TerminalStatus(procs[children[i]].status)
+        /\ procs' = [procs EXCEPT ![parent].status = BlockedAny,
+                                   ![parent].targets = children,
+                                   ![parent].target = 0]
+        /\ workers' = [workers EXCEPT ![w] = 0]
+        /\ any_waiters' = [child \in DOMAIN any_waiters |->
+            IF child \in SeqSet(children)
+            THEN any_waiters[child] \union {parent}
+            ELSE any_waiters[child]]
+        /\ step' = step + 1
+        /\ UNCHANGED <<queue, waiters, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerRequestIo(w) ==
     /\ StepOK
@@ -163,24 +260,36 @@ WorkerRequestIo(w) ==
           /\ io_waiters' = io_waiters \union {[pid |-> pid, token |-> tok]}
           /\ next_token' = next_token + 1
           /\ step' = step + 1
-          /\ UNCHANGED <<queue, waiters, next_pid, shutdown>>
+          /\ UNCHANGED <<queue, waiters, any_waiters, next_pid, shutdown>>
 
 WorkerDone(w) ==
     /\ StepOK
     /\ ~shutdown
     /\ workers[w] # 0
-    /\ LET pid == workers[w] IN
+    /\ LET pid == workers[w]
+           any_parent == AnyWaiter(pid)
+       IN
         /\ procs[pid].status = Running
-        /\ IF waiters[pid] = {}
-           THEN /\ procs' = [procs EXCEPT ![pid].status = Done]
-                /\ queue' = queue
-                /\ waiters' = waiters
-           ELSE LET parent == CHOOSE p \in waiters[pid] : TRUE IN
+        /\ IF waiters[pid] # {}
+           THEN LET parent == CHOOSE p \in waiters[pid] : TRUE IN
                 /\ procs' = [procs EXCEPT ![pid].status = Done,
                                            ![parent].status = Runnable,
                                            ![parent].target = 0]
                 /\ queue' = Append(queue, parent)
                 /\ waiters' = [waiters EXCEPT ![pid] = {}]
+                /\ any_waiters' = any_waiters
+           ELSE IF any_parent # 0
+                THEN /\ procs' = [procs EXCEPT ![pid].status = Done,
+                                               ![any_parent].status = Runnable,
+                                               ![any_parent].targets = <<>>,
+                                               ![any_parent].delivered_pid = LeftmostTerminalAfter(pid, procs[any_parent].targets)]
+                     /\ queue' = Append(queue, any_parent)
+                     /\ waiters' = waiters
+                     /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
+                ELSE /\ procs' = [procs EXCEPT ![pid].status = Done]
+                     /\ queue' = queue
+                     /\ waiters' = waiters
+                     /\ any_waiters' = any_waiters
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ step' = step + 1
         /\ UNCHANGED <<io_waiters, next_pid, next_token, shutdown>>
@@ -189,16 +298,29 @@ WorkerFail(w) ==
     /\ StepOK
     /\ ~shutdown
     /\ workers[w] # 0
-    /\ LET pid == workers[w] IN
+    /\ LET pid == workers[w]
+           any_parent == AnyWaiter(pid)
+       IN
         /\ procs[pid].status = Running
-        /\ IF waiters[pid] = {}
-           THEN /\ procs' = [procs EXCEPT ![pid].status = Failed]
-                /\ waiters' = waiters
-           ELSE LET parent == CHOOSE p \in waiters[pid] : TRUE IN
+        /\ IF waiters[pid] # {}
+           THEN LET parent == CHOOSE p \in waiters[pid] : TRUE IN
                 /\ procs' = [procs EXCEPT ![pid].status = Failed,
                                            ![parent].status = Failed,
                                            ![parent].target = 0]
                 /\ waiters' = [waiters EXCEPT ![pid] = {}]
+                /\ any_waiters' = any_waiters
+           ELSE IF any_parent # 0
+                THEN /\ procs' = [procs EXCEPT ![pid].status = Failed,
+                                               ![any_parent].status = Runnable,
+                                               ![any_parent].targets = <<>>,
+                                               ![any_parent].delivered_pid = LeftmostTerminalAfter(pid, procs[any_parent].targets)]
+                     /\ queue' = Append(queue, any_parent)
+                     /\ waiters' = waiters
+                     /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
+                ELSE /\ procs' = [procs EXCEPT ![pid].status = Failed]
+                     /\ queue' = queue
+                     /\ waiters' = waiters
+                     /\ any_waiters' = any_waiters
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ step' = step + 1
         /\ UNCHANGED <<queue, io_waiters, next_pid, next_token, shutdown>>
@@ -216,7 +338,7 @@ MonitorIoComplete(entry) ==
     /\ queue' = Append(queue, entry.pid)
     /\ io_waiters' = io_waiters \ {entry}
     /\ step' = step + 1
-    /\ UNCHANGED <<workers, waiters, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<workers, waiters, any_waiters, next_pid, next_token, shutdown>>
 
 MonitorIoFail(entry) ==
     /\ StepOK
@@ -225,19 +347,33 @@ MonitorIoFail(entry) ==
     /\ KnownPid(entry.pid)
     /\ procs[entry.pid].status = BlockedIo
     /\ procs[entry.pid].target = entry.token
-    /\ IF waiters[entry.pid] = {}
-       THEN /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
-                                        ![entry.pid].target = 0]
-            /\ waiters' = waiters
-       ELSE LET parent == CHOOSE p \in waiters[entry.pid] : TRUE IN
-            /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
-                                       ![entry.pid].target = 0,
-                                       ![parent].status = Failed,
-                                       ![parent].target = 0]
-            /\ waiters' = [waiters EXCEPT ![entry.pid] = {}]
+    /\ LET any_parent == AnyWaiter(entry.pid) IN
+        /\ IF waiters[entry.pid] # {}
+           THEN LET parent == CHOOSE p \in waiters[entry.pid] : TRUE IN
+                /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
+                                           ![entry.pid].target = 0,
+                                           ![parent].status = Failed,
+                                           ![parent].target = 0]
+                /\ queue' = queue
+                /\ waiters' = [waiters EXCEPT ![entry.pid] = {}]
+                /\ any_waiters' = any_waiters
+           ELSE IF any_parent # 0
+                THEN /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
+                                               ![entry.pid].target = 0,
+                                               ![any_parent].status = Runnable,
+                                               ![any_parent].targets = <<>>,
+                                               ![any_parent].delivered_pid = LeftmostTerminalAfter(entry.pid, procs[any_parent].targets)]
+                     /\ queue' = Append(queue, any_parent)
+                     /\ waiters' = waiters
+                     /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
+                ELSE /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
+                                                ![entry.pid].target = 0]
+                     /\ queue' = queue
+                     /\ waiters' = waiters
+                     /\ any_waiters' = any_waiters
     /\ io_waiters' = io_waiters \ {entry}
     /\ step' = step + 1
-    /\ UNCHANGED <<queue, workers, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<workers, next_pid, next_token, shutdown>>
 
 MonitorDetectDeadlock ==
     /\ StepOK
@@ -255,6 +391,7 @@ MonitorDetectDeadlock ==
             /\ parent \notin StuckPids
             /\ procs[parent].status = BlockedAwait
             /\ procs[parent].target = child}]
+    /\ any_waiters' = any_waiters
     /\ shutdown' = TRUE
     /\ step' = step + 1
     /\ UNCHANGED <<queue, workers, io_waiters, next_pid, next_token>>
@@ -269,6 +406,9 @@ Next ==
         \/ WorkerDone(w)
         \/ WorkerFail(w)
         \/ \E child \in DOMAIN procs : WorkerAwaitBlock(w, child)
+        \/ \E children \in WaitAnyInputs :
+            \/ WorkerWaitAnyReady(w, children)
+            \/ WorkerWaitAnyBlock(w, children)
     \/ \E entry \in io_waiters :
         \/ MonitorIoComplete(entry)
         \/ MonitorIoFail(entry)
@@ -281,9 +421,14 @@ TypeOK ==
     /\ step \in Nat
     /\ shutdown \in BOOLEAN
     /\ \A p \in DOMAIN procs :
-        /\ procs[p].status \in {Runnable, Running, BlockedAwait, BlockedIo, Done, Failed}
+        /\ procs[p].status \in {Runnable, Running, BlockedAwait, BlockedAny, BlockedIo, Done, Failed}
         /\ procs[p].parent \in (DOMAIN procs) \union {0}
         /\ procs[p].target \in Nat \union {0}
+        /\ IF procs[p].status = BlockedAny
+           THEN procs[p].targets \in WaitAnyInputs
+           ELSE procs[p].targets \in {<<>>} \union WaitAnyInputs
+        /\ procs[p].delivered_pid \in Nat \union {0}
+    /\ \A child \in DOMAIN any_waiters : any_waiters[child] \subseteq DOMAIN procs
     /\ \A w \in Workers : workers[w] \in (DOMAIN procs) \union {0}
 
 QueueKnownPids ==
@@ -299,7 +444,7 @@ OnlyHeldProcessesAreRunning ==
 
 BlockedNeverHeld ==
     \A p \in DOMAIN procs :
-        (procs[p].status \in {BlockedAwait, BlockedIo, Done, Failed}) =>
+        (procs[p].status \in {BlockedAwait, BlockedAny, BlockedIo, Done, Failed}) =>
             ~IsHeld(p)
 
 AtMostOneWaiterPerChild ==
@@ -312,6 +457,14 @@ WaitersConsistent ==
             /\ parent \in DOMAIN procs
             /\ procs[parent].status = BlockedAwait
             /\ procs[parent].target = child
+
+AnyWaitersConsistent ==
+    \A child \in DOMAIN any_waiters :
+        \A parent \in any_waiters[child] :
+            /\ parent \in DOMAIN procs
+            /\ procs[parent].status = BlockedAny
+            /\ child \in SeqSet(procs[parent].targets)
+            /\ procs[child].parent = parent
 
 IoWaitersConsistent ==
     \A entry \in io_waiters :
@@ -335,6 +488,7 @@ SafetyInvariant ==
     /\ BlockedNeverHeld
     /\ AtMostOneWaiterPerChild
     /\ WaitersConsistent
+    /\ AnyWaitersConsistent
     /\ IoWaitersConsistent
     /\ ShutdownImpliesNoRunnableOrRunning
 

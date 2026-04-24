@@ -1,18 +1,43 @@
 ---- MODULE ProcessLifecycle ----
-\* Semantic TLA+ specification for Hiko process lifecycle.
+\* # Documentation
 \*
-\* Focus:
-\*   - FIFO scheduler with runnable queue
-\*   - Spawn with parent-child ownership
-\*   - Await/AwaitResult with single-consumption join state
-\*   - wait_any over a parent-owned child set
-\*   - Cooperative cancellation and parent-exit scope cleanup
-\*   - I/O blocking and completion
-\*   - Deadlock detection for permanently blocked processes
+\* ## Why this spec exists
 \*
-\* This spec models user-visible behavior. It does not model the threaded
-\* runtime tables (`child_parents`, tombstones, pending_cancels, publishing
-\* windows); those belong in ThreadedSchedulerImpl.tla.
+\* Hiko programs can spawn child processes, await their results, cancel them,
+\* wait for any child in a set, and suspend on runtime I/O. Those operations are
+\* small individually, but their interactions define the safety contract of the
+\* language runtime. This spec is the executable semantic contract for that
+\* process lifecycle: it says what users are allowed to observe, independent of
+\* the Rust data structures used to implement it.
+\*
+\* ## What we model
+\*
+\* This model covers the user-visible lifecycle rules:
+\*
+\*   - FIFO runnable scheduling at the semantic level
+\*   - spawn with parent-child ownership
+\*   - await/await_result with single-consumption join state
+\*   - deterministic wait_any over an ordered parent-owned child list
+\*   - cooperative cancellation and parent-exit scope cleanup
+\*   - I/O blocking, completion, and failure
+\*   - deadlock detection for permanently blocked processes
+\*
+\* ## What we intentionally abstract
+\*
+\* This model does not describe the threaded runtime's implementation tables or
+\* transient race windows (`child_parents`, tombstones, pending_cancels, process
+\* take/return ownership, publishing windows). Those implementation concerns
+\* belong in ThreadedSchedulerImpl.tla. Here, the goal is to define the contract
+\* that all runtimes must implement.
+\*
+\* ## Why this is a good idea
+\*
+\* Process lifecycle bugs are often rare interleavings: double delivery, lost
+\* wakeups, cross-parent joins, cancellation races, or nondeterministic
+\* wait_any winners. A small TLA+ model lets us make those rules precise and
+\* model-check safety invariants before changing Rust runtime code. For a safe
+\* agentic tooling language, this improves replayability, auditability, and
+\* containment: guest failures should be specified outcomes, not scheduler luck.
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
