@@ -1,0 +1,2 @@
+step: terminal_reason' = "cancelled"
+step: stale_completion_seen' = TRUE
