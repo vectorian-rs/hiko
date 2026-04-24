@@ -328,21 +328,21 @@ config or `VMBuilder` settings.
 
 Content-hash anchored file editing for LLM agents.
 
-`read_file_tagged` returns lines with 2-char FNV-1a base62 content hashes:
+`read_file_tagged` returns lines with 16-char 64-bit FNV-1a hex content hashes:
 
 ```
-1:Kv	(* Factorial using clausal function definition *)
-2:ZD	
-3:QY	fun fact 0 = 1
-4:3v	  | fact n = n * fact (n - 1)
+1:2f1f990c87a29d57	(* Factorial using clausal function definition *)
+2:cbf29ce484222325	
+3:423367a7afe03f9c	fun fact 0 = 1
+4:f2d1140b7fd1ad39	  | fact n = n * fact (n - 1)
 ```
 
 `edit_file_tagged` accepts edits referencing line:hash anchors. If the file changed since the last read, hashes won't match and the edit is rejected:
 
 ```
-R 3:QY fun fact 0 = 1         (* replace line 3 *)
-I 4:3v   | fact n = n + 1     (* insert after line 4 *)
-D 2:ZD                        (* delete line 2 *)
+R 3:423367a7afe03f9c fun fact 0 = 1         (* replace line 3 *)
+I 4:f2d1140b7fd1ad39   | fact n = n + 1     (* insert after line 4 *)
+D 2:cbf29ce484222325                        (* delete line 2 *)
 ```
 
 ## hiko-harness

@@ -74,7 +74,7 @@ All builtins are available as global functions. No imports needed.
 
 | Builtin            | Type                           | Description                       |
 | ------------------ | ------------------------------ | --------------------------------- |
-| `read_file_tagged` | `(string, int, int) -> string` | Read file with FNV-1a line hashes |
+| `read_file_tagged` | `(string, int, int) -> string` | Read file with 64-bit FNV-1a line hashes |
 | `edit_file_tagged` | `(string, string) -> string`   | Apply hashline-based edit         |
 
 ## HTTP

@@ -12,11 +12,11 @@ val lines = split (tagged, "\n")
 
 (* Each non-empty line should match LINE:HASH\tCONTENT *)
 val first = case lines of x :: _ => x | [] => panic "empty"
-val _ = assert_eq (regex_match (first, "^1:[0-9a-zA-Z]{2}\talpha$"), true, "read_all line format")
+val _ = assert_eq (regex_match (first, "^1:[0-9a-f]{16}\talpha$"), true, "read_all line format")
 
 (* Test read with offset and limit *)
 val partial = Hashline.run (fn () => Hashline.read test_path 1 1)
-val _ = assert_eq (regex_match (partial, "^2:[0-9a-zA-Z]{2}\tbeta\n$"), true, "read offset/limit")
+val _ = assert_eq (regex_match (partial, "^2:[0-9a-f]{16}\tbeta\n$"), true, "read offset/limit")
 
 (* Test edit: replace beta with BETA *)
 val beta_line = partial
@@ -35,6 +35,17 @@ val _ = assert_eq (after, "alpha\nBETA\ngamma\n", "edit content")
 (* Test staleness rejection: use the old anchor again *)
 val stale_result = Hashline.run (fn () => Hashline.edit test_path edit_cmd)
 val _ = assert_eq (regex_match (stale_result, "REJECTED"), true, "stale hash rejected")
+
+(* Test conflicting duplicate anchors are rejected without applying any edit *)
+val current_beta = Hashline.run (fn () => Hashline.read test_path 1 1)
+val current_anchor = case split (current_beta, "\t") of
+    anchor :: _ => trim anchor
+  | [] => panic "no current anchor"
+val duplicate_cmd = "R " ^ current_anchor ^ " BETA2\nD " ^ current_anchor
+val duplicate_result = Hashline.run (fn () => Hashline.edit test_path duplicate_cmd)
+val _ = assert_eq (regex_match (duplicate_result, "duplicate edit for line 2"), true, "duplicate edit rejected")
+val unchanged = read_file test_path
+val _ = assert_eq (unchanged, "alpha\nBETA\ngamma\n", "duplicate edit left content unchanged")
 
 (* Clean up *)
 val _ = remove_file test_path

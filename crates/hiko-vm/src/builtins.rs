@@ -67,18 +67,20 @@ fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Result<Value, String> {
     Ok(list)
 }
 
-/// FNV-1a hash of a line, returned as 2-char base62.
-fn fnv1a_tag(line: &str) -> [u8; 2] {
-    const BASIS: u32 = 2166136261;
-    const PRIME: u32 = 16777619;
-    const BASE62: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+/// Stable 64-bit FNV-1a hash of a line, returned as 16-char lowercase hex.
+fn fnv1a_tag(line: &str) -> String {
+    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = BASIS;
     for &b in line.as_bytes() {
-        h ^= b as u32;
+        h ^= b as u64;
         h = h.wrapping_mul(PRIME);
     }
-    let n = (h % 3844) as usize;
-    [BASE62[n / 62], BASE62[n % 62]]
+    format!("{h:016x}")
+}
+
+fn is_valid_fnv1a_tag(tag: &str) -> bool {
+    tag.len() == 16 && tag.as_bytes().iter().all(u8::is_ascii_hexdigit)
 }
 
 fn collect_list(heap: &Heap, list_val: Value) -> Result<Vec<Value>, String> {

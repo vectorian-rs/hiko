@@ -221,8 +221,7 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
         let tag = fnv1a_tag(line);
-        let tag_str = std::str::from_utf8(&tag).unwrap();
-        out.push_str(&format!("{}:{}\t{}\n", i + 1, tag_str, line));
+        out.push_str(&format!("{}:{}\t{}\n", i + 1, tag, line));
     }
 
     heap_alloc(heap, HeapObject::String(out))
@@ -259,13 +258,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     heap.charge_io_bytes(content.len() as u64)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
-    let hashes: Vec<String> = lines
-        .iter()
-        .map(|line| {
-            let tag = fnv1a_tag(line);
-            std::str::from_utf8(&tag).unwrap().to_string()
-        })
-        .collect();
+    let hashes: Vec<String> = lines.iter().map(|line| fnv1a_tag(line)).collect();
 
     struct Edit {
         action: char,
@@ -307,6 +300,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     }
 
     let mut errors = Vec::new();
+    let mut edited_lines = std::collections::HashSet::new();
     for edit in &edits {
         if edit.line_num == 0 || edit.line_num > lines.len() {
             errors.push(format!(
@@ -314,6 +308,17 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
                 edit.line_num,
                 lines.len()
             ));
+            continue;
+        }
+        if !is_valid_fnv1a_tag(&edit.hash) {
+            errors.push(format!(
+                "invalid hash at line {}: expected 16 hex chars, got {}",
+                edit.line_num, edit.hash
+            ));
+            continue;
+        }
+        if !edited_lines.insert(edit.line_num) {
+            errors.push(format!("duplicate edit for line {}", edit.line_num));
             continue;
         }
         let idx = edit.line_num - 1;
