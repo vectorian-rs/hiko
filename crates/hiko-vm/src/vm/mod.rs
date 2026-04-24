@@ -84,8 +84,8 @@ struct HandlerFrame {
 }
 
 pub struct VM {
-    pub heap: Heap,
-    pub stack: Vec<Value>,
+    pub(crate) heap: Heap,
+    pub(crate) stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: Vec<Value>,
     global_names: HashMap<String, usize>,
@@ -130,7 +130,7 @@ pub struct VM {
     /// Pending runtime request from a process/runtime builtin.
     pending_runtime_request: Option<RuntimeRequest>,
     /// Effect metadata from compiled program (name → tag).
-    pub effect_metadata: Arc<[EffectMeta]>,
+    pub(crate) effect_metadata: Arc<[EffectMeta]>,
     /// Saved continuation when blocked on runtime I/O. GC root.
     blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
@@ -358,6 +358,18 @@ impl VM {
 
     pub fn get_output(&self) -> &[String] {
         self.output.as_deref().unwrap_or(&[])
+    }
+
+    pub fn heap(&self) -> &Heap {
+        &self.heap
+    }
+
+    pub fn stack(&self) -> &[Value] {
+        &self.stack
+    }
+
+    pub fn effect_metadata(&self) -> &[EffectMeta] {
+        &self.effect_metadata
     }
 
     pub fn enable_output_capture(&mut self) {

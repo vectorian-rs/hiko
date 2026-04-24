@@ -162,12 +162,12 @@ fn parse_heap_limit_message(message: &str) -> Option<(usize, usize)> {
 
 /// An isolated hiko process.
 pub struct Process {
-    pub pid: Pid,
-    pub vm: VM,
-    pub status: ProcessStatus,
-    pub parent: Option<Pid>,
+    pub(crate) pid: Pid,
+    pub(crate) vm: VM,
+    pub(crate) status: ProcessStatus,
+    pub(crate) parent: Option<Pid>,
     /// The scope this process belongs to.
-    pub scope_id: Option<ScopeId>,
+    pub(crate) scope_id: Option<ScopeId>,
 }
 
 impl Process {
@@ -189,6 +189,26 @@ impl Process {
             parent,
             scope_id: Some(scope_id),
         }
+    }
+
+    pub fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    pub fn vm(&self) -> &VM {
+        &self.vm
+    }
+
+    pub fn status(&self) -> &ProcessStatus {
+        &self.status
+    }
+
+    pub fn parent(&self) -> Option<Pid> {
+        self.parent
+    }
+
+    pub fn scope_id(&self) -> Option<ScopeId> {
+        self.scope_id
     }
 
     pub fn is_runnable(&self) -> bool {

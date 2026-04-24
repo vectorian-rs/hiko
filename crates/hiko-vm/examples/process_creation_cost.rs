@@ -115,7 +115,7 @@ fn resolve_global_closure(program: &CompiledProgram, name: &str) -> (usize, Vec<
     };
 
     match vm
-        .heap
+        .heap()
         .get(closure_ref)
         .unwrap_or_else(|err| panic!("global '{name}' points to invalid heap object: {err}"))
     {
@@ -128,7 +128,7 @@ fn resolve_global_closure(program: &CompiledProgram, name: &str) -> (usize, Vec<
                 .iter()
                 .copied()
                 .map(|value| {
-                    serialize(value, &vm.heap)
+                    serialize(value, vm.heap())
                         .unwrap_or_else(|err| panic!("capture for '{name}' is not sendable: {err}"))
                 })
                 .collect(),
