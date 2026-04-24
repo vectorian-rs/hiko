@@ -641,31 +641,35 @@ impl Parser {
     }
 
     fn parse_orelse(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_andalso()?;
-        if self.eat(&TokenKind::Orelse).is_some() {
-            let rhs = self.parse_orelse()?; // right-associative
-            let span = lhs.span.merge(rhs.span);
-            Ok(Expr {
-                kind: ExprKind::BinOp(BinOp::Orelse, Box::new(lhs), Box::new(rhs)),
-                span,
-            })
-        } else {
-            Ok(lhs)
+        let mut elems = vec![self.parse_andalso()?];
+        while self.eat(&TokenKind::Orelse).is_some() {
+            elems.push(self.parse_andalso()?);
         }
+        let mut result = elems.pop().unwrap();
+        while let Some(lhs) = elems.pop() {
+            let span = lhs.span.merge(result.span);
+            result = Expr {
+                kind: ExprKind::BinOp(BinOp::Orelse, Box::new(lhs), Box::new(result)),
+                span,
+            };
+        }
+        Ok(result)
     }
 
     fn parse_andalso(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_comp()?;
-        if self.eat(&TokenKind::Andalso).is_some() {
-            let rhs = self.parse_andalso()?; // right-associative
-            let span = lhs.span.merge(rhs.span);
-            Ok(Expr {
-                kind: ExprKind::BinOp(BinOp::Andalso, Box::new(lhs), Box::new(rhs)),
-                span,
-            })
-        } else {
-            Ok(lhs)
+        let mut elems = vec![self.parse_comp()?];
+        while self.eat(&TokenKind::Andalso).is_some() {
+            elems.push(self.parse_comp()?);
         }
+        let mut result = elems.pop().unwrap();
+        while let Some(lhs) = elems.pop() {
+            let span = lhs.span.merge(result.span);
+            result = Expr {
+                kind: ExprKind::BinOp(BinOp::Andalso, Box::new(lhs), Box::new(result)),
+                span,
+            };
+        }
+        Ok(result)
     }
 
     fn parse_comp(&mut self) -> Result<Expr, ParseError> {
@@ -697,17 +701,19 @@ impl Parser {
     }
 
     fn parse_cons(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_add()?;
-        if self.eat(&TokenKind::ColonColon).is_some() {
-            let rhs = self.parse_cons()?; // right-associative
-            let span = lhs.span.merge(rhs.span);
-            Ok(Expr {
-                kind: ExprKind::Cons(Box::new(lhs), Box::new(rhs)),
-                span,
-            })
-        } else {
-            Ok(lhs)
+        let mut elems = vec![self.parse_add()?];
+        while self.eat(&TokenKind::ColonColon).is_some() {
+            elems.push(self.parse_add()?);
         }
+        let mut result = elems.pop().unwrap();
+        while let Some(lhs) = elems.pop() {
+            let span = lhs.span.merge(result.span);
+            result = Expr {
+                kind: ExprKind::Cons(Box::new(lhs), Box::new(result)),
+                span,
+            };
+        }
+        Ok(result)
     }
 
     fn parse_add(&mut self) -> Result<Expr, ParseError> {
@@ -1113,36 +1119,42 @@ impl Parser {
     }
 
     fn parse_as_pat(&mut self) -> Result<Pat, ParseError> {
-        // Check for `ident as pat`
-        if matches!(self.peek(), TokenKind::Ident(_))
+        // Collect `ident as ident as ... as pat` iteratively
+        let mut names: Vec<(Symbol, Span)> = Vec::new();
+        while matches!(self.peek(), TokenKind::Ident(_))
             && self.pos + 1 < self.tokens.len()
             && matches!(self.tokens[self.pos + 1].kind, TokenKind::As)
         {
             let start = self.span();
             let name = self.take_symbol(); // consume ident
             self.advance(); // consume `as`
-            let inner = self.parse_as_pat()?;
-            let span = start.merge(inner.span);
-            return Ok(Pat {
-                kind: PatKind::As(name, Box::new(inner)),
-                span,
-            });
+            names.push((name, start));
         }
-        self.parse_cons_pat()
+        let mut result = self.parse_cons_pat()?;
+        while let Some((name, start)) = names.pop() {
+            let span = start.merge(result.span);
+            result = Pat {
+                kind: PatKind::As(name, Box::new(result)),
+                span,
+            };
+        }
+        Ok(result)
     }
 
     fn parse_cons_pat(&mut self) -> Result<Pat, ParseError> {
-        let lhs = self.parse_app_pat()?;
-        if self.eat(&TokenKind::ColonColon).is_some() {
-            let rhs = self.parse_cons_pat()?; // right-associative
-            let span = lhs.span.merge(rhs.span);
-            Ok(Pat {
-                kind: PatKind::Cons(Box::new(lhs), Box::new(rhs)),
-                span,
-            })
-        } else {
-            Ok(lhs)
+        let mut elems = vec![self.parse_app_pat()?];
+        while self.eat(&TokenKind::ColonColon).is_some() {
+            elems.push(self.parse_app_pat()?);
         }
+        let mut result = elems.pop().unwrap();
+        while let Some(lhs) = elems.pop() {
+            let span = lhs.span.merge(result.span);
+            result = Pat {
+                kind: PatKind::Cons(Box::new(lhs), Box::new(result)),
+                span,
+            };
+        }
+        Ok(result)
     }
 
     fn parse_app_pat(&mut self) -> Result<Pat, ParseError> {
@@ -1352,17 +1364,19 @@ impl Parser {
     }
 
     fn parse_arrow_type(&mut self) -> Result<TypeExpr, ParseError> {
-        let lhs = self.parse_tuple_type()?;
-        if self.eat(&TokenKind::ThinArrow).is_some() {
-            let rhs = self.parse_arrow_type()?; // right-associative
-            let span = lhs.span.merge(rhs.span);
-            Ok(TypeExpr {
-                kind: TypeExprKind::Arrow(Box::new(lhs), Box::new(rhs)),
-                span,
-            })
-        } else {
-            Ok(lhs)
+        let mut elems = vec![self.parse_tuple_type()?];
+        while self.eat(&TokenKind::ThinArrow).is_some() {
+            elems.push(self.parse_tuple_type()?);
         }
+        let mut result = elems.pop().unwrap();
+        while let Some(lhs) = elems.pop() {
+            let span = lhs.span.merge(result.span);
+            result = TypeExpr {
+                kind: TypeExprKind::Arrow(Box::new(lhs), Box::new(result)),
+                span,
+            };
+        }
+        Ok(result)
     }
 
     fn parse_tuple_type(&mut self) -> Result<TypeExpr, ParseError> {
