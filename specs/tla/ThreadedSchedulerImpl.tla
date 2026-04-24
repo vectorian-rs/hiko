@@ -54,13 +54,14 @@ VARIABLES
     waiters,
     any_waiters,
     tombstones,
+    pending_cancels,
     io_waiters,
     next_pid,
     next_token,
     shutdown,
     step
 
-vars == <<procs, queue, workers, waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown, step>>
+vars == <<procs, queue, workers, waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown, step>>
 
 Runnable       == "runnable"
 Running        == "running"
@@ -88,6 +89,7 @@ Init ==
     /\ waiters = 1 :> {}
     /\ any_waiters = 1 :> {}
     /\ tombstones = 1 :> TombNone
+    /\ pending_cancels = {}
     /\ io_waiters = {}
     /\ next_pid = 2
     /\ next_token = 1
@@ -153,7 +155,7 @@ DequeueRunnable(w, pid) ==
     /\ queue' = Tail(queue)
     /\ workers' = [workers EXCEPT ![w] = pid]
     /\ step' = step + 1
-    /\ UNCHANGED <<waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
 
 \* Scheduler entries can become stale relative to the process table/worker ownership.
 DequeueStale(w, pid) ==
@@ -165,7 +167,7 @@ DequeueStale(w, pid) ==
     /\ procs[pid].status # Runnable
     /\ queue' = Tail(queue)
     /\ step' = step + 1
-    /\ UNCHANGED <<procs, workers, waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<procs, workers, waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerYield(w) ==
     /\ StepOK
@@ -177,7 +179,7 @@ WorkerYield(w) ==
         /\ queue' = Append(queue, pid)
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerSpawn(w) ==
     /\ StepOK
@@ -193,9 +195,10 @@ WorkerSpawn(w) ==
           /\ waiters' = waiters @@ (child :> {})
           /\ any_waiters' = any_waiters @@ (child :> {})
           /\ tombstones' = tombstones @@ (child :> TombNone)
+          /\ pending_cancels' = pending_cancels
           /\ next_pid' = next_pid + 1
           /\ step' = step + 1
-          /\ UNCHANGED <<tombstones, io_waiters, next_token, shutdown>>
+          /\ UNCHANGED <<tombstones, pending_cancels, io_waiters, next_token, shutdown>>
 
 WorkerAwaitBlock(w, child) ==
     /\ StepOK
@@ -211,7 +214,7 @@ WorkerAwaitBlock(w, child) ==
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ waiters' = [waiters EXCEPT ![child] = @ \union {parent}]
         /\ step' = step + 1
-        /\ UNCHANGED <<queue, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<queue, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerAwaitReadyTombstone(w, child) ==
     /\ StepOK
@@ -228,7 +231,7 @@ WorkerAwaitReadyTombstone(w, child) ==
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ tombstones' = [tombstones EXCEPT ![child] = TombConsumed]
         /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<waiters, any_waiters, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerWaitAnyReady(w, children) ==
     /\ StepOK
@@ -246,7 +249,7 @@ WorkerWaitAnyReady(w, children) ==
         /\ queue' = Append(queue, parent)
         /\ workers' = [workers EXCEPT ![w] = 0]
         /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerWaitAnyBlock(w, children) ==
     /\ StepOK
@@ -268,7 +271,48 @@ WorkerWaitAnyBlock(w, children) ==
             THEN any_waiters[child] \union {parent}
             ELSE any_waiters[child]]
         /\ step' = step + 1
-        /\ UNCHANGED <<queue, waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+        /\ UNCHANGED <<queue, waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
+
+WorkerCancelRunningChild(w, child) ==
+    /\ StepOK
+    /\ ~shutdown
+    /\ workers[w] # 0
+    /\ KnownPid(child)
+    /\ procs[child].status = Running
+    /\ LET parent == workers[w] IN
+        /\ procs[parent].status = Running
+        /\ procs[child].parent = parent
+        /\ procs' = [procs EXCEPT ![parent].status = Runnable]
+        /\ queue' = Append(queue, parent)
+        /\ workers' = [workers EXCEPT ![w] = 0]
+        /\ pending_cancels' = pending_cancels \union {child}
+        /\ step' = step + 1
+        /\ UNCHANGED <<waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+
+WorkerObservePendingCancel(w) ==
+    /\ StepOK
+    /\ ~shutdown
+    /\ workers[w] # 0
+    /\ LET pid == workers[w]
+           any_parent == AnyWaiter(pid)
+       IN
+        /\ pid \in pending_cancels
+        /\ procs[pid].status = Running
+        /\ IF any_parent # 0
+           THEN /\ procs' = [procs EXCEPT ![pid].status = Failed,
+                                          ![any_parent].status = Runnable,
+                                          ![any_parent].targets = <<>>,
+                                          ![any_parent].delivered_pid = LeftmostTerminalAfter(pid, procs[any_parent].targets)]
+                /\ queue' = Append(queue, any_parent)
+                /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
+           ELSE /\ procs' = [procs EXCEPT ![pid].status = Failed]
+                /\ queue' = queue
+                /\ any_waiters' = any_waiters
+        /\ workers' = [workers EXCEPT ![w] = 0]
+        /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
+        /\ pending_cancels' = pending_cancels \ {pid}
+        /\ step' = step + 1
+        /\ UNCHANGED <<waiters, io_waiters, next_pid, next_token, shutdown>>
 
 WorkerRequestIo(w) ==
     /\ StepOK
@@ -284,7 +328,7 @@ WorkerRequestIo(w) ==
           /\ io_waiters' = io_waiters \union {[pid |-> pid, token |-> tok]}
           /\ next_token' = next_token + 1
           /\ step' = step + 1
-          /\ UNCHANGED <<queue, waiters, any_waiters, tombstones, next_pid, shutdown>>
+          /\ UNCHANGED <<queue, waiters, any_waiters, tombstones, pending_cancels, next_pid, shutdown>>
 
 WorkerDone(w) ==
     /\ StepOK
@@ -318,6 +362,7 @@ WorkerDone(w) ==
                      /\ any_waiters' = any_waiters
                      /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
         /\ workers' = [workers EXCEPT ![w] = 0]
+        /\ pending_cancels' = pending_cancels
         /\ step' = step + 1
         /\ UNCHANGED <<io_waiters, next_pid, next_token, shutdown>>
 
@@ -352,6 +397,7 @@ WorkerFail(w) ==
                      /\ any_waiters' = any_waiters
                      /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
         /\ workers' = [workers EXCEPT ![w] = 0]
+        /\ pending_cancels' = pending_cancels
         /\ step' = step + 1
         /\ UNCHANGED <<queue, io_waiters, next_pid, next_token, shutdown>>
 
@@ -368,7 +414,7 @@ MonitorIoComplete(entry) ==
     /\ queue' = Append(queue, entry.pid)
     /\ io_waiters' = io_waiters \ {entry}
     /\ step' = step + 1
-    /\ UNCHANGED <<workers, waiters, any_waiters, tombstones, next_pid, next_token, shutdown>>
+    /\ UNCHANGED <<workers, waiters, any_waiters, tombstones, pending_cancels, next_pid, next_token, shutdown>>
 
 MonitorIoFail(entry) ==
     /\ StepOK
@@ -405,6 +451,7 @@ MonitorIoFail(entry) ==
                      /\ any_waiters' = any_waiters
                      /\ tombstones' = [tombstones EXCEPT ![entry.pid] = IF procs[entry.pid].parent = 0 THEN TombNone ELSE TombReady]
     /\ io_waiters' = io_waiters \ {entry}
+    /\ pending_cancels' = pending_cancels \ {entry.pid}
     /\ step' = step + 1
     /\ UNCHANGED <<workers, next_pid, next_token, shutdown>>
 
@@ -427,7 +474,7 @@ MonitorDetectDeadlock ==
     /\ any_waiters' = any_waiters
     /\ shutdown' = TRUE
     /\ step' = step + 1
-    /\ UNCHANGED <<queue, workers, tombstones, io_waiters, next_pid, next_token>>
+    /\ UNCHANGED <<queue, workers, tombstones, pending_cancels, io_waiters, next_pid, next_token>>
 
 Next ==
     \/ \E w \in Workers :
@@ -436,10 +483,12 @@ Next ==
         \/ WorkerYield(w)
         \/ WorkerSpawn(w)
         \/ WorkerRequestIo(w)
+        \/ WorkerObservePendingCancel(w)
         \/ WorkerDone(w)
         \/ WorkerFail(w)
         \/ \E child \in DOMAIN procs : WorkerAwaitBlock(w, child)
         \/ \E child \in DOMAIN procs : WorkerAwaitReadyTombstone(w, child)
+        \/ \E child \in DOMAIN procs : WorkerCancelRunningChild(w, child)
         \/ \E children \in WaitAnyInputs :
             \/ WorkerWaitAnyReady(w, children)
             \/ WorkerWaitAnyBlock(w, children)
@@ -464,6 +513,7 @@ TypeOK ==
         /\ procs[p].delivered_pid \in Nat \union {0}
     /\ DOMAIN tombstones = DOMAIN procs
     /\ \A p \in DOMAIN tombstones : tombstones[p] \in {TombNone, TombReady, TombConsumed}
+    /\ pending_cancels \subseteq DOMAIN procs
     /\ \A child \in DOMAIN any_waiters : any_waiters[child] \subseteq DOMAIN procs
     /\ \A w \in Workers : workers[w] \in (DOMAIN procs) \union {0}
 
@@ -502,6 +552,11 @@ AnyWaitersConsistent ==
             /\ child \in SeqSet(procs[parent].targets)
             /\ procs[child].parent = parent
 
+PendingCancelsConsistent ==
+    \A p \in pending_cancels :
+        /\ procs[p].status = Running
+        /\ procs[p].parent # 0
+
 TombstonesConsistent ==
     \A p \in DOMAIN procs :
         /\ procs[p].parent = 0 => tombstones[p] = TombNone
@@ -532,6 +587,7 @@ SafetyInvariant ==
     /\ AtMostOneWaiterPerChild
     /\ WaitersConsistent
     /\ AnyWaitersConsistent
+    /\ PendingCancelsConsistent
     /\ TombstonesConsistent
     /\ IoWaitersConsistent
     /\ ShutdownImpliesNoRunnableOrRunning
