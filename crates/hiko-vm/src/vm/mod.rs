@@ -551,6 +551,46 @@ mod tests {
         assert_eq!(err.message, "unknown function proto: 9999");
     }
 
+    #[test]
+    fn test_dispatch_rejects_out_of_bounds_local_without_panicking() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::GetLocal as u8, 1, 0, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+        };
+
+        let mut vm = VM::new(program);
+        let err = vm.run().expect_err("invalid local slot should fail");
+        assert_eq!(err.message, "GetLocal: stack index 1 out of bounds");
+    }
+
+    #[test]
+    fn test_dispatch_rejects_out_of_bounds_field_without_panicking() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![
+                    Op::MakeTuple as u8,
+                    0,
+                    Op::GetField as u8,
+                    0,
+                    Op::Halt as u8,
+                ],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+        };
+
+        let mut vm = VM::new(program);
+        let err = vm.run().expect_err("invalid field index should fail");
+        assert_eq!(err.message, "GetField: field index 0 out of bounds");
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let unique = format!(
             "hiko-vm-{}-{}-{}",

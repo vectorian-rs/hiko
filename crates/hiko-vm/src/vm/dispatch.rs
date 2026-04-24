@@ -227,9 +227,12 @@ impl VM {
                                 self.push(field)?
                             }
                             HeapObject::Data { fields, .. } => {
-                                let field = fields.get(idx).copied().ok_or_else(|| RuntimeError {
-                                    message: format!("GetField: field index {idx} out of bounds"),
-                                })?;
+                                let field =
+                                    fields.get(idx).copied().ok_or_else(|| RuntimeError {
+                                        message: format!(
+                                            "GetField: field index {idx} out of bounds"
+                                        ),
+                                    })?;
                                 self.push(field)?
                             }
                             _ => {
@@ -391,7 +394,8 @@ impl VM {
                             let args_start = callee_pos + 1;
                             for i in 0..arity {
                                 let dst = self.checked_stack_index(base, i, "TailCall target")?;
-                                let src = self.checked_stack_index(args_start, i, "TailCall args")?;
+                                let src =
+                                    self.checked_stack_index(args_start, i, "TailCall args")?;
                                 self.stack[dst] = self.stack[src];
                             }
                             self.stack.truncate(base + arity);
@@ -796,9 +800,12 @@ impl VM {
     }
 
     fn current_frame_index(&self) -> Result<usize, RuntimeError> {
-        self.frames.len().checked_sub(1).ok_or_else(|| RuntimeError {
-            message: "call frame underflow".into(),
-        })
+        self.frames
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| RuntimeError {
+                message: "call frame underflow".into(),
+            })
     }
 
     fn checked_stack_index(
