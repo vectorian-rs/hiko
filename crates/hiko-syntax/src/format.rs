@@ -73,7 +73,7 @@ pub fn format_source(source: &str, file_id: u32) -> Result<String, FormatError> 
 }
 
 fn collect_comments(source: &str, file_id: u32) -> Vec<Comment> {
-    let mut comments = Vec::new();
+    let mut comments = Vec::with_capacity(source.len() / 200);
     let bytes = source.as_bytes();
     let mut pos = 0usize;
 
