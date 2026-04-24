@@ -129,7 +129,10 @@ impl<'src> Lexer<'src> {
             self.parse_escape(start)?
         } else {
             let rest = &self.source[self.pos..];
-            let c = rest.chars().next().unwrap();
+            let c = rest
+                .chars()
+                .next()
+                .ok_or_else(|| self.err("empty character literal", start))?;
             self.pos += c.len_utf8();
             c
         };
