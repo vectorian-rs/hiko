@@ -34,7 +34,7 @@ impl<'src> Lexer<'src> {
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>, LexError> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(self.bytes.len() / 4);
         loop {
             let tok = self.next_token()?;
             let is_eof = tok.kind == TokenKind::Eof;
