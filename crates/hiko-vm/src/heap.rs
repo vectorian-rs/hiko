@@ -347,8 +347,8 @@ impl Heap {
         }
 
         // Worklist avoids stack overflow on deep object graphs
-        let mut worklist: Vec<GcRef> = Vec::new();
-        let mut children: Vec<GcRef> = Vec::new();
+        let mut worklist: Vec<GcRef> = Vec::with_capacity(self.objects.len() / 4);
+        let mut children: Vec<GcRef> = Vec::with_capacity(8);
 
         for r in roots {
             if self.mark(r) {
