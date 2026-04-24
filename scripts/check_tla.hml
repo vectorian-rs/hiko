@@ -27,6 +27,17 @@ fun run_check name args = let
     if code = 0 then println ("PASS " ^ name) else panic ("TLA check failed: " ^ name)
   end
 
+fun run_expect_failure name args = let
+    val command = "tla"
+    val _ = println ("TLA  " ^ name ^ " (expected failure)")
+    val _ = println ("  " ^ command ^ " " ^ join_args args)
+    val (code, stdout, stderr) = exec (command, args)
+    val _ = if trim stdout = "" then () else print stdout
+    val _ = if trim stderr = "" then () else print stderr
+  in
+    if code = 0 then panic ("TLA negative check unexpectedly passed: " ^ name) else println ("PASS " ^ name ^ " failed as expected")
+  end
+
 val trace_dir = "target/tla"
 
 val _ = if file_exists trace_dir then () else create_dir trace_dir
@@ -36,7 +47,13 @@ val checks = [
     ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"]),
     ("WaitAnyLeftmost model", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost.trace.json"]),
     ("WaitAnyLeftmost right-notifier scenario", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--scenario", "@specs/tla/WaitAnyLeftmostRightNotifier.scenario", "--trace-json", "target/tla/wait_any_leftmost_right_notifier.trace.json"]),
+    ("CancelIoRace model", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race.trace.json"]),
+    ("CancelIoRace stale-completion scenario", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--scenario", "@specs/tla/CancelIoRaceStaleCompletion.scenario", "--trace-json", "target/tla/cancel_io_race_stale_completion.trace.json"]),
     ("ThreadedSchedulerImpl quick", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--quick", "--allow-deadlock", "--trace-json", "target/tla/threaded_scheduler_impl.trace.json"])
+]
+
+val negative_checks = [
+    ("Broken wait_any notifier delivery", ["specs/tla/broken/WaitAnyNotifierBroken.tla", "--config", "specs/tla/broken/WaitAnyNotifierBroken.cfg", "--allow-deadlock", "--trace-json", "target/tla/broken_wait_any_notifier.trace.json"])
 ]
 
 fun run_all xs = case xs of
@@ -47,6 +64,16 @@ fun run_all xs = case xs of
         run_all rest
       end
 
+fun run_all_expected_failures xs = case xs of
+      [] => ()
+    | (name, args) :: rest => let
+        val _ = run_expect_failure name args
+      in
+        run_all_expected_failures rest
+      end
+
 val _ = run_all checks
+
+val _ = run_all_expected_failures negative_checks
 
 val _ = println "All TLA checks passed"
