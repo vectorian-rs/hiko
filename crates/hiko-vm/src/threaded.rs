@@ -113,6 +113,7 @@ pub struct ThreadedRuntime {
 
 impl ThreadedRuntime {
     pub fn new(num_workers: usize) -> Self {
+        let num_workers = num_workers.max(1);
         Self {
             next_pid: Arc::new(AtomicU64::new(1)),
             next_io_token: Arc::new(AtomicU64::new(1)),
@@ -483,7 +484,20 @@ fn worker_loop(
                 process.status = ProcessStatus::Blocked(BlockReason::Io(token));
                 table.return_process(process);
                 table.io_waiters.insert(token, pid);
-                io_backend.register(token, request);
+                if let Err(message) = io_backend.register(token, request) {
+                    table.io_waiters.remove(&token);
+                    if let Some(process) = table.take(pid) {
+                        make_terminal(
+                            table,
+                            process,
+                            ChildOutcome::Err(ProcessFailure::runtime(message)),
+                        );
+                        cancel_scope_children(table, scheduler, pid);
+                        scheduler.remove(pid);
+                        wake_any_waiters(table, scheduler, pid);
+                        wake_join_waiters(table, scheduler, pid);
+                    }
+                }
             }
             RunResult::Cancelled => {
                 make_terminal(table, process, ChildOutcome::Err(ProcessFailure::Cancelled));
@@ -1100,6 +1114,16 @@ mod tests {
     }
 
     #[test]
+    fn test_threaded_zero_workers_clamps_to_one() {
+        let program = compile("val _ = println \"hello threaded\"");
+        let runtime = ThreadedRuntime::new(0);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["hello threaded\n"]);
+    }
+
+    #[test]
     fn test_threaded_spawn_await() {
         let program = compile(
             "val child = spawn (fn () => 42)\n\
@@ -1149,6 +1173,40 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["after sleep\n"]);
+    }
+
+    struct FailingIoBackend;
+
+    impl IoBackend for FailingIoBackend {
+        fn register(
+            &self,
+            _token: crate::io_backend::IoToken,
+            _request: crate::io_backend::IoRequest,
+        ) -> Result<(), String> {
+            Err("backend offline".into())
+        }
+
+        fn poll(&self) -> Vec<(crate::io_backend::IoToken, crate::io_backend::IoResult)> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn test_threaded_io_register_failure_fails_process() {
+        let program = compile("val _ = sleep 1");
+        let runtime = ThreadedRuntime::new(1).with_io_backend(Arc::new(FailingIoBackend));
+        let pid = runtime.spawn_root(program);
+
+        runtime.run_to_completion().unwrap();
+
+        let process = runtime.table.processes.get(&pid).unwrap();
+        match &process.status {
+            ProcessStatus::Failed(ProcessFailure::RuntimeError(message)) => {
+                assert!(message.contains("backend offline"));
+            }
+            other => panic!("expected backend failure, got {other:?}"),
+        }
+        assert!(runtime.table.io_waiters.is_empty());
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub enum IoResult {
 /// (epoll, io_uring, mock, etc.) without the runtime knowing details.
 pub trait IoBackend: Send + Sync {
     /// Register an I/O request. The backend will eventually produce a result.
-    fn register(&self, token: IoToken, request: IoRequest);
+    fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String>;
 
     /// Poll for completed I/O operations. Returns immediately.
     /// Non-blocking — returns empty vec if nothing is ready.
@@ -83,7 +83,7 @@ impl MockIoBackend {
 }
 
 impl IoBackend for MockIoBackend {
-    fn register(&self, token: IoToken, request: IoRequest) {
+    fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String> {
         // Mock: complete immediately with canned responses
         let result = match request {
             IoRequest::Sleep(_) => IoResult::Ok {
@@ -115,6 +115,7 @@ impl IoBackend for MockIoBackend {
             }
         };
         self.completed.lock().unwrap().push((token, result));
+        Ok(())
     }
 
     fn poll(&self) -> Vec<(IoToken, IoResult)> {
@@ -134,6 +135,7 @@ pub struct ThreadPoolIoBackend {
 
 impl ThreadPoolIoBackend {
     pub fn new(num_threads: usize) -> Self {
+        let num_threads = num_threads.max(1);
         let completed = Arc::new(Mutex::new(Vec::new()));
         let mut senders = Vec::with_capacity(num_threads);
 
@@ -158,12 +160,14 @@ impl ThreadPoolIoBackend {
 }
 
 impl IoBackend for ThreadPoolIoBackend {
-    fn register(&self, token: IoToken, request: IoRequest) {
+    fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String> {
         let idx = self
             .next_worker
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % self.senders.len();
-        let _ = self.senders[idx].send((token, request));
+        self.senders[idx]
+            .send((token, request))
+            .map_err(|e| format!("io backend worker unavailable: {e}"))
     }
 
     fn poll(&self) -> Vec<(IoToken, IoResult)> {
@@ -388,7 +392,9 @@ mod tests {
     #[test]
     fn test_mock_sleep_completes_immediately() {
         let backend = MockIoBackend::new();
-        backend.register(IoToken(1), IoRequest::Sleep(Duration::from_millis(100)));
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_millis(100)))
+            .unwrap();
         let results = backend.poll();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, IoToken(1));
@@ -404,10 +410,32 @@ mod tests {
     #[test]
     fn test_mock_poll_drains() {
         let backend = MockIoBackend::new();
-        backend.register(IoToken(1), IoRequest::Sleep(Duration::from_millis(0)));
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_millis(0)))
+            .unwrap();
         let r1 = backend.poll();
         assert_eq!(r1.len(), 1);
         let r2 = backend.poll();
         assert_eq!(r2.len(), 0);
+    }
+
+    #[test]
+    fn test_thread_pool_zero_threads_still_accepts_request() {
+        let backend = ThreadPoolIoBackend::new(0);
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_millis(0)))
+            .unwrap();
+
+        for _ in 0..50 {
+            let results = backend.poll();
+            if !results.is_empty() {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0, IoToken(1));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        panic!("thread pool backend did not complete request");
     }
 }
