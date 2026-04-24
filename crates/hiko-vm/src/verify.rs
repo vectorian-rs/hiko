@@ -248,6 +248,11 @@ fn decode_instruction(
         | Op::SubFloat
         | Op::MulFloat
         | Op::DivFloat
+        | Op::AddWord
+        | Op::SubWord
+        | Op::MulWord
+        | Op::DivWord
+        | Op::ModWord
         | Op::Eq
         | Op::Ne
         | Op::LtInt
@@ -258,6 +263,10 @@ fn decode_instruction(
         | Op::GtFloat
         | Op::LeFloat
         | Op::GeFloat
+        | Op::LtWord
+        | Op::GtWord
+        | Op::LeWord
+        | Op::GeWord
         | Op::ConcatString => {
             successors.push(*ip);
             StackRule::Exact {

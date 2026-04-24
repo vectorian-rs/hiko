@@ -651,6 +651,15 @@ fn scan_chunk_globals(
             | Op::GtFloat
             | Op::LeFloat
             | Op::GeFloat
+            | Op::AddWord
+            | Op::SubWord
+            | Op::MulWord
+            | Op::DivWord
+            | Op::ModWord
+            | Op::LtWord
+            | Op::GtWord
+            | Op::LeWord
+            | Op::GeWord
             | Op::ConcatString
             | Op::Not
             | Op::GetTag
@@ -885,6 +894,15 @@ fn count_chunk_opcodes(chunk: &Chunk) -> Result<usize, String> {
             | Op::GtFloat
             | Op::LeFloat
             | Op::GeFloat
+            | Op::AddWord
+            | Op::SubWord
+            | Op::MulWord
+            | Op::DivWord
+            | Op::ModWord
+            | Op::LtWord
+            | Op::GtWord
+            | Op::LeWord
+            | Op::GeWord
             | Op::ConcatString
             | Op::Not
             | Op::GetTag

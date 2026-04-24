@@ -175,6 +175,7 @@ impl Parser {
             self.peek(),
             TokenKind::IntLit(_)
                 | TokenKind::FloatLit(_)
+                | TokenKind::WordLit(_)
                 | TokenKind::StringLit(_)
                 | TokenKind::CharLit(_)
                 | TokenKind::True
@@ -231,6 +232,7 @@ impl Parser {
             TokenKind::Underscore
                 | TokenKind::IntLit(_)
                 | TokenKind::FloatLit(_)
+                | TokenKind::WordLit(_)
                 | TokenKind::StringLit(_)
                 | TokenKind::CharLit(_)
                 | TokenKind::True
@@ -677,14 +679,10 @@ impl Parser {
         let op = match self.peek() {
             TokenKind::Eq => Some(BinOp::Eq),
             TokenKind::Ne => Some(BinOp::Ne),
-            TokenKind::Lt => Some(BinOp::LtInt),
-            TokenKind::Gt => Some(BinOp::GtInt),
-            TokenKind::Le => Some(BinOp::LeInt),
-            TokenKind::Ge => Some(BinOp::GeInt),
-            TokenKind::LtDot => Some(BinOp::LtFloat),
-            TokenKind::GtDot => Some(BinOp::GtFloat),
-            TokenKind::LeDot => Some(BinOp::LeFloat),
-            TokenKind::GeDot => Some(BinOp::GeFloat),
+            TokenKind::Lt => Some(BinOp::Lt),
+            TokenKind::Gt => Some(BinOp::Gt),
+            TokenKind::Le => Some(BinOp::Le),
+            TokenKind::Ge => Some(BinOp::Ge),
             _ => None,
         };
         if let Some(op) = op {
@@ -720,10 +718,8 @@ impl Parser {
         let mut lhs = self.parse_mul()?;
         loop {
             let op = match self.peek() {
-                TokenKind::Plus => Some(BinOp::AddInt),
-                TokenKind::Minus => Some(BinOp::SubInt),
-                TokenKind::PlusDot => Some(BinOp::AddFloat),
-                TokenKind::MinusDot => Some(BinOp::SubFloat),
+                TokenKind::Plus => Some(BinOp::Add),
+                TokenKind::Minus => Some(BinOp::Sub),
                 TokenKind::Caret => Some(BinOp::ConcatStr),
                 _ => None,
             };
@@ -746,11 +742,9 @@ impl Parser {
         let mut lhs = self.parse_unary()?;
         loop {
             let op = match self.peek() {
-                TokenKind::Star => Some(BinOp::MulInt),
-                TokenKind::Slash => Some(BinOp::DivInt),
-                TokenKind::Mod => Some(BinOp::ModInt),
-                TokenKind::StarDot => Some(BinOp::MulFloat),
-                TokenKind::SlashDot => Some(BinOp::DivFloat),
+                TokenKind::Star => Some(BinOp::Mul),
+                TokenKind::Slash => Some(BinOp::Div),
+                TokenKind::Mod => Some(BinOp::Mod),
                 _ => None,
             };
             if let Some(op) = op {
@@ -845,6 +839,14 @@ impl Parser {
                 self.advance();
                 Ok(Expr {
                     kind: ExprKind::FloatLit(f),
+                    span: start,
+                })
+            }
+            TokenKind::WordLit(w) => {
+                let w = *w;
+                self.advance();
+                Ok(Expr {
+                    kind: ExprKind::WordLit(w),
                     span: start,
                 })
             }
@@ -1245,6 +1247,14 @@ impl Parser {
                 self.advance();
                 Ok(Pat {
                     kind: PatKind::FloatLit(f),
+                    span: start,
+                })
+            }
+            TokenKind::WordLit(w) => {
+                let w = *w;
+                self.advance();
+                Ok(Pat {
+                    kind: PatKind::WordLit(w),
                     span: start,
                 })
             }
@@ -1903,10 +1913,10 @@ mod tests {
         // 1 + 2 * 3 should be 1 + (2 * 3)
         let prog = parse("val x = 1 + 2 * 3");
         if let DeclKind::Val(_, ref expr) = prog.decls[0].kind {
-            if let ExprKind::BinOp(BinOp::AddInt, _, ref rhs) = expr.kind {
-                assert!(matches!(&rhs.kind, ExprKind::BinOp(BinOp::MulInt, _, _)));
+            if let ExprKind::BinOp(BinOp::Add, _, ref rhs) = expr.kind {
+                assert!(matches!(&rhs.kind, ExprKind::BinOp(BinOp::Mul, _, _)));
             } else {
-                panic!("expected AddInt at top");
+                panic!("expected Add at top");
             }
         }
     }
@@ -2000,13 +2010,23 @@ mod tests {
 
     #[test]
     fn test_float_operators() {
-        let prog = parse("val x = 1.0 +. 2.0 *. 3.0");
+        let prog = parse("val x = 1.0 + 2.0 * 3.0");
         if let DeclKind::Val(_, ref expr) = prog.decls[0].kind {
-            if let ExprKind::BinOp(BinOp::AddFloat, _, ref rhs) = expr.kind {
-                assert!(matches!(&rhs.kind, ExprKind::BinOp(BinOp::MulFloat, _, _)));
+            if let ExprKind::BinOp(BinOp::Add, _, ref rhs) = expr.kind {
+                assert!(matches!(&rhs.kind, ExprKind::BinOp(BinOp::Mul, _, _)));
             } else {
-                panic!("expected AddFloat");
+                panic!("expected Add at top");
             }
+        }
+    }
+
+    #[test]
+    fn test_word_literal() {
+        let prog = parse("val x = 0w42");
+        if let DeclKind::Val(_, ref expr) = prog.decls[0].kind {
+            assert!(matches!(&expr.kind, ExprKind::WordLit(42)));
+        } else {
+            panic!("expected val with WordLit");
         }
     }
 

@@ -145,6 +145,7 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     while let Some((left, right)) = worklist.pop() {
         match (left, right) {
             (Value::Int(x), Value::Int(y)) if x == y => {}
+            (Value::Word(x), Value::Word(y)) if x == y => {}
             (Value::Pid(x), Value::Pid(y)) if x == y => {}
             (Value::Float(x), Value::Float(y)) if x == y => {}
             (Value::Bool(x), Value::Bool(y)) if x == y => {}

@@ -10,12 +10,17 @@
  *)
 
 val input = read_stdin ()
+
 val command = json_get (input, "command")
+
 val args_str = json_get (input, "args")
+
 val args = split (args_str, " ")
+
 val (code, stdout, stderr) = exec (command, args)
+
 val _ = if stdout <> "" then print stdout else ()
+
 val _ = if stderr <> "" then print ("stderr: " ^ stderr) else ()
-val _ = if code <> 0
-  then println ("exit code: " ^ int_to_string code)
-  else ()
+
+val _ = if code <> 0 then println ("exit code: " ^ int_to_string code) else ()

@@ -14,6 +14,7 @@ use crate::vm::{TAG_CONS, TAG_NIL};
 #[derive(Debug, Clone)]
 pub enum SendableValue {
     Int(i64),
+    Word(u64),
     Pid(u64),
     Float(f64),
     Bool(bool),
@@ -33,7 +34,10 @@ impl SendableValue {
     /// Approximate payload bytes represented by this value.
     pub fn estimated_bytes(&self) -> usize {
         match self {
-            SendableValue::Int(_) | SendableValue::Pid(_) | SendableValue::Float(_) => 8,
+            SendableValue::Int(_)
+            | SendableValue::Word(_)
+            | SendableValue::Pid(_)
+            | SendableValue::Float(_) => 8,
             SendableValue::Bool(_) => 1,
             SendableValue::Char(_) => 4,
             SendableValue::Unit => 0,
@@ -53,6 +57,7 @@ impl SendableValue {
 pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
     match value {
         Value::Int(n) => Ok(SendableValue::Int(n)),
+        Value::Word(w) => Ok(SendableValue::Word(w)),
         Value::Pid(pid) => Ok(SendableValue::Pid(pid)),
         Value::Float(f) => Ok(SendableValue::Float(f)),
         Value::Bool(b) => Ok(SendableValue::Bool(b)),
@@ -125,6 +130,7 @@ pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLim
 
     match msg {
         SendableValue::Int(n) => Ok(Value::Int(n)),
+        SendableValue::Word(w) => Ok(Value::Word(w)),
         SendableValue::Pid(pid) => Ok(Value::Pid(pid)),
         SendableValue::Float(f) => Ok(Value::Float(f)),
         SendableValue::Bool(b) => Ok(Value::Bool(b)),

@@ -8,10 +8,14 @@
 use "../libraries/Std-v0.1.0/modules/List.hml"
 
 val input = read_stdin ()
+
 val path = json_get (input, "path")
+
 val entries = list_dir path
-val _ = List.map (fn entry =>
-  let val full = path_join (path, entry)
-      val suffix = if is_dir full then "/" else ""
-  in println (entry ^ suffix) end
-) entries
+
+val _ = List.map (fn entry => let
+  val full = path_join (path, entry)
+  val suffix = if is_dir full then "/" else ""
+in
+  println (entry ^ suffix)
+end) entries

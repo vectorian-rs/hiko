@@ -22,6 +22,9 @@ impl Type {
     pub fn float() -> Type {
         Type::Con("Float".into())
     }
+    pub fn word() -> Type {
+        Type::Con("Word".into())
+    }
     pub fn bool() -> Type {
         Type::Con("Bool".into())
     }
@@ -55,7 +58,7 @@ impl Type {
         match self {
             Type::Con(n) => matches!(
                 n.as_str(),
-                "Int" | "Float" | "Bool" | "String" | "Char" | "Unit" | "Bytes" | "Pid"
+                "Int" | "Float" | "Word" | "Bool" | "String" | "Char" | "Unit" | "Bytes" | "Pid"
             ),
             Type::Var(_) => false, // conservative: block until resolved to a concrete equality type
             Type::Tuple(elems) => elems.iter().all(|e| e.is_equality()),
@@ -73,6 +76,7 @@ impl Type {
         match name {
             "Int" => "int",
             "Float" => "float",
+            "Word" => "word",
             "Bool" => "bool",
             "String" => "string",
             "Char" => "char",

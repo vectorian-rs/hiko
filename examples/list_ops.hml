@@ -1,32 +1,31 @@
 (* Standard list operations *)
 
-fun map f xs =
-  case xs of
-    []      => []
-  | x :: xs => f x :: map f xs
+fun map f xs = case xs of
+      [] => []
+    | x :: xs => f x :: map f xs
 
-fun filter p xs =
-  case xs of
-    []      => []
-  | x :: xs =>
-      if p x then x :: filter p xs
-      else filter p xs
+fun filter p xs = case xs of
+      [] => []
+    | x :: xs => if p x then x :: filter p xs else filter p xs
 
-fun foldl f init xs =
-  case xs of
-    []       => init
-  | x :: rest => foldl f (f (init, x)) rest
+fun foldl f init xs = case xs of
+      [] => init
+    | x :: rest => foldl f (f (init, x)) rest
 
-fun length xs =
-  case xs of
-    []      => 0
-  | _ :: xs => 1 + length xs
+fun length xs = case xs of
+      [] => 0
+    | _ :: xs => 1 + length xs
 
-val nums    = [1, 2, 3, 4, 5]
+val nums = [1, 2, 3, 4, 5]
+
 val doubled = map (fn x => x * 2) nums
-val evens   = filter (fn x => x mod 2 = 0) nums
-val sum     = foldl (fn (acc, x) => acc + x) 0 nums
+
+val evens = filter (fn x => x mod 2 = 0) nums
+
+val sum = foldl (fn (acc, x) => acc + x) 0 nums
 
 val _ = println (int_to_string (length doubled))
+
 val _ = println (int_to_string (length evens))
+
 val _ = println (int_to_string sum)

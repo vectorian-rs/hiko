@@ -712,6 +712,7 @@ impl<'a> TrackedPrettyPrinter<'a> {
         self.with_anchor(expr.span, |this| match &expr.kind {
             ExprKind::IntLit(n) => write!(this.buf, "{n}").unwrap(),
             ExprKind::FloatLit(f) => pretty_float(&mut this.buf, *f),
+            ExprKind::WordLit(w) => write!(this.buf, "0w{w}").unwrap(),
             ExprKind::StringLit(s) => write_escaped_string(&mut this.buf, s),
             ExprKind::CharLit(c) => write_escaped_char(&mut this.buf, *c),
             ExprKind::BoolLit(true) => this.buf.push_str("true"),
@@ -932,6 +933,7 @@ impl<'a> TrackedPrettyPrinter<'a> {
                     pretty_float(&mut this.buf, *f);
                 }
             }
+            PatKind::WordLit(w) => write!(this.buf, "0w{w}").unwrap(),
             PatKind::StringLit(s) => write_escaped_string(&mut this.buf, s),
             PatKind::CharLit(c) => write_escaped_char(&mut this.buf, *c),
             PatKind::BoolLit(true) => this.buf.push_str("true"),
@@ -1069,6 +1071,7 @@ fn needs_parens_as_atom(expr: &Expr) -> bool {
         &expr.kind,
         ExprKind::IntLit(_)
             | ExprKind::FloatLit(_)
+            | ExprKind::WordLit(_)
             | ExprKind::StringLit(_)
             | ExprKind::CharLit(_)
             | ExprKind::BoolLit(_)
@@ -1088,16 +1091,34 @@ fn binop_prec(op: &BinOp) -> u8 {
         BinOp::Andalso => 2,
         BinOp::Eq
         | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Gt
+        | BinOp::Le
+        | BinOp::Ge
         | BinOp::LtInt
         | BinOp::GtInt
         | BinOp::LeInt
         | BinOp::GeInt
-        | BinOp::LtFloat
-        | BinOp::GtFloat
-        | BinOp::LeFloat
-        | BinOp::GeFloat => 3,
-        BinOp::AddInt | BinOp::SubInt | BinOp::AddFloat | BinOp::SubFloat | BinOp::ConcatStr => 4,
-        BinOp::MulInt | BinOp::DivInt | BinOp::ModInt | BinOp::MulFloat | BinOp::DivFloat => 5,
+        | BinOp::LtWord
+        | BinOp::GtWord
+        | BinOp::LeWord
+        | BinOp::GeWord => 3,
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::AddInt
+        | BinOp::SubInt
+        | BinOp::AddWord
+        | BinOp::SubWord
+        | BinOp::ConcatStr => 4,
+        BinOp::Mul
+        | BinOp::Div
+        | BinOp::Mod
+        | BinOp::MulInt
+        | BinOp::DivInt
+        | BinOp::ModInt
+        | BinOp::MulWord
+        | BinOp::DivWord
+        | BinOp::ModWord => 5,
     }
 }
 
@@ -1136,24 +1157,16 @@ fn binop_needs_parens_rhs(op: &BinOp, rhs: &Expr) -> bool {
 fn binop_str(op: &BinOp) -> &'static str {
     match op {
         BinOp::Pipe => "|>",
-        BinOp::AddInt => "+",
-        BinOp::SubInt => "-",
-        BinOp::MulInt => "*",
-        BinOp::DivInt => "/",
-        BinOp::ModInt => "mod",
-        BinOp::AddFloat => "+.",
-        BinOp::SubFloat => "-.",
-        BinOp::MulFloat => "*.",
-        BinOp::DivFloat => "/.",
+        BinOp::Add | BinOp::AddInt | BinOp::AddWord => "+",
+        BinOp::Sub | BinOp::SubInt | BinOp::SubWord => "-",
+        BinOp::Mul | BinOp::MulInt | BinOp::MulWord => "*",
+        BinOp::Div | BinOp::DivInt | BinOp::DivWord => "/",
+        BinOp::Mod | BinOp::ModInt | BinOp::ModWord => "mod",
         BinOp::ConcatStr => "^",
-        BinOp::LtInt => "<",
-        BinOp::GtInt => ">",
-        BinOp::LeInt => "<=",
-        BinOp::GeInt => ">=",
-        BinOp::LtFloat => "<.",
-        BinOp::GtFloat => ">.",
-        BinOp::LeFloat => "<=.",
-        BinOp::GeFloat => ">=.",
+        BinOp::Lt | BinOp::LtInt | BinOp::LtWord => "<",
+        BinOp::Gt | BinOp::GtInt | BinOp::GtWord => ">",
+        BinOp::Le | BinOp::LeInt | BinOp::LeWord => "<=",
+        BinOp::Ge | BinOp::GeInt | BinOp::GeWord => ">=",
         BinOp::Eq => "=",
         BinOp::Ne => "<>",
         BinOp::Andalso => "andalso",

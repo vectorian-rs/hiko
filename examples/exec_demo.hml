@@ -18,9 +18,15 @@
 
 (* Show the exec type signature *)
 val _ = println "exec : (string, string list) -> (int, string, string)"
+
 val _ = println ""
+
 val _ = println "Usage:"
+
 val _ = println "  val (code, stdout, stderr) = exec (\"/bin/ls\", [\"-la\"])"
+
 val _ = println ""
+
 val _ = println "Requires a run config with [capabilities.exec.exec] allowed commands."
+
 val _ = println "See examples/agent.policy.toml"

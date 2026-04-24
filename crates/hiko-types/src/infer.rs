@@ -10,6 +10,7 @@ use crate::ty::{Scheme, Type};
 const UPPERCASE_PRIMITIVE_ALIASES: &[(&str, &str)] = &[
     ("Int", "int"),
     ("Float", "float"),
+    ("Word", "word"),
     ("Bool", "bool"),
     ("String", "string"),
     ("Char", "char"),
@@ -98,6 +99,10 @@ impl InferCtx {
             ("char_to_int", Type::arrow(Type::char(), Type::int())),
             ("int_to_char", Type::arrow(Type::int(), Type::char())),
             ("int_to_float", Type::arrow(Type::int(), Type::float())),
+            ("word_to_int", Type::arrow(Type::word(), Type::int())),
+            ("int_to_word", Type::arrow(Type::int(), Type::word())),
+            ("word_to_string", Type::arrow(Type::word(), Type::string())),
+            ("string_to_word", Type::arrow(Type::string(), Type::word())),
             // string ops
             ("string_length", Type::arrow(Type::string(), Type::int())),
             (
@@ -1052,6 +1057,7 @@ impl InferCtx {
         match &expr.kind {
             ExprKind::IntLit(_) => Ok(Type::int()),
             ExprKind::FloatLit(_) => Ok(Type::float()),
+            ExprKind::WordLit(_) => Ok(Type::word()),
             ExprKind::StringLit(_) => Ok(Type::string()),
             ExprKind::CharLit(_) => Ok(Type::char()),
             ExprKind::BoolLit(_) => Ok(Type::bool()),
@@ -1105,6 +1111,9 @@ impl InferCtx {
                     Type::Con(n) if n == "Int" || n == "Float" => {
                         self.expr_types.insert(expr.span, resolved);
                         Ok(ty)
+                    }
+                    Type::Con(n) if n == "Word" => {
+                        Err(self.err("cannot negate word value, words are unsigned", e.span))
                     }
                     Type::Var(_) => {
                         Err(self.err("~ requires int or float, but type is unconstrained", e.span))
@@ -1261,19 +1270,73 @@ impl InferCtx {
 
         let (expected_lhs, expected_rhs, result) = match op {
             BinOp::Pipe => unreachable!("pipeline is desugared to application"),
+
+            // Generic arithmetic: resolve via unification
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                self.unify(&lhs_ty, &rhs_ty, span)?;
+                let resolved = self.apply(&lhs_ty);
+                let resolved = match &resolved {
+                    Type::Var(_) => {
+                        // Default ambiguous numeric type to int
+                        self.unify(&lhs_ty, &Type::int(), span)?;
+                        Type::int()
+                    }
+                    Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => resolved,
+                    _ => {
+                        return Err(self.err(
+                            &format!(
+                                "arithmetic operators require int, float, or word, found {}",
+                                self.display(&resolved)
+                            ),
+                            span,
+                        ));
+                    }
+                };
+                self.expr_types.insert(span, resolved.clone());
+                return Ok(resolved);
+            }
+
+            // Generic comparison: resolve via unification, return bool
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                self.unify(&lhs_ty, &rhs_ty, span)?;
+                let resolved = self.apply(&lhs_ty);
+                let resolved = match &resolved {
+                    Type::Var(_) => {
+                        self.unify(&lhs_ty, &Type::int(), span)?;
+                        Type::int()
+                    }
+                    Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => resolved,
+                    _ => {
+                        return Err(self.err(
+                            &format!(
+                                "comparison operators require int, float, or word, found {}",
+                                self.display(&resolved)
+                            ),
+                            span,
+                        ));
+                    }
+                };
+                self.expr_types.insert(span, resolved);
+                return Ok(Type::bool());
+            }
+
+            // Type-specific int ops (kept for safety)
             BinOp::AddInt | BinOp::SubInt | BinOp::MulInt | BinOp::DivInt | BinOp::ModInt => {
                 (Type::int(), Type::int(), Type::int())
             }
-            BinOp::AddFloat | BinOp::SubFloat | BinOp::MulFloat | BinOp::DivFloat => {
-                (Type::float(), Type::float(), Type::float())
-            }
-            BinOp::ConcatStr => (Type::string(), Type::string(), Type::string()),
             BinOp::LtInt | BinOp::GtInt | BinOp::LeInt | BinOp::GeInt => {
                 (Type::int(), Type::int(), Type::bool())
             }
-            BinOp::LtFloat | BinOp::GtFloat | BinOp::LeFloat | BinOp::GeFloat => {
-                (Type::float(), Type::float(), Type::bool())
+
+            // Type-specific word ops (kept for safety)
+            BinOp::AddWord | BinOp::SubWord | BinOp::MulWord | BinOp::DivWord | BinOp::ModWord => {
+                (Type::word(), Type::word(), Type::word())
             }
+            BinOp::LtWord | BinOp::GtWord | BinOp::LeWord | BinOp::GeWord => {
+                (Type::word(), Type::word(), Type::bool())
+            }
+
+            BinOp::ConcatStr => (Type::string(), Type::string(), Type::string()),
             BinOp::Andalso | BinOp::Orelse => {
                 unreachable!("desugared to if-then-else")
             }
@@ -1322,6 +1385,7 @@ impl InferCtx {
             }
             PatKind::IntLit(_) => Ok((Type::int(), vec![])),
             PatKind::FloatLit(_) => Ok((Type::float(), vec![])),
+            PatKind::WordLit(_) => Ok((Type::word(), vec![])),
             PatKind::StringLit(_) => Ok((Type::string(), vec![])),
             PatKind::CharLit(_) => Ok((Type::char(), vec![])),
             PatKind::BoolLit(_) => Ok((Type::bool(), vec![])),
@@ -1420,6 +1484,7 @@ impl InferCtx {
                 match name {
                     "int" => return Ok(Type::int()),
                     "float" => return Ok(Type::float()),
+                    "word" => return Ok(Type::word()),
                     "bool" => return Ok(Type::bool()),
                     "string" => return Ok(Type::string()),
                     "char" => return Ok(Type::char()),
@@ -1538,7 +1603,7 @@ impl InferCtx {
             Type::Con(name) => match name.as_str() {
                 "Bool" => TypeInfo::bool_type(),
                 "Unit" => TypeInfo::unit_type(),
-                "Int" | "Float" | "String" | "Char" => TypeInfo::infinite(),
+                "Int" | "Float" | "Word" | "String" | "Char" => TypeInfo::infinite(),
                 _ => {
                     if let Some(cons) = self.datatype_constructors.get(name) {
                         TypeInfo::adt_type(name, cons)
@@ -1608,6 +1673,7 @@ fn is_syntactic_value(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::IntLit(_)
         | ExprKind::FloatLit(_)
+        | ExprKind::WordLit(_)
         | ExprKind::StringLit(_)
         | ExprKind::CharLit(_)
         | ExprKind::BoolLit(_)
@@ -1910,7 +1976,7 @@ mod tests {
 
     #[test]
     fn test_float_arith() {
-        let ctx = infer("val x = 1.0 +. 2.0");
+        let ctx = infer("val x = 1.0 + 2.0");
         assert_eq!(type_of(&ctx, "x"), "float");
     }
 

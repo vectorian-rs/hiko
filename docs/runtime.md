@@ -220,6 +220,8 @@ val _ = cancel pid
 val res = await_process pid
 ```
 
+`wait_any` uses deterministic list-order semantics. `wait_any [p1, p2, ..., pn]` blocks until at least one listed child has completed, then returns the leftmost PID in the original input list whose child is complete. If several children complete concurrently, input list order breaks ties; the child that wakes the parent is only a notification, not automatically the winner.
+
 The intended user-facing layer is `Std.Fiber`:
 
 ```sml

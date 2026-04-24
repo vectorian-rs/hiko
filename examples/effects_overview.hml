@@ -15,81 +15,93 @@ datatype 'a result = Ok of 'a | Err of string
 
 effect Fail of string
 
-fun run_safe f =
-  handle f ()
-  with return x => Ok x
-     | Fail msg _ => Err msg
+fun run_safe f = handle
+    f ()
+  with
+    return x => Ok x
+  | Fail msg _ => Err msg
 
-fun divide a b =
-  if b = 0 then perform Fail "division by zero"
-  else a / b
+fun divide a b = if b = 0 then perform Fail "division by zero" else a / b
 
 val _ = println "--- Error handling ---"
 
 val good = run_safe (fn () => divide 100 5 + divide 20 4)
+
 val _ = case good of
-    Ok n  => println ("100/5 + 20/4 = " ^ int_to_string n)
+    Ok n => println ("100/5 + 20/4 = " ^ int_to_string n)
   | Err e => println ("Error: " ^ e)
 
 val bad = run_safe (fn () => divide 10 0)
+
 val _ = case bad of
-    Ok n  => println ("Unexpected: " ^ int_to_string n)
+    Ok n => println ("Unexpected: " ^ int_to_string n)
   | Err e => println ("Caught: " ^ e)
 
 (* ── 2. Generators ─────────────────────────────────────────── *)
 
 effect Yield of int
 
-fun collect f = handle f ()
-  with return _ => []
-     | Yield n k => n :: collect (fn _ => resume k ())
+fun collect f = handle
+    f ()
+  with
+    return _ => []
+  | Yield n k => n :: collect (fn _ => resume k ())
 
-fun fib_go a b count =
-  if count = 0 then ()
-  else let val _ = perform Yield a
-       in fib_go b (a + b) (count - 1) end
+fun fib_go a b count = if count = 0 then () else let
+    val _ = perform Yield a
+  in
+    fib_go b (a + b) (count - 1)
+  end
 
 fun fibonacci n () = fib_go 0 1 n
 
 val fibs = collect (fibonacci 10)
 
 val _ = println "\n--- Generators ---"
+
 val _ = println "First 10 Fibonacci numbers:"
 
 fun show_list xs = case xs of
-    [] => println ""
-  | [x] => println (int_to_string x)
-  | x :: rest =>
-      let val _ = print (int_to_string x ^ ", ")
-      in show_list rest end
+      [] => println ""
+    | [x] => println (int_to_string x)
+    | x :: rest => let
+        val _ = print (int_to_string x ^ ", ")
+      in
+        show_list rest
+      end
 
 val _ = show_list fibs
 
 (* ── 3. Mutable state ──────────────────────────────────────── *)
 
 effect Get of unit
+
 effect Put of int
 
-fun run_state init f =
-  handle f ()
-  with return x => (init, x)
-     | Get _ k => run_state init (fn _ => resume k init)
-     | Put n k => run_state n (fn _ => resume k ())
+fun run_state init f = handle
+    f ()
+  with
+    return x => (init, x)
+  | Get _ k => run_state init (fn _ => resume k init)
+  | Put n k => run_state n (fn _ => resume k ())
 
 fun count_each ws = case ws of
-    [] => ()
-  | w :: rest =>
-      if string_length w > 0
-      then let val n = perform Get ()
-               val _ = perform Put (n + 1)
-           in count_each rest end
-      else count_each rest
+      [] => ()
+    | w :: rest => if string_length w > 0 then let
+        val n = perform Get ()
+        val _ = perform Put (n + 1)
+      in
+        count_each rest
+      end else count_each rest
 
-fun count_words text =
-  let val words = split (text, " ")
-  in count_each words end
+fun count_words text = let
+    val words = split (text, " ")
+  in
+    count_each words
+  end
 
 val (word_count, _) = run_state 0 (fn () => count_words "the quick brown fox jumps")
 
 val _ = println "\n--- Mutable state ---"
+
 val _ = println ("Word count: " ^ int_to_string word_count)

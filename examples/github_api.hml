@@ -4,26 +4,41 @@
  *)
 
 import Std.Json
+
 import Std.List
 
 val (status, _, body) = http_get "https://api.github.com/repos/vectorian-rs/hiko/contents/"
 
 fun lookup key fs = case fs of
-    [] => Json.JNull
-  | (k, v) :: rest =>
-      if k = key then v else lookup key rest
+      [] => Json.JNull
+    | (k, v) :: rest => if k = key then v else lookup key rest
 
 val _ = case json_parse body of
-    Json.JArray items =>
-      List.map (fn item => case item of
-          Json.JObject fields =>
-            let
-              val name = case lookup "name" fields of Json.JStr s => s | _ => "?"
-              val typ = case lookup "type" fields of Json.JStr s => s | _ => "?"
-            in println (name ^ " " ^ typ) end
-        | _ => ()
-      ) items
-  | Json.JObject fields =>
-      let val msg = case lookup "message" fields of Json.JStr s => s | _ => "unknown error"
-      in let val _ = println ("API error: " ^ msg) in [] end end
-  | _ => let val _ = println "unexpected response" in [] end
+    Json.JArray items => List.map (fn item => case item of
+        Json.JObject fields => let
+          val name = case lookup "name" fields of
+              Json.JStr s => s
+            | _ => "?"
+          val typ = case lookup "type" fields of
+              Json.JStr s => s
+            | _ => "?"
+        in
+          println (name ^ " " ^ typ)
+        end
+      | _ => ()) items
+  | Json.JObject fields => let
+      val msg = case lookup "message" fields of
+          Json.JStr s => s
+        | _ => "unknown error"
+    in
+      let
+        val _ = println ("API error: " ^ msg)
+      in
+        []
+      end
+    end
+  | _ => let
+      val _ = println "unexpected response"
+    in
+      []
+    end

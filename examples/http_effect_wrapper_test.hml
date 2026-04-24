@@ -14,52 +14,71 @@ effect HttpGet of string
 
 (* ── Business logic ────────────────────────────────────────── *)
 
-fun fetch url =
-  let val (status, _, body) = perform HttpGet url
-  in (url, status, string_length body) end
+fun fetch url = let
+    val (status, _, body) = perform HttpGet url
+  in
+    (url, status, string_length body)
+  end
 
-fun fetch_all () =
-  let val a = fetch "http://httpbin.org/get"
-      val b = fetch "http://httpbin.org/ip"
-      val c = fetch "http://httpbin.org/user-agent"
-  in [a, b, c] end
+fun fetch_all () = let
+    val a = fetch "http://httpbin.org/get"
+    val b = fetch "http://httpbin.org/ip"
+    val c = fetch "http://httpbin.org/user-agent"
+  in
+    [a, b, c]
+  end
 
 (* ── Display ───────────────────────────────────────────────── *)
 
 fun show xs = case xs of
-    [] => ()
-  | (url, status, len) :: rest =>
-      let val _ = println ("    " ^ url)
-          val _ = println ("      status: " ^ int_to_string status ^ "  body: " ^ int_to_string len ^ " bytes")
-      in show rest end
+      [] => ()
+    | (url, status, len) :: rest => let
+        val _ = println ("    " ^ url)
+        val _ = println ("      status: " ^ int_to_string status ^ "  body: " ^ int_to_string len ^ " bytes")
+      in
+        show rest
+      end
 
 (* ── 1. Mock handler ───────────────────────────────────────── *)
 
-fun with_mock_http f =
-  handle f ()
-  with return x => x
-     | HttpGet url k =>
-         with_mock_http (fn () => resume k (200, [], "fake body from " ^ url))
+fun with_mock_http f = handle
+    f ()
+  with
+    return x => x
+  | HttpGet url k => with_mock_http (fn () => resume k (200, [], "fake body from " ^ url))
 
 val _ = println "1. Mock handler (no network)"
+
 val t0 = monotonic_ms ()
+
 val mock_results = with_mock_http fetch_all
+
 val mock_time = monotonic_ms () - t0
+
 val _ = show mock_results
+
 val _ = println ("    time: " ^ int_to_string mock_time ^ " ms\n")
 
 (* ── 2. Real handler ───────────────────────────────────────── *)
 
-fun with_real_http f =
-  handle f ()
-  with return x => x
-     | HttpGet url k =>
-         let val res = http_get url
-         in with_real_http (fn () => resume k res) end
+fun with_real_http f = handle
+    f ()
+  with
+    return x => x
+  | HttpGet url k => let
+      val res = http_get url
+    in
+      with_real_http (fn () => resume k res)
+    end
 
 val _ = println "2. Real handler (network)"
+
 val t1 = monotonic_ms ()
+
 val real_results = with_real_http fetch_all
+
 val real_time = monotonic_ms () - t1
+
 val _ = show real_results
+
 val _ = println ("    time: " ^ int_to_string real_time ^ " ms")

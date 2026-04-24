@@ -2,17 +2,16 @@
 
 datatype 'a option = None | Some of 'a
 
-fun map_option f opt =
-  case opt of
-    None   => None
-  | Some x => Some (f x)
+fun map_option f opt = case opt of
+      None => None
+    | Some x => Some (f x)
 
-fun get_or opt default =
-  case opt of
-    None   => default
-  | Some x => x
+fun get_or opt default = case opt of
+      None => default
+    | Some x => x
 
 val x = map_option (fn n => n + 1) (Some 41)
+
 val n = get_or x 0
 
 val _ = println (int_to_string n)

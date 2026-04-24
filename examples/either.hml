@@ -2,20 +2,24 @@
 
 datatype ('a, 'b) either = Left of 'a | Right of 'b
 
-fun map_right f e =
-  case e of
-    Left x  => Left x
-  | Right y => Right (f y)
+fun map_right f e = case e of
+      Left x => Left x
+    | Right y => Right (f y)
 
-fun safe_div a b =
-  if b = 0 then Left "division by zero"
-  else Right (a / b)
+fun safe_div a b = if b = 0 then Left "division by zero" else Right (a / b)
 
-val ok  = safe_div 10 3
+val ok = safe_div 10 3
+
 val err = safe_div 10 0
 
-val r1 = case ok of Left _ => ~1 | Right n => n
-val r2 = case err of Left _ => ~1 | Right n => n
+val r1 = case ok of
+    Left _ => ~1
+  | Right n => n
+
+val r2 = case err of
+    Left _ => ~1
+  | Right n => n
 
 val _ = println (int_to_string r1)
+
 val _ = println (int_to_string r2)

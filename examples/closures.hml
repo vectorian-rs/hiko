@@ -4,11 +4,14 @@ fun compose f g = fn x => f (g x)
 
 fun twice f x = f (f x)
 
-val inc    = fn x => x + 1
+val inc = fn x => x + 1
+
 val double = fn x => x * 2
 
 val inc_then_double = compose double inc
+
 val _ = println (int_to_string (inc_then_double 3))
 
 val add4 = twice (twice inc)
+
 val _ = println (int_to_string (add4 0))

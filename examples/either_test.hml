@@ -1,13 +1,15 @@
 import Std.Either
 
-fun safe_div a b =
-  if b = 0 then Either.Left "division by zero"
-  else Either.Right (a / b)
+fun safe_div a b = if b = 0 then Either.Left "division by zero" else Either.Right (a / b)
 
 val ok = safe_div 10 3
+
 val err = safe_div 10 0
 
 val _ = println (int_to_string (Either.from_right 0 ok))
+
 val _ = println (Either.from_left "" err)
+
 val _ = println (if Either.is_right ok then "right" else "left")
+
 val _ = println (if Either.is_left err then "left" else "right")

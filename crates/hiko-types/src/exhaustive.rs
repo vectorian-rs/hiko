@@ -35,6 +35,7 @@ enum Constructor {
     /// treated as an open (infinite) domain requiring a wildcard fallback.
     IntLit(i64),
     FloatBits(u64), // use bits for Eq/Hash
+    WordLit(u64),
     StringLit(String),
     CharLit(char),
 }
@@ -119,6 +120,7 @@ fn simplify_pat(
         PatKind::Unit => SPat::Con(Constructor::Unit, vec![]),
 
         PatKind::IntLit(n) => SPat::Con(Constructor::IntLit(*n), vec![]),
+        PatKind::WordLit(w) => SPat::Con(Constructor::WordLit(*w), vec![]),
         PatKind::FloatLit(f) => SPat::Con(Constructor::FloatBits(f.to_bits()), vec![]),
         PatKind::StringLit(s) => SPat::Con(Constructor::StringLit(s.clone()), vec![]),
         PatKind::CharLit(c) => SPat::Con(Constructor::CharLit(*c), vec![]),
@@ -295,6 +297,7 @@ fn infer_type_info_from_column(matrix: &PatternMatrix, col: usize, dt: &DtMap) -
                 Constructor::Nil | Constructor::Cons => return TypeInfo::list_type(),
                 Constructor::Tuple(n) => return TypeInfo::tuple_type(*n),
                 Constructor::IntLit(_)
+                | Constructor::WordLit(_)
                 | Constructor::FloatBits(_)
                 | Constructor::StringLit(_)
                 | Constructor::CharLit(_) => return TypeInfo::infinite(),

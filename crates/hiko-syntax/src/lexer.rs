@@ -183,6 +183,40 @@ impl<'src> Lexer<'src> {
 
     fn lex_number(&mut self) -> Result<Token, LexError> {
         let start = self.pos;
+
+        // Check for word literal: 0w... or 0wx...
+        if self.bytes[start] == b'0' && self.peek_at(1) == Some(b'w') {
+            self.pos += 2; // skip '0w'
+            if self.pos < self.bytes.len() && matches!(self.bytes[self.pos], b'x' | b'X') {
+                // Hex word literal: 0wxFF
+                self.pos += 1; // skip 'x'/'X'
+                let hex_start = self.pos;
+                while self.pos < self.bytes.len() && hex_digit(self.bytes[self.pos]).is_some() {
+                    self.pos += 1;
+                }
+                if self.pos == hex_start {
+                    return Err(self.err("expected hex digits after 0wx", start));
+                }
+                let hex_text = &self.source[hex_start..self.pos];
+                let value = u64::from_str_radix(hex_text, 16).map_err(|_| {
+                    self.err(&format!("word literal overflow: 0wx{hex_text}"), start)
+                })?;
+                return Ok(self.make_token(TokenKind::WordLit(value), start, self.pos));
+            } else {
+                // Decimal word literal: 0w255
+                let dec_start = self.pos;
+                self.consume_digits();
+                if self.pos == dec_start {
+                    return Err(self.err("expected digits after 0w", start));
+                }
+                let dec_text = &self.source[dec_start..self.pos];
+                let value: u64 = dec_text.parse().map_err(|_| {
+                    self.err(&format!("word literal overflow: 0w{dec_text}"), start)
+                })?;
+                return Ok(self.make_token(TokenKind::WordLit(value), start, self.pos));
+            }
+        }
+
         self.consume_digits();
 
         let mut is_float = false;
@@ -339,9 +373,6 @@ impl<'src> Lexer<'src> {
                 if self.peek() == Some(b'>') {
                     self.pos += 1;
                     TokenKind::ThinArrow
-                } else if self.peek() == Some(b'.') {
-                    self.pos += 1;
-                    TokenKind::MinusDot
                 } else {
                     TokenKind::Minus
                 }
@@ -349,32 +380,17 @@ impl<'src> Lexer<'src> {
 
             b'+' => {
                 self.pos += 1;
-                if self.peek() == Some(b'.') {
-                    self.pos += 1;
-                    TokenKind::PlusDot
-                } else {
-                    TokenKind::Plus
-                }
+                TokenKind::Plus
             }
 
             b'*' => {
                 self.pos += 1;
-                if self.peek() == Some(b'.') {
-                    self.pos += 1;
-                    TokenKind::StarDot
-                } else {
-                    TokenKind::Star
-                }
+                TokenKind::Star
             }
 
             b'/' => {
                 self.pos += 1;
-                if self.peek() == Some(b'.') {
-                    self.pos += 1;
-                    TokenKind::SlashDot
-                } else {
-                    TokenKind::Slash
-                }
+                TokenKind::Slash
             }
 
             b'<' => {
@@ -386,16 +402,7 @@ impl<'src> Lexer<'src> {
                     }
                     Some(b'=') => {
                         self.pos += 1;
-                        if self.peek() == Some(b'.') {
-                            self.pos += 1;
-                            TokenKind::LeDot
-                        } else {
-                            TokenKind::Le
-                        }
-                    }
-                    Some(b'.') => {
-                        self.pos += 1;
-                        TokenKind::LtDot
+                        TokenKind::Le
                     }
                     _ => TokenKind::Lt,
                 }
@@ -406,16 +413,7 @@ impl<'src> Lexer<'src> {
                 match self.peek() {
                     Some(b'=') => {
                         self.pos += 1;
-                        if self.peek() == Some(b'.') {
-                            self.pos += 1;
-                            TokenKind::GeDot
-                        } else {
-                            TokenKind::Ge
-                        }
-                    }
-                    Some(b'.') => {
-                        self.pos += 1;
-                        TokenKind::GtDot
+                        TokenKind::Ge
                     }
                     _ => TokenKind::Gt,
                 }
@@ -649,16 +647,12 @@ mod tests {
     #[test]
     fn test_operators() {
         assert_eq!(
-            lex("+ +. - -. * *. / /."),
+            lex("+ - * /"),
             vec![
                 TokenKind::Plus,
-                TokenKind::PlusDot,
                 TokenKind::Minus,
-                TokenKind::MinusDot,
                 TokenKind::Star,
-                TokenKind::StarDot,
                 TokenKind::Slash,
-                TokenKind::SlashDot,
                 TokenKind::Eof,
             ]
         );
@@ -667,19 +661,26 @@ mod tests {
     #[test]
     fn test_comparison_operators() {
         assert_eq!(
-            lex("< <. <= <=. > >. >= >=."),
+            lex("< <= > >="),
             vec![
                 TokenKind::Lt,
-                TokenKind::LtDot,
                 TokenKind::Le,
-                TokenKind::LeDot,
                 TokenKind::Gt,
-                TokenKind::GtDot,
                 TokenKind::Ge,
-                TokenKind::GeDot,
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn test_word_literals() {
+        assert_eq!(lex("0w42"), vec![TokenKind::WordLit(42), TokenKind::Eof]);
+        assert_eq!(lex("0wxFF"), vec![TokenKind::WordLit(0xFF), TokenKind::Eof]);
+        assert_eq!(
+            lex("0wxDEADBEEF"),
+            vec![TokenKind::WordLit(0xDEADBEEF), TokenKind::Eof]
+        );
+        assert_eq!(lex("0w0"), vec![TokenKind::WordLit(0), TokenKind::Eof]);
     }
 
     #[test]

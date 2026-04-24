@@ -4,20 +4,31 @@ import Std.List
 
 (* Simple matching *)
 val _ = println "=== Regex match ==="
+
 val _ = println (if regex_match ("hello world", "^hello") then "starts with hello" else "no match")
+
 val _ = println (if regex_match ("foo@bar.com", "[a-z]+@[a-z]+\\.[a-z]+") then "looks like email" else "not email")
+
 val _ = println (if regex_match ("12345", "^\\d+$") then "all digits" else "not all digits")
+
 val _ = println (if regex_match ("hello", "^\\d+$") then "all digits" else "not all digits")
 
 (* Replacement *)
 val _ = println "\n=== Regex replace ==="
+
 val _ = println (regex_replace ("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})", "$2/$3/$1"))
+
 val _ = println (regex_replace ("foo  bar   baz", "\\s+", " "))
+
 val _ = println (regex_replace ("camelCase", "([a-z])([A-Z])", "$1_$2"))
 
 (* Filter lines matching a pattern *)
 val _ = println "\n=== Filter with regex ==="
+
 val code = "fun foo x = x + 1\nval bar = 42\nfun baz y = y * 2\nval qux = true"
+
 val lines = split (code, "\n")
+
 val funs = List.filter (fn l => regex_match (l, "^fun ")) lines
+
 val _ = List.map println funs

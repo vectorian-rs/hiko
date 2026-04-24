@@ -12,13 +12,17 @@
  *)
 
 val input = read_stdin ()
+
 val path = json_get (input, "path")
+
 val offset = case json_get (input, "offset") of
     "" => 0
-  | s => case string_to_int s of n => n
+  | s => case string_to_int s of
+        n => n
 
 val limit = case json_get (input, "limit") of
     "" => 0
-  | s => case string_to_int s of n => n
+  | s => case string_to_int s of
+        n => n
 
 val _ = print (read_file_tagged (path, offset, limit))

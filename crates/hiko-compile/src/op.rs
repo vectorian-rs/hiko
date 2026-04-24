@@ -34,10 +34,20 @@ pub enum Op {
     LeInt = 25,
     GeInt = 26,
 
+    AddWord = 27,
+    SubWord = 28,
+
     LtFloat = 29,
     GtFloat = 30,
     LeFloat = 31,
     GeFloat = 32,
+
+    MulWord = 33,
+    DivWord = 34,
+    ModWord = 35,
+    LtWord = 36,
+    GtWord = 37,
+    LeWord = 38,
 
     ConcatString = 39,
     Not = 40,
@@ -62,6 +72,8 @@ pub enum Op {
 
     CallDirect = 57,
     TailCallDirect = 58,
+
+    GeWord = 59,
 
     InstallHandler = 53,
     Perform = 54,
@@ -101,10 +113,18 @@ impl TryFrom<u8> for Op {
             24 => Ok(Op::GtInt),
             25 => Ok(Op::LeInt),
             26 => Ok(Op::GeInt),
+            27 => Ok(Op::AddWord),
+            28 => Ok(Op::SubWord),
             29 => Ok(Op::LtFloat),
             30 => Ok(Op::GtFloat),
             31 => Ok(Op::LeFloat),
             32 => Ok(Op::GeFloat),
+            33 => Ok(Op::MulWord),
+            34 => Ok(Op::DivWord),
+            35 => Ok(Op::ModWord),
+            36 => Ok(Op::LtWord),
+            37 => Ok(Op::GtWord),
+            38 => Ok(Op::LeWord),
             39 => Ok(Op::ConcatString),
             40 => Ok(Op::Not),
             41 => Ok(Op::MakeTuple),
@@ -125,6 +145,7 @@ impl TryFrom<u8> for Op {
             56 => Ok(Op::RemoveHandler),
             57 => Ok(Op::CallDirect),
             58 => Ok(Op::TailCallDirect),
+            59 => Ok(Op::GeWord),
             _ => Err(b),
         }
     }

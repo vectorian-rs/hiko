@@ -898,12 +898,23 @@ fn wake_any_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pi
     for waiter_pid in waiter_pids {
         // Use a single get_mut() to check status and deliver atomically,
         // avoiding a TOCTOU race where two children finishing concurrently
-        // could both deliver to the same waiter.
+        // could both deliver to the same waiter. The finished pid is only a
+        // wakeup signal; the semantic winner is the leftmost completed pid in
+        // the parent's original wait_any input list.
         let child_pids = match table.processes.get_mut(&waiter_pid) {
             Some(mut waiter) => match &waiter.status {
                 ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => {
                     let child_pids = child_pids.clone();
-                    crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, finished_pid);
+                    let winner = child_pids.iter().copied().find(|child_pid| {
+                        table
+                            .tombstones
+                            .get(child_pid)
+                            .is_some_and(|record| record.parent() == waiter_pid)
+                    });
+                    let Some(winner) = winner else {
+                        continue;
+                    };
+                    crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, winner);
                     waiter.status = ProcessStatus::Runnable;
                     drop(waiter);
                     scheduler.enqueue(waiter_pid);
@@ -1159,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wait_any_returns_first_finished_child_pid() {
+    fn test_wait_any_returns_only_completed_child_pid() {
         let program = compile(
             "val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
              val fast = spawn (fn () => 20)\n\
@@ -1547,11 +1558,27 @@ mod tests {
     }
 
     #[test]
+    fn test_multiworker_wait_any_returns_leftmost_completed_child() {
+        let program = compile(
+            "val left = spawn (fn () => 10)\n\
+             val right = spawn (fn () => 20)\n\
+             val winner = wait_any [left, right]\n\
+             val result = await_process winner\n\
+             val _ = println (int_to_string result)",
+        );
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.table.get_output(pid);
+        assert_eq!(output, vec!["10\n"]);
+    }
+
+    #[test]
     fn test_multiworker_wait_any() {
         let program = compile(
-            "val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
-             val fast = spawn (fn () => 20)\n\
-             val winner = wait_any [slow, fast]\n\
+            "val fast = spawn (fn () => 20)\n\
+             val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
+             val winner = wait_any [fast, slow]\n\
              val result = await_process winner\n\
              val _ = println (int_to_string result)",
         );

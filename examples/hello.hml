@@ -1,2 +1,3 @@
 val greeting = "Hello, world!"
+
 val _ = println greeting

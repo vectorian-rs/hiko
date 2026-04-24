@@ -156,6 +156,8 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 | `cancel`        | `pid -> unit`           | Cooperatively cancel a child process                 |
 | `wait_any`      | `pid list -> pid`       | Wait until any child in the set finishes             |
 
+`wait_any [p1, p2, ..., pn]` is deterministic: it blocks until at least one listed child has completed, then returns the leftmost PID in the original input list whose child is complete. If multiple children complete concurrently, input list order breaks ties. A child completion is only a wakeup signal; it is not automatically the winner.
+
 The raw builtins are intended to sit under `Std.Fiber`, which provides the user-facing structured-concurrency surface (`Fiber.spawn`, `Fiber.join`, `Fiber.first`, `Fiber.any`). `Fiber.join` is `Result`-typed, so child/runtime failure is handled as a value rather than propagating failure to the parent.
 
 ## Testing

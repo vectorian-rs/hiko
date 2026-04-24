@@ -173,27 +173,27 @@ fn rt_arith_precedence() {
 
 #[test]
 fn rt_float_ops() {
-    assert_roundtrip("val x = 1.0 +. 2.0 *. 3.0");
+    assert_roundtrip("val x = 1.0 + 2.0 * 3.0");
 }
 
 #[test]
 fn rt_float_comparison() {
-    assert_roundtrip("val b = x <. 1.0");
+    assert_roundtrip("val b = x < 1.0");
 }
 
 #[test]
 fn rt_float_comparison_le() {
-    assert_roundtrip("val b = x <=. 1.0");
+    assert_roundtrip("val b = x <= 1.0");
 }
 
 #[test]
 fn rt_float_comparison_gt() {
-    assert_roundtrip("val b = x >. 1.0");
+    assert_roundtrip("val b = x > 1.0");
 }
 
 #[test]
 fn rt_float_comparison_ge() {
-    assert_roundtrip("val b = x >=. 1.0");
+    assert_roundtrip("val b = x >= 1.0");
 }
 
 #[test]

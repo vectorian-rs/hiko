@@ -2,15 +2,21 @@
 
 (* Read entire file with hashline tags *)
 val _ = println "=== Full file (examples/factorial.hml) ==="
+
 val content = read_file_tagged ("examples/factorial.hml", 0, 0)
+
 val _ = print content
 
 (* Read a range: lines 1-3 *)
 val _ = println "=== Lines 1-3 only ==="
+
 val range = read_file_tagged ("examples/factorial.hml", 0, 3)
+
 val _ = print range
 
 (* Read with offset: skip first 2 lines, read 2 *)
 val _ = println "=== Offset 2, limit 2 ==="
+
 val slice = read_file_tagged ("examples/factorial.hml", 2, 2)
+
 val _ = print slice

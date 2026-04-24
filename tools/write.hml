@@ -9,7 +9,11 @@
  *)
 
 val input = read_stdin ()
+
 val path = json_get (input, "path")
+
 val content = json_get (input, "content")
+
 val _ = write_file (path, content)
+
 val _ = println ("Wrote " ^ path)

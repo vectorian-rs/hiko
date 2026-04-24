@@ -5,7 +5,9 @@ val _ = write_file ("/tmp/hiko_edit_test.txt", "line one\nline two\nline three\n
 
 (* Read it with hashline tags *)
 val tagged = read_file_tagged ("/tmp/hiko_edit_test.txt", 0, 0)
+
 val _ = println "=== Before edit ==="
+
 val _ = print tagged
 
 (* Extract hashes from the tagged output for editing *)
@@ -18,43 +20,49 @@ val lines = split (tagged, "\n")
 
 (* Manually construct edits using hashes from the output *)
 (* We'll read the hash for line 2 from the tagged output *)
-fun get_hash line =
-  case split (line, "\t") of
-      prefix :: _ =>
-        (case split (prefix, ":") of
-            _ :: h :: _ => h
-          | _ => "")
+fun get_hash line = case split (line, "\t") of
+      prefix :: _ => (case split (prefix, ":") of
+          _ :: h :: _ => h
+        | _ => "")
     | _ => ""
 
 fun get_line_hash (tagged_lines, n) = case tagged_lines of
-    [] => ""
-  | l :: rest =>
-      if starts_with (l, int_to_string n ^ ":")
-      then get_hash l
-      else get_line_hash (rest, n)
+      [] => ""
+    | l :: rest => if starts_with (l, int_to_string n ^ ":") then get_hash l else get_line_hash (rest, n)
 
 val h2 = get_line_hash (lines, 2)
+
 val h3 = get_line_hash (lines, 3)
 
 val _ = println ("\nhash for line 2: " ^ h2)
+
 val _ = println ("hash for line 3: " ^ h3)
 
 (* Apply edits *)
 val edits = "R 2:" ^ h2 ^ " LINE TWO REPLACED\nI 3:" ^ h3 ^ " inserted after line three"
+
 val _ = println ("\n=== Edits ===")
+
 val _ = println edits
 
 val result = edit_file_tagged ("/tmp/hiko_edit_test.txt", edits)
+
 val _ = println ("\n=== Result ===")
+
 val _ = println result
 
 (* Read again to verify *)
 val after = read_file_tagged ("/tmp/hiko_edit_test.txt", 0, 0)
+
 val _ = println "\n=== After edit ==="
+
 val _ = print after
 
 (* Test hash mismatch rejection *)
 val bad_edit = "R 1:zz wrong hash should fail"
+
 val bad_result = edit_file_tagged ("/tmp/hiko_edit_test.txt", bad_edit)
+
 val _ = println ("\n=== Bad edit result ===")
+
 val _ = println bad_result

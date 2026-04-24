@@ -17,26 +17,23 @@ effect HttpGet of string
 
 (* ── Business logic uses the effect, not the builtin ───────── *)
 
-fun fetch_title url =
-  let val (status, _, body) = perform HttpGet url
-  in if status = 200
-     then "got " ^ int_to_string (string_length body) ^ " bytes from " ^ url
-     else "failed with status " ^ int_to_string status
+fun fetch_title url = let
+    val (status, _, body) = perform HttpGet url
+  in
+    if status = 200 then "got " ^ int_to_string (string_length body) ^ " bytes from " ^ url else "failed with status " ^ int_to_string status
   end
 
 (* ── Demo with mock handler (no network) ───────────────────── *)
 
 val _ = println "--- Mock handler (no network) ---"
 
-val mock_result =
-  handle fetch_title "https://example.com"
-  with return x => x
-     | HttpGet url k => resume k (200, [], "mock body for " ^ url)
+val mock_result = handle
+  fetch_title "https://example.com"
+with
+  return x => x
+| HttpGet url k => resume k (200, [], "mock body for " ^ url)
 
-val _ = println mock_result
-
-(* ── Demo with real handler (actual HTTP via builtin) ──────── *)
-
+val _ = println mock_result  (* ── Demo with real handler (actual HTTP via builtin) ──────── *)
 (* To run with real HTTP, use:
  *
  *   handle fetch_title "https://httpbin.org/get"

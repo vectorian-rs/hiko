@@ -1,4 +1,5 @@
 use "./math.hml"
 
 val _ = println (int_to_string (square 5))
+
 val _ = println (int_to_string (double 7))

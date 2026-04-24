@@ -11,6 +11,7 @@ pub enum TokenKind {
     // Literals
     IntLit(i64),
     FloatLit(f64),
+    WordLit(u64),
     StringLit(String),
     CharLit(char),
 
@@ -56,32 +57,20 @@ pub enum TokenKind {
     Resume,
     Return,
 
-    // Operators (Int arithmetic)
+    // Operators (arithmetic)
     Plus,  // +
     Minus, // -
     Star,  // *
     Slash, // /
 
-    // Operators (Float arithmetic)
-    PlusDot,  // +.
-    MinusDot, // -.
-    StarDot,  // *.
-    SlashDot, // /.
-
     // Operators (String)
     Caret, // ^
 
-    // Operators (Int comparison)
+    // Operators (comparison)
     Lt, // <
     Gt, // >
     Le, // <=
     Ge, // >=
-
-    // Operators (Float comparison)
-    LtDot, // <.
-    GtDot, // >.
-    LeDot, // <=.
-    GeDot, // >=.
 
     // Operators (equality, scalar only)
     Eq, // =

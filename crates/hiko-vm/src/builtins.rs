@@ -415,6 +415,10 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("char_to_int", convert::char_to_int),
         ("int_to_char", convert::int_to_char),
         ("int_to_float", convert::int_to_float),
+        ("word_to_int", convert::word_to_int),
+        ("int_to_word", convert::int_to_word),
+        ("word_to_string", convert::word_to_string),
+        ("string_to_word", convert::string_to_word),
     ]);
 
     #[cfg(feature = "builtin-string")]

@@ -8,6 +8,7 @@
  *)
 
 import Std.Json
+
 import Std.List
 
 (* ── Effect: safe error handling around I/O ─────────────── *)
@@ -16,92 +17,113 @@ datatype 'a result = Ok of 'a | Err of string
 
 effect Fail of string
 
-fun try f =
-  handle f ()
-  with return x => Ok x
-     | Fail msg _ => Err msg
+fun try f = handle
+    f ()
+  with
+    return x => Ok x
+  | Fail msg _ => Err msg
 
 (* Read a file, fail with a nice message if empty *)
-fun read_nonempty path =
-  let val contents = read_file path
-  in if string_length contents = 0
-     then perform Fail ("file is empty: " ^ path)
-     else contents
+fun read_nonempty path = let
+    val contents = read_file path
+  in
+    if string_length contents = 0 then perform Fail ("file is empty: " ^ path) else contents
   end
 
 val _ = println "--- Error effects wrapping I/O ---"
 
 val _ = write_file ("/tmp/hiko_demo_nonempty.txt", "hello")
+
 val _ = write_file ("/tmp/hiko_demo_empty.txt", "")
 
 val r1 = try (fn () => read_nonempty "/tmp/hiko_demo_nonempty.txt")
+
 val _ = case r1 of
-    Ok s  => println ("Read: " ^ s)
+    Ok s => println ("Read: " ^ s)
   | Err e => println ("Failed: " ^ e)
 
 val r2 = try (fn () => read_nonempty "/tmp/hiko_demo_empty.txt")
+
 val _ = case r2 of
-    Ok s  => println ("Read: " ^ s)
+    Ok s => println ("Read: " ^ s)
   | Err e => println ("Failed: " ^ e)
 
 val _ = remove_file "/tmp/hiko_demo_nonempty.txt"
+
 val _ = remove_file "/tmp/hiko_demo_empty.txt"
 
 (* ── Effect: accumulate log entries while doing I/O ─────── *)
 
 effect Log of string
 
-fun with_log f =
-  let val logs = handle f ()
-        with return _ => []
-           | Log msg k => msg :: with_log (fn _ => resume k ())
-  in logs end
+fun with_log f = let
+    val logs = handle
+      f ()
+    with
+      return _ => []
+    | Log msg k => msg :: with_log (fn _ => resume k ())
+  in
+    logs
+  end
 
-fun process_files () =
-  let val _ = perform Log "starting"
-      val _ = write_file ("/tmp/hiko_log_test.txt", "data")
-      val _ = perform Log "wrote file"
-      val contents = read_file "/tmp/hiko_log_test.txt"
-      val _ = perform Log ("read back: " ^ contents)
-      val _ = remove_file "/tmp/hiko_log_test.txt"
-      val _ = perform Log "cleaned up"
-  in () end
+fun process_files () = let
+    val _ = perform Log "starting"
+    val _ = write_file ("/tmp/hiko_log_test.txt", "data")
+    val _ = perform Log "wrote file"
+    val contents = read_file "/tmp/hiko_log_test.txt"
+    val _ = perform Log ("read back: " ^ contents)
+    val _ = remove_file "/tmp/hiko_log_test.txt"
+    val _ = perform Log "cleaned up"
+  in
+    ()
+  end
 
 val _ = println "\n--- Log effect interleaved with I/O ---"
+
 val logs = with_log process_files
 
 fun print_logs xs = case xs of
-    [] => ()
-  | x :: rest =>
-      let val _ = println ("  [log] " ^ x)
-      in print_logs rest end
+      [] => ()
+    | x :: rest => let
+        val _ = println ("  [log] " ^ x)
+      in
+        print_logs rest
+      end
 
 val _ = print_logs logs
 
 (* ── Effect: state tracking across I/O operations ────────── *)
 
 effect Get of unit
+
 effect Put of int
 
-fun run_state init f =
-  handle f ()
-  with return x => x
-     | Get _ k => run_state init (fn _ => resume k init)
-     | Put n k => run_state n (fn _ => resume k ())
+fun run_state init f = handle
+    f ()
+  with
+    return x => x
+  | Get _ k => run_state init (fn _ => resume k init)
+  | Put n k => run_state n (fn _ => resume k ())
 
 fun count_entries xs = case xs of
-    [] => perform Get ()
-  | _ :: rest =>
-      let val n = perform Get ()
-          val _ = perform Put (n + 1)
-      in count_entries rest end
+      [] => perform Get ()
+    | _ :: rest => let
+        val n = perform Get ()
+        val _ = perform Put (n + 1)
+      in
+        count_entries rest
+      end
 
-fun count_files_in dir =
-  let val entries = list_dir dir
-  in count_entries entries end
+fun count_files_in dir = let
+    val entries = list_dir dir
+  in
+    count_entries entries
+  end
 
 val _ = println "\n--- State effect with list_dir I/O ---"
+
 val file_count = run_state 0 (fn () => count_files_in "/tmp")
+
 val _ = println ("Entries in /tmp: " ^ int_to_string file_count)
 
 val _ = println "\nAll effects + I/O demos passed."

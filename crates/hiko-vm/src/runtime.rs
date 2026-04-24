@@ -549,10 +549,23 @@ impl Runtime {
                 None => continue,
             };
 
+            let winner = child_pids.iter().copied().find(|child_pid| {
+                self.tombstones
+                    .get(child_pid)
+                    .is_some_and(|record| record.parent() == waiter_pid)
+            });
+
+            let Some(winner) = winner else {
+                // A wakeup is only a notification that some child may be ready.
+                // If the child state was concurrently consumed/removed, leave the
+                // parent blocked rather than delivering the notifying pid blindly.
+                continue;
+            };
+
             self.remove_wait_any_registration(waiter_pid, &child_pids);
 
             if let Some(process) = self.processes.get_mut(&waiter_pid) {
-                crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, finished_pid);
+                crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, winner);
                 process.status = ProcessStatus::Runnable;
                 self.scheduler.enqueue(waiter_pid);
             }
@@ -918,6 +931,22 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.get_output(pid);
         assert_eq!(output, vec!["30\n"]);
+    }
+
+    #[test]
+    fn test_wait_any_returns_leftmost_completed_child() {
+        let program = compile(
+            "val left = spawn (fn () => 10)\n\
+             val right = spawn (fn () => 20)\n\
+             val winner = wait_any [left, right]\n\
+             val result = await_process winner\n\
+             val _ = println (int_to_string result)",
+        );
+        let mut runtime = Runtime::new();
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        let output = runtime.get_output(pid);
+        assert_eq!(output, vec!["10\n"]);
     }
 
     #[test]

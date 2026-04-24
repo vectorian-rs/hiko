@@ -1,19 +1,27 @@
 (* Read, write, and check files *)
 
 val _ = write_file ("/tmp/hiko_example.txt", "Hello from Hiko!\nLine 2\n")
+
 val contents = read_file "/tmp/hiko_example.txt"
+
 val _ = println contents
 
 val lines = split (contents, "\n")
+
 fun print_lines xs = case xs of
-    [] => ()
-  | x :: rest =>
-      if string_length x > 0
-      then let val _ = println ("  > " ^ x) in print_lines rest end
-      else print_lines rest
+      [] => ()
+    | x :: rest => if string_length x > 0 then let
+        val _ = println ("  > " ^ x)
+      in
+        print_lines rest
+      end else print_lines rest
+
 val _ = print_lines lines
 
 val _ = assert (file_exists "/tmp/hiko_example.txt", "file should exist")
+
 val _ = remove_file "/tmp/hiko_example.txt"
+
 val _ = assert (not (file_exists "/tmp/hiko_example.txt"), "file should be gone")
+
 val _ = println "file_io test passed"

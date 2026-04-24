@@ -153,6 +153,7 @@ impl VM {
             Value::Builtin(id) => {
                 format!("<builtin:{}>", self.builtins[*id as usize].name.as_ref())
             }
+            Value::Word(w) => format!("0w{w}"),
             Value::Pid(pid) => format!("<pid {pid}>"),
             Value::Heap(r) => match self.heap.get(*r) {
                 Ok(HeapObject::String(s)) => s.clone(),

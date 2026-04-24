@@ -106,6 +106,8 @@ BlockOnWaitAny(proc, children) ==
         !.status = Blocked,
         !.block_reason = BkWaitAny,
         !.block_target = 0,
+        \* wait_any preserves the caller's original PID order. Completion is
+        \* only a wakeup signal; the winner is selected by LeftmostTerminal.
         !.block_targets = children]
 
 BlockOnIo(proc, token) ==
@@ -184,8 +186,20 @@ WakeJoinParent(proc, join_state, child) ==
                       child
                   )
 
+SeqSet(seq) == {seq[i] : i \in 1..Len(seq)}
+
+LeftmostTerminal(children) ==
+    CHOOSE child \in SeqSet(children) :
+        /\ IsTerminal(child)
+        /\ \E i \in 1..Len(children) :
+            /\ children[i] = child
+            /\ \A j \in 1..(i - 1) : ~IsTerminal(children[j])
+
+WaitAnyInputs == UNION {[1..n -> 1..MaxProcesses] : n \in 1..MaxProcesses}
+
 WakeAnyParent(proc, child) ==
-    WithDelivered(ClearBlock(SetStatus(proc, Runnable)), DelPid, child)
+    LET ignored_child == child IN
+    WithDelivered(ClearBlock(SetStatus(proc, Runnable)), DelPid, LeftmostTerminal(proc.block_targets))
 
 CanWakeFromJoinState(child) ==
     /\ procs[child].status \in {Done, Failed}
@@ -201,10 +215,10 @@ TerminalParent(pid) ==
     /\ procs[pid].status \in {Done, Failed}
 
 WaitAnyChildrenValid(parent, children) ==
-    /\ children # {}
-    /\ \A child \in children :
-        /\ KnownPid(child)
-        /\ procs[child].parent = parent
+    /\ children \in WaitAnyInputs
+    /\ \A i \in 1..Len(children) :
+        /\ KnownPid(children[i])
+        /\ procs[children[i]].parent = parent
 
 \* ── Spawn / yield ───────────────────────────────────────────
 
@@ -461,14 +475,13 @@ AwaitNotChild(parent, child) ==
 
 \* ── wait_any ────────────────────────────────────────────────
 
-WaitAnyReady(parent, children, winner) ==
+WaitAnyReady(parent, children) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
     /\ WaitAnyChildrenValid(parent, children)
-    /\ winner \in children
-    /\ procs[winner].status \in {Done, Failed}
-    /\ procs' = [procs EXCEPT ![parent] = WithDelivered(procs[parent], DelPid, winner)]
+    /\ \E i \in 1..Len(children) : procs[children[i]].status \in {Done, Failed}
+    /\ procs' = [procs EXCEPT ![parent] = WithDelivered(procs[parent], DelPid, LeftmostTerminal(children))]
     /\ runqueue' = Tail(runqueue) \o <<parent>>
     /\ step' = step + 1
     /\ UNCHANGED <<waiters, any_waiters, io_pending, next_pid, io_next_token, io_count>>
@@ -478,12 +491,12 @@ WaitAnyBlock(parent, children) ==
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
     /\ WaitAnyChildrenValid(parent, children)
-    /\ \A child \in children : procs[child].status \notin {Done, Failed}
+    /\ \A i \in 1..Len(children) : procs[children[i]].status \notin {Done, Failed}
     /\ procs' = [procs EXCEPT ![parent] = BlockOnWaitAny(procs[parent], children)]
     /\ runqueue' = Tail(runqueue)
     /\ any_waiters' =
         [child \in DOMAIN any_waiters |->
-            IF child \in children
+            IF child \in SeqSet(children)
             THEN any_waiters[child] \union {parent}
             ELSE any_waiters[child]]
     /\ step' = step + 1
@@ -502,10 +515,10 @@ WaitAnyNotChild(parent, children) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ children # {}
-    /\ \E child \in children :
-        /\ KnownPid(child)
-        /\ procs[child].parent # parent
+    /\ children \in WaitAnyInputs
+    /\ \E i \in 1..Len(children) :
+        /\ KnownPid(children[i])
+        /\ procs[children[i]].parent # parent
     /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
     /\ runqueue' = Tail(runqueue)
     /\ step' = step + 1
@@ -515,8 +528,8 @@ WaitAnyUnknown(parent, children) ==
     /\ Step
     /\ procs[parent].status = Runnable
     /\ AtHead(parent)
-    /\ children # {}
-    /\ \E child \in children : UnknownPid(child)
+    /\ children \in WaitAnyInputs
+    /\ \E i \in 1..Len(children) : UnknownPid(children[i])
     /\ procs' = [procs EXCEPT ![parent] = SetStatus(procs[parent], Failed)]
     /\ runqueue' = Tail(runqueue)
     /\ step' = step + 1
@@ -570,7 +583,7 @@ CancelBlocked(parent, child) ==
            cleared_any_waiters ==
                IF procs[child].block_reason = BkWaitAny
                THEN [pid \in DOMAIN any_waiters |->
-                       IF pid \in procs[child].block_targets
+                       IF pid \in SeqSet(procs[child].block_targets)
                        THEN any_waiters[pid] \ {child}
                        ELSE any_waiters[pid]]
                ELSE any_waiters
@@ -728,7 +741,7 @@ ScopeCancelBlocked(parent, child) ==
            cleared_any_waiters ==
                IF procs[child].block_reason = BkWaitAny
                THEN [pid \in DOMAIN any_waiters |->
-                       IF pid \in procs[child].block_targets
+                       IF pid \in SeqSet(procs[child].block_targets)
                        THEN any_waiters[pid] \ {child}
                        ELSE any_waiters[pid]]
                ELSE any_waiters
@@ -773,7 +786,7 @@ DetectDeadlock(pid) ==
     /\ \/ /\ procs[pid].block_reason \in {BkAwaitRaw, BkAwaitResult}
           /\ procs[procs[pid].block_target].status = Blocked
        \/ /\ procs[pid].block_reason = BkWaitAny
-          /\ \A child \in procs[pid].block_targets : procs[child].status = Blocked
+          /\ \A child \in SeqSet(procs[pid].block_targets) : procs[child].status = Blocked
     /\ procs' = [procs EXCEPT ![pid] = ClearBlock(SetStatus(procs[pid], Failed))]
     /\ waiters' =
         IF procs[pid].block_reason \in {BkAwaitRaw, BkAwaitResult}
@@ -782,7 +795,7 @@ DetectDeadlock(pid) ==
     /\ any_waiters' =
         IF procs[pid].block_reason = BkWaitAny
         THEN [child \in DOMAIN any_waiters |->
-                IF child \in procs[pid].block_targets
+                IF child \in SeqSet(procs[pid].block_targets)
                 THEN any_waiters[child] \ {pid}
                 ELSE any_waiters[child]]
         ELSE any_waiters
@@ -819,8 +832,8 @@ Next ==
             \/ AwaitNotChild(pid, child)
             \/ CancelNotChild(pid, child)
         \/ WaitAnyEmpty(pid)
-        \/ \E children \in SUBSET (1..MaxProcesses) :
-            \/ \E winner \in children : WaitAnyReady(pid, children, winner)
+        \/ \E children \in WaitAnyInputs :
+            \/ WaitAnyReady(pid, children)
             \/ WaitAnyBlock(pid, children)
             \/ WaitAnyNotChild(pid, children)
             \/ WaitAnyUnknown(pid, children)
@@ -842,7 +855,9 @@ TypeOK ==
         /\ procs[p].join_state \in {JoinNone, JoinReadyOk, JoinReadyErr, JoinReadyCancelled, JoinConsumed}
         /\ procs[p].block_reason \in {BkNone, BkAwaitRaw, BkAwaitResult, BkWaitAny, BkIo}
         /\ procs[p].block_target \in Nat \union {0}
-        /\ procs[p].block_targets \subseteq 1..MaxProcesses
+        /\ IF procs[p].block_reason = BkWaitAny
+           THEN procs[p].block_targets \in WaitAnyInputs
+           ELSE procs[p].block_targets = {}
         /\ procs[p].cancel_requested \in BOOLEAN
         /\ procs[p].delivered_kind \in {
             DelNone, DelValue, DelPid, DelJoinOk,
@@ -887,8 +902,8 @@ OnlyParentAwaits ==
 OnlyParentWaitsAny ==
     \A p \in DOMAIN procs :
         (procs[p].status = Blocked /\ procs[p].block_reason = BkWaitAny) =>
-            /\ procs[p].block_targets # {}
-            /\ \A child \in procs[p].block_targets :
+            /\ procs[p].block_targets \in WaitAnyInputs
+            /\ \A child \in SeqSet(procs[p].block_targets) :
                 /\ child \in DOMAIN procs
                 /\ procs[child].parent = p
 
@@ -915,7 +930,7 @@ AnyWaitersConsistent ==
             /\ parent \in DOMAIN procs
             /\ procs[parent].status = Blocked
             /\ procs[parent].block_reason = BkWaitAny
-            /\ child \in procs[parent].block_targets
+            /\ child \in SeqSet(procs[parent].block_targets)
             /\ procs[child].parent = parent
 
 AtMostOneAnyWaiterPerChild ==

@@ -51,6 +51,41 @@ pub(super) fn int_to_float(args: &[Value], _heap: &mut Heap) -> Result<Value, St
     }
 }
 
+pub(super) fn word_to_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Word(w) => Ok(Value::Int(*w as i64)),
+        _ => Err("word_to_int: expected Word".into()),
+    }
+}
+
+pub(super) fn int_to_word(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Int(n) => Ok(Value::Word(*n as u64)),
+        _ => Err("int_to_word: expected Int".into()),
+    }
+}
+
+pub(super) fn word_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Word(w) => heap_alloc(heap, HeapObject::String(w.to_string())),
+        _ => Err("word_to_string: expected Word".into()),
+    }
+}
+
+pub(super) fn string_to_word(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s
+                .trim()
+                .parse::<u64>()
+                .map(Value::Word)
+                .map_err(|e| format!("string_to_word: {e}")),
+            _ => Err("string_to_word: expected String".into()),
+        },
+        _ => Err("string_to_word: expected String".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::*;

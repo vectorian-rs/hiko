@@ -13,6 +13,7 @@ pub struct Expr {
 pub enum ExprKind {
     IntLit(i64),
     FloatLit(f64),
+    WordLit(u64),
     StringLit(String),
     CharLit(char),
     BoolLit(bool),
@@ -47,29 +48,41 @@ pub enum ExprKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    // Int arithmetic
+    // Generic arithmetic (produced by parser, resolved by type checker)
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    // Generic comparison (produced by parser, resolved by type checker)
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    // Int arithmetic (produced by type checker)
     AddInt,
     SubInt,
     MulInt,
     DivInt,
     ModInt,
-    // Float arithmetic
-    AddFloat,
-    SubFloat,
-    MulFloat,
-    DivFloat,
-    // String
-    ConcatStr,
-    // Int comparison
+    // Int comparison (produced by type checker)
     LtInt,
     GtInt,
     LeInt,
     GeInt,
-    // Float comparison
-    LtFloat,
-    GtFloat,
-    LeFloat,
-    GeFloat,
+    // Word arithmetic (produced by type checker)
+    AddWord,
+    SubWord,
+    MulWord,
+    DivWord,
+    ModWord,
+    // Word comparison (produced by type checker)
+    LtWord,
+    GtWord,
+    LeWord,
+    GeWord,
+    // String
+    ConcatStr,
     // Equality (scalar only)
     Eq,
     Ne,
@@ -216,6 +229,7 @@ pub enum PatKind {
     Var(Symbol),
     IntLit(i64),
     FloatLit(f64),
+    WordLit(u64),
     StringLit(String),
     CharLit(char),
     BoolLit(bool),

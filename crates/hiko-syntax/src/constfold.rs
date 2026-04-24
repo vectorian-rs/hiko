@@ -144,35 +144,57 @@ fn fold_expr(expr: Expr) -> Expr {
 fn try_fold_binop(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<ExprKind> {
     match (op, &lhs.kind, &rhs.kind) {
         (BinOp::Pipe, _, _) => None,
-        // Int arithmetic
-        (BinOp::AddInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
+
+        // Generic Add: int + int, float + float, word + word
+        (BinOp::Add, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
             a.checked_add(*b).map(ExprKind::IntLit)
         }
-        (BinOp::SubInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
-            a.checked_sub(*b).map(ExprKind::IntLit)
-        }
-        (BinOp::MulInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
-            a.checked_mul(*b).map(ExprKind::IntLit)
-        }
-        (BinOp::DivInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) if *b != 0 => {
-            a.checked_div(*b).map(ExprKind::IntLit)
-        }
-        (BinOp::ModInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) if *b != 0 => {
-            a.checked_rem(*b).map(ExprKind::IntLit)
-        }
-
-        // Float arithmetic
-        (BinOp::AddFloat, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
+        (BinOp::Add, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
             Some(ExprKind::FloatLit(a + b))
         }
-        (BinOp::SubFloat, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
+        (BinOp::Add, ExprKind::WordLit(a), ExprKind::WordLit(b)) => {
+            Some(ExprKind::WordLit(a.wrapping_add(*b)))
+        }
+
+        // Generic Sub
+        (BinOp::Sub, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
+            a.checked_sub(*b).map(ExprKind::IntLit)
+        }
+        (BinOp::Sub, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
             Some(ExprKind::FloatLit(a - b))
         }
-        (BinOp::MulFloat, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
+        (BinOp::Sub, ExprKind::WordLit(a), ExprKind::WordLit(b)) => {
+            Some(ExprKind::WordLit(a.wrapping_sub(*b)))
+        }
+
+        // Generic Mul
+        (BinOp::Mul, ExprKind::IntLit(a), ExprKind::IntLit(b)) => {
+            a.checked_mul(*b).map(ExprKind::IntLit)
+        }
+        (BinOp::Mul, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
             Some(ExprKind::FloatLit(a * b))
         }
-        (BinOp::DivFloat, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
+        (BinOp::Mul, ExprKind::WordLit(a), ExprKind::WordLit(b)) => {
+            Some(ExprKind::WordLit(a.wrapping_mul(*b)))
+        }
+
+        // Generic Div
+        (BinOp::Div, ExprKind::IntLit(a), ExprKind::IntLit(b)) if *b != 0 => {
+            a.checked_div(*b).map(ExprKind::IntLit)
+        }
+        (BinOp::Div, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
             Some(ExprKind::FloatLit(a / b))
+        }
+        (BinOp::Div, ExprKind::WordLit(a), ExprKind::WordLit(b)) if *b != 0 => {
+            Some(ExprKind::WordLit(a / b))
+        }
+
+        // Generic Mod
+        (BinOp::Mod, ExprKind::IntLit(a), ExprKind::IntLit(b)) if *b != 0 => {
+            a.checked_rem(*b).map(ExprKind::IntLit)
+        }
+        (BinOp::Mod, ExprKind::WordLit(a), ExprKind::WordLit(b)) if *b != 0 => {
+            Some(ExprKind::WordLit(a % b))
         }
 
         // String concat
@@ -182,13 +204,33 @@ fn try_fold_binop(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<ExprKind> {
             Some(ExprKind::StringLit(s))
         }
 
-        // Int comparison
+        // Equality
         (BinOp::Eq, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a == b)),
         (BinOp::Ne, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a != b)),
-        (BinOp::LtInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a < b)),
-        (BinOp::GtInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a > b)),
-        (BinOp::LeInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a <= b)),
-        (BinOp::GeInt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a >= b)),
+        (BinOp::Eq, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a == b)),
+        (BinOp::Ne, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a != b)),
+
+        // Generic comparison: int
+        (BinOp::Lt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a < b)),
+        (BinOp::Gt, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a > b)),
+        (BinOp::Le, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a <= b)),
+        (BinOp::Ge, ExprKind::IntLit(a), ExprKind::IntLit(b)) => Some(ExprKind::BoolLit(a >= b)),
+
+        // Generic comparison: float
+        (BinOp::Lt, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => Some(ExprKind::BoolLit(a < b)),
+        (BinOp::Gt, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => Some(ExprKind::BoolLit(a > b)),
+        (BinOp::Le, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
+            Some(ExprKind::BoolLit(a <= b))
+        }
+        (BinOp::Ge, ExprKind::FloatLit(a), ExprKind::FloatLit(b)) => {
+            Some(ExprKind::BoolLit(a >= b))
+        }
+
+        // Generic comparison: word
+        (BinOp::Lt, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a < b)),
+        (BinOp::Gt, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a > b)),
+        (BinOp::Le, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a <= b)),
+        (BinOp::Ge, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a >= b)),
 
         _ => None,
     }

@@ -5,24 +5,35 @@ import Std.List
 (* ── Basic assertions ─────────────────────────────────────────────── *)
 
 val _ = assert (true, "true should be true")
+
 val _ = assert (1 + 1 = 2, "arithmetic")
+
 val _ = assert_eq (1 + 1, 2, "1 + 1 = 2")
 
 (* ── string operations ────────────────────────────────────────────── *)
 
 val _ = assert (to_upper "hello" = "HELLO", "to_upper")
+
 val _ = assert (to_lower "WORLD" = "world", "to_lower")
+
 val _ = assert (trim "  hi  " = "hi", "trim")
+
 val _ = assert (string_replace ("foo bar foo", "foo", "baz") = "baz bar baz", "string_replace")
+
 val _ = assert (starts_with ("hello.hml", "hello"), "starts_with")
+
 val _ = assert (ends_with ("hello.hml", ".hml"), "ends_with")
+
 val _ = assert (not (starts_with ("hello.hml", "world")), "starts_with negative")
 
 (* ── List operations ──────────────────────────────────────────────── *)
 
 val _ = assert_eq (List.length [1, 2, 3], 3, "list length")
+
 val _ = assert_eq (List.length (List.map (fn x => x * 2) [1, 2, 3]), 3, "map preserves length")
+
 val _ = assert_eq (List.foldl (fn (x, acc) => acc + x) 0 [1, 2, 3], 6, "foldl sum")
+
 val _ = assert_eq (List.length (List.filter (fn x => x > 2) [1, 2, 3, 4, 5]), 3, "filter count")
 
 (* ── Pattern matching ─────────────────────────────────────────────── *)
@@ -30,10 +41,11 @@ val _ = assert_eq (List.length (List.filter (fn x => x > 2) [1, 2, 3, 4, 5]), 3,
 datatype shape = Circle of int | Rect of int * int
 
 fun area s = case s of
-    Circle r => r * r * 3
-  | Rect (w, h) => w * h
+      Circle r => r * r * 3
+    | Rect (w, h) => w * h
 
 val _ = assert_eq (area (Circle 5), 75, "circle area")
+
 val _ = assert_eq (area (Rect (3, 4)), 12, "rect area")
 
 (* ── JSON round-trip ──────────────────────────────────────────────── *)
@@ -41,16 +53,23 @@ val _ = assert_eq (area (Rect (3, 4)), 12, "rect area")
 import Std.Json
 
 val original = "{\"name\":\"test\",\"value\":42}"
+
 val parsed = json_parse original
+
 val serialized = json_to_string parsed
+
 val reparsed = json_parse serialized
+
 val reserialized = json_to_string reparsed
+
 val _ = assert (serialized = reserialized, "json round-trip")
 
 (* ── Regex ────────────────────────────────────────────────────────── *)
 
 val _ = assert (regex_match ("hello123", "\\d+"), "regex digits")
+
 val _ = assert (not (regex_match ("hello", "\\d+")), "regex no digits")
+
 val _ = assert (regex_replace ("a-b-c", "-", "_") = "a_b_c", "regex replace")
 
 (* ── Error handling with effects ──────────────────────────────────── *)
@@ -59,14 +78,13 @@ datatype 'a result = Ok of 'a | Err of string
 
 effect Fail of string
 
-fun run_safe f =
-  handle f ()
-  with return x => Ok x
-     | Fail msg _ => Err msg
+fun run_safe f = handle
+    f ()
+  with
+    return x => Ok x
+  | Fail msg _ => Err msg
 
-fun safe_divide a b =
-  if b = 0 then perform Fail "division by zero"
-  else a / b
+fun safe_divide a b = if b = 0 then perform Fail "division by zero" else a / b
 
 val _ = case run_safe (fn _ => safe_divide 10 2) of
     Ok n => assert_eq (n, 5, "safe_divide 10/2")

@@ -15,6 +15,7 @@ pub struct Chunk {
 pub enum Constant {
     Int(i64),
     Float(f64),
+    Word(u64),
     String(String),
     Char(char),
 }

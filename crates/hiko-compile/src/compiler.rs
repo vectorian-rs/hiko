@@ -1317,6 +1317,9 @@ impl Compiler {
             PatKind::FloatLit(f) => {
                 self.emit_scalar_check(slot, Constant::Float(*f), Op::Eq, fail_jumps)?;
             }
+            PatKind::WordLit(w) => {
+                self.emit_scalar_check(slot, Constant::Word(*w), Op::Eq, fail_jumps)?;
+            }
             PatKind::BoolLit(b) => {
                 self.emit(Op::GetLocal);
                 self.emit_u16(slot);
@@ -1412,6 +1415,7 @@ impl Compiler {
             }
             PatKind::IntLit(_)
             | PatKind::FloatLit(_)
+            | PatKind::WordLit(_)
             | PatKind::BoolLit(_)
             | PatKind::StringLit(_)
             | PatKind::CharLit(_) => {} // no bindings
@@ -1450,6 +1454,45 @@ impl Compiler {
         Ok(())
     }
 
+    // ── Generic binary op resolution ────────────────────────────────
+
+    fn resolve_generic_binop(&self, op: BinOp, span: hiko_syntax::span::Span) -> Option<Op> {
+        use hiko_types::ty::Type;
+        let ty = self.infer_ctx.expr_types.get(&span)?;
+        let is_int = matches!(ty, Type::Con(n) if n == "Int");
+        let is_float = matches!(ty, Type::Con(n) if n == "Float");
+        let is_word = matches!(ty, Type::Con(n) if n == "Word");
+        match op {
+            BinOp::Add if is_int => Some(Op::AddInt),
+            BinOp::Add if is_float => Some(Op::AddFloat),
+            BinOp::Add if is_word => Some(Op::AddWord),
+            BinOp::Sub if is_int => Some(Op::SubInt),
+            BinOp::Sub if is_float => Some(Op::SubFloat),
+            BinOp::Sub if is_word => Some(Op::SubWord),
+            BinOp::Mul if is_int => Some(Op::MulInt),
+            BinOp::Mul if is_float => Some(Op::MulFloat),
+            BinOp::Mul if is_word => Some(Op::MulWord),
+            BinOp::Div if is_int => Some(Op::DivInt),
+            BinOp::Div if is_float => Some(Op::DivFloat),
+            BinOp::Div if is_word => Some(Op::DivWord),
+            BinOp::Mod if is_int => Some(Op::ModInt),
+            BinOp::Mod if is_word => Some(Op::ModWord),
+            BinOp::Lt if is_int => Some(Op::LtInt),
+            BinOp::Lt if is_float => Some(Op::LtFloat),
+            BinOp::Lt if is_word => Some(Op::LtWord),
+            BinOp::Gt if is_int => Some(Op::GtInt),
+            BinOp::Gt if is_float => Some(Op::GtFloat),
+            BinOp::Gt if is_word => Some(Op::GtWord),
+            BinOp::Le if is_int => Some(Op::LeInt),
+            BinOp::Le if is_float => Some(Op::LeFloat),
+            BinOp::Le if is_word => Some(Op::LeWord),
+            BinOp::Ge if is_int => Some(Op::GeInt),
+            BinOp::Ge if is_float => Some(Op::GeFloat),
+            BinOp::Ge if is_word => Some(Op::GeWord),
+            _ => None,
+        }
+    }
+
     // ── Expressions ──────────────────────────────────────────────────
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
@@ -1465,6 +1508,7 @@ impl Compiler {
         match &expr.kind {
             ExprKind::IntLit(n) => self.emit_constant(Constant::Int(*n))?,
             ExprKind::FloatLit(f) => self.emit_constant(Constant::Float(*f))?,
+            ExprKind::WordLit(w) => self.emit_constant(Constant::Word(*w))?,
             ExprKind::StringLit(s) => self.emit_constant(Constant::String(s.clone()))?,
             ExprKind::CharLit(c) => self.emit_constant(Constant::Char(*c))?,
             ExprKind::BoolLit(true) => self.emit(Op::True),
@@ -1507,9 +1551,15 @@ impl Compiler {
                 unreachable!("desugared to if-then-else")
             }
             ExprKind::BinOp(op, lhs, rhs) => {
-                self.compile_expr(lhs)?;
-                self.compile_expr(rhs)?;
-                self.emit(binop_to_op(*op));
+                if let Some(resolved_op) = self.resolve_generic_binop(*op, expr.span) {
+                    self.compile_expr(lhs)?;
+                    self.compile_expr(rhs)?;
+                    self.emit(resolved_op);
+                } else {
+                    self.compile_expr(lhs)?;
+                    self.compile_expr(rhs)?;
+                    self.emit(binop_to_op(*op));
+                }
             }
 
             ExprKind::UnaryNeg(e) => {
@@ -1710,27 +1760,45 @@ fn is_trivial_pat(pat: &Pat) -> bool {
 fn binop_to_op(op: BinOp) -> Op {
     match op {
         BinOp::Pipe => unreachable!("pipeline is desugared to application"),
+        // Int-specific
         BinOp::AddInt => Op::AddInt,
         BinOp::SubInt => Op::SubInt,
         BinOp::MulInt => Op::MulInt,
         BinOp::DivInt => Op::DivInt,
         BinOp::ModInt => Op::ModInt,
-        BinOp::AddFloat => Op::AddFloat,
-        BinOp::SubFloat => Op::SubFloat,
-        BinOp::MulFloat => Op::MulFloat,
-        BinOp::DivFloat => Op::DivFloat,
-        BinOp::ConcatStr => Op::ConcatString,
         BinOp::LtInt => Op::LtInt,
         BinOp::GtInt => Op::GtInt,
         BinOp::LeInt => Op::LeInt,
         BinOp::GeInt => Op::GeInt,
-        BinOp::LtFloat => Op::LtFloat,
-        BinOp::GtFloat => Op::GtFloat,
-        BinOp::LeFloat => Op::LeFloat,
-        BinOp::GeFloat => Op::GeFloat,
+        // Word-specific
+        BinOp::AddWord => Op::AddWord,
+        BinOp::SubWord => Op::SubWord,
+        BinOp::MulWord => Op::MulWord,
+        BinOp::DivWord => Op::DivWord,
+        BinOp::ModWord => Op::ModWord,
+        BinOp::LtWord => Op::LtWord,
+        BinOp::GtWord => Op::GtWord,
+        BinOp::LeWord => Op::LeWord,
+        BinOp::GeWord => Op::GeWord,
+        // String
+        BinOp::ConcatStr => Op::ConcatString,
+        // Equality
         BinOp::Eq => Op::Eq,
         BinOp::Ne => Op::Ne,
+        // Short-circuit
         BinOp::Andalso | BinOp::Orelse => unreachable!("short-circuit ops handled separately"),
+        // Generic ops should be resolved via expr_types in resolve_generic_binop
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::Div
+        | BinOp::Mod
+        | BinOp::Lt
+        | BinOp::Gt
+        | BinOp::Le
+        | BinOp::Ge => {
+            unreachable!("generic ops should be resolved via expr_types")
+        }
     }
 }
 

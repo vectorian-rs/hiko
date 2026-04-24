@@ -53,6 +53,7 @@ impl VM {
                             }
                         }
                         Constant::Char(c) => Value::Char(*c),
+                        Constant::Word(w) => Value::Word(*w),
                     };
                     self.push(val)?;
                 }
@@ -121,6 +122,11 @@ impl VM {
                             self.push(Value::Int(neg))?
                         }
                         Value::Float(f) => self.push(Value::Float(-f))?,
+                        Value::Word(_) => {
+                            return Err(RuntimeError {
+                                message: "cannot negate word value".into(),
+                            });
+                        }
                         _ => {
                             return Err(RuntimeError {
                                 message: "Neg: expected Int or Float".into(),
@@ -149,6 +155,22 @@ impl VM {
                 Op::GtFloat => self.float_cmp(|a, b| a > b)?,
                 Op::LeFloat => self.float_cmp(|a, b| a <= b)?,
                 Op::GeFloat => self.float_cmp(|a, b| a >= b)?,
+
+                Op::AddWord => self.word_binop(u64::wrapping_add)?,
+                Op::SubWord => self.word_binop(u64::wrapping_sub)?,
+                Op::MulWord => self.word_binop(u64::wrapping_mul)?,
+                Op::DivWord => self.word_checked_binop(
+                    |a, b| if b == 0 { None } else { Some(a / b) },
+                    "word division by zero",
+                )?,
+                Op::ModWord => self.word_checked_binop(
+                    |a, b| if b == 0 { None } else { Some(a % b) },
+                    "word mod by zero",
+                )?,
+                Op::LtWord => self.word_cmp(|a, b| a < b)?,
+                Op::GtWord => self.word_cmp(|a, b| a > b)?,
+                Op::LeWord => self.word_cmp(|a, b| a <= b)?,
+                Op::GeWord => self.word_cmp(|a, b| a >= b)?,
 
                 Op::ConcatString => {
                     let b_ref = self.pop_string_ref()?;
@@ -704,6 +726,42 @@ impl VM {
     fn float_cmp(&mut self, f: impl Fn(f64, f64) -> bool) -> Result<(), RuntimeError> {
         let b = self.pop_float()?;
         let a = self.pop_float()?;
+        self.push(Value::Bool(f(a, b)))
+    }
+
+    fn pop_word(&mut self) -> Result<u64, RuntimeError> {
+        match self.pop()? {
+            Value::Word(w) => Ok(w),
+            v => Err(RuntimeError {
+                message: format!("expected Word, got {v:?}"),
+            }),
+        }
+    }
+
+    fn word_binop(&mut self, f: impl Fn(u64, u64) -> u64) -> Result<(), RuntimeError> {
+        let b = self.pop_word()?;
+        let a = self.pop_word()?;
+        self.push(Value::Word(f(a, b)))
+    }
+
+    fn word_checked_binop(
+        &mut self,
+        f: impl Fn(u64, u64) -> Option<u64>,
+        err_msg: &str,
+    ) -> Result<(), RuntimeError> {
+        let b = self.pop_word()?;
+        let a = self.pop_word()?;
+        match f(a, b) {
+            Some(result) => self.push(Value::Word(result)),
+            None => Err(RuntimeError {
+                message: err_msg.to_string(),
+            }),
+        }
+    }
+
+    fn word_cmp(&mut self, f: impl Fn(u64, u64) -> bool) -> Result<(), RuntimeError> {
+        let b = self.pop_word()?;
+        let a = self.pop_word()?;
         self.push(Value::Bool(f(a, b)))
     }
 
