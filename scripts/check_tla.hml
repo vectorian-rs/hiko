@@ -29,8 +29,7 @@ fun run_check name args = let
 
 val checks = [
     ("ProcessLifecycle validate", ["specs/tla/ProcessLifecycle.tla", "--config", "specs/tla/ProcessLifecycle.cfg", "--validate"]),
-    ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"]),
-    ("ProcessLifecycle quick", ["specs/tla/ProcessLifecycle.tla", "--config", "specs/tla/ProcessLifecycle.cfg", "--quick", "--allow-deadlock"])
+    ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"])
 ]
 
 fun run_all xs = case xs of

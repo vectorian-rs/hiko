@@ -338,6 +338,7 @@ allowed_commands = [
   "sort",
   "tail",
   "tar",
+  "tla",
   "touch",
   "tr",
   "uniq",
