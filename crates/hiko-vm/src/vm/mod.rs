@@ -292,25 +292,25 @@ impl VM {
     /// Set the filesystem root for path enforcement.
     pub fn set_fs_root(&mut self, root: String) {
         self.fs_root = root.clone();
-        self.heap.fs_root = root;
+        self.heap.set_fs_root(root);
     }
 
     /// Set per-builtin filesystem folder allowlists.
     pub fn set_fs_builtin_folders(&mut self, folders: HashMap<String, Vec<String>>) {
         self.fs_builtin_folders = folders.clone();
-        self.heap.fs_builtin_folders = folders;
+        self.heap.set_fs_builtin_folders(folders);
     }
 
     /// Set allowed HTTP hosts.
     pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
         self.http_allowed_hosts = hosts.clone();
-        self.heap.http_allowed_hosts = hosts;
+        self.heap.set_http_allowed_hosts(hosts);
     }
 
     /// Set per-builtin HTTP host allowlists.
     pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
         self.http_allowed_hosts_by_builtin = hosts.clone();
-        self.heap.http_allowed_hosts_by_builtin = hosts;
+        self.heap.set_http_allowed_hosts_by_builtin(hosts);
     }
 
     /// Check if a filesystem path is within the allowed root.

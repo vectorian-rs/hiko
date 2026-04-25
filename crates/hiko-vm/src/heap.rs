@@ -68,13 +68,13 @@ pub struct Heap {
     io_bytes_used: u64,
     max_io_bytes: Option<u64>,
     /// Filesystem root for path enforcement (empty = unrestricted).
-    pub fs_root: String,
+    fs_root: String,
     /// Per-builtin filesystem folder allowlists.
-    pub fs_builtin_folders: HashMap<String, Vec<String>>,
+    fs_builtin_folders: HashMap<String, Vec<String>>,
     /// Allowed HTTP hosts (empty = unrestricted).
-    pub http_allowed_hosts: Vec<String>,
+    http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
-    pub http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
     /// Optional injected stdin content for embedded runtimes.
     stdin_override: Option<String>,
     stdin_override_consumed: bool,
@@ -135,6 +135,38 @@ impl Heap {
         self.charge_io_bytes(buf.len() as u64)
             .map_err(|e| format!("read_stdin: {e}"))?;
         Ok(buf)
+    }
+
+    pub fn set_fs_root(&mut self, root: String) {
+        self.fs_root = root;
+    }
+
+    pub fn fs_root(&self) -> &str {
+        &self.fs_root
+    }
+
+    pub fn set_fs_builtin_folders(&mut self, folders: HashMap<String, Vec<String>>) {
+        self.fs_builtin_folders = folders;
+    }
+
+    pub fn fs_builtin_folders(&self) -> &HashMap<String, Vec<String>> {
+        &self.fs_builtin_folders
+    }
+
+    pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
+        self.http_allowed_hosts = hosts;
+    }
+
+    pub fn http_allowed_hosts(&self) -> &[String] {
+        &self.http_allowed_hosts
+    }
+
+    pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
+        self.http_allowed_hosts_by_builtin = hosts;
+    }
+
+    pub fn http_allowed_hosts_by_builtin(&self) -> &HashMap<String, Vec<String>> {
+        &self.http_allowed_hosts_by_builtin
     }
 
     /// Check if a path is within the allowed filesystem root.
@@ -577,10 +609,12 @@ mod tests {
         fs::write(allowed.join("file.txt"), "ok").unwrap();
 
         let mut heap = Heap::new();
-        heap.fs_builtin_folders.insert(
+        let mut folders = HashMap::new();
+        folders.insert(
             "read_file".to_string(),
             vec![allowed.to_string_lossy().to_string()],
         );
+        heap.set_fs_builtin_folders(folders);
 
         let resolved = heap
             .check_fs_path_for("read_file", "file.txt")
@@ -602,8 +636,9 @@ mod tests {
     #[test]
     fn test_check_http_host_for_uses_builtin_hosts() {
         let mut heap = Heap::new();
-        heap.http_allowed_hosts_by_builtin
-            .insert("http_get".to_string(), vec!["api.example.com".to_string()]);
+        let mut hosts = HashMap::new();
+        hosts.insert("http_get".to_string(), vec!["api.example.com".to_string()]);
+        heap.set_http_allowed_hosts_by_builtin(hosts);
 
         heap.check_http_host_for("http_get", "https://api.example.com/v1/ok")
             .expect("allowed host should pass");
@@ -618,7 +653,7 @@ mod tests {
     #[test]
     fn test_check_http_host_rejects_userinfo_spoofed_url() {
         let mut heap = Heap::new();
-        heap.http_allowed_hosts = vec!["localhost".to_string()];
+        heap.set_http_allowed_hosts(vec!["localhost".to_string()]);
 
         let err = heap
             .check_http_host("http://localhost:80@evil.example/path")
@@ -632,10 +667,12 @@ mod tests {
         let missing = base.join("build").join("nested");
 
         let mut heap = Heap::new();
-        heap.fs_builtin_folders.insert(
+        let mut folders = HashMap::new();
+        folders.insert(
             "create_dir".to_string(),
             vec![missing.to_string_lossy().to_string()],
         );
+        heap.set_fs_builtin_folders(folders);
 
         let folders = heap
             .allowed_fs_folders_for("create_dir")
