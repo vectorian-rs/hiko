@@ -67,14 +67,16 @@ fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Result<Value, String> {
     Ok(list)
 }
 
-/// Stable 64-bit FNV-1a hash of a line, returned as 16-char lowercase hex.
-fn fnv1a_tag(line: &str) -> String {
+/// Stable 64-bit FNV-1a hash, returned as 16-char lowercase hex.
+fn fnv1a_tag_parts(parts: &[&str]) -> String {
     const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = BASIS;
-    for &b in line.as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(PRIME);
+    for part in parts {
+        for &b in part.as_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(PRIME);
+        }
     }
     format!("{h:016x}")
 }

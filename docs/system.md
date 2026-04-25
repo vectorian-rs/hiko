@@ -328,7 +328,9 @@ config or `VMBuilder` settings.
 
 Content-hash anchored file editing for LLM agents.
 
-`read_file_tagged` returns lines with 16-char 64-bit FNV-1a hex content hashes:
+`read_file_tagged` returns lines with 16-char 64-bit FNV-1a hex content hashes.
+The hash covers both the line text and its original line ending, so CRLF/LF
+changes are detected without normalizing the file on edit:
 
 ```
 1:2f1f990c87a29d57	(* Factorial using clausal function definition *)

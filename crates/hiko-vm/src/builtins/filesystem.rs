@@ -164,6 +164,59 @@ pub(super) fn is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
     }
 }
 
+#[derive(Clone)]
+struct TaggedFileLine {
+    text: String,
+    ending: String,
+}
+
+impl TaggedFileLine {
+    fn tag(&self) -> String {
+        fnv1a_tag_parts(&[self.text.as_str(), self.ending.as_str()])
+    }
+}
+
+fn split_file_lines(content: &str) -> Vec<TaggedFileLine> {
+    content
+        .split_inclusive('\n')
+        .map(|chunk| {
+            if let Some(text) = chunk.strip_suffix("\r\n") {
+                TaggedFileLine {
+                    text: text.to_string(),
+                    ending: "\r\n".to_string(),
+                }
+            } else if let Some(text) = chunk.strip_suffix('\n') {
+                TaggedFileLine {
+                    text: text.to_string(),
+                    ending: "\n".to_string(),
+                }
+            } else {
+                TaggedFileLine {
+                    text: chunk.to_string(),
+                    ending: String::new(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn default_line_ending(lines: &[TaggedFileLine]) -> &str {
+    lines
+        .iter()
+        .find(|line| !line.ending.is_empty())
+        .map(|line| line.ending.as_str())
+        .unwrap_or("\n")
+}
+
+fn render_file_lines(lines: &[TaggedFileLine]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        out.push_str(&line.text);
+        out.push_str(&line.ending);
+    }
+    out
+}
+
 pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v_path, v_offset, v_limit) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
@@ -206,7 +259,7 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     heap.charge_io_bytes(content.len() as u64)
         .map_err(|e| format!("read_file_tagged: {e}"))?;
 
-    let lines: Vec<&str> = content.lines().collect();
+    let lines = split_file_lines(&content);
     let start = if offset > 0 {
         offset.min(lines.len())
     } else {
@@ -220,8 +273,8 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
 
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
-        let tag = fnv1a_tag(line);
-        out.push_str(&format!("{}:{}\t{}\n", i + 1, tag, line));
+        let tag = line.tag();
+        out.push_str(&format!("{}:{}\t{}\n", i + 1, tag, line.text));
     }
 
     heap_alloc(heap, HeapObject::String(out))
@@ -257,8 +310,8 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
     heap.charge_io_bytes(content.len() as u64)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
-    let lines: Vec<&str> = content.lines().collect();
-    let hashes: Vec<String> = lines.iter().map(|line| fnv1a_tag(line)).collect();
+    let lines = split_file_lines(&content);
+    let hashes: Vec<String> = lines.iter().map(TaggedFileLine::tag).collect();
 
     struct Edit {
         action: char,
@@ -336,15 +389,30 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         return heap_alloc(heap, HeapObject::String(msg));
     }
 
-    let mut result: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let default_ending = default_line_ending(&lines).to_string();
+    let mut result = lines.clone();
     let mut sorted_edits: Vec<&Edit> = edits.iter().collect();
     sorted_edits.sort_by(|a, b| b.line_num.cmp(&a.line_num));
 
     for edit in &sorted_edits {
         let idx = edit.line_num - 1;
         match edit.action {
-            'R' => result[idx] = edit.content.clone(),
-            'I' => result.insert(idx + 1, edit.content.clone()),
+            'R' => result[idx].text = edit.content.clone(),
+            'I' => {
+                let inserted_ending = if result[idx].ending.is_empty() {
+                    result[idx].ending = default_ending.clone();
+                    String::new()
+                } else {
+                    result[idx].ending.clone()
+                };
+                result.insert(
+                    idx + 1,
+                    TaggedFileLine {
+                        text: edit.content.clone(),
+                        ending: inserted_ending,
+                    },
+                );
+            }
             'D' => {
                 result.remove(idx);
             }
@@ -352,12 +420,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         }
     }
 
-    let output = result.join("\n");
-    let final_output = if content.ends_with('\n') {
-        format!("{output}\n")
-    } else {
-        output
-    };
+    let final_output = render_file_lines(&result);
     heap.charge_io_bytes(final_output.len() as u64)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
     std::fs::write(&checked_path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;

@@ -1354,6 +1354,80 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    fn run_fs_program(root: &std::path::Path, source: String) -> VM {
+        let program = compile_program(&source);
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: true,
+                allow_delete: false,
+            })
+            .build();
+        vm.run().unwrap();
+        vm
+    }
+
+    #[test]
+    fn test_tagged_edit_preserves_crlf_and_trailing_blank_line() {
+        let root = temp_dir("fs-tagged-crlf");
+        let file = root.join("data.txt");
+        fs::write(&file, "alpha\r\nbeta\r\n\r\n").unwrap();
+
+        let vm = run_fs_program(
+            &root,
+            "val tagged = read_file_tagged (\"data.txt\", 0, 0)".to_string(),
+        );
+        let tagged = global_str(&vm, "tagged");
+        let tagged_lines = tagged.lines().collect::<Vec<_>>();
+        assert_eq!(tagged_lines.len(), 3);
+        assert!(tagged_lines[0].ends_with("\talpha"));
+        assert!(tagged_lines[1].ends_with("\tbeta"));
+        assert!(tagged_lines[2].ends_with('\t'));
+
+        let beta_anchor = tagged_lines[1].split('\t').next().unwrap();
+        let edit = format!("R {beta_anchor} BETA");
+        run_fs_program(
+            &root,
+            format!(
+                "val result = edit_file_tagged ({:?}, {:?})",
+                "data.txt", edit
+            ),
+        );
+
+        assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\r\nBETA\r\n\r\n");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_tagged_insert_preserves_missing_final_newline() {
+        let root = temp_dir("fs-tagged-no-final-newline");
+        let file = root.join("data.txt");
+        fs::write(&file, "alpha\r\nbeta").unwrap();
+
+        let vm = run_fs_program(
+            &root,
+            "val tagged = read_file_tagged (\"data.txt\", 0, 0)".to_string(),
+        );
+        let tagged = global_str(&vm, "tagged");
+        let tagged_lines = tagged.lines().collect::<Vec<_>>();
+        let beta_anchor = tagged_lines[1].split('\t').next().unwrap();
+        let edit = format!("I {beta_anchor} gamma");
+        run_fs_program(
+            &root,
+            format!(
+                "val result = edit_file_tagged ({:?}, {:?})",
+                "data.txt", edit
+            ),
+        );
+
+        assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\r\nbeta\r\ngamma");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn test_fs_root_rejects_glob_traversal() {
         let root = temp_dir("fs-root-glob");
