@@ -1,0 +1,21 @@
+import __Builtin.Hashline
+
+structure Hashline = struct
+  (* Read a file with hashline anchors for safe editing.
+   * Returns: LINE:HASH\tCONTENT
+   * offset: start line (0 = beginning), limit: max lines (0 = all). *)
+  fun read path offset limit =
+    BuiltinHashline.read_tagged_raw (path, offset, limit)
+
+  fun read_all path =
+    read path 0 0
+
+  (* Apply hashline-anchored edits atomically.
+   * Each edit line: ACTION LINE:HASH CONTENT
+   *   R LINE:HASH NEW_CONTENT   - replace line
+   *   I LINE:HASH NEW_CONTENT   - insert after line
+   *   D LINE:HASH               - delete line
+   * Rejects all edits if any hash does not match current file state. *)
+  fun edit path edits =
+    BuiltinHashline.edit_tagged_raw (path, edits)
+end

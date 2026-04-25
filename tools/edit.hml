@@ -1,19 +1,21 @@
 (* tool: edit
- * description: Edit a file using hashline anchors
+ * description: Apply hashline-anchored edits safely
  * param path: string - File path to edit
  * param edits: string - Newline-separated edit operations
  *
- * notes: Each edit line has the format ACTION LINE:HASH CONTENT.
- * Actions: R (replace line), I (insert after line), D (delete line).
- * Example edits string:
- *   R 5:a3 new content for line 5
- *   I 5:a3 inserted line after line 5
- *   D 8:f1
+ * notes: Use read first to get LINE:HASH anchors. Each edit line has
+ * the format ACTION LINE:HASH CONTENT. Actions: R (replace line),
+ * I (insert after line), D (delete line). Example edits string:
+ *   R 5:0123456789abcdef new content for line 5
+ *   I 5:0123456789abcdef inserted line after line 5
+ *   D 8:fedcba9876543210
  * All hashes are verified before any edit is applied. If any hash
  * does not match the current file content, ALL edits are rejected
  * atomically. This means the file changed since you last read it --
  * read again to get fresh hashes.
  *)
+
+use "../libraries/Harness-v0.1.0/modules/Hashline.hml"
 
 val input = read_stdin ()
 
@@ -21,4 +23,4 @@ val path = json_get (input, "path")
 
 val edits_raw = json_get (input, "edits")
 
-val _ = print (edit_file_tagged (path, edits_raw))
+val _ = print (Hashline.edit path edits_raw)

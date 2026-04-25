@@ -1,15 +1,16 @@
 (* tool: read
- * description: Read a file with hashline content-hash anchors per line
+ * description: Read a file with hashline anchors for safe editing
  * param path: string - File path to read
  * param offset: number - Start line, 0 for beginning
  * param limit: number - Max lines, 0 for all
  *
- * notes: Returns lines formatted as LINE:HASH\tCONTENT where HASH is
- * a 2-character content hash (FNV-1a, base62). These hashes are the
- * anchors for the edit tool -- they prove you know what you are
- * changing. Always read a file before editing it. Use offset and
+ * notes: Returns lines formatted as LINE:HASH\tCONTENT. These hashes
+ * are the anchors for the edit tool -- they prove you know what you
+ * are changing. Always read a file before editing it. Use offset and
  * limit for large files to stay within context.
  *)
+
+use "../libraries/Harness-v0.1.0/modules/Hashline.hml"
 
 val input = read_stdin ()
 
@@ -25,4 +26,4 @@ val limit = case json_get (input, "limit") of
   | s => case string_to_int s of
         n => n
 
-val _ = print (read_file_tagged (path, offset, limit))
+val _ = print (Hashline.read path offset limit)

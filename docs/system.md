@@ -403,8 +403,8 @@ local = "qwen3-32b"
 
 ```
 tools/
-├── read.hml     Hashline-tagged file reading
-├── edit.hml     Hash-verified file editing
+├── read.hml     Hashline-tagged file reading via Harness.Hashline
+├── edit.hml     Hash-verified file editing via Harness.Hashline
 ├── find.hml     Glob file search
 ├── grep.hml     Regex search across files
 ├── write.hml    Write file content
