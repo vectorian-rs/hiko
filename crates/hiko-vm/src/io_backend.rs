@@ -131,6 +131,7 @@ pub struct ThreadPoolIoBackend {
     senders: Vec<std::sync::mpsc::Sender<(IoToken, IoRequest)>>,
     next_worker: std::sync::atomic::AtomicUsize,
     completed: Arc<Mutex<Vec<(IoToken, IoResult)>>>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl ThreadPoolIoBackend {
@@ -138,29 +139,56 @@ impl ThreadPoolIoBackend {
         let num_threads = num_threads.max(1);
         let completed = Arc::new(Mutex::new(Vec::new()));
         let mut senders = Vec::with_capacity(num_threads);
+        let mut workers = Vec::with_capacity(num_threads);
 
         for _ in 0..num_threads {
             let (tx, rx) = std::sync::mpsc::channel::<(IoToken, IoRequest)>();
             let done = Arc::clone(&completed);
-            std::thread::spawn(move || {
+            let worker = std::thread::spawn(move || {
                 while let Ok((token, request)) = rx.recv() {
-                    let result = execute_io_request(request);
-                    done.lock().unwrap().push((token, result));
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        execute_io_request(request)
+                    }))
+                    .unwrap_or_else(|_| IoResult::Err("io backend worker panicked".into()));
+                    done.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((token, result));
                 }
             });
             senders.push(tx);
+            workers.push(worker);
         }
 
         Self {
             senders,
             next_worker: std::sync::atomic::AtomicUsize::new(0),
             completed,
+            workers: Mutex::new(workers),
+        }
+    }
+
+    pub fn shutdown(&mut self) -> Result<(), String> {
+        self.senders.clear();
+        let workers = self.workers.get_mut().unwrap_or_else(|e| e.into_inner());
+        let mut panicked = 0;
+        for worker in workers.drain(..) {
+            if worker.join().is_err() {
+                panicked += 1;
+            }
+        }
+        if panicked == 0 {
+            Ok(())
+        } else {
+            Err(format!("{panicked} io backend worker(s) panicked"))
         }
     }
 }
 
 impl IoBackend for ThreadPoolIoBackend {
     fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String> {
+        if self.senders.is_empty() {
+            return Err("io backend is shut down".into());
+        }
         let idx = self
             .next_worker
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -173,6 +201,12 @@ impl IoBackend for ThreadPoolIoBackend {
     fn poll(&self) -> Vec<(IoToken, IoResult)> {
         let mut completed = self.completed.lock().unwrap();
         std::mem::take(&mut *completed)
+    }
+}
+
+impl Drop for ThreadPoolIoBackend {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -437,5 +471,16 @@ mod tests {
         }
 
         panic!("thread pool backend did not complete request");
+    }
+
+    #[test]
+    fn test_thread_pool_shutdown_closes_registration() {
+        let mut backend = ThreadPoolIoBackend::new(1);
+        backend.shutdown().unwrap();
+
+        let err = backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_millis(0)))
+            .unwrap_err();
+        assert!(err.contains("shut down"));
     }
 }
