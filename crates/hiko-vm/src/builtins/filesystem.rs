@@ -445,9 +445,13 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
             return Ok(());
         }
 
-        let entries = std::fs::read_dir(dir).map_err(|e| format!("walk_dir: {e}"))?;
+        let mut entries = std::fs::read_dir(dir)
+            .map_err(|e| format!("walk_dir: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("walk_dir: {e}"))?;
+        entries.sort_by_key(|entry| entry.path());
+
         for entry in entries {
-            let entry = entry.map_err(|e| format!("walk_dir: {e}"))?;
             let checked_path = heap
                 .check_fs_path_for("walk_dir", entry.path().to_string_lossy().as_ref())
                 .map_err(|e| format!("walk_dir: {e}"))?;

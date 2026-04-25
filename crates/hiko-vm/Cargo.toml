@@ -100,7 +100,12 @@ hiko-common = { version = "0.7.0", path = "../hiko-common", default-features = f
 hiko-compile = { version = "0.7.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+sortedvec = "0.5"
 
 [[bench]]
 name = "vm_bench"
+harness = false
+
+[[bench]]
+name = "sorted_collections_bench"
 harness = false

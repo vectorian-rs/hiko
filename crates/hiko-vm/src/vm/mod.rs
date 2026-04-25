@@ -1404,6 +1404,41 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    #[test]
+    fn test_fs_root_walk_dir_returns_deterministic_order() {
+        let root = temp_dir("fs-root-walk-order");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("c.txt"), "c").unwrap();
+        fs::write(root.join("a").join("b.txt"), "b").unwrap();
+        fs::write(root.join("b.txt"), "b").unwrap();
+
+        let program = compile_program("val files = walk_dir \".\"");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_filesystem(FilesystemPolicy {
+                root: root.to_string_lossy().to_string(),
+                allow_read: true,
+                allow_write: false,
+                allow_delete: false,
+            })
+            .build();
+
+        vm.run().unwrap();
+        let files = global_string_list(&vm, "files");
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        let expected = [
+            canonical_root.join("a").join("b.txt"),
+            canonical_root.join("b.txt"),
+            canonical_root.join("c.txt"),
+        ]
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+        assert_eq!(files, expected);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_fs_root_walk_dir_handles_symlink_cycle() {
