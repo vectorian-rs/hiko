@@ -1097,6 +1097,11 @@ fn fmt_files(options: &FmtOptions) {
                 had_error = true;
                 continue;
             }
+            Err(FormatError::TreeSitter(message)) => {
+                ctx.error(&message, None);
+                had_error = true;
+                continue;
+            }
         };
 
         if formatted == source {

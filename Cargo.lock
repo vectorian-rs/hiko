@@ -664,6 +664,8 @@ dependencies = [
  "criterion",
  "insta",
  "proptest",
+ "tree-sitter",
+ "tree-sitter-hiko",
 ]
 
 [[package]]
