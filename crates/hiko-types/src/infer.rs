@@ -59,6 +59,155 @@ pub struct InferCtx {
     pub interner: StringInterner,
 }
 
+struct BuiltinTypeParser<'a> {
+    chars: Vec<char>,
+    pos: usize,
+    vars: HashMap<&'a str, u32>,
+}
+
+impl<'a> BuiltinTypeParser<'a> {
+    fn new(input: &'a str, vars: HashMap<&'a str, u32>) -> Self {
+        Self {
+            chars: input.chars().collect(),
+            pos: 0,
+            vars,
+        }
+    }
+
+    fn parse(&mut self) -> Result<Type, String> {
+        let ty = self.parse_arrow()?;
+        self.skip_ws();
+        if self.pos != self.chars.len() {
+            return Err(format!("unexpected trailing input at byte {}", self.pos));
+        }
+        Ok(ty)
+    }
+
+    fn parse_arrow(&mut self) -> Result<Type, String> {
+        let lhs = self.parse_tuple()?;
+        self.skip_ws();
+        if self.consume("->") {
+            let rhs = self.parse_arrow()?;
+            Ok(Type::arrow(lhs, rhs))
+        } else {
+            Ok(lhs)
+        }
+    }
+
+    fn parse_tuple(&mut self) -> Result<Type, String> {
+        let first = self.parse_app()?;
+        let mut elems = vec![first];
+        loop {
+            self.skip_ws();
+            if !self.consume("*") {
+                break;
+            }
+            elems.push(self.parse_app()?);
+        }
+        if elems.len() == 1 {
+            Ok(elems.pop().unwrap())
+        } else {
+            Ok(Type::Tuple(elems))
+        }
+    }
+
+    fn parse_app(&mut self) -> Result<Type, String> {
+        let mut ty = self.parse_atom()?;
+        loop {
+            self.skip_ws();
+            if self.consume_word("list") {
+                ty = Type::list(ty);
+            } else {
+                break;
+            }
+        }
+        Ok(ty)
+    }
+
+    fn parse_atom(&mut self) -> Result<Type, String> {
+        self.skip_ws();
+        if self.consume("(") {
+            let ty = self.parse_arrow()?;
+            self.skip_ws();
+            if !self.consume(")") {
+                return Err("expected ')'".into());
+            }
+            return Ok(ty);
+        }
+        if self.consume("'") {
+            let name = self.ident()?;
+            let var = self
+                .vars
+                .get(name.as_str())
+                .copied()
+                .ok_or_else(|| format!("unknown type variable '{name}"))?;
+            return Ok(Type::Var(var));
+        }
+        let ident = self.ident()?;
+        match ident.as_str() {
+            "int" => Ok(Type::int()),
+            "float" => Ok(Type::float()),
+            "word" => Ok(Type::word()),
+            "bool" => Ok(Type::bool()),
+            "string" => Ok(Type::string()),
+            "char" => Ok(Type::char()),
+            "unit" => Ok(Type::unit()),
+            "bytes" => Ok(Type::bytes()),
+            "rng" => Ok(Type::rng()),
+            "pid" => Ok(Type::pid()),
+            other => Err(format!("unknown type constructor '{other}")),
+        }
+    }
+
+    fn ident(&mut self) -> Result<String, String> {
+        self.skip_ws();
+        let start = self.pos;
+        while self.pos < self.chars.len()
+            && (self.chars[self.pos].is_ascii_alphanumeric() || self.chars[self.pos] == '_')
+        {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            Err(format!("expected identifier at byte {}", self.pos))
+        } else {
+            Ok(self.chars[start..self.pos].iter().collect())
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.chars.len() && self.chars[self.pos].is_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn consume(&mut self, expected: &str) -> bool {
+        self.skip_ws();
+        let expected_chars: Vec<char> = expected.chars().collect();
+        if self.chars[self.pos..].starts_with(&expected_chars) {
+            self.pos += expected_chars.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_word(&mut self, expected: &str) -> bool {
+        self.skip_ws();
+        let start = self.pos;
+        if !self.consume(expected) {
+            return false;
+        }
+        if self.pos < self.chars.len()
+            && (self.chars[self.pos].is_ascii_alphanumeric() || self.chars[self.pos] == '_')
+        {
+            self.pos = start;
+            false
+        } else {
+            true
+        }
+    }
+}
+
 impl Default for InferCtx {
     fn default() -> Self {
         Self::new()
@@ -82,573 +231,37 @@ impl InferCtx {
             interner: StringInterner::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
-        let int_pair = || Type::Tuple(vec![Type::int(), Type::int()]);
-        let word_pair = || Type::Tuple(vec![Type::word(), Type::word()]);
-        let float_pair = || Type::Tuple(vec![Type::float(), Type::float()]);
-        let bool_int_pair = || Type::Tuple(vec![Type::bool(), Type::int()]);
-        let bool_word_pair = || Type::Tuple(vec![Type::bool(), Type::word()]);
-        // Register runtime builtins
-        let builtins: &[(&str, Type)] = &[
-            // I/O
-            ("print", Type::arrow(Type::string(), Type::unit())),
-            ("println", Type::arrow(Type::string(), Type::unit())),
-            ("read_line", Type::arrow(Type::unit(), Type::string())),
-            ("read_stdin", Type::arrow(Type::unit(), Type::string())),
-            // Conversions
-            ("int_to_string", Type::arrow(Type::int(), Type::string())),
-            (
-                "float_to_string",
-                Type::arrow(Type::float(), Type::string()),
-            ),
-            ("string_to_int", Type::arrow(Type::string(), Type::int())),
-            ("char_to_int", Type::arrow(Type::char(), Type::int())),
-            ("int_to_char", Type::arrow(Type::int(), Type::char())),
-            ("int_to_float", Type::arrow(Type::int(), Type::float())),
-            ("word_to_int", Type::arrow(Type::word(), Type::int())),
-            ("int_to_word", Type::arrow(Type::int(), Type::word())),
-            ("word_to_string", Type::arrow(Type::word(), Type::string())),
-            ("string_to_word", Type::arrow(Type::string(), Type::word())),
-            (
-                "numeric_int32_min_value",
-                Type::arrow(Type::unit(), Type::int()),
-            ),
-            (
-                "numeric_int32_max_value",
-                Type::arrow(Type::unit(), Type::int()),
-            ),
-            (
-                "numeric_int32_of_int",
-                Type::arrow(Type::int(), Type::int()),
-            ),
-            (
-                "numeric_int32_checked_of_int",
-                Type::arrow(Type::int(), bool_int_pair()),
-            ),
-            (
-                "numeric_int32_to_int",
-                Type::arrow(Type::int(), Type::int()),
-            ),
-            ("numeric_int32_add", Type::arrow(int_pair(), Type::int())),
-            (
-                "numeric_int32_checked_add",
-                Type::arrow(int_pair(), bool_int_pair()),
-            ),
-            (
-                "numeric_int32_wrapping_add",
-                Type::arrow(int_pair(), Type::int()),
-            ),
-            (
-                "numeric_int32_saturating_add",
-                Type::arrow(int_pair(), Type::int()),
-            ),
-            ("numeric_int32_sub", Type::arrow(int_pair(), Type::int())),
-            ("numeric_int32_mul", Type::arrow(int_pair(), Type::int())),
-            ("numeric_int32_div", Type::arrow(int_pair(), Type::int())),
-            ("numeric_int32_rem", Type::arrow(int_pair(), Type::int())),
-            ("numeric_int32_neg", Type::arrow(Type::int(), Type::int())),
-            (
-                "numeric_word32_min_value",
-                Type::arrow(Type::unit(), Type::word()),
-            ),
-            (
-                "numeric_word32_max_value",
-                Type::arrow(Type::unit(), Type::word()),
-            ),
-            (
-                "numeric_word32_of_word",
-                Type::arrow(Type::word(), Type::word()),
-            ),
-            (
-                "numeric_word32_checked_of_word",
-                Type::arrow(Type::word(), bool_word_pair()),
-            ),
-            (
-                "numeric_word32_of_int",
-                Type::arrow(Type::int(), Type::word()),
-            ),
-            (
-                "numeric_word32_checked_of_int",
-                Type::arrow(Type::int(), bool_word_pair()),
-            ),
-            (
-                "numeric_word32_to_word",
-                Type::arrow(Type::word(), Type::word()),
-            ),
-            (
-                "numeric_word32_to_int",
-                Type::arrow(Type::word(), Type::int()),
-            ),
-            ("numeric_word32_add", Type::arrow(word_pair(), Type::word())),
-            (
-                "numeric_word32_checked_add",
-                Type::arrow(word_pair(), bool_word_pair()),
-            ),
-            (
-                "numeric_word32_saturating_add",
-                Type::arrow(word_pair(), Type::word()),
-            ),
-            ("numeric_word32_sub", Type::arrow(word_pair(), Type::word())),
-            ("numeric_word32_mul", Type::arrow(word_pair(), Type::word())),
-            ("numeric_word32_div", Type::arrow(word_pair(), Type::word())),
-            ("numeric_word32_rem", Type::arrow(word_pair(), Type::word())),
-            (
-                "numeric_float32_of_float",
-                Type::arrow(Type::float(), Type::float()),
-            ),
-            (
-                "numeric_float32_to_float",
-                Type::arrow(Type::float(), Type::float()),
-            ),
-            (
-                "numeric_float32_neg",
-                Type::arrow(Type::float(), Type::float()),
-            ),
-            (
-                "numeric_float32_add",
-                Type::arrow(float_pair(), Type::float()),
-            ),
-            (
-                "numeric_float32_sub",
-                Type::arrow(float_pair(), Type::float()),
-            ),
-            (
-                "numeric_float32_mul",
-                Type::arrow(float_pair(), Type::float()),
-            ),
-            (
-                "numeric_float32_div",
-                Type::arrow(float_pair(), Type::float()),
-            ),
-            // string ops
-            ("string_length", Type::arrow(Type::string(), Type::int())),
-            (
-                "substring",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::int(), Type::int()]),
-                    Type::string(),
-                ),
-            ),
-            (
-                "string_contains",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::bool(),
-                ),
-            ),
-            ("trim", Type::arrow(Type::string(), Type::string())),
-            (
-                "split",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::list(Type::string()),
-                ),
-            ),
-            (
-                "string_replace",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            // Math
-            ("sqrt", Type::arrow(Type::float(), Type::float())),
-            ("abs_int", Type::arrow(Type::int(), Type::int())),
-            ("abs_float", Type::arrow(Type::float(), Type::float())),
-            ("floor", Type::arrow(Type::float(), Type::int())),
-            ("ceil", Type::arrow(Type::float(), Type::int())),
-            // Filesystem
-            ("read_file", Type::arrow(Type::string(), Type::string())),
-            (
-                "write_file",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::unit(),
-                ),
-            ),
-            ("file_exists", Type::arrow(Type::string(), Type::bool())),
-            (
-                "list_dir",
-                Type::arrow(Type::string(), Type::list(Type::string())),
-            ),
-            ("remove_file", Type::arrow(Type::string(), Type::unit())),
-            ("create_dir", Type::arrow(Type::string(), Type::unit())),
-            ("is_dir", Type::arrow(Type::string(), Type::bool())),
-            ("is_file", Type::arrow(Type::string(), Type::bool())),
-            (
-                "path_join",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            // HTTP
-            (
-                "http_get",
-                Type::arrow(
-                    Type::string(),
-                    Type::Tuple(vec![
-                        Type::int(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::string(),
-                    ]),
-                ),
-            ),
-            // General HTTP: (method, url, headers, body) -> (status, response_headers, body)
-            (
-                "http",
-                Type::arrow(
-                    Type::Tuple(vec![
-                        Type::string(),
-                        Type::string(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::string(),
-                    ]),
-                    Type::Tuple(vec![
-                        Type::int(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::string(),
-                    ]),
-                ),
-            ),
-            (
-                "http_bytes",
-                Type::arrow(
-                    Type::Tuple(vec![
-                        Type::string(),
-                        Type::string(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::string(),
-                    ]),
-                    Type::Tuple(vec![
-                        Type::int(),
-                        Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                        Type::bytes(),
-                    ]),
-                ),
-            ),
-            // File I/O (bytes)
-            (
-                "read_file_bytes",
-                Type::arrow(Type::string(), Type::bytes()),
-            ),
-            // Hashing
-            ("blake3", Type::arrow(Type::bytes(), Type::string())),
-            // bytes
-            ("bytes_length", Type::arrow(Type::bytes(), Type::int())),
-            (
-                "bytes_to_string",
-                Type::arrow(Type::bytes(), Type::string()),
-            ),
-            (
-                "string_to_bytes",
-                Type::arrow(Type::string(), Type::bytes()),
-            ),
-            (
-                "bytes_get",
-                Type::arrow(Type::Tuple(vec![Type::bytes(), Type::int()]), Type::int()),
-            ),
-            (
-                "bytes_slice",
-                Type::arrow(
-                    Type::Tuple(vec![Type::bytes(), Type::int(), Type::int()]),
-                    Type::bytes(),
-                ),
-            ),
-            // Crypto RNG
-            ("random_bytes", Type::arrow(Type::int(), Type::bytes())),
-            // Deterministic RNG
-            ("rng_seed", Type::arrow(Type::bytes(), Type::rng())),
-            (
-                "rng_bytes",
-                Type::arrow(
-                    Type::Tuple(vec![Type::rng(), Type::int()]),
-                    Type::Tuple(vec![Type::bytes(), Type::rng()]),
-                ),
-            ),
-            (
-                "rng_int",
-                Type::arrow(
-                    Type::Tuple(vec![Type::rng(), Type::int()]),
-                    Type::Tuple(vec![Type::int(), Type::rng()]),
-                ),
-            ),
-            // Hashline read
-            (
-                "read_file_tagged",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::int(), Type::int()]),
-                    Type::string(),
-                ),
-            ),
-            (
-                "edit_file_tagged",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            // Glob & walk
-            (
-                "glob",
-                Type::arrow(Type::string(), Type::list(Type::string())),
-            ),
-            (
-                "walk_dir",
-                Type::arrow(Type::string(), Type::list(Type::string())),
-            ),
-            // Regex
-            (
-                "regex_match",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::bool(),
-                ),
-            ),
-            (
-                "regex_replace",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            // JSON (string-based convenience)
-            (
-                "json_get",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            (
-                "json_keys",
-                Type::arrow(Type::string(), Type::list(Type::string())),
-            ),
-            ("json_length", Type::arrow(Type::string(), Type::int())),
-            // Environment & string utils
-            ("getenv", Type::arrow(Type::string(), Type::string())),
-            (
-                "starts_with",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::bool(),
-                ),
-            ),
-            (
-                "ends_with",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::bool(),
-                ),
-            ),
-            ("to_upper", Type::arrow(Type::string(), Type::string())),
-            ("to_lower", Type::arrow(Type::string(), Type::string())),
-            #[cfg(feature = "builtin-time")]
-            ("epoch", Type::arrow(Type::unit(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("epoch_ms", Type::arrow(Type::unit(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("monotonic_ms", Type::arrow(Type::unit(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("sleep", Type::arrow(Type::int(), Type::unit())),
-            #[cfg(feature = "builtin-time")]
-            ("date_utc_tz", Type::arrow(Type::unit(), Type::string())),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_local_tz",
-                Type::arrow(
-                    Type::unit(),
-                    Type::Tuple(vec![Type::bool(), Type::string()]),
-                ),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_timezone_of",
-                Type::arrow(
-                    Type::string(),
-                    Type::Tuple(vec![Type::bool(), Type::string()]),
-                ),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_fixed_offset",
-                Type::arrow(Type::int(), Type::string()),
-            ),
-            #[cfg(feature = "builtin-time")]
-            ("date_utc_now", Type::arrow(Type::unit(), Type::string())),
-            #[cfg(feature = "builtin-time")]
-            ("date_now_in", Type::arrow(Type::string(), Type::string())),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_from_instant",
-                Type::arrow(
-                    Type::Tuple(vec![Type::int(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            #[cfg(feature = "builtin-time")]
-            ("date_to_epoch_ms", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_to_timezone",
-                Type::arrow(Type::string(), Type::string()),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_in_timezone",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            #[cfg(feature = "builtin-time")]
-            ("date_year", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_month", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_day", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_hour", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_minute", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_second", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_millisecond", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            ("date_weekday", Type::arrow(Type::string(), Type::int())),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_to_rfc3339",
-                Type::arrow(Type::string(), Type::string()),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_to_rfc2822",
-                Type::arrow(Type::string(), Type::string()),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_format",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_parse_rfc3339",
-                Type::arrow(
-                    Type::string(),
-                    Type::Tuple(vec![Type::bool(), Type::string()]),
-                ),
-            ),
-            #[cfg(feature = "builtin-time")]
-            (
-                "date_parse_rfc9557",
-                Type::arrow(
-                    Type::string(),
-                    Type::Tuple(vec![Type::bool(), Type::string()]),
-                ),
-            ),
-            (
-                "string_join",
-                Type::arrow(
-                    Type::Tuple(vec![Type::list(Type::string()), Type::string()]),
-                    Type::string(),
-                ),
-            ),
-            // Exec
-            (
-                "exec",
-                Type::arrow(
-                    Type::Tuple(vec![Type::string(), Type::list(Type::string())]),
-                    Type::Tuple(vec![Type::int(), Type::string(), Type::string()]),
-                ),
-            ),
-            // System
-            // Process operations
-            ("exit", Type::arrow(Type::int(), Type::unit())),
-            // Testing
-            (
-                "assert",
-                Type::arrow(
-                    Type::Tuple(vec![Type::bool(), Type::string()]),
-                    Type::unit(),
-                ),
-            ),
-        ];
-        for &(name, ref ty) in builtins {
-            ctx.bind(name.to_string(), Scheme::mono(ty.clone()));
-        }
-        ctx.bind_poly_builtin("http_json", |a| {
-            Type::arrow(
-                Type::Tuple(vec![
-                    Type::string(),
-                    Type::string(),
-                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                    Type::string(),
-                ]),
-                Type::Tuple(vec![
-                    Type::int(),
-                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                    a,
-                ]),
-            )
-        });
-        ctx.bind_poly_builtin("http_msgpack", |a| {
-            Type::arrow(
-                Type::Tuple(vec![
-                    Type::string(),
-                    Type::string(),
-                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                    Type::string(),
-                ]),
-                Type::Tuple(vec![
-                    Type::int(),
-                    Type::list(Type::Tuple(vec![Type::string(), Type::string()])),
-                    a,
-                ]),
-            )
-        });
-        ctx.bind_poly_builtin("json_parse", |a| Type::arrow(Type::string(), a));
-        ctx.bind_poly_builtin("json_to_string", |a| Type::arrow(a, Type::string()));
-        ctx.bind_poly_builtin("spawn", |a| {
-            Type::arrow(Type::arrow(Type::unit(), a), Type::pid())
-        });
-        ctx.bind_poly_builtin("await_process", |a| Type::arrow(Type::pid(), a));
-        ctx.bind_poly_builtin("await_process_result", |a| Type::arrow(Type::pid(), a));
-        ctx.bind(
-            "cancel".to_string(),
-            Scheme::mono(Type::arrow(Type::pid(), Type::unit())),
-        );
-        ctx.bind(
-            "wait_any".to_string(),
-            Scheme::mono(Type::arrow(Type::list(Type::pid()), Type::pid())),
-        );
-        ctx.bind_poly_builtin("panic", |a| Type::arrow(Type::string(), a));
-        ctx.bind_poly_builtin("assert_eq", |a| {
-            Type::arrow(
-                Type::Tuple(vec![a.clone(), a, Type::string()]),
-                Type::unit(),
-            )
-        });
+        ctx.bind_builtin_type_signatures();
         ctx
     }
 
-    fn bind_poly_builtin<F>(&mut self, name: &str, build: F)
-    where
-        F: FnOnce(Type) -> Type,
-    {
-        let var = self.next_var;
-        self.next_var += 1;
-        let ty = build(Type::Var(var));
-        self.bind(
-            name.to_string(),
-            Scheme {
-                vars: vec![var],
-                ty,
-            },
-        );
+    fn bind_builtin_type_signatures(&mut self) {
+        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
+            let scheme = self
+                .parse_builtin_scheme(sig)
+                .unwrap_or_else(|err| panic!("invalid builtin type signature for {name}: {err}"));
+            self.bind(name.to_string(), scheme);
+        }
+    }
+
+    fn parse_builtin_scheme(
+        &mut self,
+        sig: hiko_builtin_meta::BuiltinTypeSignature,
+    ) -> Result<Scheme, String> {
+        let mut vars = HashMap::new();
+        let mut scheme_vars = Vec::new();
+        for name in sig.vars {
+            let var = self.next_var;
+            self.next_var += 1;
+            vars.insert(*name, var);
+            scheme_vars.push(var);
+        }
+        let mut parser = BuiltinTypeParser::new(sig.ty, vars);
+        let ty = parser.parse()?;
+        Ok(Scheme {
+            vars: scheme_vars,
+            ty,
+        })
     }
 
     // ── Fresh variables ──────────────────────────────────────────────

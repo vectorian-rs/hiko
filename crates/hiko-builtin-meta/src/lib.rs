@@ -25,6 +25,7 @@ mod process;
 mod random;
 #[cfg(feature = "builtin-regex")]
 mod regex;
+mod signatures;
 #[cfg(feature = "builtin-stdio")]
 mod stdio;
 #[cfg(feature = "builtin-string")]
@@ -53,6 +54,13 @@ pub struct BuiltinMeta {
 pub use internal::{
     INTERNAL_BUILTIN_PACKAGE, InternalBuiltinModule, internal_builtin_module,
     internal_builtin_modules, is_internal_builtin_package,
+};
+pub use signatures::{
+    BuiltinTypeSignature, PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_AWAIT_RESULT_ERR_TAG,
+    PROCESS_AWAIT_RESULT_OK_TAG, PROCESS_JOIN_ERROR_ALREADY_JOINED_TAG,
+    PROCESS_JOIN_ERROR_CANCELLED_TAG, PROCESS_JOIN_ERROR_CONSTRUCTORS,
+    PROCESS_JOIN_ERROR_FUEL_EXHAUSTED_TAG, PROCESS_JOIN_ERROR_HEAP_LIMIT_TAG,
+    PROCESS_JOIN_ERROR_RUNTIME_ERROR_TAG, builtin_type_signature, builtin_type_signatures,
 };
 
 pub const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
