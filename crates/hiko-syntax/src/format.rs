@@ -99,13 +99,13 @@ fn print_cst_tokens(source: &str, tokens: &[CstToken<'_>]) -> String {
             ensure_newline(&mut out, indent.saturating_sub(2));
             at_line_start = false;
         } else if top_level_decl && !out.trim().is_empty() && !out.ends_with("\n\n") {
-            if !prev_text.is_some_and(|prev| prev.starts_with("(*")) {
+            if !is_comment_text(prev_text) {
                 ensure_blank_line(&mut out);
                 at_line_start = true;
             }
         } else if is_decl_starter(text)
             && indent > 0
-            && source[last_end..token.start].contains('\n')
+            && has_line_break(source, last_end, token.start)
         {
             ensure_newline(&mut out, indent);
             at_line_start = true;
@@ -118,7 +118,7 @@ fn print_cst_tokens(source: &str, tokens: &[CstToken<'_>]) -> String {
         }
 
         if token.kind == "comment" {
-            if source[last_end..token.start].contains('\n') && !at_line_start {
+            if has_line_break(source, last_end, token.start) && !at_line_start {
                 ensure_newline(&mut out, indent);
                 at_line_start = true;
             }
@@ -195,6 +195,14 @@ fn is_word_like(text: &str) -> bool {
     text.chars()
         .next()
         .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '\'' || ch == '"')
+}
+
+fn is_comment_text(text: Option<&str>) -> bool {
+    text.is_some_and(|text| text.starts_with("(*"))
+}
+
+fn has_line_break(source: &str, start: usize, end: usize) -> bool {
+    source[start..end].contains('\n')
 }
 
 fn is_operator(text: &str) -> bool {
