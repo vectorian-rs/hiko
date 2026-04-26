@@ -53,3 +53,8 @@ fn test_stdlib_date() {
 fn test_stdlib_hashline() {
     run_hiko_file("../../tests/run/test_hashline.hml");
 }
+
+#[test]
+fn test_numeric_module_examples() {
+    run_hiko_file("../../examples/numeric_modules.hml");
+}

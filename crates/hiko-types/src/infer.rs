@@ -82,6 +82,11 @@ impl InferCtx {
             interner: StringInterner::new(),
         };
         ctx.type_arities.insert("list".into(), 1);
+        let int_pair = || Type::Tuple(vec![Type::int(), Type::int()]);
+        let word_pair = || Type::Tuple(vec![Type::word(), Type::word()]);
+        let float_pair = || Type::Tuple(vec![Type::float(), Type::float()]);
+        let bool_int_pair = || Type::Tuple(vec![Type::bool(), Type::int()]);
+        let bool_word_pair = || Type::Tuple(vec![Type::bool(), Type::word()]);
         // Register runtime builtins
         let builtins: &[(&str, Type)] = &[
             // I/O
@@ -103,6 +108,117 @@ impl InferCtx {
             ("int_to_word", Type::arrow(Type::int(), Type::word())),
             ("word_to_string", Type::arrow(Type::word(), Type::string())),
             ("string_to_word", Type::arrow(Type::string(), Type::word())),
+            (
+                "numeric_int32_min_value",
+                Type::arrow(Type::unit(), Type::int()),
+            ),
+            (
+                "numeric_int32_max_value",
+                Type::arrow(Type::unit(), Type::int()),
+            ),
+            (
+                "numeric_int32_of_int",
+                Type::arrow(Type::int(), Type::int()),
+            ),
+            (
+                "numeric_int32_checked_of_int",
+                Type::arrow(Type::int(), bool_int_pair()),
+            ),
+            (
+                "numeric_int32_to_int",
+                Type::arrow(Type::int(), Type::int()),
+            ),
+            ("numeric_int32_add", Type::arrow(int_pair(), Type::int())),
+            (
+                "numeric_int32_checked_add",
+                Type::arrow(int_pair(), bool_int_pair()),
+            ),
+            (
+                "numeric_int32_wrapping_add",
+                Type::arrow(int_pair(), Type::int()),
+            ),
+            (
+                "numeric_int32_saturating_add",
+                Type::arrow(int_pair(), Type::int()),
+            ),
+            ("numeric_int32_sub", Type::arrow(int_pair(), Type::int())),
+            ("numeric_int32_mul", Type::arrow(int_pair(), Type::int())),
+            ("numeric_int32_div", Type::arrow(int_pair(), Type::int())),
+            ("numeric_int32_rem", Type::arrow(int_pair(), Type::int())),
+            ("numeric_int32_neg", Type::arrow(Type::int(), Type::int())),
+            (
+                "numeric_word32_min_value",
+                Type::arrow(Type::unit(), Type::word()),
+            ),
+            (
+                "numeric_word32_max_value",
+                Type::arrow(Type::unit(), Type::word()),
+            ),
+            (
+                "numeric_word32_of_word",
+                Type::arrow(Type::word(), Type::word()),
+            ),
+            (
+                "numeric_word32_checked_of_word",
+                Type::arrow(Type::word(), bool_word_pair()),
+            ),
+            (
+                "numeric_word32_of_int",
+                Type::arrow(Type::int(), Type::word()),
+            ),
+            (
+                "numeric_word32_checked_of_int",
+                Type::arrow(Type::int(), bool_word_pair()),
+            ),
+            (
+                "numeric_word32_to_word",
+                Type::arrow(Type::word(), Type::word()),
+            ),
+            (
+                "numeric_word32_to_int",
+                Type::arrow(Type::word(), Type::int()),
+            ),
+            ("numeric_word32_add", Type::arrow(word_pair(), Type::word())),
+            (
+                "numeric_word32_checked_add",
+                Type::arrow(word_pair(), bool_word_pair()),
+            ),
+            (
+                "numeric_word32_saturating_add",
+                Type::arrow(word_pair(), Type::word()),
+            ),
+            ("numeric_word32_sub", Type::arrow(word_pair(), Type::word())),
+            ("numeric_word32_mul", Type::arrow(word_pair(), Type::word())),
+            ("numeric_word32_div", Type::arrow(word_pair(), Type::word())),
+            ("numeric_word32_rem", Type::arrow(word_pair(), Type::word())),
+            (
+                "numeric_float32_of_float",
+                Type::arrow(Type::float(), Type::float()),
+            ),
+            (
+                "numeric_float32_to_float",
+                Type::arrow(Type::float(), Type::float()),
+            ),
+            (
+                "numeric_float32_neg",
+                Type::arrow(Type::float(), Type::float()),
+            ),
+            (
+                "numeric_float32_add",
+                Type::arrow(float_pair(), Type::float()),
+            ),
+            (
+                "numeric_float32_sub",
+                Type::arrow(float_pair(), Type::float()),
+            ),
+            (
+                "numeric_float32_mul",
+                Type::arrow(float_pair(), Type::float()),
+            ),
+            (
+                "numeric_float32_div",
+                Type::arrow(float_pair(), Type::float()),
+            ),
             // string ops
             ("string_length", Type::arrow(Type::string(), Type::int())),
             (

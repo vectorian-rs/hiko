@@ -112,6 +112,16 @@ pub fn core_builtin_names() -> impl Iterator<Item = &'static str> {
         .map(|meta| meta.name)
 }
 
+pub fn unrestricted_runtime_builtin_names() -> impl Iterator<Item = &'static str> {
+    builtins()
+        .filter(|meta| {
+            meta.in_core_default
+                && meta.surface == BuiltinSurface::RuntimeOnly
+                && meta.capability_path.is_none()
+        })
+        .map(|meta| meta.name)
+}
+
 pub fn public_builtin_names() -> impl Iterator<Item = &'static str> {
     builtins()
         .filter(|meta| meta.surface == BuiltinSurface::Public)

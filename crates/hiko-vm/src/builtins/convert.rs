@@ -37,9 +37,13 @@ pub(super) fn char_to_int(args: &[Value], _heap: &mut Heap) -> Result<Value, Str
 
 pub(super) fn int_to_char(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Int(n) => char::from_u32(*n as u32)
-            .map(Value::Char)
-            .ok_or_else(|| format!("int_to_char: invalid codepoint {n}")),
+        Value::Int(n) => {
+            let codepoint =
+                u32::try_from(*n).map_err(|_| format!("int_to_char: invalid codepoint {n}"))?;
+            char::from_u32(codepoint)
+                .map(Value::Char)
+                .ok_or_else(|| format!("int_to_char: invalid codepoint {n}"))
+        }
         _ => Err("int_to_char: expected Int".into()),
     }
 }
@@ -53,14 +57,18 @@ pub(super) fn int_to_float(args: &[Value], _heap: &mut Heap) -> Result<Value, St
 
 pub(super) fn word_to_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Word(w) => Ok(Value::Int(*w as i64)),
+        Value::Word(w) => i64::try_from(*w)
+            .map(Value::Int)
+            .map_err(|_| format!("word_to_int: value out of int range: {w}")),
         _ => Err("word_to_int: expected Word".into()),
     }
 }
 
 pub(super) fn int_to_word(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Int(n) => Ok(Value::Word(*n as u64)),
+        Value::Int(n) => u64::try_from(*n)
+            .map(Value::Word)
+            .map_err(|_| format!("int_to_word: value out of word range: {n}")),
         _ => Err("int_to_word: expected Int".into()),
     }
 }
@@ -238,6 +246,22 @@ mod tests {
     }
 
     #[test]
+    fn int_to_char_rejects_negative_codepoint() {
+        let mut heap = Heap::new();
+        let result = int_to_char(&[Value::Int(-1)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid codepoint"));
+    }
+
+    #[test]
+    fn int_to_char_rejects_too_large_codepoint_without_wrapping() {
+        let mut heap = Heap::new();
+        let result = int_to_char(&[Value::Int(0x1_0000_0041)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid codepoint"));
+    }
+
+    #[test]
     fn int_to_char_type_error() {
         let mut heap = Heap::new();
         let result = int_to_char(&[Value::Char('A')], &mut heap);
@@ -265,5 +289,79 @@ mod tests {
         let result = int_to_float(&[Value::Float(1.0)], &mut heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("expected Int"));
+    }
+
+    #[test]
+    fn word_to_int_valid() {
+        let mut heap = Heap::new();
+        let result = word_to_int(&[Value::Word(i64::MAX as u64)], &mut heap).unwrap();
+        assert_int(result, i64::MAX);
+    }
+
+    #[test]
+    fn word_to_int_overflow() {
+        let mut heap = Heap::new();
+        let result = word_to_int(&[Value::Word(u64::MAX)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("out of int range"));
+    }
+
+    #[test]
+    fn word_to_int_type_error() {
+        let mut heap = Heap::new();
+        let result = word_to_int(&[Value::Int(1)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected Word"));
+    }
+
+    #[test]
+    fn int_to_word_valid() {
+        let mut heap = Heap::new();
+        let result = int_to_word(&[Value::Int(i64::MAX)], &mut heap).unwrap();
+        match result {
+            Value::Word(w) => assert_eq!(w, i64::MAX as u64),
+            other => panic!("expected Word({}), got {other:?}", i64::MAX),
+        }
+    }
+
+    #[test]
+    fn int_to_word_negative() {
+        let mut heap = Heap::new();
+        let result = int_to_word(&[Value::Int(-1)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("out of word range"));
+    }
+
+    #[test]
+    fn int_to_word_type_error() {
+        let mut heap = Heap::new();
+        let result = int_to_word(&[Value::Word(1)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected Int"));
+    }
+
+    #[test]
+    fn word_to_string_max() {
+        let mut heap = Heap::new();
+        let result = word_to_string(&[Value::Word(u64::MAX)], &mut heap).unwrap();
+        assert_eq!(heap_string(result, &heap), u64::MAX.to_string());
+    }
+
+    #[test]
+    fn string_to_word_overflow() {
+        let mut heap = Heap::new();
+        let arg = string_arg(&mut heap, "18446744073709551616");
+        let result = string_to_word(&[arg], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("string_to_word"));
+    }
+
+    #[test]
+    fn string_to_word_invalid() {
+        let mut heap = Heap::new();
+        let arg = string_arg(&mut heap, "not_a_word");
+        let result = string_to_word(&[arg], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("string_to_word"));
     }
 }

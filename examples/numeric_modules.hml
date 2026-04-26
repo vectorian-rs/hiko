@@ -1,0 +1,59 @@
+use "../libraries/Std-v0.1.0/modules/Int32.hml"
+
+use "../libraries/Std-v0.1.0/modules/Word32.hml"
+
+use "../libraries/Std-v0.1.0/modules/Float32.hml"
+
+val int32_max = Int32.of_int 2147483647
+
+val int32_one = Int32.of_int 1
+
+val _ = assert_eq (Int32.to_int int32_max, 2147483647, "Int32.to_int max")
+
+val _ = case Int32.checked_of_int 2147483648 of
+    Option.None => ()
+  | Option.Some _ => assert (false, "Int32.checked_of_int rejects overflow")
+
+val _ = case Int32.checked_add int32_one int32_max of
+    Option.None => ()
+  | Option.Some _ => assert (false, "Int32.checked_add detects overflow")
+
+val int32_wrapped = Int32.wrapping_add int32_one int32_max
+
+val _ = assert_eq (Int32.to_int int32_wrapped, ~2147483648, "Int32.wrapping_add wraps")
+
+val int32_saturated = Int32.saturating_add int32_one int32_max
+
+val _ = assert_eq (Int32.to_int int32_saturated, 2147483647, "Int32.saturating_add saturates")
+
+val word32_max = Word32.of_word 0w4294967295
+
+val word32_one = Word32.of_word 0w1
+
+val _ = assert_eq (Word32.to_int word32_max, 4294967295, "Word32.to_int u32 max")
+
+val word32_wrapped = Word32.add word32_one word32_max
+
+val _ = assert (Word32.to_word word32_wrapped = 0w0, "Word32.add wraps")
+
+val _ = case Word32.checked_of_word 0w4294967296 of
+    Option.None => ()
+  | Option.Some _ => assert (false, "Word32.checked_of_word rejects overflow")
+
+val _ = case Word32.checked_of_int (~1) of
+    Option.None => ()
+  | Option.Some _ => assert (false, "Word32.checked_of_int rejects negative input")
+
+val _ = case Word32.checked_add word32_one word32_max of
+    Option.None => ()
+  | Option.Some _ => assert (false, "Word32.checked_add detects overflow")
+
+val f32_large = Float32.of_float 16777216.0
+
+val f32_plus_one = Float32.add (Float32.of_float 1.0) f32_large
+
+val f32_rounded = Float32.to_float f32_plus_one
+
+val _ = assert (f32_rounded < 16777217.0, "Float32.add rounds after each operation")
+
+val _ = println "numeric module examples passed"

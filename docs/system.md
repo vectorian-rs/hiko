@@ -133,6 +133,8 @@ Hiko also has a left-associative pipeline operator `|>`, which desugars to ordin
 ```rust
 enum Value {
     Int(i64),
+    Word(u64),
+    Pid(u64),
     Float(f64),
     Bool(bool),
     Char(char),

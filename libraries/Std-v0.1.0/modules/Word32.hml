@@ -1,0 +1,86 @@
+import Std.Option
+import __Builtin.Numeric
+
+signature WORD32 = sig
+  type t
+
+  val min_value : t
+  val max_value : t
+
+  val of_word : word -> t
+  val checked_of_word : word -> t Option.option
+  val of_int : int -> t
+  val checked_of_int : int -> t Option.option
+  val to_word : t -> word
+  val to_int : t -> int
+
+  val add : t -> t -> t
+  val checked_add : t -> t -> t Option.option
+  val saturating_add : t -> t -> t
+  val sub : t -> t -> t
+  val mul : t -> t -> t
+  val div : t -> t -> t
+  val rem : t -> t -> t
+end
+
+structure Word32 :> WORD32 = struct
+  type t = word
+
+  val min_value = BuiltinNumeric.word32_min_value_raw ()
+  val max_value = BuiltinNumeric.word32_max_value_raw ()
+
+  fun of_word value =
+    BuiltinNumeric.word32_of_word_raw value
+
+  fun checked_of_word value =
+    let
+      val (ok, result) = BuiltinNumeric.word32_checked_of_word_raw value
+    in
+      if ok then Option.Some result
+      else Option.None
+    end
+
+  fun of_int value =
+    BuiltinNumeric.word32_of_int_raw value
+
+  fun checked_of_int value =
+    let
+      val (ok, result) = BuiltinNumeric.word32_checked_of_int_raw value
+    in
+      if ok then Option.Some result
+      else Option.None
+    end
+
+  fun to_word value =
+    BuiltinNumeric.word32_to_word_raw value
+
+  (* Infallible because Hiko int is i64 and every u32 fits; see docs/numerics.md. *)
+  fun to_int value =
+    BuiltinNumeric.word32_to_int_raw value
+
+  fun add rhs value =
+    BuiltinNumeric.word32_add_raw (value, rhs)
+
+  fun checked_add rhs value =
+    let
+      val (ok, result) = BuiltinNumeric.word32_checked_add_raw (value, rhs)
+    in
+      if ok then Option.Some result
+      else Option.None
+    end
+
+  fun saturating_add rhs value =
+    BuiltinNumeric.word32_saturating_add_raw (value, rhs)
+
+  fun sub rhs value =
+    BuiltinNumeric.word32_sub_raw (value, rhs)
+
+  fun mul rhs value =
+    BuiltinNumeric.word32_mul_raw (value, rhs)
+
+  fun div divisor value =
+    BuiltinNumeric.word32_div_raw (value, divisor)
+
+  fun rem divisor value =
+    BuiltinNumeric.word32_rem_raw (value, divisor)
+end

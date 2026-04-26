@@ -6,10 +6,13 @@
 
 - **Pipeline operator**: added a left-associative `|>` operator that desugars to ordinary application, so `x |> f |> g` reads as `g (f x)` while keeping the core language free of new runtime machinery.
 - **Timezone-aware date/time stdlib**: added `Std.Time` and `Std.Date` with Jiff-backed timezone handling, RFC3339 formatting/parsing, fixed-offset zones, and IANA zone lookup behind the `builtin-time` feature.
+- **Width-specific numeric modules**: added opaque `Int32`, `Word32`, and `Float32` stdlib modules backed by Rust builtins over the existing `int`, `word`, and `float` VM representations.
 
 ### Correctness and Diagnostics
 
 - **Polymorphic inference fix**: repaired scheme instantiation so polymorphic builtins such as `panic` no longer leak concrete instantiations across call sites or modules.
+- **Opaque export inference fix**: type inference now processes abstract types and exported values emitted by opaque module ascription, fixing a latent compiler issue independent of the numeric module work.
+- **Checked conversion hardening**: `word_to_int`, `int_to_word`, and `int_to_char` now reject out-of-range inputs with checked conversions instead of silently casting or wrapping.
 - **Layered runtime diagnostics**: CLI `run`/`check` now make config/runtime selection explicit and report missing builtin/capability failures at the layer that rejected them.
 - **Iterative structural equality**: `values_equal` now uses an explicit worklist instead of recursive descent, preventing host stack overflow on deeply nested equalities.
 

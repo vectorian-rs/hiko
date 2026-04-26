@@ -32,6 +32,9 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
         }
         DeclKind::Fun(bindings) => {
             for (i, binding) in bindings.iter().enumerate() {
+                if i > 0 {
+                    buf.push('\n');
+                }
                 write_indent(buf, indent);
                 if i == 0 {
                     buf.push_str("fun ");

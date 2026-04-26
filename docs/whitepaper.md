@@ -226,45 +226,61 @@ semantically boring.
 
 ### 3.4 Numeric policy
 
-Today the stable numeric story is intentionally small:
+See [numerics.md](numerics.md) for the source-of-truth numeric policy. The core
+numeric representations are:
 
-- current: `int` and `float` are the only builtin numeric surfaces documented
-  as stable
-- intended: keep numeric semantics explicit and avoid overloading/defaulting
-- open: whether width-specific numeric modules such as `Float32` are added at
-  all, and what exact API they use
+```text
+int   = i64
+word  = u64
+float = f64
+```
 
-- `int` for 64-bit signed integers
-- `float` for 64-bit IEEE-754 floating point
+| Hiko type | VM/Rust representation | Notes |
+| --------- | ---------------------- | ----- |
+| `int`     | `i64`                  | Signed 64-bit integer |
+| `word`    | `u64`                  | Unsigned 64-bit integer |
+| `float`   | `f64`                  | IEEE-754 binary64 double |
 
-Operators are monomorphic:
-
-- `+`, `-`, `*`, `/`, `mod`, `<`, `<=`, `>`, `>=` for `int`
-- `+.`, `-.`, `*.`, `/.`, `<.`, `<=.`, `>.`, `>=.` for `float`
+The core numeric surface is intentionally small. Core operators are a closed
+compiler-resolved surface over `int`, `word`, and `float`, not an extensible
+typeclass, trait, or implicit-conversion mechanism.
 
 Conversions are explicit:
 
 - `int_to_float`
+- `int_to_word`
+- `word_to_int`
+- `word_to_string`
+- `string_to_word`
 - `float_to_string`
 - `floor`
 - `ceil`
 
-There is no ad-hoc overloading. That keeps inference simple and code review
-obvious. A reader does not need to guess whether `+` dispatches through a type
-class, an implicit conversion, or a trait-like mechanism.
+There is no open-ended ad-hoc overloading. That keeps inference simple and code
+review obvious. A reader does not need to guess whether a future numeric domain
+dispatches through a type class, an implicit conversion, or a trait-like
+mechanism.
 
-Width-specific numerics such as `Float32` are **not** a stable part of the
-language today. If Hiko adds them, the preferred direction is explicit library
-or module APIs such as:
+Width-specific numerics use **Option A**: explicit stdlib module APIs with
+opaque `type t` values. Older planning text called this "Option B"; that name is
+superseded. The initial module set is `Int32`, `Word32`, and `Float32`, with a
+surface like:
 
 ```sml
-Float32.add x y
-Float32.mul x y
-Float32.from_float z
+Int32.add x y
+Word32.wrapping_add x y
+Float32.of_float z
 ```
 
-rather than reintroducing overloaded operators. The rule should stay the same:
-new numeric domains should make their semantics more explicit, not less.
+They reuse existing immediate VM values:
+
+- `Int32.t` as `Value::Int(i64)` with an `i32` invariant
+- `Word32.t` as `Value::Word(u64)` with a `u32` invariant
+- `Float32.t` as `Value::Float(f64)` rounded through `f32`
+
+All width-specific builtins validate inputs and canonicalize outputs. The rule
+should stay the same: new numeric domains should make their semantics more
+explicit, not less.
 
 ### 3.5 Equality and data reasoning
 
@@ -1080,7 +1096,8 @@ Several areas are intentionally unfinished:
 - typed fiber/process handles instead of raw `pid`
 - effect typing
 - further stdlib design polish
-- width-specific numeric modules such as `Float32`, if and when they are added
+- additional width-specific numeric modules beyond `Int32`, `Word32`, and
+  `Float32`
 
 The important constraint is that future work should preserve the core semantic
 shape:
@@ -1101,7 +1118,7 @@ with intended direction. The current boundary is:
 | Named package imports                      | `import Package.Module` is documented and used in the published stdlib sources | converge on named package imports for stdlib and packages | loader, packaging, lockfile, and fetch workflow details                                |
 | `Std.Fiber` handle shape                   | `'a Fiber.t = pid` in the current stdlib                                       | likely move toward a more explicit typed handle story     | whether that becomes opaque in the surface language                                    |
 | Recoverable errors                         | `Std.Result` plus library-owned `error` datatypes                              | keep this as the default application/library style        | whether any effect-typed error surface is ever added                                   |
-| Numeric operators                          | monomorphic `int` and `float` operators                                        | keep no-overloading as the default rule                   | whether width-specific numeric modules such as `Float32` land, and with what exact API |
+| Numeric operators                          | closed core operators over `int`, `word`, and `float`; `Int32`, `Word32`, and `Float32` stdlib modules | keep width-specific numeric domains as explicit modules   | additional widths such as `Int64`, `Word64`, and `Float16` |
 | Effects                                    | one-shot local handlers with deep continuation capture                         | keep effects local, not the async substrate               | whether effect typing is added                                                         |
 | Async I/O                                  | runtime-managed suspension via builtins and `RunResult`/`RuntimeRequest`       | preserve fixed runtime ownership of async behavior        | backend and packaging evolution, not the semantic split                                |
 | Process handles and structured concurrency | raw runtime builtins plus `Std.Fiber` library layer                            | keep `Fiber` as the main user-facing concurrency surface  | exact future surface for typed handles and richer combinators                          |

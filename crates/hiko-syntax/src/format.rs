@@ -536,6 +536,9 @@ impl<'a> TrackedPrettyPrinter<'a> {
             }
             DeclKind::Fun(bindings) => {
                 for (idx, binding) in bindings.iter().enumerate() {
+                    if idx > 0 {
+                        this.buf.push('\n');
+                    }
                     write_indent(&mut this.buf, indent);
                     if idx == 0 {
                         this.buf.push_str("fun ");
@@ -1287,6 +1290,15 @@ mod tests {
         assert_eq!(
             fmt(source),
             "val x = let\n  val a = 1\n  val b = 2\nin\n  a + b\nend\n"
+        );
+    }
+
+    #[test]
+    fn mutual_fun_after_let_body_keeps_and_on_new_line() {
+        let source = "fun walk dir = let\n  val entries = list_dir dir\nin\n  walk_entries dir entries\nend\nand walk_entries dir entries = case entries of\n  [] => ()\n| name :: rest => walk_entries dir rest\n";
+        assert_eq!(
+            fmt(source),
+            "fun walk dir = let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries = case entries of\n      [] => ()\n    | name :: rest => walk_entries dir rest\n"
         );
     }
 }

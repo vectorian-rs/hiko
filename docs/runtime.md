@@ -67,6 +67,8 @@ Values that cross process boundaries (e.g., spawn captures, await results):
 ```rust
 enum SendableValue {
     Int(i64),
+    Word(u64),
+    Pid(u64),
     Float(f64),
     Bool(bool),
     Char(char),

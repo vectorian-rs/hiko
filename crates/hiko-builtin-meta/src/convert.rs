@@ -1,6 +1,7 @@
 use crate::{BuiltinMeta, BuiltinSurface};
 
 const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
+const RUNTIME_ONLY: BuiltinSurface = BuiltinSurface::RuntimeOnly;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
     BuiltinMeta {
@@ -38,5 +39,245 @@ pub const BUILTINS: &[BuiltinMeta] = &[
         capability_path: Some("capabilities.convert.int_to_float"),
         in_core_default: true,
         surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "word_to_int",
+        capability_path: Some("capabilities.convert.word_to_int"),
+        in_core_default: true,
+        surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "int_to_word",
+        capability_path: Some("capabilities.convert.int_to_word"),
+        in_core_default: true,
+        surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "word_to_string",
+        capability_path: Some("capabilities.convert.word_to_string"),
+        in_core_default: true,
+        surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "string_to_word",
+        capability_path: Some("capabilities.convert.string_to_word"),
+        in_core_default: true,
+        surface: PUBLIC,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_min_value",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_max_value",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_of_int",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_checked_of_int",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_to_int",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_checked_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_wrapping_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_saturating_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_sub",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_mul",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_div",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_rem",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_int32_neg",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_min_value",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_max_value",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_of_word",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_checked_of_word",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_of_int",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_checked_of_int",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_to_word",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_to_int",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_checked_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_saturating_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_sub",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_mul",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_div",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_word32_rem",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_of_float",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_to_float",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_neg",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_add",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_sub",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_mul",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
+    },
+    BuiltinMeta {
+        name: "numeric_float32_div",
+        capability_path: None,
+        in_core_default: true,
+        surface: RUNTIME_ONLY,
     },
 ];

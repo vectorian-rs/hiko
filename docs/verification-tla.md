@@ -40,6 +40,15 @@ runtime is fully modeled.
     `child_parents`, `pending_cancels`, tombstones, and the full TOCTOU
     mitigation logic in `threaded.rs`.
 
+- [`specs/tla/NumericWidthSemantics.tla`](../specs/tla/NumericWidthSemantics.tla)
+  - Focused semantic model for width-specific numeric modules.
+  - Covers bounded Int32/Word32 conversion decisions, add variant invariants,
+    wrapping/saturating boundary values, and symbolic Float32 rounding
+    invariants.
+  - Does **not** execute or prove Rust's `TryFrom`, `checked_*`, `wrapping_*`,
+    `saturating_*`, or IEEE-754 operations. Those are validated by Rust unit
+    tests against the actual implementation.
+
 ## Lifecycle model
 
 `ProcessLifecycle.tla` is the semantic source of truth for:
@@ -113,6 +122,9 @@ new lifecycle model.
 
 - [`specs/tla/ThreadedSchedulerImpl.cfg`](../specs/tla/ThreadedSchedulerImpl.cfg)
   - Safety checking for the lower-level worker/scheduler model.
+
+- [`specs/tla/NumericWidthSemantics.cfg`](../specs/tla/NumericWidthSemantics.cfg)
+  - Safety checking for width-specific numeric semantic invariants.
 
 - [`specs/tla/ThreadedSchedulerImplLive.cfg`](../specs/tla/ThreadedSchedulerImplLive.cfg)
   - Uses `SPECIFICATION LiveSpec`.

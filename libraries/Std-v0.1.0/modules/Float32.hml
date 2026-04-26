@@ -1,0 +1,39 @@
+import __Builtin.Numeric
+
+signature FLOAT32 = sig
+  type t
+
+  val of_float : float -> t
+  val to_float : t -> float
+
+  val add : t -> t -> t
+  val sub : t -> t -> t
+  val mul : t -> t -> t
+  val div : t -> t -> t
+  val neg : t -> t
+end
+
+structure Float32 :> FLOAT32 = struct
+  type t = float
+
+  fun of_float value =
+    BuiltinNumeric.float32_of_float_raw value
+
+  fun to_float value =
+    BuiltinNumeric.float32_to_float_raw value
+
+  fun add rhs value =
+    BuiltinNumeric.float32_add_raw (value, rhs)
+
+  fun sub rhs value =
+    BuiltinNumeric.float32_sub_raw (value, rhs)
+
+  fun mul rhs value =
+    BuiltinNumeric.float32_mul_raw (value, rhs)
+
+  fun div divisor value =
+    BuiltinNumeric.float32_div_raw (value, divisor)
+
+  fun neg value =
+    BuiltinNumeric.float32_neg_raw value
+end

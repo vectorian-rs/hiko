@@ -1,6 +1,9 @@
 use crate::builder::{ExecPolicy as VmExecPolicy, VMBuilder};
 use crate::vm::VM;
-use hiko_builtin_meta::capability_path_for_builtin as meta_capability_path_for_builtin;
+use hiko_builtin_meta::{
+    capability_path_for_builtin as meta_capability_path_for_builtin,
+    unrestricted_runtime_builtin_names,
+};
 use hiko_compile::chunk::CompiledProgram;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -227,6 +230,10 @@ enabled_family!(ConvertCapabilities {
     char_to_int => "char_to_int",
     int_to_char => "int_to_char",
     int_to_float => "int_to_float",
+    word_to_int => "word_to_int",
+    int_to_word => "int_to_word",
+    word_to_string => "word_to_string",
+    string_to_word => "string_to_word",
 });
 
 enabled_family!(StringCapabilities {
@@ -516,6 +523,10 @@ pub struct Capabilities {
 
 impl Capabilities {
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        let mut builder = builder;
+        for name in unrestricted_runtime_builtin_names() {
+            builder = builder.register_builtin_name(name);
+        }
         let builder = self.stdio.apply(builder);
         let builder = self.convert.apply(builder);
         let builder = self.string.apply(builder);
@@ -538,6 +549,9 @@ impl Capabilities {
     }
 
     fn emit(&self, out: &mut String) {
+        for name in unrestricted_runtime_builtin_names() {
+            out.push_str(&format!("            .register_builtin_name({name:?})\n"));
+        }
         self.stdio.emit(out);
         self.convert.emit(out);
         self.string.emit(out);
@@ -560,7 +574,7 @@ impl Capabilities {
     }
 
     fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
-        let mut out = BTreeSet::new();
+        let mut out: BTreeSet<_> = unrestricted_runtime_builtin_names().collect();
         self.stdio.extend_enabled(&mut out);
         self.convert.extend_enabled(&mut out);
         self.string.extend_enabled(&mut out);
@@ -684,7 +698,8 @@ impl RunConfig {
         self.apply_to_builder(VMBuilder::new(program)).build()
     }
 
-    /// Return the public builtin names enabled by this run config.
+    /// Return builtin names enabled by this run config, including internal
+    /// runtime-support builtins that do not have a policy capability leaf.
     pub fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
         self.capabilities.enabled_builtin_names()
     }
@@ -837,6 +852,21 @@ folders = ["."]
             .join("../../docs/full-builtin-run-config.example.toml");
         let text = std::fs::read_to_string(path).expect("example config should exist");
         RunConfig::from_toml(&text).expect("full builtin example config should parse");
+    }
+
+    #[test]
+    fn policy_configs_include_unrestricted_runtime_numeric_builtins() {
+        let config = RunConfig::from_toml("").expect("empty config should parse");
+        let enabled = config.enabled_builtin_names();
+        assert!(enabled.contains("numeric_int32_min_value"));
+        assert!(enabled.contains("numeric_word32_add"));
+        assert!(enabled.contains("numeric_float32_add"));
+        assert!(!enabled.contains("println"));
+
+        let rust_source = config.to_rust_source();
+        assert!(rust_source.contains(".register_builtin_name(\"numeric_int32_min_value\")"));
+        assert!(rust_source.contains(".register_builtin_name(\"numeric_word32_add\")"));
+        assert!(rust_source.contains(".register_builtin_name(\"numeric_float32_add\")"));
     }
 
     #[test]

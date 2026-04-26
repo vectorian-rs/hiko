@@ -42,21 +42,9 @@ val trace_dir = "target/tla"
 
 val _ = if file_exists trace_dir then () else create_dir trace_dir
 
-val checks = [
-    ("ProcessLifecycle validate", ["specs/tla/ProcessLifecycle.tla", "--config", "specs/tla/ProcessLifecycle.cfg", "--validate"]),
-    ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"]),
-    ("WaitAnyLeftmost model", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost.trace.json"]),
-    ("WaitAnyLeftmost right-notifier scenario", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--scenario", "@specs/tla/WaitAnyLeftmostRightNotifier.scenario", "--trace-json", "target/tla/wait_any_leftmost_right_notifier.trace.json"]),
-    ("CancelIoRace model", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race.trace.json"]),
-    ("CancelIoRace stale-completion scenario", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--scenario", "@specs/tla/CancelIoRaceStaleCompletion.scenario", "--trace-json", "target/tla/cancel_io_race_stale_completion.trace.json"]),
-    ("WaitAnyLeftmost liveness", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmostLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost_live.trace.json"]),
-    ("CancelIoRace liveness", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRaceLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race_live.trace.json"]),
-    ("ThreadedSchedulerImpl quick", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--quick", "--allow-deadlock", "--trace-json", "target/tla/threaded_scheduler_impl.trace.json"])
-]
+val checks = [("ProcessLifecycle validate", ["specs/tla/ProcessLifecycle.tla", "--config", "specs/tla/ProcessLifecycle.cfg", "--validate"]), ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"]), ("NumericWidthSemantics model", ["specs/tla/NumericWidthSemantics.tla", "--config", "specs/tla/NumericWidthSemantics.cfg", "--allow-deadlock", "--trace-json", "target/tla/numeric_width_semantics.trace.json"]), ("WaitAnyLeftmost model", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost.trace.json"]), ("WaitAnyLeftmost right-notifier scenario", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--scenario", "@specs/tla/WaitAnyLeftmostRightNotifier.scenario", "--trace-json", "target/tla/wait_any_leftmost_right_notifier.trace.json"]), ("CancelIoRace model", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race.trace.json"]), ("CancelIoRace stale-completion scenario", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--scenario", "@specs/tla/CancelIoRaceStaleCompletion.scenario", "--trace-json", "target/tla/cancel_io_race_stale_completion.trace.json"]), ("WaitAnyLeftmost liveness", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmostLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost_live.trace.json"]), ("CancelIoRace liveness", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRaceLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race_live.trace.json"]), ("ThreadedSchedulerImpl quick", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--quick", "--allow-deadlock", "--trace-json", "target/tla/threaded_scheduler_impl.trace.json"])]
 
-val negative_checks = [
-    ("Broken wait_any notifier delivery", ["specs/tla/broken/WaitAnyNotifierBroken.tla", "--config", "specs/tla/broken/WaitAnyNotifierBroken.cfg", "--allow-deadlock", "--trace-json", "target/tla/broken_wait_any_notifier.trace.json"])
-]
+val negative_checks = [("Broken wait_any notifier delivery", ["specs/tla/broken/WaitAnyNotifierBroken.tla", "--config", "specs/tla/broken/WaitAnyNotifierBroken.cfg", "--allow-deadlock", "--trace-json", "target/tla/broken_wait_any_notifier.trace.json"])]
 
 fun run_all xs = case xs of
       [] => ()

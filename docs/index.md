@@ -27,6 +27,9 @@ Audit snapshot on 2026-04-21:
 - [whitepaper.md](whitepaper.md): closest thing to a project-definition doc;
   open when you need the language/runtime thesis, target workloads, or major
   design goals.
+- [numerics.md](numerics.md): core numeric representation and width-specific
+  module policy; open before changing numeric types, operators, conversions, or
+  arithmetic builtins.
 - [runtime.md](runtime.md): current isolated-process runtime model, async I/O
   suspension, scheduler/process ownership, and structured concurrency surface;
   open for runtime, scheduler, spawn/await, or cancellation work.
@@ -110,9 +113,10 @@ Audit snapshot on 2026-04-21:
 
 1. [README.md](../README.md)
 2. [whitepaper.md](whitepaper.md)
-3. [error-handling.md](error-handling.md)
-4. [modules.md](modules.md) and/or [builtins.md](builtins.md)
-5. [sml-deltas.md](sml-deltas.md) if the change affects language behavior
+3. [numerics.md](numerics.md) if the change affects numeric behavior
+4. [error-handling.md](error-handling.md)
+5. [modules.md](modules.md) and/or [builtins.md](builtins.md)
+6. [sml-deltas.md](sml-deltas.md) if the change affects language behavior
 
 ### Performance Work
 

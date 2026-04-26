@@ -28,6 +28,8 @@ mod http;
 mod json;
 #[cfg(feature = "builtin-math")]
 mod math;
+#[cfg(feature = "builtin-convert")]
+mod numeric;
 #[cfg(feature = "builtin-path")]
 mod path;
 #[cfg(feature = "builtin-process")]
@@ -423,6 +425,57 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
         ("int_to_word", convert::int_to_word),
         ("word_to_string", convert::word_to_string),
         ("string_to_word", convert::string_to_word),
+        ("numeric_int32_min_value", numeric::int32_min_value),
+        ("numeric_int32_max_value", numeric::int32_max_value),
+        ("numeric_int32_of_int", numeric::int32_of_int),
+        (
+            "numeric_int32_checked_of_int",
+            numeric::int32_checked_of_int,
+        ),
+        ("numeric_int32_to_int", numeric::int32_to_int),
+        ("numeric_int32_add", numeric::int32_add),
+        ("numeric_int32_checked_add", numeric::int32_checked_add),
+        ("numeric_int32_wrapping_add", numeric::int32_wrapping_add),
+        (
+            "numeric_int32_saturating_add",
+            numeric::int32_saturating_add,
+        ),
+        ("numeric_int32_sub", numeric::int32_sub),
+        ("numeric_int32_mul", numeric::int32_mul),
+        ("numeric_int32_div", numeric::int32_div),
+        ("numeric_int32_rem", numeric::int32_rem),
+        ("numeric_int32_neg", numeric::int32_neg),
+        ("numeric_word32_min_value", numeric::word32_min_value),
+        ("numeric_word32_max_value", numeric::word32_max_value),
+        ("numeric_word32_of_word", numeric::word32_of_word),
+        (
+            "numeric_word32_checked_of_word",
+            numeric::word32_checked_of_word,
+        ),
+        ("numeric_word32_of_int", numeric::word32_of_int),
+        (
+            "numeric_word32_checked_of_int",
+            numeric::word32_checked_of_int,
+        ),
+        ("numeric_word32_to_word", numeric::word32_to_word),
+        ("numeric_word32_to_int", numeric::word32_to_int),
+        ("numeric_word32_add", numeric::word32_add),
+        ("numeric_word32_checked_add", numeric::word32_checked_add),
+        (
+            "numeric_word32_saturating_add",
+            numeric::word32_saturating_add,
+        ),
+        ("numeric_word32_sub", numeric::word32_sub),
+        ("numeric_word32_mul", numeric::word32_mul),
+        ("numeric_word32_div", numeric::word32_div),
+        ("numeric_word32_rem", numeric::word32_rem),
+        ("numeric_float32_of_float", numeric::float32_of_float),
+        ("numeric_float32_to_float", numeric::float32_to_float),
+        ("numeric_float32_neg", numeric::float32_neg),
+        ("numeric_float32_add", numeric::float32_add),
+        ("numeric_float32_sub", numeric::float32_sub),
+        ("numeric_float32_mul", numeric::float32_mul),
+        ("numeric_float32_div", numeric::float32_div),
     ]);
 
     #[cfg(feature = "builtin-string")]

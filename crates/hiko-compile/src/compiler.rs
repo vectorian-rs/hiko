@@ -918,7 +918,10 @@ impl Compiler {
             DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference pass")
             }
-            DeclKind::AbstractType(_) | DeclKind::ExportVal { .. } => Ok(()),
+            DeclKind::AbstractType(_) | DeclKind::ExportVal { .. } => {
+                self.infer_ctx.infer_decl(decl)?;
+                Ok(())
+            }
             DeclKind::Local(locals, body) => {
                 for d in locals {
                     self.infer_decl_pass(d)?;
@@ -1901,6 +1904,29 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected in-memory compile to accept internal builtin import"
+        );
+    }
+
+    #[test]
+    fn compile_exports_opaque_ascription_values() {
+        let source = "signature BOX = sig
+  type t
+  val make : int -> t
+  val get : t -> int
+end
+
+structure Box :> BOX = struct
+  type t = int
+  fun make x = x
+  fun get x = x
+end
+
+val result = Box.get (Box.make 41)
+";
+        let result = Compiler::compile(parse_program(source));
+        assert!(
+            result.is_ok(),
+            "expected opaque module exports to typecheck, got {result:?}"
         );
     }
 

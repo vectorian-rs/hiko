@@ -2,6 +2,10 @@
 
 All builtins are available as global functions. No imports needed.
 
+Width-specific numeric APIs live in stdlib modules such as `Int32`, `Word32`,
+and `Float32`; see [numerics.md](./numerics.md). Their raw runtime builtins are
+internal aliases, not the public surface.
+
 ## I/O
 
 | Builtin     | Type             | Description                         |
@@ -19,8 +23,12 @@ All builtins are available as global functions. No imports needed.
 | `float_to_string` | `float -> string` | float to string                 |
 | `string_to_int`   | `string -> int`   | Parse decimal string to integer |
 | `char_to_int`     | `char -> int`     | Character to Unicode codepoint  |
-| `int_to_char`     | `int -> char`     | Unicode codepoint to character  |
+| `int_to_char`     | `int -> char`     | Unicode codepoint to character; errors on invalid or out-of-range input |
 | `int_to_float`    | `int -> float`    | Integer to float                |
+| `word_to_int`     | `word -> int`     | Word to integer; errors if value is above `i64::MAX` |
+| `int_to_word`     | `int -> word`     | Integer to word; errors if value is negative |
+| `word_to_string`  | `word -> string`  | Word to decimal string          |
+| `string_to_word`  | `string -> word`  | Parse decimal string to word; errors on invalid input or overflow |
 
 ## string Operations
 

@@ -102,7 +102,8 @@ This is the primary scope boundary. The module language is absent, not simplifie
 **Built-in types:**
 
 - `int`: 64-bit signed integer
-- `float`: 64-bit IEEE float (literals support decimal and exponent notation: `3.14`, `1.0e10`, `2.5E-3`)
+- `word`: 64-bit unsigned integer
+- `float`: 64-bit IEEE-754 binary64 float (literals support decimal and exponent notation: `3.14`, `1.0e10`, `2.5E-3`)
 - `bool`: `true`, `false`
 - `string`: UTF-8 immutable string
 - `char`: Unicode scalar value

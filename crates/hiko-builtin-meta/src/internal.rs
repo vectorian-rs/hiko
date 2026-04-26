@@ -100,6 +100,48 @@ const TIME_SOURCE: &str = r#"structure BuiltinTime = struct
 end
 "#;
 
+const NUMERIC_SOURCE: &str = r#"structure BuiltinNumeric = struct
+  val int32_min_value_raw = numeric_int32_min_value
+  val int32_max_value_raw = numeric_int32_max_value
+  val int32_of_int_raw = numeric_int32_of_int
+  val int32_checked_of_int_raw = numeric_int32_checked_of_int
+  val int32_to_int_raw = numeric_int32_to_int
+  val int32_add_raw = numeric_int32_add
+  val int32_checked_add_raw = numeric_int32_checked_add
+  val int32_wrapping_add_raw = numeric_int32_wrapping_add
+  val int32_saturating_add_raw = numeric_int32_saturating_add
+  val int32_sub_raw = numeric_int32_sub
+  val int32_mul_raw = numeric_int32_mul
+  val int32_div_raw = numeric_int32_div
+  val int32_rem_raw = numeric_int32_rem
+  val int32_neg_raw = numeric_int32_neg
+
+  val word32_min_value_raw = numeric_word32_min_value
+  val word32_max_value_raw = numeric_word32_max_value
+  val word32_of_word_raw = numeric_word32_of_word
+  val word32_checked_of_word_raw = numeric_word32_checked_of_word
+  val word32_of_int_raw = numeric_word32_of_int
+  val word32_checked_of_int_raw = numeric_word32_checked_of_int
+  val word32_to_word_raw = numeric_word32_to_word
+  val word32_to_int_raw = numeric_word32_to_int
+  val word32_add_raw = numeric_word32_add
+  val word32_checked_add_raw = numeric_word32_checked_add
+  val word32_saturating_add_raw = numeric_word32_saturating_add
+  val word32_sub_raw = numeric_word32_sub
+  val word32_mul_raw = numeric_word32_mul
+  val word32_div_raw = numeric_word32_div
+  val word32_rem_raw = numeric_word32_rem
+
+  val float32_of_float_raw = numeric_float32_of_float
+  val float32_to_float_raw = numeric_float32_to_float
+  val float32_neg_raw = numeric_float32_neg
+  val float32_add_raw = numeric_float32_add
+  val float32_sub_raw = numeric_float32_sub
+  val float32_mul_raw = numeric_float32_mul
+  val float32_div_raw = numeric_float32_div
+end
+"#;
+
 const DATE_SOURCE: &str = r#"structure BuiltinDate = struct
   val utc_tz_raw = date_utc_tz
   val local_tz_raw = date_local_tz
@@ -203,6 +245,13 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-time",
         enabled: cfg!(feature = "builtin-time"),
         source: TIME_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Numeric",
+        import_name: "__Builtin.Numeric",
+        feature_name: "builtin-convert",
+        enabled: cfg!(feature = "builtin-convert"),
+        source: NUMERIC_SOURCE,
     },
     InternalBuiltinModule {
         leaf_name: "Date",

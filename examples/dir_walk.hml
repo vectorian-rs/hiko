@@ -4,7 +4,8 @@ fun walk dir = let
     val entries = list_dir dir
   in
     walk_entries dir entries
-  endand walk_entries dir entries = case entries of
+  end
+and walk_entries dir entries = case entries of
       [] => ()
     | name :: rest => let
         val full = path_join (dir, name)
@@ -13,4 +14,4 @@ fun walk dir = let
         walk_entries dir rest
       end
 
-val _ = walk "/tmp"
+val _ = walk "examples"
