@@ -1,4 +1,5 @@
 use super::*;
+use std::mem::size_of;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -86,6 +87,12 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
 
     let keys: Vec<Value> = match &parsed {
         serde_json::Value::Object(map) => {
+            let key_vec_bytes = map
+                .len()
+                .checked_mul(size_of::<Value>())
+                .ok_or_else(|| "json_keys: key vector size overflow".to_string())?;
+            heap.ensure_can_allocate_bytes(key_vec_bytes)
+                .map_err(|e| format!("json_keys: {e}"))?;
             let mut keys = Vec::with_capacity(map.len());
             for k in map.keys() {
                 keys.push(heap_alloc(heap, HeapObject::String(k.clone()))?);
@@ -308,6 +315,16 @@ mod tests {
         let keys = collect_string_list(result, &heap);
         // Non-object returns empty list
         assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn json_keys_checks_key_vector_against_memory_limit() {
+        let mut heap = Heap::new();
+        let arg = string_arg(&mut heap, r#"{"a":1,"b":2,"c":3}"#);
+        heap.set_max_bytes(heap.live_bytes() + (2 * size_of::<Value>()));
+
+        let err = json_keys(&[arg], &mut heap).unwrap_err();
+        assert!(err.contains("json_keys: memory limit exceeded"));
     }
 
     #[test]

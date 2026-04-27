@@ -1,5 +1,6 @@
 use super::*;
 use smallvec::smallvec;
+use std::mem::size_of;
 
 const TAG_JNULL: u16 = 0;
 const TAG_JBOOL: u16 = 1;
@@ -8,6 +9,34 @@ const TAG_JFLOAT: u16 = 3;
 const TAG_JSTR: u16 = 4;
 const TAG_JARRAY: u16 = 5;
 const TAG_JOBJECT: u16 = 6;
+
+fn check_host_bytes(heap: &Heap, context: &str, bytes: usize) -> Result<(), String> {
+    heap.ensure_can_allocate_bytes(bytes)
+        .map_err(|e| format!("{context}: {e}"))
+}
+
+fn check_value_vec_capacity(heap: &Heap, context: &str, len: usize) -> Result<(), String> {
+    let bytes = len
+        .checked_mul(size_of::<Value>())
+        .ok_or_else(|| format!("{context}: value vector size overflow"))?;
+    check_host_bytes(heap, context, bytes)
+}
+
+fn check_string_vec_capacity(heap: &Heap, context: &str, len: usize) -> Result<(), String> {
+    let bytes = len
+        .checked_mul(size_of::<String>())
+        .ok_or_else(|| format!("{context}: string vector size overflow"))?;
+    check_host_bytes(heap, context, bytes)
+}
+
+fn check_json_output(heap: &Heap, context: &str, output: String) -> Result<String, String> {
+    check_host_bytes(
+        heap,
+        context,
+        size_of::<HeapObject>().saturating_add(output.len()),
+    )?;
+    Ok(output)
+}
 
 pub(crate) fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<Value, String> {
     match val {
@@ -63,6 +92,7 @@ pub(crate) fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<V
             )
         }
         serde_json::Value::Array(arr) => {
+            check_value_vec_capacity(heap, "json_parse", arr.len())?;
             let mut elems = Vec::with_capacity(arr.len());
             for v in arr {
                 elems.push(json_to_hiko(v, heap)?);
@@ -77,6 +107,7 @@ pub(crate) fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<V
             )
         }
         serde_json::Value::Object(map) => {
+            check_value_vec_capacity(heap, "json_parse", map.len())?;
             let mut pairs = Vec::with_capacity(map.len());
             for (k, v) in map {
                 let key = heap_alloc(heap, HeapObject::String(k.clone()))?;
@@ -119,22 +150,28 @@ pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, Str
     match val {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
             HeapObject::Data { tag, fields } => match *tag {
-                TAG_JNULL => Ok("null".into()),
+                TAG_JNULL => check_json_output(heap, "json_to_string", "null".into()),
                 TAG_JBOOL => match fields.first() {
-                    Some(Value::Bool(b)) => Ok(b.to_string()),
+                    Some(Value::Bool(b)) => {
+                        check_json_output(heap, "json_to_string", b.to_string())
+                    }
                     _ => Err("json_to_string: malformed JBool".into()),
                 },
                 TAG_JINT => match fields.first() {
-                    Some(Value::Int(n)) => Ok(n.to_string()),
+                    Some(Value::Int(n)) => check_json_output(heap, "json_to_string", n.to_string()),
                     _ => Err("json_to_string: malformed JInt".into()),
                 },
                 TAG_JFLOAT => match fields.first() {
-                    Some(Value::Float(f)) => Ok(f.to_string()),
+                    Some(Value::Float(f)) => {
+                        check_json_output(heap, "json_to_string", f.to_string())
+                    }
                     _ => Err("json_to_string: malformed JFloat".into()),
                 },
                 TAG_JSTR => match fields.first() {
                     Some(Value::Heap(sr)) => match heap.get(*sr).map_err(|e| e.to_string())? {
-                        HeapObject::String(s) => Ok(json_escape(s)),
+                        HeapObject::String(s) => {
+                            check_json_output(heap, "json_to_string", json_escape(s))
+                        }
                         _ => Err("json_to_string: malformed JStr".into()),
                     },
                     _ => Err("json_to_string: malformed JStr".into()),
@@ -142,16 +179,18 @@ pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, Str
                 TAG_JARRAY => {
                     let list_val = fields.first().copied().unwrap_or(Value::Unit);
                     let elems = collect_list(heap, list_val)?;
+                    check_string_vec_capacity(heap, "json_to_string", elems.len())?;
                     let items: Result<Vec<String>, String> = elems
                         .into_iter()
                         .map(|v| hiko_to_json_string(v, heap))
                         .collect();
-                    Ok(format!("[{}]", items?.join(",")))
+                    check_json_output(heap, "json_to_string", format!("[{}]", items?.join(",")))
                 }
                 TAG_JOBJECT => {
                     let list_val = fields.first().copied().unwrap_or(Value::Unit);
                     let pairs = collect_list(heap, list_val)?;
-                    let mut entries = Vec::new();
+                    check_string_vec_capacity(heap, "json_to_string", pairs.len())?;
+                    let mut entries = Vec::with_capacity(pairs.len());
                     for pair_val in pairs {
                         match pair_val {
                             Value::Heap(tr) => match heap.get(tr).map_err(|e| e.to_string())? {
@@ -173,7 +212,7 @@ pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, Str
                             _ => return Err("json_to_string: bad object entry".into()),
                         }
                     }
-                    Ok(format!("{{{}}}", entries.join(",")))
+                    check_json_output(heap, "json_to_string", format!("{{{}}}", entries.join(",")))
                 }
                 _ => Err(format!("json_to_string: unknown tag {tag}")),
             },
