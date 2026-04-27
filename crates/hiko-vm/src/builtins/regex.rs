@@ -1,5 +1,7 @@
 use super::*;
 use ::regex::Regex;
+use std::borrow::Cow;
+use std::mem::size_of;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -64,10 +66,14 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
         _ => return Err("regex_replace: expected String".into()),
     };
     let re = Regex::new(pattern).map_err(|e| format!("regex_replace: {e}"))?;
-    heap_alloc(
-        heap,
-        HeapObject::String(re.replace_all(s, replacement).into_owned()),
-    )
+    let replaced = re.replace_all(s, replacement);
+    let output_len = match &replaced {
+        Cow::Borrowed(text) => text.len(),
+        Cow::Owned(text) => text.len(),
+    };
+    heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(output_len))
+        .map_err(|e| format!("regex_replace: {e}"))?;
+    heap_alloc(heap, HeapObject::String(replaced.into_owned()))
 }
 
 #[cfg(test)]
@@ -189,5 +195,18 @@ mod tests {
         let result = regex_replace(&[arg], &mut heap).unwrap();
         // Empty pattern matches every position: before each char and at end
         assert_eq!(heap_string(result, &heap), "XaXbXcX");
+    }
+
+    #[test]
+    fn regex_replace_checks_output_against_memory_limit() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "abc");
+        let pat = string_arg(&mut heap, "");
+        let rep = string_arg(&mut heap, "XXXX");
+        let arg = tuple3(&mut heap, s, pat, rep);
+        heap.set_max_bytes(heap.live_bytes() + size_of::<HeapObject>() + 18);
+
+        let err = regex_replace(&[arg], &mut heap).unwrap_err();
+        assert!(err.contains("regex_replace: memory limit exceeded"));
     }
 }
