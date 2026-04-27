@@ -28,7 +28,7 @@ impl OutputSink for StdoutOutputSink {
 
 pub(super) struct ResolvedExec {
     display_command: String,
-    resolved_path: PathBuf,
+    allowed_path: ExecAllowedPath,
     args: Vec<String>,
 }
 
@@ -87,6 +87,32 @@ fn canonicalize_exec_candidate(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
 
+fn exec_allowed_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
+    let metadata = path
+        .metadata()
+        .map_err(|e| format!("cannot stat executable '{}': {e}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("executable '{}' is not a file", path.display()));
+    }
+    Ok(ExecAllowedPath {
+        path,
+        #[cfg(unix)]
+        dev: {
+            use std::os::unix::fs::MetadataExt as _;
+            metadata.dev()
+        },
+        #[cfg(unix)]
+        ino: {
+            use std::os::unix::fs::MetadataExt as _;
+            metadata.ino()
+        },
+    })
+}
+
+fn resolve_exec_command(command: &str) -> Result<ExecAllowedPath, String> {
+    resolve_exec_command_path(command).and_then(exec_allowed_path)
+}
+
 fn resolve_exec_command_path(command: &str) -> Result<PathBuf, String> {
     let path = Path::new(command);
     if command_has_explicit_path(command) {
@@ -132,7 +158,7 @@ impl VM {
         let mut resolved = Vec::new();
         let mut errors = Vec::new();
         for command in &allowed {
-            match resolve_exec_command_path(command) {
+            match resolve_exec_command(command) {
                 Ok(path) => resolved.push(path),
                 Err(err) => errors.push(format!("{command}: {err}")),
             }
@@ -226,24 +252,25 @@ impl VM {
     pub(super) fn prepare_exec(&self, arg: Value) -> Result<ResolvedExec, RuntimeError> {
         let (command, args) = extract_exec_command_and_args(&self.heap, arg)
             .map_err(|message| RuntimeError { message })?;
-        let resolved_path = resolve_exec_command_path(&command).map_err(|err| RuntimeError {
+        let resolved_path = resolve_exec_command(&command).map_err(|err| RuntimeError {
             message: format!("exec: {err}"),
         })?;
-        if self
+        if let Some(allowed_path) = self
             .exec_allowed_paths
             .iter()
-            .any(|path| path == &resolved_path)
+            .find(|allowed| **allowed == resolved_path)
+            .cloned()
         {
             Ok(ResolvedExec {
                 display_command: command,
-                resolved_path,
+                allowed_path,
                 args,
             })
         } else {
             let mut message = format!(
                 "exec: command '{}' resolved to '{}' which is not in the allowed list: {:?}",
                 command,
-                resolved_path.display(),
+                resolved_path.path.display(),
                 self.exec_allowed
             );
             if !self.exec_allowed_resolution_errors.is_empty() {
@@ -262,7 +289,15 @@ impl VM {
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
 
-        let mut child = Command::new(&exec.resolved_path)
+        let current_path = exec_allowed_path(exec.allowed_path.path.clone())?;
+        if current_path != exec.allowed_path {
+            return Err(format!(
+                "exec: '{}' changed since it was allowed",
+                exec.allowed_path.path.display()
+            ));
+        }
+
+        let mut child = Command::new(&exec.allowed_path.path)
             .args(&exec.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -325,5 +360,48 @@ impl VM {
             .alloc(HeapObject::Tuple(smallvec![exit_code, stdout, stderr]))
             .map(Value::Heap)
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hiko-host-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_executable(path: &Path, body: &str) {
+        std::fs::write(path, body).expect("write executable");
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod executable");
+    }
+
+    #[test]
+    fn exec_identity_changes_when_allowed_path_is_replaced() {
+        let root = temp_dir("exec-identity");
+        let script = root.join("tool.sh");
+        write_executable(&script, "#!/bin/sh\necho first\n");
+        let first =
+            resolve_exec_command(script.to_str().expect("utf8 path")).expect("first identity");
+
+        std::fs::remove_file(&script).expect("remove executable");
+        write_executable(&script, "#!/bin/sh\necho second\n");
+        let second =
+            resolve_exec_command(script.to_str().expect("utf8 path")).expect("second identity");
+
+        assert_eq!(first.path, second.path);
+        assert_ne!(first, second);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

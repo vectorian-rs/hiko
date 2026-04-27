@@ -83,6 +83,15 @@ struct HandlerFrame {
     captures: Arc<[Value]>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ExecAllowedPath {
+    path: PathBuf,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
 pub struct VM {
     pub(crate) heap: Heap,
     pub(crate) stack: Vec<Value>,
@@ -99,7 +108,7 @@ pub struct VM {
     /// Persistent total fuel budget (from VMBuilder.max_fuel). Not reset per slice.
     max_fuel_remaining: Option<u64>,
     exec_allowed: Vec<String>,
-    exec_allowed_paths: Vec<PathBuf>,
+    exec_allowed_paths: Vec<ExecAllowedPath>,
     exec_allowed_resolution_errors: Vec<String>,
     exec_timeout: u64,
     exec_builtin_id: Option<u16>,
