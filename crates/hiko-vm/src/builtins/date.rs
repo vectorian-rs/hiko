@@ -3,6 +3,34 @@ use jiff::fmt::{strtime, temporal::DateTimeParser};
 use jiff::{Timestamp, Zoned, tz::Offset, tz::TimeZone};
 use smallvec::smallvec;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("date_utc_tz", utc_tz as BuiltinFn),
+        ("date_local_tz", local_tz),
+        ("date_timezone_of", timezone_of),
+        ("date_fixed_offset", fixed_offset),
+        ("date_utc_now", utc_now),
+        ("date_now_in", now_in),
+        ("date_from_instant", from_instant),
+        ("date_to_epoch_ms", to_epoch_ms),
+        ("date_to_timezone", to_timezone),
+        ("date_in_timezone", in_timezone),
+        ("date_year", year),
+        ("date_month", month),
+        ("date_day", day),
+        ("date_hour", hour),
+        ("date_minute", minute),
+        ("date_second", second),
+        ("date_millisecond", millisecond),
+        ("date_weekday", weekday),
+        ("date_to_rfc3339", to_rfc3339),
+        ("date_to_rfc2822", to_rfc2822),
+        ("date_format", format),
+        ("date_parse_rfc3339", parse_rfc3339),
+        ("date_parse_rfc9557", parse_rfc9557),
+    ]
+}
+
 static TEMPORAL_PARSER: DateTimeParser = DateTimeParser::new();
 
 fn alloc_string(heap: &mut Heap, text: impl Into<String>) -> Result<Value, String> {

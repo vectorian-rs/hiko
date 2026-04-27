@@ -1,4 +1,6 @@
-use crate::builder::{ExecPolicy as VmExecPolicy, VMBuilder};
+#[cfg(feature = "builtin-exec")]
+use crate::builder::ExecPolicy as VmExecPolicy;
+use crate::builder::VMBuilder;
 use crate::vm::VM;
 use hiko_builtin_meta::{
     capability_path_for_builtin as meta_capability_path_for_builtin,
@@ -131,15 +133,23 @@ macro_rules! folder_family {
         }
 
         impl $name {
-            fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
-                $(
-                    if let Some(leaf) = &self.$field
-                        && leaf.enabled
-                    {
-                        builder = builder.allow_filesystem_builtin($builtin, leaf.folders.clone());
-                    }
-                )*
-                builder
+            fn apply(&self, builder: VMBuilder) -> VMBuilder {
+                #[cfg(feature = "builtin-filesystem")]
+                {
+                    let mut builder = builder;
+                    $(
+                        if let Some(leaf) = &self.$field
+                            && leaf.enabled
+                        {
+                            builder = builder.allow_filesystem_builtin($builtin, leaf.folders.clone());
+                        }
+                    )*
+                    builder
+                }
+                #[cfg(not(feature = "builtin-filesystem"))]
+                {
+                    builder
+                }
             }
 
             fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
@@ -178,15 +188,23 @@ macro_rules! http_family {
         }
 
         impl $name {
-            fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
-                $(
-                    if let Some(leaf) = &self.$field
-                        && leaf.enabled
-                    {
-                        builder = builder.allow_http_builtin($builtin, leaf.allowed_hosts.clone());
-                    }
-                )*
-                builder
+            fn apply(&self, builder: VMBuilder) -> VMBuilder {
+                #[cfg(feature = "builtin-http")]
+                {
+                    let mut builder = builder;
+                    $(
+                        if let Some(leaf) = &self.$field
+                            && leaf.enabled
+                        {
+                            builder = builder.allow_http_builtin($builtin, leaf.allowed_hosts.clone());
+                        }
+                    )*
+                    builder
+                }
+                #[cfg(not(feature = "builtin-http"))]
+                {
+                    builder
+                }
             }
 
             fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
@@ -437,10 +455,13 @@ impl ExecCapabilities {
         if let Some(leaf) = &self.exec
             && leaf.enabled
         {
-            return builder.with_exec(VmExecPolicy {
-                allowed: leaf.allowed_commands.clone(),
-                timeout: leaf.timeout,
-            });
+            #[cfg(feature = "builtin-exec")]
+            {
+                return builder.with_exec(VmExecPolicy {
+                    allowed: leaf.allowed_commands.clone(),
+                    timeout: leaf.timeout,
+                });
+            }
         }
         builder
     }

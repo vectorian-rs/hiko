@@ -1,5 +1,14 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("print", print as BuiltinFn),
+        ("println", println),
+        ("read_line", read_line),
+        ("read_stdin", read_stdin),
+    ]
+}
+
 pub(super) fn print(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Ok(args[0])
 }

@@ -1,5 +1,15 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("spawn", spawn_placeholder as BuiltinFn),
+        ("await_process", await_placeholder),
+        ("await_process_result", await_result_placeholder),
+        ("cancel", cancel_placeholder),
+        ("wait_any", wait_any_placeholder),
+    ]
+}
+
 pub(super) fn spawn_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Err("spawn: must be called within a runtime".into())
 }

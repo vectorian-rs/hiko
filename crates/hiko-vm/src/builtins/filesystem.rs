@@ -1,5 +1,23 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("read_file", read_file as BuiltinFn),
+        ("read_file_bytes", read_file_bytes),
+        ("write_file", write_file),
+        ("file_exists", file_exists),
+        ("list_dir", list_dir),
+        ("remove_file", remove_file),
+        ("create_dir", create_dir),
+        ("is_dir", is_dir),
+        ("is_file", is_file),
+        ("read_file_tagged", read_file_tagged),
+        ("edit_file_tagged", edit_file_tagged),
+        ("glob", glob),
+        ("walk_dir", walk_dir),
+    ]
+}
+
 pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

@@ -1,5 +1,15 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("sqrt", sqrt as BuiltinFn),
+        ("abs_int", abs_int),
+        ("abs_float", abs_float),
+        ("floor", floor),
+        ("ceil", ceil),
+    ]
+}
+
 pub(super) fn sqrt(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Float(f.sqrt())),

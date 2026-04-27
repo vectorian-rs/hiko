@@ -1,6 +1,15 @@
 use super::*;
 use std::sync::OnceLock;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("epoch", epoch as BuiltinFn),
+        ("epoch_ms", epoch_ms),
+        ("monotonic_ms", monotonic_ms),
+        ("sleep", sleep),
+    ]
+}
+
 pub(super) fn epoch(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

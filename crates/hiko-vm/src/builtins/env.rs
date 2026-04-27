@@ -1,5 +1,9 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[("getenv", getenv as BuiltinFn)]
+}
+
 pub(super) fn getenv(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let name = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

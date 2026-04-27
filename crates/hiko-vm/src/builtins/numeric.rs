@@ -1,6 +1,47 @@
 use super::*;
 use smallvec::smallvec;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("numeric_int32_min_value", int32_min_value as BuiltinFn),
+        ("numeric_int32_max_value", int32_max_value),
+        ("numeric_int32_of_int", int32_of_int),
+        ("numeric_int32_checked_of_int", int32_checked_of_int),
+        ("numeric_int32_to_int", int32_to_int),
+        ("numeric_int32_add", int32_add),
+        ("numeric_int32_checked_add", int32_checked_add),
+        ("numeric_int32_wrapping_add", int32_wrapping_add),
+        ("numeric_int32_saturating_add", int32_saturating_add),
+        ("numeric_int32_sub", int32_sub),
+        ("numeric_int32_mul", int32_mul),
+        ("numeric_int32_div", int32_div),
+        ("numeric_int32_rem", int32_rem),
+        ("numeric_int32_neg", int32_neg),
+        ("numeric_word32_min_value", word32_min_value),
+        ("numeric_word32_max_value", word32_max_value),
+        ("numeric_word32_of_word", word32_of_word),
+        ("numeric_word32_checked_of_word", word32_checked_of_word),
+        ("numeric_word32_of_int", word32_of_int),
+        ("numeric_word32_checked_of_int", word32_checked_of_int),
+        ("numeric_word32_to_word", word32_to_word),
+        ("numeric_word32_to_int", word32_to_int),
+        ("numeric_word32_add", word32_add),
+        ("numeric_word32_checked_add", word32_checked_add),
+        ("numeric_word32_saturating_add", word32_saturating_add),
+        ("numeric_word32_sub", word32_sub),
+        ("numeric_word32_mul", word32_mul),
+        ("numeric_word32_div", word32_div),
+        ("numeric_word32_rem", word32_rem),
+        ("numeric_float32_of_float", float32_of_float),
+        ("numeric_float32_to_float", float32_to_float),
+        ("numeric_float32_neg", float32_neg),
+        ("numeric_float32_add", float32_add),
+        ("numeric_float32_sub", float32_sub),
+        ("numeric_float32_mul", float32_mul),
+        ("numeric_float32_div", float32_div),
+    ]
+}
+
 fn make_bool_int_pair(heap: &mut Heap, ok: bool, value: i64) -> Result<Value, String> {
     heap_alloc(
         heap,

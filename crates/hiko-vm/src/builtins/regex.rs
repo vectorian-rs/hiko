@@ -1,6 +1,13 @@
 use super::*;
 use ::regex::Regex;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("regex_match", regex_match as BuiltinFn),
+        ("regex_replace", regex_replace),
+    ]
+}
+
 pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

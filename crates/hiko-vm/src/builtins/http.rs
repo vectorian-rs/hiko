@@ -1,6 +1,16 @@
 use super::*;
 use smallvec::smallvec;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("http_get", http_get as BuiltinFn),
+        ("http", http),
+        ("http_json", http_json),
+        ("http_msgpack", http_msgpack),
+        ("http_bytes", http_bytes),
+    ]
+}
+
 fn collect_headers<'a>(
     header_pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
     heap: &mut Heap,

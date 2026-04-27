@@ -1,5 +1,15 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("json_parse", json_parse as BuiltinFn),
+        ("json_to_string", json_to_string),
+        ("json_get", json_get),
+        ("json_keys", json_keys),
+        ("json_length", json_length),
+    ]
+}
+
 pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

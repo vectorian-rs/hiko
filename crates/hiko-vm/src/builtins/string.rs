@@ -1,5 +1,21 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("string_length", string_length as BuiltinFn),
+        ("substring", substring),
+        ("string_contains", string_contains),
+        ("trim", trim),
+        ("split", split),
+        ("string_replace", string_replace),
+        ("starts_with", starts_with),
+        ("ends_with", ends_with),
+        ("to_upper", to_upper),
+        ("to_lower", to_lower),
+        ("string_join", string_join),
+    ]
+}
+
 pub(super) fn string_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

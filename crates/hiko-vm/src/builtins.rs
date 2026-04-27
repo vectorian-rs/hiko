@@ -1,12 +1,92 @@
+#[cfg(any(
+    test,
+    feature = "builtin-bytes",
+    feature = "builtin-convert",
+    feature = "builtin-env",
+    feature = "builtin-exec",
+    feature = "builtin-filesystem",
+    feature = "builtin-hash",
+    feature = "builtin-http",
+    feature = "builtin-json",
+    feature = "builtin-math",
+    feature = "builtin-path",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-stdio",
+    feature = "builtin-string",
+    feature = "builtin-system",
+    feature = "builtin-testing",
+    feature = "builtin-time"
+))]
 use crate::heap::Heap;
-use crate::value::{BuiltinFn, GcRef, HeapObject, Value};
-use crate::vm::{TAG_CONS, TAG_NIL};
-use smallvec::smallvec;
+use crate::value::BuiltinFn;
+#[cfg(any(
+    test,
+    feature = "builtin-bytes",
+    feature = "builtin-convert",
+    feature = "builtin-env",
+    feature = "builtin-exec",
+    feature = "builtin-filesystem",
+    feature = "builtin-hash",
+    feature = "builtin-http",
+    feature = "builtin-json",
+    feature = "builtin-math",
+    feature = "builtin-path",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-stdio",
+    feature = "builtin-string",
+    feature = "builtin-system",
+    feature = "builtin-testing",
+    feature = "builtin-time"
+))]
+use crate::value::{HeapObject, Value};
 
-/// Allocate a heap object and wrap it as a Value, converting HeapLimitExceeded to String.
-fn heap_alloc(heap: &mut Heap, obj: HeapObject) -> Result<Value, String> {
-    heap.alloc(obj).map(Value::Heap).map_err(|e| e.to_string())
-}
+mod support;
+
+#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
+mod json_value;
+
+mod http_args;
+
+#[cfg(any(
+    test,
+    feature = "builtin-filesystem",
+    feature = "builtin-http",
+    feature = "builtin-json",
+    feature = "builtin-string"
+))]
+pub(crate) use support::alloc_list;
+#[cfg(any(
+    test,
+    feature = "builtin-bytes",
+    feature = "builtin-convert",
+    feature = "builtin-env",
+    feature = "builtin-filesystem",
+    feature = "builtin-hash",
+    feature = "builtin-http",
+    feature = "builtin-json",
+    feature = "builtin-path",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-stdio",
+    feature = "builtin-string",
+    feature = "builtin-time"
+))]
+pub(crate) use support::heap_alloc;
+pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg};
+#[cfg(feature = "builtin-filesystem")]
+pub(crate) use support::{fnv1a_tag_parts, is_valid_fnv1a_tag};
+
+#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
+pub(crate) use json_value::json_to_hiko;
+
+#[cfg(feature = "builtin-json")]
+pub(crate) use json_value::hiko_to_json_string;
+
+pub(crate) use http_args::extract_http_args;
+#[cfg(feature = "builtin-http")]
+pub(crate) use http_args::{HttpArgRefs, extract_http_arg_refs};
 
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
@@ -49,627 +129,72 @@ mod testing;
 #[cfg(feature = "builtin-time")]
 mod time;
 
-fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Result<Value, String> {
-    let mut list = heap_alloc(
-        heap,
-        HeapObject::Data {
-            tag: TAG_NIL,
-            fields: smallvec![],
-        },
-    )?;
-    for elem in elems.into_iter().rev() {
-        list = heap_alloc(
-            heap,
-            HeapObject::Data {
-                tag: TAG_CONS,
-                fields: smallvec![elem, list],
-            },
-        )?;
-    }
-    Ok(list)
-}
-
-/// Stable 64-bit FNV-1a hash, returned as 16-char lowercase hex.
-fn fnv1a_tag_parts(parts: &[&str]) -> String {
-    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = BASIS;
-    for part in parts {
-        for &b in part.as_bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(PRIME);
-        }
-    }
-    format!("{h:016x}")
-}
-
-fn is_valid_fnv1a_tag(tag: &str) -> bool {
-    tag.len() == 16 && tag.as_bytes().iter().all(u8::is_ascii_hexdigit)
-}
-
-fn collect_list(heap: &Heap, list_val: Value) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut cur = list_val;
-    while let Value::Heap(lr) = cur {
-        match heap.get(lr).map_err(|e| e.to_string())? {
-            HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
-            HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
-                out.push(fields[0]);
-                cur = fields[1];
-            }
-            _ => break,
-        }
-    }
-    Ok(out)
-}
-
-pub(crate) fn extract_pid_list_arg(
-    args: &[Value],
-    heap: &Heap,
-    name: &str,
-) -> Result<Vec<u64>, String> {
-    let list_val = args
-        .first()
-        .copied()
-        .ok_or_else(|| format!("{name}: expected pid list"))?;
-    let values = collect_list(heap, list_val)?;
-    let mut pids = Vec::with_capacity(values.len());
-    for value in values {
-        match value {
-            Value::Pid(pid) => pids.push(pid),
-            _ => return Err(format!("{name}: expected pid list")),
-        }
-    }
-    Ok(pids)
-}
-
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JNULL: u16 = 0;
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JBOOL: u16 = 1;
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JINT: u16 = 2;
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JFLOAT: u16 = 3;
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JSTR: u16 = 4;
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JARRAY: u16 = 5;
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-const TAG_JOBJECT: u16 = 6;
-
-#[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
-fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<Value, String> {
-    match val {
-        serde_json::Value::Null => heap_alloc(
-            heap,
-            HeapObject::Data {
-                tag: TAG_JNULL,
-                fields: smallvec![],
-            },
-        ),
-        serde_json::Value::Bool(b) => heap_alloc(
-            heap,
-            HeapObject::Data {
-                tag: TAG_JBOOL,
-                fields: smallvec![Value::Bool(*b)],
-            },
-        ),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                heap_alloc(
-                    heap,
-                    HeapObject::Data {
-                        tag: TAG_JINT,
-                        fields: smallvec![Value::Int(i)],
-                    },
-                )
-            } else if let Some(f) = n.as_f64() {
-                heap_alloc(
-                    heap,
-                    HeapObject::Data {
-                        tag: TAG_JFLOAT,
-                        fields: smallvec![Value::Float(f)],
-                    },
-                )
-            } else {
-                heap_alloc(
-                    heap,
-                    HeapObject::Data {
-                        tag: TAG_JNULL,
-                        fields: smallvec![],
-                    },
-                )
-            }
-        }
-        serde_json::Value::String(s) => {
-            let sv = heap_alloc(heap, HeapObject::String(s.clone()))?;
-            heap_alloc(
-                heap,
-                HeapObject::Data {
-                    tag: TAG_JSTR,
-                    fields: smallvec![sv],
-                },
-            )
-        }
-        serde_json::Value::Array(arr) => {
-            let mut elems = Vec::with_capacity(arr.len());
-            for v in arr {
-                elems.push(json_to_hiko(v, heap)?);
-            }
-            let list = alloc_list(heap, elems)?;
-            heap_alloc(
-                heap,
-                HeapObject::Data {
-                    tag: TAG_JARRAY,
-                    fields: smallvec![list],
-                },
-            )
-        }
-        serde_json::Value::Object(map) => {
-            let mut pairs = Vec::with_capacity(map.len());
-            for (k, v) in map {
-                let key = heap_alloc(heap, HeapObject::String(k.clone()))?;
-                let val = json_to_hiko(v, heap)?;
-                pairs.push(heap_alloc(heap, HeapObject::Tuple(smallvec![key, val]))?);
-            }
-            let list = alloc_list(heap, pairs)?;
-            heap_alloc(
-                heap,
-                HeapObject::Data {
-                    tag: TAG_JOBJECT,
-                    fields: smallvec![list],
-                },
-            )
-        }
-    }
-}
-
-#[cfg(feature = "builtin-json")]
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            c if c < '\u{20}' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-#[cfg(feature = "builtin-json")]
-fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, String> {
-    match val {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::Data { tag, fields } => match *tag {
-                TAG_JNULL => Ok("null".into()),
-                TAG_JBOOL => match fields.first() {
-                    Some(Value::Bool(b)) => Ok(b.to_string()),
-                    _ => Err("json_to_string: malformed JBool".into()),
-                },
-                TAG_JINT => match fields.first() {
-                    Some(Value::Int(n)) => Ok(n.to_string()),
-                    _ => Err("json_to_string: malformed JInt".into()),
-                },
-                TAG_JFLOAT => match fields.first() {
-                    Some(Value::Float(f)) => Ok(f.to_string()),
-                    _ => Err("json_to_string: malformed JFloat".into()),
-                },
-                TAG_JSTR => match fields.first() {
-                    Some(Value::Heap(sr)) => match heap.get(*sr).map_err(|e| e.to_string())? {
-                        HeapObject::String(s) => Ok(json_escape(s)),
-                        _ => Err("json_to_string: malformed JStr".into()),
-                    },
-                    _ => Err("json_to_string: malformed JStr".into()),
-                },
-                TAG_JARRAY => {
-                    let list_val = fields.first().copied().unwrap_or(Value::Unit);
-                    let elems = collect_list(heap, list_val)?;
-                    let items: Result<Vec<String>, String> = elems
-                        .into_iter()
-                        .map(|v| hiko_to_json_string(v, heap))
-                        .collect();
-                    Ok(format!("[{}]", items?.join(",")))
-                }
-                TAG_JOBJECT => {
-                    let list_val = fields.first().copied().unwrap_or(Value::Unit);
-                    let pairs = collect_list(heap, list_val)?;
-                    let mut entries = Vec::new();
-                    for pair_val in pairs {
-                        match pair_val {
-                            Value::Heap(tr) => match heap.get(tr).map_err(|e| e.to_string())? {
-                                HeapObject::Tuple(pair) if pair.len() == 2 => {
-                                    let key = match pair[0] {
-                                        Value::Heap(kr) => {
-                                            match heap.get(kr).map_err(|e| e.to_string())? {
-                                                HeapObject::String(s) => json_escape(s),
-                                                _ => return Err("json_to_string: bad key".into()),
-                                            }
-                                        }
-                                        _ => return Err("json_to_string: bad key".into()),
-                                    };
-                                    let val_str = hiko_to_json_string(pair[1], heap)?;
-                                    entries.push(format!("{key}:{val_str}"));
-                                }
-                                _ => return Err("json_to_string: bad object entry".into()),
-                            },
-                            _ => return Err("json_to_string: bad object entry".into()),
-                        }
-                    }
-                    Ok(format!("{{{}}}", entries.join(",")))
-                }
-                _ => Err(format!("json_to_string: unknown tag {tag}")),
-            },
-            _ => Err("json_to_string: expected json value".into()),
-        },
-        _ => Err("json_to_string: expected json value".into()),
-    }
-}
-
-pub(crate) fn extract_string_arg(
-    args: &[Value],
-    heap: &Heap,
-    name: &str,
-) -> Result<String, String> {
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(s.clone()),
-            _ => Err(format!("{name}: expected String")),
-        },
-        _ => Err(format!("{name}: expected String")),
-    }
-}
-
-type HttpArgs = (String, String, Vec<(String, String)>, String);
-
-pub(crate) struct HttpArgRefs {
-    method: GcRef,
-    url: GcRef,
-    headers: Vec<(GcRef, GcRef)>,
-    body: GcRef,
-    body_len: usize,
-}
-
-impl HttpArgRefs {
-    pub(crate) fn method<'a>(&self, heap: &'a Heap) -> Result<&'a str, String> {
-        heap_string_ref(heap, self.method)
-    }
-
-    pub(crate) fn url<'a>(&self, heap: &'a Heap) -> Result<&'a str, String> {
-        heap_string_ref(heap, self.url)
-    }
-
-    pub(crate) fn body<'a>(&self, heap: &'a Heap) -> Result<&'a str, String> {
-        heap_string_ref(heap, self.body)
-    }
-
-    pub(crate) fn body_len(&self) -> usize {
-        self.body_len
-    }
-
-    pub(crate) fn headers<'a>(&self, heap: &'a Heap) -> Result<Vec<(&'a str, &'a str)>, String> {
-        self.headers
-            .iter()
-            .map(|(key, value)| Ok((heap_string_ref(heap, *key)?, heap_string_ref(heap, *value)?)))
-            .collect()
-    }
-}
-
-fn expect_string_ref(value: Value, heap: &Heap, message: String) -> Result<GcRef, String> {
-    match value {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(_) => Ok(r),
-            _ => Err(message),
-        },
-        _ => Err(message),
-    }
-}
-
-fn heap_string_ref(heap: &Heap, r: GcRef) -> Result<&str, String> {
-    match heap.get(r).map_err(|e| e.to_string())? {
-        HeapObject::String(s) => Ok(s.as_str()),
-        _ => Err("expected String".into()),
-    }
-}
-
-pub(crate) fn extract_http_arg_refs(
-    args: &[Value],
-    heap: &Heap,
-    name: &str,
-) -> Result<HttpArgRefs, String> {
-    let expected = || format!("{name}: expected (String, String, (String * String) list, String)");
-    let (v0, v1, v2, v3) = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::Tuple(t) if t.len() >= 4 => (t[0], t[1], t[2], t[3]),
-            _ => return Err(expected()),
-        },
-        _ => return Err(expected()),
-    };
-
-    let method = expect_string_ref(v0, heap, format!("{name}: expected String for method"))?;
-    let url = expect_string_ref(v1, heap, format!("{name}: expected String for url"))?;
-    let body = expect_string_ref(v3, heap, format!("{name}: expected String for body"))?;
-    let body_len = heap_string_ref(heap, body)?.len();
-
-    let mut headers = Vec::new();
-    for elem in collect_list(heap, v2)? {
-        match elem {
-            Value::Heap(tr) => match heap.get(tr).map_err(|e| e.to_string())? {
-                HeapObject::Tuple(pair) if pair.len() == 2 => {
-                    let key = expect_string_ref(
-                        pair[0],
-                        heap,
-                        format!("{name}: header key must be String"),
-                    )?;
-                    let value = expect_string_ref(
-                        pair[1],
-                        heap,
-                        format!("{name}: header value must be String"),
-                    )?;
-                    headers.push((key, value));
-                }
-                _ => return Err(format!("{name}: headers must be (String, String) list")),
-            },
-            _ => return Err(format!("{name}: headers must be (String, String) list")),
-        }
-    }
-
-    Ok(HttpArgRefs {
-        method,
-        url,
-        headers,
-        body,
-        body_len,
-    })
-}
-
-pub(crate) fn extract_http_args(
-    args: &[Value],
-    heap: &Heap,
-    name: &str,
-) -> Result<HttpArgs, String> {
-    let refs = extract_http_arg_refs(args, heap, name)?;
-    let method = refs.method(heap)?.to_string();
-    let url = refs.url(heap)?.to_string();
-    let headers = refs
-        .headers(heap)?
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect();
-    let body = refs.body(heap)?.to_string();
-    Ok((method, url, headers, body))
-}
-
 pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
     let mut entries = Vec::new();
+    append_builtin_entries(&mut entries);
+    entries
+}
 
+fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
     #[cfg(feature = "builtin-stdio")]
-    entries.extend([
-        ("print", stdio::print as BuiltinFn),
-        ("println", stdio::println),
-        ("read_line", stdio::read_line),
-        ("read_stdin", stdio::read_stdin),
-    ]);
+    _entries.extend(stdio::entries());
 
     #[cfg(feature = "builtin-convert")]
-    entries.extend([
-        ("int_to_string", convert::int_to_string as BuiltinFn),
-        ("float_to_string", convert::float_to_string),
-        ("string_to_int", convert::string_to_int),
-        ("char_to_int", convert::char_to_int),
-        ("int_to_char", convert::int_to_char),
-        ("int_to_float", convert::int_to_float),
-        ("word_to_int", convert::word_to_int),
-        ("int_to_word", convert::int_to_word),
-        ("word_to_string", convert::word_to_string),
-        ("string_to_word", convert::string_to_word),
-        ("numeric_int32_min_value", numeric::int32_min_value),
-        ("numeric_int32_max_value", numeric::int32_max_value),
-        ("numeric_int32_of_int", numeric::int32_of_int),
-        (
-            "numeric_int32_checked_of_int",
-            numeric::int32_checked_of_int,
-        ),
-        ("numeric_int32_to_int", numeric::int32_to_int),
-        ("numeric_int32_add", numeric::int32_add),
-        ("numeric_int32_checked_add", numeric::int32_checked_add),
-        ("numeric_int32_wrapping_add", numeric::int32_wrapping_add),
-        (
-            "numeric_int32_saturating_add",
-            numeric::int32_saturating_add,
-        ),
-        ("numeric_int32_sub", numeric::int32_sub),
-        ("numeric_int32_mul", numeric::int32_mul),
-        ("numeric_int32_div", numeric::int32_div),
-        ("numeric_int32_rem", numeric::int32_rem),
-        ("numeric_int32_neg", numeric::int32_neg),
-        ("numeric_word32_min_value", numeric::word32_min_value),
-        ("numeric_word32_max_value", numeric::word32_max_value),
-        ("numeric_word32_of_word", numeric::word32_of_word),
-        (
-            "numeric_word32_checked_of_word",
-            numeric::word32_checked_of_word,
-        ),
-        ("numeric_word32_of_int", numeric::word32_of_int),
-        (
-            "numeric_word32_checked_of_int",
-            numeric::word32_checked_of_int,
-        ),
-        ("numeric_word32_to_word", numeric::word32_to_word),
-        ("numeric_word32_to_int", numeric::word32_to_int),
-        ("numeric_word32_add", numeric::word32_add),
-        ("numeric_word32_checked_add", numeric::word32_checked_add),
-        (
-            "numeric_word32_saturating_add",
-            numeric::word32_saturating_add,
-        ),
-        ("numeric_word32_sub", numeric::word32_sub),
-        ("numeric_word32_mul", numeric::word32_mul),
-        ("numeric_word32_div", numeric::word32_div),
-        ("numeric_word32_rem", numeric::word32_rem),
-        ("numeric_float32_of_float", numeric::float32_of_float),
-        ("numeric_float32_to_float", numeric::float32_to_float),
-        ("numeric_float32_neg", numeric::float32_neg),
-        ("numeric_float32_add", numeric::float32_add),
-        ("numeric_float32_sub", numeric::float32_sub),
-        ("numeric_float32_mul", numeric::float32_mul),
-        ("numeric_float32_div", numeric::float32_div),
-    ]);
+    {
+        _entries.extend(convert::entries());
+        _entries.extend(numeric::entries());
+    }
 
     #[cfg(feature = "builtin-string")]
-    entries.extend([
-        ("string_length", string::string_length as BuiltinFn),
-        ("substring", string::substring),
-        ("string_contains", string::string_contains),
-        ("trim", string::trim),
-        ("split", string::split),
-        ("string_replace", string::string_replace),
-        ("starts_with", string::starts_with),
-        ("ends_with", string::ends_with),
-        ("to_upper", string::to_upper),
-        ("to_lower", string::to_lower),
-        ("string_join", string::string_join),
-    ]);
+    _entries.extend(string::entries());
 
     #[cfg(feature = "builtin-regex")]
-    entries.extend([
-        ("regex_match", regex::regex_match as BuiltinFn),
-        ("regex_replace", regex::regex_replace),
-    ]);
+    _entries.extend(regex::entries());
 
     #[cfg(feature = "builtin-json")]
-    entries.extend([
-        ("json_parse", json::json_parse as BuiltinFn),
-        ("json_to_string", json::json_to_string),
-        ("json_get", json::json_get),
-        ("json_keys", json::json_keys),
-        ("json_length", json::json_length),
-    ]);
+    _entries.extend(json::entries());
 
     #[cfg(feature = "builtin-math")]
-    entries.extend([
-        ("sqrt", math::sqrt as BuiltinFn),
-        ("abs_int", math::abs_int),
-        ("abs_float", math::abs_float),
-        ("floor", math::floor),
-        ("ceil", math::ceil),
-    ]);
+    _entries.extend(math::entries());
 
     #[cfg(feature = "builtin-bytes")]
-    entries.extend([
-        ("bytes_length", bytes::bytes_length as BuiltinFn),
-        ("bytes_to_string", bytes::bytes_to_string),
-        ("string_to_bytes", bytes::string_to_bytes),
-        ("bytes_get", bytes::bytes_get),
-        ("bytes_slice", bytes::bytes_slice),
-    ]);
+    _entries.extend(bytes::entries());
 
     #[cfg(feature = "builtin-hash")]
-    entries.push(("blake3", hash::blake3 as BuiltinFn));
+    _entries.extend(hash::entries());
 
     #[cfg(feature = "builtin-random")]
-    entries.extend([
-        ("random_bytes", random::random_bytes as BuiltinFn),
-        ("rng_seed", random::rng_seed),
-        ("rng_bytes", random::rng_bytes),
-        ("rng_int", random::rng_int),
-    ]);
+    _entries.extend(random::entries());
 
     #[cfg(feature = "builtin-env")]
-    entries.push(("getenv", env::getenv as BuiltinFn));
+    _entries.extend(env::entries());
 
     #[cfg(feature = "builtin-time")]
-    entries.extend([
-        ("epoch", time::epoch as BuiltinFn),
-        ("epoch_ms", time::epoch_ms),
-        ("monotonic_ms", time::monotonic_ms),
-        ("sleep", time::sleep),
-        ("date_utc_tz", date::utc_tz),
-        ("date_local_tz", date::local_tz),
-        ("date_timezone_of", date::timezone_of),
-        ("date_fixed_offset", date::fixed_offset),
-        ("date_utc_now", date::utc_now),
-        ("date_now_in", date::now_in),
-        ("date_from_instant", date::from_instant),
-        ("date_to_epoch_ms", date::to_epoch_ms),
-        ("date_to_timezone", date::to_timezone),
-        ("date_in_timezone", date::in_timezone),
-        ("date_year", date::year),
-        ("date_month", date::month),
-        ("date_day", date::day),
-        ("date_hour", date::hour),
-        ("date_minute", date::minute),
-        ("date_second", date::second),
-        ("date_millisecond", date::millisecond),
-        ("date_weekday", date::weekday),
-        ("date_to_rfc3339", date::to_rfc3339),
-        ("date_to_rfc2822", date::to_rfc2822),
-        ("date_format", date::format),
-        ("date_parse_rfc3339", date::parse_rfc3339),
-        ("date_parse_rfc9557", date::parse_rfc9557),
-    ]);
+    {
+        _entries.extend(time::entries());
+        _entries.extend(date::entries());
+    }
 
     #[cfg(feature = "builtin-process")]
-    entries.extend([
-        ("spawn", process::spawn_placeholder as BuiltinFn),
-        ("await_process", process::await_placeholder),
-        ("await_process_result", process::await_result_placeholder),
-        ("cancel", process::cancel_placeholder),
-        ("wait_any", process::wait_any_placeholder),
-    ]);
+    _entries.extend(process::entries());
 
     #[cfg(feature = "builtin-path")]
-    entries.push(("path_join", path::path_join as BuiltinFn));
+    _entries.extend(path::entries());
 
     #[cfg(feature = "builtin-filesystem")]
-    entries.extend([
-        ("read_file", filesystem::read_file as BuiltinFn),
-        ("read_file_bytes", filesystem::read_file_bytes),
-        ("write_file", filesystem::write_file),
-        ("file_exists", filesystem::file_exists),
-        ("list_dir", filesystem::list_dir),
-        ("remove_file", filesystem::remove_file),
-        ("create_dir", filesystem::create_dir),
-        ("is_dir", filesystem::is_dir),
-        ("is_file", filesystem::is_file),
-        ("read_file_tagged", filesystem::read_file_tagged),
-        ("edit_file_tagged", filesystem::edit_file_tagged),
-        ("glob", filesystem::glob),
-        ("walk_dir", filesystem::walk_dir),
-    ]);
+    _entries.extend(filesystem::entries());
 
     #[cfg(feature = "builtin-http")]
-    entries.extend([
-        ("http_get", http::http_get as BuiltinFn),
-        ("http", http::http),
-        ("http_json", http::http_json),
-        ("http_msgpack", http::http_msgpack),
-        ("http_bytes", http::http_bytes),
-    ]);
+    _entries.extend(http::entries());
 
     #[cfg(feature = "builtin-exec")]
-    entries.push(("exec", exec::exec as BuiltinFn));
+    _entries.extend(exec::entries());
 
     #[cfg(feature = "builtin-system")]
-    entries.push(("exit", system::exit as BuiltinFn));
+    _entries.extend(system::entries());
 
     #[cfg(feature = "builtin-testing")]
-    entries.extend([
-        ("panic", testing::panic as BuiltinFn),
-        ("assert", testing::assert),
-        ("assert_eq", testing::assert_eq),
-    ]);
-
-    entries
+    _entries.extend(testing::entries());
 }
 
 #[cfg(test)]

@@ -1,6 +1,15 @@
 use super::*;
 use smallvec::smallvec;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("random_bytes", random_bytes as BuiltinFn),
+        ("rng_seed", rng_seed),
+        ("rng_bytes", rng_bytes),
+        ("rng_int", rng_int),
+    ]
+}
+
 pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) if *n >= 0 => {

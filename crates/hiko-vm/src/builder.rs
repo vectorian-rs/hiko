@@ -6,6 +6,7 @@ use hiko_compile::chunk::CompiledProgram;
 use std::collections::HashMap;
 
 /// Policy for filesystem access.
+#[cfg(feature = "builtin-filesystem")]
 pub struct FilesystemPolicy {
     pub root: String,
     pub allow_read: bool,
@@ -14,11 +15,13 @@ pub struct FilesystemPolicy {
 }
 
 /// Policy for HTTP access.
+#[cfg(feature = "builtin-http")]
 pub struct HttpPolicy {
     pub allowed_hosts: Vec<String>,
 }
 
 /// Policy for direct command execution.
+#[cfg(feature = "builtin-exec")]
 pub struct ExecPolicy {
     pub allowed: Vec<String>,
     /// Timeout in seconds for each exec call (default 30).
@@ -81,6 +84,7 @@ impl VMBuilder {
     }
 
     /// Register a filesystem builtin with a per-builtin folder allowlist.
+    #[cfg(feature = "builtin-filesystem")]
     pub fn allow_filesystem_builtin(mut self, name: &'static str, folders: Vec<String>) -> Self {
         if !self.has_builtin(name)
             && let Some(func) = find_builtin(name)
@@ -92,6 +96,7 @@ impl VMBuilder {
     }
 
     /// Register an HTTP builtin with a per-builtin host allowlist.
+    #[cfg(feature = "builtin-http")]
     pub fn allow_http_builtin(mut self, name: &'static str, allowed_hosts: Vec<String>) -> Self {
         if !self.has_builtin(name)
             && let Some(func) = find_builtin(name)
@@ -118,6 +123,7 @@ impl VMBuilder {
     }
 
     /// Include filesystem builtins filtered by policy.
+    #[cfg(feature = "builtin-filesystem")]
     pub fn with_filesystem(mut self, policy: FilesystemPolicy) -> Self {
         self.fs_root = policy.root.clone();
         let fs_read = [
@@ -155,6 +161,7 @@ impl VMBuilder {
     }
 
     /// Include HTTP builtins.
+    #[cfg(feature = "builtin-http")]
     pub fn with_http(mut self, policy: HttpPolicy) -> Self {
         self.http_allowed_hosts = policy.allowed_hosts.clone();
         let http_names = [
@@ -176,6 +183,7 @@ impl VMBuilder {
     }
 
     /// Include exec builtin with whitelisted commands and timeout.
+    #[cfg(feature = "builtin-exec")]
     pub fn with_exec(mut self, policy: ExecPolicy) -> Self {
         self.exec_allowed = policy.allowed;
         self.exec_timeout = policy.timeout;

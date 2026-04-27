@@ -1,5 +1,15 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("bytes_length", bytes_length as BuiltinFn),
+        ("bytes_to_string", bytes_to_string),
+        ("string_to_bytes", string_to_bytes),
+        ("bytes_get", bytes_get),
+        ("bytes_slice", bytes_slice),
+    ]
+}
+
 pub(super) fn bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

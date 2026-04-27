@@ -1,5 +1,20 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("int_to_string", int_to_string as BuiltinFn),
+        ("float_to_string", float_to_string),
+        ("string_to_int", string_to_int),
+        ("char_to_int", char_to_int),
+        ("int_to_char", int_to_char),
+        ("int_to_float", int_to_float),
+        ("word_to_int", word_to_int),
+        ("int_to_word", int_to_word),
+        ("word_to_string", word_to_string),
+        ("string_to_word", string_to_word),
+    ]
+}
+
 pub(super) fn int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) => heap_alloc(heap, HeapObject::String(n.to_string())),

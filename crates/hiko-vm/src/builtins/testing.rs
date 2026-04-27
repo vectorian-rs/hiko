@@ -1,5 +1,13 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[
+        ("panic", panic as BuiltinFn),
+        ("assert", assert),
+        ("assert_eq", assert_eq),
+    ]
+}
+
 pub(super) fn panic(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {

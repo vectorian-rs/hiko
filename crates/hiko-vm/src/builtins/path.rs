@@ -1,5 +1,9 @@
 use super::*;
 
+pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
+    &[("path_join", path_join as BuiltinFn)]
+}
+
 pub(super) fn path_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
