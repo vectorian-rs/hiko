@@ -80,6 +80,40 @@ fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), C
     }
 }
 
+#[cfg(all(
+    feature = "loader-named-imports",
+    feature = "loader-http",
+    feature = "loader-integrity-blake3"
+))]
+fn write_verified_cache_file(cache_path: &Path, bytes: &[u8]) -> Result<(), CompileError> {
+    let file_name = cache_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("module-cache.hml");
+    let tmp_path = cache_path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp_path, bytes).map_err(|e| {
+        CompileError::codegen(format!(
+            "cannot write cached module '{}': {e}",
+            tmp_path.display()
+        ))
+    })?;
+    if let Err(err) = std::fs::rename(&tmp_path, cache_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(CompileError::codegen(format!(
+            "cannot write cached module '{}': {err}",
+            cache_path.display()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "loader-named-imports")]
 fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), CompileError> {
     if lockfile.schema_version != 1 {
@@ -228,6 +262,11 @@ enum ResolvedImport {
         canonical: PathBuf,
         display_name: String,
     },
+    VerifiedFile {
+        canonical: PathBuf,
+        display_name: String,
+        source: String,
+    },
     Synthetic {
         import_name: &'static str,
         display_name: String,
@@ -239,18 +278,22 @@ enum ResolvedImport {
 impl ResolvedImport {
     fn key(&self) -> ImportKey {
         match self {
-            Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
+            Self::File { canonical, .. } | Self::VerifiedFile { canonical, .. } => {
+                ImportKey::File(canonical.clone())
+            }
             Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
         }
     }
 
     fn display_name(&self) -> &str {
         match self {
-            Self::File { display_name, .. } | Self::Synthetic { display_name, .. } => display_name,
+            Self::File { display_name, .. }
+            | Self::VerifiedFile { display_name, .. }
+            | Self::Synthetic { display_name, .. } => display_name,
         }
     }
 
-    fn load_source(&self) -> Result<(Cow<'static, str>, PathBuf), CompileError> {
+    fn load_source(&self) -> Result<(Cow<'_, str>, PathBuf), CompileError> {
         match self {
             Self::File { canonical, .. } => {
                 let source = std::fs::read_to_string(canonical).map_err(|e| {
@@ -258,6 +301,12 @@ impl ResolvedImport {
                 })?;
                 let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
                 Ok((Cow::Owned(source), base_dir))
+            }
+            Self::VerifiedFile {
+                canonical, source, ..
+            } => {
+                let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
+                Ok((Cow::Borrowed(source.as_str()), base_dir))
             }
             Self::Synthetic {
                 source, base_dir, ..
@@ -818,9 +867,10 @@ impl Compiler {
             )
             .is_ok()
             {
-                return Ok(ResolvedImport::File {
+                return Ok(ResolvedImport::VerifiedFile {
                     canonical: cache_path,
                     display_name: module_name.to_string(),
+                    source: cached,
                 });
             }
             let _ = std::fs::remove_file(&cache_path);
@@ -832,15 +882,11 @@ impl Compiler {
             &expected_hash,
             &format!("named import '{module_name}'"),
         )?;
-        std::fs::write(&cache_path, source).map_err(|e| {
-            CompileError::codegen(format!(
-                "cannot write cached module '{}': {e}",
-                cache_path.display()
-            ))
-        })?;
-        Ok(ResolvedImport::File {
+        write_verified_cache_file(&cache_path, source.as_bytes())?;
+        Ok(ResolvedImport::VerifiedFile {
             canonical: cache_path,
             display_name: module_name.to_string(),
+            source,
         })
     }
 
@@ -2002,6 +2048,25 @@ val result = Box.get (Box.make 41)
         }
         let _ = std::fs::remove_file(&cache_path);
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn verified_file_import_uses_verified_source_without_rereading_disk() {
+        let project_dir = unique_temp_dir("verified-import-source");
+        let cache_path = project_dir.join("module.hml");
+        write_file(&cache_path, "val answer = 0\n");
+        let import = ResolvedImport::VerifiedFile {
+            canonical: cache_path.clone(),
+            display_name: "Test.Module".into(),
+            source: "val answer = 42\n".into(),
+        };
+        write_file(&cache_path, "val answer = 13\n");
+
+        let (source, base_dir) = import.load_source().expect("load verified source");
+        assert_eq!(source.as_ref(), "val answer = 42\n");
+        assert_eq!(base_dir, project_dir);
+
+        std::fs::remove_dir_all(base_dir).ok();
     }
 
     #[test]
