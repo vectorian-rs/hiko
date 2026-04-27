@@ -947,9 +947,16 @@ fn wake_any_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pi
                     }
                     child_pids
                 }
-                _ => continue,
+                _ => {
+                    drop(waiter);
+                    remove_waiter_globally(&table.any_waiters, waiter_pid);
+                    continue;
+                }
             },
-            None => continue,
+            None => {
+                remove_waiter_globally(&table.any_waiters, waiter_pid);
+                continue;
+            }
         };
 
         remove_any_waiter_registration(table, waiter_pid, &child_pids);
@@ -1063,6 +1070,13 @@ fn remove_any_waiter_registration(table: &ProcessTable, waiter_pid: Pid, child_p
     }
 }
 
+fn remove_waiter_globally(waiters: &DashMap<Pid, Vec<Pid>>, waiter_pid: Pid) {
+    let child_pids: Vec<Pid> = waiters.iter().map(|entry| *entry.key()).collect();
+    for child_pid in child_pids {
+        remove_waiter(waiters, child_pid, waiter_pid);
+    }
+}
+
 fn remove_waiter(waiters: &DashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: Pid) {
     let should_remove = if let Some(mut waiter_pids) = waiters.get_mut(&child_pid) {
         waiter_pids.retain(|pid| *pid != waiter_pid);
@@ -1124,6 +1138,49 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["hello threaded\n"]);
+    }
+
+    #[test]
+    fn test_wake_any_waiters_removes_missing_waiter_registrations() {
+        let table = ProcessTable::new();
+        let scheduler = FifoScheduler::new(1000);
+        let waiter = Pid(10);
+        let child1 = Pid(11);
+        let child2 = Pid(12);
+        table.any_waiters.insert(child1, vec![waiter]);
+        table.any_waiters.insert(child2, vec![waiter]);
+
+        wake_any_waiters(&table, &scheduler, child1);
+
+        assert!(!table.any_waiters.contains_key(&child1));
+        assert!(
+            !table
+                .any_waiters
+                .get(&child2)
+                .is_some_and(|waiters| waiters.contains(&waiter))
+        );
+    }
+
+    #[test]
+    fn test_wake_any_waiters_removes_non_blocked_waiter_registrations() {
+        let table = ProcessTable::new();
+        let scheduler = FifoScheduler::new(1000);
+        let waiter = Pid(10);
+        let child1 = Pid(11);
+        let child2 = Pid(12);
+        table.insert(Process::new(waiter, VM::new(compile("val _ = ()")), None));
+        table.any_waiters.insert(child1, vec![waiter]);
+        table.any_waiters.insert(child2, vec![waiter]);
+
+        wake_any_waiters(&table, &scheduler, child1);
+
+        assert!(!table.any_waiters.contains_key(&child1));
+        assert!(
+            !table
+                .any_waiters
+                .get(&child2)
+                .is_some_and(|waiters| waiters.contains(&waiter))
+        );
     }
 
     #[test]
