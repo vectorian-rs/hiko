@@ -63,6 +63,27 @@ impl Runtime {
         Pid(self.next_pid.fetch_add(1, Ordering::Relaxed))
     }
 
+    fn missing_process_message(context: &str, pid: Pid) -> String {
+        format!("{context}: process {:?} missing from runtime table", pid)
+    }
+
+    fn fail_process(&mut self, pid: Pid, failure: ProcessFailure) -> bool {
+        let Some(process) = self.processes.get_mut(&pid) else {
+            self.scheduler.remove(pid);
+            return false;
+        };
+        process.status = ProcessStatus::Failed(failure);
+        self.scheduler.remove(pid);
+        true
+    }
+
+    fn fail_missing_process(&mut self, pid: Pid, context: &str) -> bool {
+        self.fail_process(
+            pid,
+            ProcessFailure::runtime(Self::missing_process_message(context, pid)),
+        )
+    }
+
     /// Spawn a root process from a compiled program.
     /// Returns the Pid.
     pub fn spawn_root(&mut self, program: CompiledProgram) -> Pid {
@@ -87,14 +108,18 @@ impl Runtime {
             let reductions = self.scheduler.reductions(pid);
 
             let result = {
-                let process = self.processes.get_mut(&pid).expect("process not in table");
+                let Some(process) = self.processes.get_mut(&pid) else {
+                    return Err(Self::missing_process_message("run", pid));
+                };
                 process.vm.run_slice(reductions)
             };
 
             match result {
                 RunResult::Done => {
                     let outcome = {
-                        let process = self.processes.get(&pid).unwrap();
+                        let Some(process) = self.processes.get(&pid) else {
+                            return Err(Self::missing_process_message("finish", pid));
+                        };
                         if process.parent.is_some() {
                             let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
                             match serialize(val, &process.vm.heap) {
@@ -126,7 +151,9 @@ impl Runtime {
                     captures,
                 } => match self.handle_spawn(pid, proto_idx, captures) {
                     Ok(child_pid) => {
-                        let process = self.processes.get_mut(&pid).unwrap();
+                        let Some(process) = self.processes.get_mut(&pid) else {
+                            return Err(Self::missing_process_message("spawn", pid));
+                        };
                         process.vm.stack.pop();
                         process.vm.push_value(Value::Pid(child_pid.0));
                         self.scheduler.enqueue(pid);
@@ -188,7 +215,9 @@ impl Runtime {
         captures: Vec<SendableValue>,
     ) -> Result<Pid, ProcessFailure> {
         let child_pid = self.new_pid();
-        let parent = self.processes.get(&parent_pid).unwrap();
+        let parent = self.processes.get(&parent_pid).ok_or_else(|| {
+            ProcessFailure::runtime(Self::missing_process_message("spawn", parent_pid))
+        })?;
         let child_vm =
             crate::runtime_ops::create_child_vm_from_parent(&parent.vm, proto_idx, captures)?;
         let child = Process::new(child_pid, child_vm, Some(parent_pid));
@@ -241,15 +270,19 @@ impl Runtime {
             match record {
                 ChildRecord::Consumed { parent } => {
                     if parent != parent_pid {
-                        let p = self.processes.get_mut(&parent_pid).unwrap();
-                        p.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                            "await: process {:?} is not a child of {:?}",
-                            child_pid, parent_pid
-                        )));
-                        self.scheduler.remove(parent_pid);
+                        self.fail_process(
+                            parent_pid,
+                            ProcessFailure::runtime(format!(
+                                "await: process {:?} is not a child of {:?}",
+                                child_pid, parent_pid
+                            )),
+                        );
                         return;
                     }
-                    let p = self.processes.get_mut(&parent_pid).unwrap();
+                    let Some(p) = self.processes.get_mut(&parent_pid) else {
+                        self.fail_missing_process(parent_pid, "await");
+                        return;
+                    };
                     match await_kind {
                         AwaitKind::Raw => {
                             p.status = ProcessStatus::Failed(ProcessFailure::runtime(
@@ -276,15 +309,19 @@ impl Runtime {
                 }
                 ChildRecord::Ready { parent, outcome } => {
                     if parent != parent_pid {
-                        let p = self.processes.get_mut(&parent_pid).unwrap();
-                        p.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                            "await: process {:?} is not a child of {:?}",
-                            child_pid, parent_pid
-                        )));
-                        self.scheduler.remove(parent_pid);
+                        self.fail_process(
+                            parent_pid,
+                            ProcessFailure::runtime(format!(
+                                "await: process {:?} is not a child of {:?}",
+                                child_pid, parent_pid
+                            )),
+                        );
                         return;
                     }
-                    let p = self.processes.get_mut(&parent_pid).unwrap();
+                    let Some(p) = self.processes.get_mut(&parent_pid) else {
+                        self.fail_missing_process(parent_pid, "await");
+                        return;
+                    };
                     let delivered = match (&await_kind, &outcome) {
                         (AwaitKind::Raw, ChildOutcome::Ok(sv)) => {
                             crate::runtime_ops::deliver_result_to_parent(&mut p.vm, sv.clone())
@@ -343,7 +380,10 @@ impl Runtime {
 
         match child_state {
             ChildState::Running => {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
+                let Some(parent) = self.processes.get_mut(&parent_pid) else {
+                    self.fail_missing_process(parent_pid, "await");
+                    return;
+                };
                 parent.status = ProcessStatus::Blocked(BlockReason::Await {
                     child: child_pid,
                     kind: await_kind,
@@ -351,20 +391,19 @@ impl Runtime {
                 self.waiters.entry(child_pid).or_default().push(parent_pid);
             }
             ChildState::NotFound => {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "await: unknown process {:?}",
-                    child_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!("await: unknown process {:?}", child_pid)),
+                );
             }
             ChildState::NotChild => {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "await: process {:?} is not a child of {:?}",
-                    child_pid, parent_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!(
+                        "await: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )),
+                );
             }
         }
     }
@@ -374,16 +413,20 @@ impl Runtime {
         let tombstone_parent = self.tombstones.get(&child_pid).map(|r| r.parent());
         if let Some(tombstone_parent) = tombstone_parent {
             if tombstone_parent != parent_pid {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "cancel: process {:?} is not a child of {:?}",
-                    child_pid, parent_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!(
+                        "cancel: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )),
+                );
                 return;
             }
             // Already terminal — cancel is no-op
-            let parent = self.processes.get_mut(&parent_pid).unwrap();
+            let Some(parent) = self.processes.get_mut(&parent_pid) else {
+                self.fail_missing_process(parent_pid, "cancel");
+                return;
+            };
             parent.vm.stack.pop();
             parent.vm.push_value(Value::Unit);
             parent.status = ProcessStatus::Runnable;
@@ -413,20 +456,19 @@ impl Runtime {
                 }
             }
             CancelState::NotFound => {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "cancel: unknown process {:?}",
-                    child_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!("cancel: unknown process {:?}", child_pid)),
+                );
             }
             CancelState::NotChild => {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "cancel: process {:?} is not a child of {:?}",
-                    child_pid, parent_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!(
+                        "cancel: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )),
+                );
             }
         }
     }
@@ -434,11 +476,10 @@ impl Runtime {
     fn handle_wait_any(&mut self, parent_pid: Pid, child_pids: Vec<Pid>) {
         let child_pids = dedup_pids(child_pids);
         if child_pids.is_empty() {
-            let parent = self.processes.get_mut(&parent_pid).unwrap();
-            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                "wait_any: expected non-empty pid list",
-            ));
-            self.scheduler.remove(parent_pid);
+            self.fail_process(
+                parent_pid,
+                ProcessFailure::runtime("wait_any: expected non-empty pid list"),
+            );
             return;
         }
 
@@ -447,12 +488,13 @@ impl Runtime {
             // Check tombstone first — child already finished
             if let Some(record) = self.tombstones.get(&child_pid) {
                 if record.parent() != parent_pid {
-                    let parent = self.processes.get_mut(&parent_pid).unwrap();
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "wait_any: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )));
-                    self.scheduler.remove(parent_pid);
+                    self.fail_process(
+                        parent_pid,
+                        ProcessFailure::runtime(format!(
+                            "wait_any: process {:?} is not a child of {:?}",
+                            child_pid, parent_pid
+                        )),
+                    );
                     return;
                 }
                 first_finished = Some(child_pid);
@@ -461,34 +503,39 @@ impl Runtime {
 
             // Check live process
             let Some(child) = self.processes.get(&child_pid) else {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "wait_any: unknown process {:?}",
-                    child_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!("wait_any: unknown process {:?}", child_pid)),
+                );
                 return;
             };
             if child.parent != Some(parent_pid) {
-                let parent = self.processes.get_mut(&parent_pid).unwrap();
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "wait_any: process {:?} is not a child of {:?}",
-                    child_pid, parent_pid
-                )));
-                self.scheduler.remove(parent_pid);
+                self.fail_process(
+                    parent_pid,
+                    ProcessFailure::runtime(format!(
+                        "wait_any: process {:?} is not a child of {:?}",
+                        child_pid, parent_pid
+                    )),
+                );
                 return;
             }
         }
 
         if let Some(winner) = first_finished {
-            let parent = self.processes.get_mut(&parent_pid).unwrap();
+            let Some(parent) = self.processes.get_mut(&parent_pid) else {
+                self.fail_missing_process(parent_pid, "wait_any");
+                return;
+            };
             crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, winner);
             parent.status = ProcessStatus::Runnable;
             self.scheduler.enqueue(parent_pid);
             return;
         }
 
-        let parent = self.processes.get_mut(&parent_pid).unwrap();
+        let Some(parent) = self.processes.get_mut(&parent_pid) else {
+            self.fail_missing_process(parent_pid, "wait_any");
+            return;
+        };
         parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
         for child_pid in child_pids {
             self.any_waiters
@@ -727,6 +774,42 @@ mod tests {
         let program = Parser::new(tokens).parse_program().unwrap();
         let (compiled, _) = Compiler::compile(program).unwrap();
         compiled
+    }
+
+    struct MissingPidScheduler;
+
+    impl Scheduler for MissingPidScheduler {
+        fn enqueue(&self, _pid: Pid) {}
+        fn dequeue(&self) -> Option<Pid> {
+            None
+        }
+        fn remove(&self, _pid: Pid) {}
+        fn reductions(&self, _pid: Pid) -> u64 {
+            1000
+        }
+        fn try_dequeue(&self) -> Option<Pid> {
+            Some(Pid(999))
+        }
+        fn shutdown(&self) {}
+    }
+
+    #[test]
+    fn runtime_reports_missing_scheduled_process() {
+        let mut runtime = Runtime::with_scheduler(Box::new(MissingPidScheduler));
+        let err = runtime.run_to_completion().unwrap_err();
+        assert!(err.contains("run: process Pid(999) missing from runtime table"));
+    }
+
+    #[test]
+    fn handle_spawn_reports_missing_parent_process() {
+        let mut runtime = Runtime::new();
+        let err = runtime.handle_spawn(Pid(404), 0, Vec::new()).unwrap_err();
+        assert_eq!(
+            err,
+            ProcessFailure::RuntimeError(
+                "spawn: process Pid(404) missing from runtime table".into()
+            )
+        );
     }
 
     fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
