@@ -1,6 +1,6 @@
 [package]
 name = "hiko-vm"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 description = "hiko-vm: part of the hiko ML-family scripting language"
@@ -86,10 +86,10 @@ builtin-aws-config = [
 ]
 
 [dependencies]
-hiko-builtin-meta = { version = "0.7.0", path = "../hiko-builtin-meta", default-features = false }
-hiko-common = { version = "0.7.0", path = "../hiko-common", default-features = false }
-hiko-compile = { version = "0.7.0", path = "../hiko-compile", default-features = false }
-hiko-syntax = { version = "0.7.0", path = "../hiko-syntax" }
+hiko-builtin-meta = { version = "0.8.0", path = "../hiko-builtin-meta", default-features = false }
+hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false }
+hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false }
+hiko-syntax = { version = "0.8.0", path = "../hiko-syntax" }
 dashmap = "6"
 dryoc = { version = "0.7", default-features = false, optional = true }
 glob = { version = "0.3", optional = true }
@@ -106,8 +106,8 @@ tokio = { version = "1", features = ["rt", "time"], optional = true }
 cap-std = { version = "4", optional = true }
 
 [dev-dependencies]
-hiko-common = { version = "0.7.0", path = "../hiko-common", default-features = false, features = ["hash"] }
-hiko-compile = { version = "0.7.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }
+hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"] }
+hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 sortedvec = "0.5"

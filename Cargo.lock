@@ -1201,11 +1201,11 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiko-builtin-meta"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "hiko-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "codespan-reporting",
  "hiko-builtin-meta",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-common"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "ureq",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-compile"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hiko-builtin-meta",
  "hiko-common",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-docgen"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hiko-common",
  "serde",
@@ -1252,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-harness"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-syntax"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "criterion",
  "insta",
@@ -1273,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-types"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hiko-builtin-meta",
  "hiko-syntax",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "hiko-vm"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aws-config",
  "cap-std",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-hiko"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "tree-sitter",
