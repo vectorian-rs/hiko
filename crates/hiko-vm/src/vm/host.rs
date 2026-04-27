@@ -297,8 +297,12 @@ impl VM {
             }
         };
 
-        let stdout_str = stdout_handle.join().unwrap_or_default();
-        let stderr_str = stderr_handle.join().unwrap_or_default();
+        let stdout_str = stdout_handle
+            .join()
+            .map_err(|_| "exec: stdout reader thread panicked".to_string())?;
+        let stderr_str = stderr_handle
+            .join()
+            .map_err(|_| "exec: stderr reader thread panicked".to_string())?;
         self.heap
             .charge_io_bytes((stdout_str.len() + stderr_str.len()) as u64)
             .map_err(|e| format!("exec: {e}"))?;
