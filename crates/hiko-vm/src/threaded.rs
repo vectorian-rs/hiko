@@ -991,7 +991,11 @@ fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_p
                 {
                     *kind
                 }
-                _ => continue,
+                _ => {
+                    drop(waiter);
+                    remove_waiter_globally(&table.waiters, waiter_pid);
+                    continue;
+                }
             };
 
             match (await_kind, &delivery) {
@@ -1040,6 +1044,8 @@ fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_p
                     }
                 }
             }
+        } else {
+            remove_waiter_globally(&table.waiters, waiter_pid);
         }
     }
 
@@ -1178,6 +1184,63 @@ mod tests {
         assert!(
             !table
                 .any_waiters
+                .get(&child2)
+                .is_some_and(|waiters| waiters.contains(&waiter))
+        );
+    }
+
+    #[test]
+    fn test_wake_join_waiters_removes_missing_waiter_registrations() {
+        let table = ProcessTable::new();
+        let scheduler = FifoScheduler::new(1000);
+        let waiter = Pid(10);
+        let child1 = Pid(11);
+        let child2 = Pid(12);
+        table.waiters.insert(child1, vec![waiter]);
+        table.waiters.insert(child2, vec![waiter]);
+        table.tombstones.insert(
+            child1,
+            ChildRecord::Ready {
+                parent: waiter,
+                outcome: ChildOutcome::Ok(crate::sendable::SendableValue::Unit),
+            },
+        );
+
+        wake_join_waiters(&table, &scheduler, child1);
+
+        assert!(!table.waiters.contains_key(&child1));
+        assert!(
+            !table
+                .waiters
+                .get(&child2)
+                .is_some_and(|waiters| waiters.contains(&waiter))
+        );
+    }
+
+    #[test]
+    fn test_wake_join_waiters_removes_non_blocked_waiter_registrations() {
+        let table = ProcessTable::new();
+        let scheduler = FifoScheduler::new(1000);
+        let waiter = Pid(10);
+        let child1 = Pid(11);
+        let child2 = Pid(12);
+        table.insert(Process::new(waiter, VM::new(compile("val _ = ()")), None));
+        table.waiters.insert(child1, vec![waiter]);
+        table.waiters.insert(child2, vec![waiter]);
+        table.tombstones.insert(
+            child1,
+            ChildRecord::Ready {
+                parent: waiter,
+                outcome: ChildOutcome::Ok(crate::sendable::SendableValue::Unit),
+            },
+        );
+
+        wake_join_waiters(&table, &scheduler, child1);
+
+        assert!(!table.waiters.contains_key(&child1));
+        assert!(
+            !table
+                .waiters
                 .get(&child2)
                 .is_some_and(|waiters| waiters.contains(&waiter))
         );
