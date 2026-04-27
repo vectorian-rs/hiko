@@ -18,35 +18,61 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     ]
 }
 
-pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let path = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("read_file: expected String".into()),
+fn string_arg(args: &[Value], heap: &Heap, name: &str) -> Result<String, String> {
+    match args.first() {
+        Some(Value::Heap(r)) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => Ok(s.clone()),
+            _ => Err(format!("{name}: expected String")),
         },
-        _ => return Err("read_file: expected String".into()),
+        _ => Err(format!("{name}: expected String")),
+    }
+}
+
+fn cap_io<T>(
+    builtin: &str,
+    path: &str,
+    heap: &Heap,
+    f: impl Fn(&cap_std::fs::Dir, &std::path::Path) -> std::io::Result<T>,
+) -> Result<T, String> {
+    let candidates = heap
+        .cap_candidates_for(builtin, path)
+        .map_err(|e| format!("{builtin}: {e}"))?;
+    let mut last_err = None;
+    for candidate in candidates {
+        match f(&candidate.dir, &candidate.relative_path) {
+            Ok(value) => return Ok(value),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(format!(
+        "{builtin}: {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "no allowed folder matched".into())
+    ))
+}
+
+pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let path = string_arg(args, heap, "read_file")?;
+    let contents = if heap.has_cap_fs_policy() {
+        cap_io("read_file", &path, heap, |dir, path| {
+            dir.read_to_string(path)
+        })?
+    } else {
+        std::fs::read_to_string(&path).map_err(|e| format!("read_file: {e}"))?
     };
-    let checked_path = heap
-        .check_fs_path_for("read_file", &path)
-        .map_err(|e| format!("read_file: {e}"))?;
-    let contents = std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file: {e}"))?;
     heap.charge_io_bytes(contents.len() as u64)
         .map_err(|e| format!("read_file: {e}"))?;
     heap_alloc(heap, HeapObject::String(contents))
 }
 
 pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let path = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("read_file_bytes: expected String".into()),
-        },
-        _ => return Err("read_file_bytes: expected String".into()),
+    let path = string_arg(args, heap, "read_file_bytes")?;
+    let contents = if heap.has_cap_fs_policy() {
+        cap_io("read_file_bytes", &path, heap, |dir, path| dir.read(path))?
+    } else {
+        std::fs::read(&path).map_err(|e| format!("read_file_bytes: {e}"))?
     };
-    let checked_path = heap
-        .check_fs_path_for("read_file_bytes", &path)
-        .map_err(|e| format!("read_file_bytes: {e}"))?;
-    let contents = std::fs::read(&checked_path).map_err(|e| format!("read_file_bytes: {e}"))?;
     heap.charge_io_bytes(contents.len() as u64)
         .map_err(|e| format!("read_file_bytes: {e}"))?;
     heap_alloc(heap, HeapObject::Bytes(contents))
@@ -74,43 +100,43 @@ pub(super) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         },
         _ => return Err("write_file: expected String".into()),
     };
-    let checked_path = heap
-        .check_fs_path_for("write_file", &path)
-        .map_err(|e| format!("write_file: {e}"))?;
     heap.charge_io_bytes(contents.len() as u64)
         .map_err(|e| format!("write_file: {e}"))?;
-    std::fs::write(&checked_path, &contents).map_err(|e| format!("write_file: {e}"))?;
+    if heap.has_cap_fs_policy() {
+        cap_io("write_file", &path, heap, |dir, path| {
+            dir.write(path, &contents)
+        })?;
+    } else {
+        std::fs::write(&path, &contents).map_err(|e| format!("write_file: {e}"))?;
+    }
     Ok(Value::Unit)
 }
 
 pub(super) fn file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => {
-                let checked_path = heap
-                    .check_fs_path_for("file_exists", s)
-                    .map_err(|e| format!("file_exists: {e}"))?;
-                Ok(Value::Bool(checked_path.exists()))
-            }
-            _ => Err("file_exists: expected String".into()),
-        },
-        _ => Err("file_exists: expected String".into()),
+    let path = string_arg(args, heap, "file_exists")?;
+    if heap.has_cap_fs_policy() {
+        let candidates = heap
+            .cap_candidates_for("file_exists", &path)
+            .map_err(|e| format!("file_exists: {e}"))?;
+        Ok(Value::Bool(candidates.iter().any(|candidate| {
+            candidate.dir.exists(&candidate.relative_path)
+        })))
+    } else {
+        Ok(Value::Bool(std::path::Path::new(&path).exists()))
     }
 }
 
 pub(super) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let path = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("list_dir: expected String".into()),
-        },
-        _ => return Err("list_dir: expected String".into()),
+    let path = string_arg(args, heap, "list_dir")?;
+    let mut read_dir = if heap.has_cap_fs_policy() {
+        cap_io("list_dir", &path, heap, |dir, path| dir.read_dir(path))?
+    } else {
+        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .and_then(|dir| dir.read_dir(&path))
+            .map_err(|e| format!("list_dir: {e}"))?
     };
-    let checked_path = heap
-        .check_fs_path_for("list_dir", &path)
-        .map_err(|e| format!("list_dir: {e}"))?;
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(&checked_path).map_err(|e| format!("list_dir: {e}"))? {
+    for entry in &mut read_dir {
         let entry = entry.map_err(|e| format!("list_dir: {e}"))?;
         let text = entry.file_name().to_string_lossy().to_string();
         heap.charge_io_bytes(text.len() as u64)
@@ -121,64 +147,54 @@ pub(super) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
 }
 
 pub(super) fn remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => {
-                let checked_path = heap
-                    .check_fs_path_for("remove_file", s)
-                    .map_err(|e| format!("remove_file: {e}"))?;
-                std::fs::remove_file(&checked_path).map_err(|e| format!("remove_file: {e}"))?;
-                Ok(Value::Unit)
-            }
-            _ => Err("remove_file: expected String".into()),
-        },
-        _ => Err("remove_file: expected String".into()),
+    let path = string_arg(args, heap, "remove_file")?;
+    if heap.has_cap_fs_policy() {
+        cap_io("remove_file", &path, heap, |dir, path| {
+            dir.remove_file(path)
+        })?;
+    } else {
+        std::fs::remove_file(&path).map_err(|e| format!("remove_file: {e}"))?;
     }
+    Ok(Value::Unit)
 }
 
 pub(super) fn create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => {
-                let checked_path = heap
-                    .check_fs_path_for("create_dir", s)
-                    .map_err(|e| format!("create_dir: {e}"))?;
-                std::fs::create_dir_all(&checked_path).map_err(|e| format!("create_dir: {e}"))?;
-                Ok(Value::Unit)
-            }
-            _ => Err("create_dir: expected String".into()),
-        },
-        _ => Err("create_dir: expected String".into()),
+    let path = string_arg(args, heap, "create_dir")?;
+    if heap.has_cap_fs_policy() {
+        cap_io("create_dir", &path, heap, |dir, path| {
+            dir.create_dir_all(path)
+        })?;
+    } else {
+        std::fs::create_dir_all(&path).map_err(|e| format!("create_dir: {e}"))?;
     }
+    Ok(Value::Unit)
 }
 
 pub(super) fn is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => {
-                let checked_path = heap
-                    .check_fs_path_for("is_dir", s)
-                    .map_err(|e| format!("is_dir: {e}"))?;
-                Ok(Value::Bool(checked_path.is_dir()))
-            }
-            _ => Err("is_dir: expected String".into()),
-        },
-        _ => Err("is_dir: expected String".into()),
+    let path = string_arg(args, heap, "is_dir")?;
+    if heap.has_cap_fs_policy() {
+        let candidates = heap
+            .cap_candidates_for("is_dir", &path)
+            .map_err(|e| format!("is_dir: {e}"))?;
+        Ok(Value::Bool(candidates.iter().any(|candidate| {
+            candidate.dir.is_dir(&candidate.relative_path)
+        })))
+    } else {
+        Ok(Value::Bool(std::path::Path::new(&path).is_dir()))
     }
 }
 
 pub(super) fn is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => {
-                let checked_path = heap
-                    .check_fs_path_for("is_file", s)
-                    .map_err(|e| format!("is_file: {e}"))?;
-                Ok(Value::Bool(checked_path.is_file()))
-            }
-            _ => Err("is_file: expected String".into()),
-        },
-        _ => Err("is_file: expected String".into()),
+    let path = string_arg(args, heap, "is_file")?;
+    if heap.has_cap_fs_policy() {
+        let candidates = heap
+            .cap_candidates_for("is_file", &path)
+            .map_err(|e| format!("is_file: {e}"))?;
+        Ok(Value::Bool(candidates.iter().any(|candidate| {
+            candidate.dir.is_file(&candidate.relative_path)
+        })))
+    } else {
+        Ok(Value::Bool(std::path::Path::new(&path).is_file()))
     }
 }
 
@@ -269,11 +285,16 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
-    let checked_path = heap
-        .check_fs_path_for("read_file_tagged", path)
-        .map_err(|e| format!("read_file_tagged: {e}"))?;
-    let content =
-        std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?;
+    let content = if heap.has_cap_fs_policy() {
+        cap_io("read_file_tagged", path, heap, |dir, path| {
+            dir.read_to_string(path)
+        })?
+    } else {
+        let checked_path = heap
+            .check_fs_path_for("read_file_tagged", path)
+            .map_err(|e| format!("read_file_tagged: {e}"))?;
+        std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?
+    };
     heap.charge_io_bytes(content.len() as u64)
         .map_err(|e| format!("read_file_tagged: {e}"))?;
 
@@ -321,11 +342,16 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("edit_file_tagged: expected String for edits".into()),
     };
 
-    let checked_path = heap
-        .check_fs_path_for("edit_file_tagged", &path)
-        .map_err(|e| format!("edit_file_tagged: {e}"))?;
-    let content =
-        std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    let content = if heap.has_cap_fs_policy() {
+        cap_io("edit_file_tagged", &path, heap, |dir, path| {
+            dir.read_to_string(path)
+        })?
+    } else {
+        let checked_path = heap
+            .check_fs_path_for("edit_file_tagged", &path)
+            .map_err(|e| format!("edit_file_tagged: {e}"))?;
+        std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?
+    };
     heap.charge_io_bytes(content.len() as u64)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
     let lines = split_file_lines(&content);
@@ -441,7 +467,17 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     let final_output = render_file_lines(&result);
     heap.charge_io_bytes(final_output.len() as u64)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
-    std::fs::write(&checked_path, &final_output).map_err(|e| format!("edit_file_tagged: {e}"))?;
+    if heap.has_cap_fs_policy() {
+        cap_io("edit_file_tagged", &path, heap, |dir, path| {
+            dir.write(path, &final_output)
+        })?;
+    } else {
+        let checked_path = heap
+            .check_fs_path_for("edit_file_tagged", &path)
+            .map_err(|e| format!("edit_file_tagged: {e}"))?;
+        std::fs::write(&checked_path, &final_output)
+            .map_err(|e| format!("edit_file_tagged: {e}"))?;
+    }
 
     let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
     heap_alloc(heap, HeapObject::String(msg))
@@ -457,6 +493,101 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     };
     let mut seen = std::collections::BTreeSet::new();
     let mut paths = Vec::new();
+
+    if heap.has_cap_fs_policy() {
+        fn collect_cap_paths(
+            root: &std::path::Path,
+            cap_dir: &cap_std::fs::Dir,
+            dir: &std::path::Path,
+            visited: &mut std::collections::HashSet<std::path::PathBuf>,
+            out: &mut Vec<std::path::PathBuf>,
+        ) -> Result<(), String> {
+            if !visited.insert(dir.to_path_buf()) {
+                return Ok(());
+            }
+            let mut entries = cap_dir
+                .read_dir(dir)
+                .map_err(|e| format!("glob: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("glob: {e}"))?;
+            entries.sort_by_key(|entry| entry.file_name());
+
+            for entry in entries {
+                let name = entry.file_name();
+                let child = dir.join(&name);
+                let file_type = entry.file_type().map_err(|e| format!("glob: {e}"))?;
+                if file_type.is_symlink() {
+                    let target = std::fs::canonicalize(root.join(&child))
+                        .map_err(|e| format!("glob: {e}"))?;
+                    let relative_target = target.strip_prefix(root).map_err(|_| {
+                        "glob: path contains symlink outside allowed root".to_string()
+                    })?;
+                    out.push(target.clone());
+                    if target.is_dir() {
+                        let relative_target = if relative_target.as_os_str().is_empty() {
+                            std::path::Path::new(".")
+                        } else {
+                            relative_target
+                        };
+                        collect_cap_paths(root, cap_dir, relative_target, visited, out)?;
+                    }
+                } else {
+                    let display_child = child.strip_prefix(".").unwrap_or(&child);
+                    let absolute = root.join(display_child);
+                    out.push(absolute.clone());
+                    if file_type.is_dir() {
+                        collect_cap_paths(root, cap_dir, &child, visited, out)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        if !std::path::Path::new(&pattern).is_absolute() {
+            crate::heap::validate_cap_relative_path(&pattern).map_err(|e| format!("glob: {e}"))?;
+        }
+        let candidates = heap
+            .cap_candidates_for("glob", ".")
+            .map_err(|e| format!("glob: {e}"))?;
+        if std::path::Path::new(&pattern).is_absolute()
+            && !candidates
+                .iter()
+                .any(|candidate| std::path::Path::new(&pattern).starts_with(&candidate.root))
+        {
+            return Err(format!(
+                "glob: path '{pattern}' is outside allowed root/folders"
+            ));
+        }
+        for candidate in candidates {
+            let pattern_text = if std::path::Path::new(&pattern).is_absolute() {
+                pattern.clone()
+            } else {
+                candidate.root.join(&pattern).to_string_lossy().to_string()
+            };
+            let pattern = glob::Pattern::new(&pattern_text).map_err(|e| format!("glob: {e}"))?;
+            let mut all_paths = Vec::new();
+            let mut visited = std::collections::HashSet::new();
+            collect_cap_paths(
+                &candidate.root,
+                &candidate.dir,
+                &candidate.relative_path,
+                &mut visited,
+                &mut all_paths,
+            )?;
+            for path in all_paths {
+                if pattern.matches_path(&path) {
+                    let text = path.to_string_lossy().to_string();
+                    if seen.insert(text.clone()) {
+                        heap.charge_io_bytes(text.len() as u64)
+                            .map_err(|e| format!("glob: {e}"))?;
+                        paths.push(heap_alloc(heap, HeapObject::String(text))?);
+                    }
+                }
+            }
+        }
+        return alloc_list(heap, paths);
+    }
+
     let roots = heap
         .allowed_fs_folders_for("glob")
         .map_err(|e| format!("glob: {e}"))?;
@@ -512,41 +643,112 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         },
         _ => return Err("walk_dir: expected String".into()),
     };
-    let checked_dir = heap
-        .check_fs_path_for("walk_dir", &dir)
-        .map_err(|e| format!("walk_dir: {e}"))?;
-    fn walk(
-        dir: &std::path::Path,
-        heap: &Heap,
-        visited: &mut std::collections::HashSet<std::path::PathBuf>,
-        out: &mut Vec<String>,
-    ) -> Result<(), String> {
-        let canonical_dir = std::fs::canonicalize(dir).map_err(|e| format!("walk_dir: {e}"))?;
-        if !visited.insert(canonical_dir) {
-            return Ok(());
+    let mut files = Vec::new();
+    if heap.has_cap_fs_policy() {
+        fn walk_cap(
+            root: &std::path::Path,
+            cap_dir: &cap_std::fs::Dir,
+            dir: &std::path::Path,
+            visited: &mut std::collections::HashSet<std::path::PathBuf>,
+            out: &mut Vec<String>,
+        ) -> Result<(), String> {
+            if !visited.insert(dir.to_path_buf()) {
+                return Ok(());
+            }
+
+            let mut entries = cap_dir
+                .read_dir(dir)
+                .map_err(|e| format!("walk_dir: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("walk_dir: {e}"))?;
+            entries.sort_by_key(|entry| entry.file_name());
+
+            for entry in entries {
+                let name = entry.file_name();
+                let child = dir.join(&name);
+                let file_type = entry.file_type().map_err(|e| format!("walk_dir: {e}"))?;
+                if file_type.is_symlink() {
+                    let target = std::fs::canonicalize(root.join(&child))
+                        .map_err(|e| format!("walk_dir: {e}"))?;
+                    let relative_target = target.strip_prefix(root).map_err(|_| {
+                        "walk_dir: path contains symlink outside allowed root".to_string()
+                    })?;
+                    if target.is_dir() {
+                        let relative_target = if relative_target.as_os_str().is_empty() {
+                            std::path::Path::new(".")
+                        } else {
+                            relative_target
+                        };
+                        walk_cap(root, cap_dir, relative_target, visited, out)?;
+                    } else if target.is_file() {
+                        out.push(target.to_string_lossy().to_string());
+                    }
+                } else if file_type.is_dir() {
+                    walk_cap(root, cap_dir, &child, visited, out)?;
+                } else if file_type.is_file() {
+                    let display_child = child.strip_prefix(".").unwrap_or(&child);
+                    out.push(root.join(display_child).to_string_lossy().to_string());
+                }
+            }
+            Ok(())
         }
 
-        let mut entries = std::fs::read_dir(dir)
-            .map_err(|e| format!("walk_dir: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
+        let candidates = heap
+            .cap_candidates_for("walk_dir", &dir)
             .map_err(|e| format!("walk_dir: {e}"))?;
-        entries.sort_by_key(|entry| entry.path());
-
-        for entry in entries {
-            let checked_path = heap
-                .check_fs_path_for("walk_dir", entry.path().to_string_lossy().as_ref())
-                .map_err(|e| format!("walk_dir: {e}"))?;
-            if checked_path.is_dir() {
-                walk(&checked_path, heap, visited, out)?;
-            } else if checked_path.is_file() {
-                out.push(checked_path.to_string_lossy().to_string());
+        let mut seen = std::collections::BTreeSet::new();
+        for candidate in candidates {
+            let mut candidate_files = Vec::new();
+            let mut visited = std::collections::HashSet::new();
+            walk_cap(
+                &candidate.root,
+                &candidate.dir,
+                &candidate.relative_path,
+                &mut visited,
+                &mut candidate_files,
+            )?;
+            for file in candidate_files {
+                if seen.insert(file.clone()) {
+                    files.push(file);
+                }
             }
         }
-        Ok(())
+    } else {
+        let checked_dir = heap
+            .check_fs_path_for("walk_dir", &dir)
+            .map_err(|e| format!("walk_dir: {e}"))?;
+        fn walk(
+            dir: &std::path::Path,
+            heap: &Heap,
+            visited: &mut std::collections::HashSet<std::path::PathBuf>,
+            out: &mut Vec<String>,
+        ) -> Result<(), String> {
+            let canonical_dir = std::fs::canonicalize(dir).map_err(|e| format!("walk_dir: {e}"))?;
+            if !visited.insert(canonical_dir) {
+                return Ok(());
+            }
+
+            let mut entries = std::fs::read_dir(dir)
+                .map_err(|e| format!("walk_dir: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("walk_dir: {e}"))?;
+            entries.sort_by_key(|entry| entry.path());
+
+            for entry in entries {
+                let checked_path = heap
+                    .check_fs_path_for("walk_dir", entry.path().to_string_lossy().as_ref())
+                    .map_err(|e| format!("walk_dir: {e}"))?;
+                if checked_path.is_dir() {
+                    walk(&checked_path, heap, visited, out)?;
+                } else if checked_path.is_file() {
+                    out.push(checked_path.to_string_lossy().to_string());
+                }
+            }
+            Ok(())
+        }
+        let mut visited = std::collections::HashSet::new();
+        walk(&checked_dir, heap, &mut visited, &mut files)?;
     }
-    let mut files = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-    walk(&checked_dir, heap, &mut visited, &mut files)?;
     let mut values = Vec::with_capacity(files.len());
     for f in files {
         heap.charge_io_bytes(f.len() as u64)

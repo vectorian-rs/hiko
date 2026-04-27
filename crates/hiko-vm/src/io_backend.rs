@@ -9,6 +9,8 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(feature = "builtin-filesystem")]
+use crate::heap::CapFsCandidate;
 use crate::sendable::SendableValue;
 
 /// Opaque token identifying an I/O operation.
@@ -38,8 +40,14 @@ pub enum IoRequest {
         body: String,
         format: HttpResponseFormat,
     },
-    /// Read a file. Returns file contents as a string.
+    /// Read a file by ambient path. Returns file contents as a string.
     ReadFile { path: String },
+    /// Read a file through preopened directory capabilities.
+    #[cfg(feature = "builtin-filesystem")]
+    CapReadFile {
+        candidates: Vec<CapFsCandidate>,
+        path: String,
+    },
 }
 
 /// Result of a completed I/O operation.
@@ -109,6 +117,12 @@ impl IoBackend for MockIoBackend {
                 IoResult::Ok { value, io_bytes }
             }
             IoRequest::ReadFile { path } => {
+                let value = SendableValue::String(format!("mock contents of {path}").into());
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
+            #[cfg(feature = "builtin-filesystem")]
+            IoRequest::CapReadFile { path, .. } => {
                 let value = SendableValue::String(format!("mock contents of {path}").into());
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
@@ -240,7 +254,30 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             },
             Err(e) => IoResult::Err(format!("read_file: {e}")),
         },
+        #[cfg(feature = "builtin-filesystem")]
+        IoRequest::CapReadFile { candidates, path } => match cap_read_to_string(&candidates, &path)
+        {
+            Ok(contents) => IoResult::Ok {
+                io_bytes: contents.len() as u64,
+                value: SendableValue::String(contents.into()),
+            },
+            Err(e) => IoResult::Err(format!("read_file: {e}")),
+        },
     }
+}
+
+#[cfg(feature = "builtin-filesystem")]
+fn cap_read_to_string(candidates: &[CapFsCandidate], _path: &str) -> Result<String, String> {
+    let mut last_err = None;
+    for candidate in candidates {
+        match candidate.dir.read_to_string(&candidate.relative_path) {
+            Ok(contents) => return Ok(contents),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(last_err
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "no allowed folder matched".into()))
 }
 
 /// Async HTTP GET — runs on I/O pool thread.

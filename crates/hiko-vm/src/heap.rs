@@ -1,6 +1,8 @@
 use crate::value::{GcRef, HeapObject};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "builtin-filesystem")]
+use std::sync::Arc;
 #[cfg(feature = "builtin-http")]
 use url::Url;
 
@@ -54,6 +56,21 @@ impl std::fmt::Display for IoLimitExceeded {
     }
 }
 
+#[cfg(feature = "builtin-filesystem")]
+#[derive(Clone, Debug)]
+pub struct CapAllowedDir {
+    pub root: PathBuf,
+    pub dir: Arc<cap_std::fs::Dir>,
+}
+
+#[cfg(feature = "builtin-filesystem")]
+#[derive(Clone, Debug)]
+pub struct CapFsCandidate {
+    pub root: PathBuf,
+    pub dir: Arc<cap_std::fs::Dir>,
+    pub relative_path: PathBuf,
+}
+
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
     object_bytes: Vec<usize>,
@@ -71,6 +88,9 @@ pub struct Heap {
     fs_root: String,
     /// Per-builtin filesystem folder allowlists.
     fs_builtin_folders: HashMap<String, Vec<String>>,
+    /// Preopened per-builtin filesystem directory capabilities.
+    #[cfg(feature = "builtin-filesystem")]
+    fs_builtin_dirs: HashMap<String, Vec<CapAllowedDir>>,
     /// Allowed HTTP hosts (empty = unrestricted).
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
@@ -103,6 +123,8 @@ impl Heap {
             max_io_bytes: None,
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
+            #[cfg(feature = "builtin-filesystem")]
+            fs_builtin_dirs: HashMap::new(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
             stdin_override: None,
@@ -139,6 +161,10 @@ impl Heap {
 
     pub fn set_fs_root(&mut self, root: String) {
         self.fs_root = root;
+        #[cfg(feature = "builtin-filesystem")]
+        {
+            self.rebuild_cap_dirs();
+        }
     }
 
     pub fn fs_root(&self) -> &str {
@@ -147,10 +173,82 @@ impl Heap {
 
     pub fn set_fs_builtin_folders(&mut self, folders: HashMap<String, Vec<String>>) {
         self.fs_builtin_folders = folders;
+        #[cfg(feature = "builtin-filesystem")]
+        {
+            self.rebuild_cap_dirs();
+        }
     }
 
     pub fn fs_builtin_folders(&self) -> &HashMap<String, Vec<String>> {
         &self.fs_builtin_folders
+    }
+
+    #[cfg(feature = "builtin-filesystem")]
+    pub fn has_cap_fs_policy(&self) -> bool {
+        !self.fs_root.is_empty() || !self.fs_builtin_folders.is_empty()
+    }
+
+    #[cfg(feature = "builtin-filesystem")]
+    pub fn cap_candidates_for(
+        &self,
+        builtin: &str,
+        path: &str,
+    ) -> Result<Vec<CapFsCandidate>, String> {
+        let dirs = self
+            .fs_builtin_dirs
+            .get(builtin)
+            .ok_or_else(|| format!("builtin '{builtin}' has no filesystem permission"))?;
+        if dirs.is_empty() {
+            return Err(format!("builtin '{builtin}' has no allowed folders"));
+        }
+        let mut candidates = Vec::new();
+        for allowed in dirs {
+            if let Some(relative_path) = cap_relative_path_for(&allowed.root, path)? {
+                candidates.push(CapFsCandidate {
+                    root: allowed.root.clone(),
+                    dir: Arc::clone(&allowed.dir),
+                    relative_path,
+                });
+            }
+        }
+        if candidates.is_empty() {
+            Err(format!("path '{path}' is outside allowed root/folders"))
+        } else {
+            Ok(candidates)
+        }
+    }
+
+    #[cfg(feature = "builtin-filesystem")]
+    fn rebuild_cap_dirs(&mut self) {
+        self.fs_builtin_dirs.clear();
+        if self.fs_builtin_folders.is_empty() {
+            if !self.fs_root.is_empty()
+                && let Ok((root, dir)) = open_cap_dir(&self.fs_root)
+            {
+                let entry = CapAllowedDir {
+                    root,
+                    dir: Arc::new(dir),
+                };
+                for builtin in FILESYSTEM_BUILTIN_NAMES {
+                    self.fs_builtin_dirs
+                        .insert((*builtin).to_string(), vec![entry.clone()]);
+                }
+            }
+            return;
+        }
+
+        for (builtin, folders) in &self.fs_builtin_folders {
+            let dirs = folders
+                .iter()
+                .filter_map(|folder| {
+                    open_cap_dir(folder).ok().map(|(root, dir)| CapAllowedDir {
+                        root,
+                        dir: Arc::new(dir),
+                    })
+                })
+                .collect();
+            self.fs_builtin_dirs.insert(builtin.clone(), dirs);
+        }
     }
 
     pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
@@ -434,6 +532,86 @@ impl Heap {
     pub fn live_count(&self) -> usize {
         self.objects.iter().filter(|o| o.is_some()).count()
     }
+}
+
+#[cfg(feature = "builtin-filesystem")]
+const FILESYSTEM_BUILTIN_NAMES: &[&str] = &[
+    "read_file",
+    "read_file_bytes",
+    "write_file",
+    "file_exists",
+    "list_dir",
+    "remove_file",
+    "create_dir",
+    "is_dir",
+    "is_file",
+    "read_file_tagged",
+    "edit_file_tagged",
+    "glob",
+    "walk_dir",
+];
+
+#[cfg(feature = "builtin-filesystem")]
+fn open_cap_dir(path: &str) -> std::io::Result<(PathBuf, cap_std::fs::Dir)> {
+    let root = std::fs::canonicalize(path)?;
+    let dir = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
+    Ok((root, dir))
+}
+
+#[cfg(feature = "builtin-filesystem")]
+fn cap_relative_path_for(root: &Path, path: &str) -> Result<Option<PathBuf>, String> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        let resolved = canonicalize_with_missing_tail(path)
+            .map_err(|e| format!("cannot resolve path '{}': {e}", path.display()))?;
+        return match resolved.strip_prefix(root) {
+            Ok(relative) => {
+                validate_cap_relative_path(relative)?;
+                Ok(Some(normalize_cap_relative_path(relative)))
+            }
+            Err(_) => Ok(None),
+        };
+    }
+    validate_cap_relative_path(path)?;
+    Ok(Some(normalize_cap_relative_path(path)))
+}
+
+#[cfg(feature = "builtin-filesystem")]
+fn normalize_cap_relative_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        if let std::path::Component::Normal(part) = component {
+            normalized.push(part);
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
+#[cfg(feature = "builtin-filesystem")]
+pub(crate) fn validate_cap_relative_path(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    if path.is_absolute() {
+        return Err("absolute paths are not allowed for filesystem capabilities".into());
+    }
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err("path contains parent-directory component outside allowed root".into());
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err("absolute paths are not allowed for filesystem capabilities".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_fs_path(fs_root: &str, path: &str) -> Result<PathBuf, String> {

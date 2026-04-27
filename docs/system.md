@@ -311,6 +311,13 @@ memory, and host-I/O limits. `max_fuel` remains accepted as a compatibility
 alias for `max_work`, and `max_heap` remains available as a separate
 object-count guard.
 
+Filesystem policies are implemented with preopened `cap-std` directory
+capabilities when `builtin-filesystem` is compiled. The VM opens each configured
+root/folder once during builder setup and filesystem builtins operate relative to
+those capabilities instead of resolving every operation through ambient absolute
+paths. This reduces time-of-check/time-of-use exposure, but it is still a VM
+capability boundary rather than a full OS/container sandbox.
+
 To inspect the static bytecode size of a script, use:
 
 ```bash

@@ -228,15 +228,25 @@ impl VM {
                     "read_file",
                 )
                 .map_err(|msg| RuntimeError { message: msg })?;
-                let checked = self
-                    .heap
-                    .check_fs_path_for("read_file", &path)
-                    .map_err(|e| RuntimeError {
-                        message: format!("read_file: {e}"),
-                    })?;
-                Some(crate::io_backend::IoRequest::ReadFile {
-                    path: checked.to_string_lossy().to_string(),
-                })
+                #[cfg(feature = "builtin-filesystem")]
+                {
+                    if self.heap.has_cap_fs_policy() {
+                        let candidates =
+                            self.heap
+                                .cap_candidates_for("read_file", &path)
+                                .map_err(|e| RuntimeError {
+                                    message: format!("read_file: {e}"),
+                                })?;
+                        Some(crate::io_backend::IoRequest::CapReadFile { candidates, path })
+                    } else {
+                        Some(crate::io_backend::IoRequest::ReadFile { path })
+                    }
+                }
+                #[cfg(not(feature = "builtin-filesystem"))]
+                {
+                    let _ = path;
+                    None
+                }
             } else {
                 None
             };
