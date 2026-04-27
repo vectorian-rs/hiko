@@ -98,6 +98,80 @@ impl ProcessTable {
             )
         }) && !self.processes.iter().any(|e| e.is_runnable())
     }
+
+    #[cfg(test)]
+    fn check_invariants(&self) -> Result<(), String> {
+        for entry in self.waiters.iter() {
+            let child_pid = *entry.key();
+            if !self.processes.contains_key(&child_pid)
+                && !self.tombstones.contains_key(&child_pid)
+                && !self.child_parents.contains_key(&child_pid)
+            {
+                return Err(format!("waiters contains unknown child {child_pid:?}"));
+            }
+            for waiter_pid in entry.value() {
+                let Some(waiter) = self.processes.get(waiter_pid) else {
+                    return Err(format!(
+                        "waiter {waiter_pid:?} registered for {child_pid:?} is missing"
+                    ));
+                };
+                match &waiter.status {
+                    ProcessStatus::Blocked(BlockReason::Await { child, .. })
+                        if *child == child_pid => {}
+                    status => {
+                        return Err(format!(
+                            "waiter {waiter_pid:?} registered for {child_pid:?} but has status {status:?}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        for entry in self.any_waiters.iter() {
+            let child_pid = *entry.key();
+            if !self.processes.contains_key(&child_pid)
+                && !self.tombstones.contains_key(&child_pid)
+                && !self.child_parents.contains_key(&child_pid)
+            {
+                return Err(format!("any_waiters contains unknown child {child_pid:?}"));
+            }
+            for waiter_pid in entry.value() {
+                let Some(waiter) = self.processes.get(waiter_pid) else {
+                    return Err(format!(
+                        "wait-any waiter {waiter_pid:?} registered for {child_pid:?} is missing"
+                    ));
+                };
+                match &waiter.status {
+                    ProcessStatus::Blocked(BlockReason::WaitAny(child_pids))
+                        if child_pids.contains(&child_pid) => {}
+                    status => {
+                        return Err(format!(
+                            "wait-any waiter {waiter_pid:?} registered for {child_pid:?} but has status {status:?}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        for entry in self.io_waiters.iter() {
+            let token = *entry.key();
+            let pid = *entry.value();
+            let Some(process) = self.processes.get(&pid) else {
+                return Err(format!("I/O waiter {pid:?} for {token:?} is missing"));
+            };
+            match &process.status {
+                ProcessStatus::Blocked(BlockReason::Io(blocked_token))
+                    if *blocked_token == token => {}
+                status => {
+                    return Err(format!(
+                        "I/O waiter {pid:?} registered for {token:?} but has status {status:?}"
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Multi-threaded hiko runtime.
@@ -143,6 +217,11 @@ impl ThreadedRuntime {
         self.table.insert(process);
         self.scheduler.enqueue(pid);
         pid
+    }
+
+    #[cfg(test)]
+    pub fn check_invariants(&self) -> Result<(), String> {
+        self.table.check_invariants()
     }
 
     /// Run all processes to completion using N worker threads.
@@ -1144,6 +1223,18 @@ mod tests {
         runtime.run_to_completion().unwrap();
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["hello threaded\n"]);
+        runtime.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_threaded_invariants_reject_stale_wait_any_registration() {
+        let runtime = ThreadedRuntime::new(1);
+        let waiter = runtime.spawn_root(compile("val _ = ()"));
+        let child = Pid(999);
+        runtime.table.any_waiters.insert(child, vec![waiter]);
+
+        let err = runtime.check_invariants().unwrap_err();
+        assert!(err.contains("any_waiters contains unknown child"));
     }
 
     #[test]
