@@ -258,17 +258,20 @@ fn aio_http(
     body: &str,
     format: HttpResponseFormat,
 ) -> Result<(SendableValue, u64), String> {
-    let response = hiko_common::dispatch_ureq(method, url, req_headers, body)?;
+    let headers = req_headers
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    let response = hiko_common::dispatch_ureq(method, url, &headers, body)?;
 
     let status = SendableValue::Int(response.status().as_u16() as i64);
     let headers: Vec<SendableValue> = response
         .headers()
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .map(|(k, v)| {
             SendableValue::Tuple(vec![
-                SendableValue::String(k.into()),
-                SendableValue::String(v.into()),
+                SendableValue::String(k.as_str().into()),
+                SendableValue::String(v.to_str().unwrap_or("").into()),
             ])
         })
         .collect();

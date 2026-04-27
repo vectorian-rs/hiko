@@ -1,8 +1,13 @@
 # R&D: Hiko Infrastructure-as-Code Demo
 
-This document sketches a possible showcase application for Hiko: an infrastructure-as-code tool that uses Dhall for typed configuration, Hiko for planning and apply logic, and capability-gated provider builtins for cloud operations.
+This document sketches a possible showcase application for Hiko: an
+infrastructure-as-code tool that uses Dhall for typed configuration, Hiko for
+planning and apply logic, and capability-gated provider builtins for cloud
+operations.
 
-The goal is not to clone Terraform directly. The goal is to explore whether Hiko can model infrastructure changes as explicit, reviewable, committed state transitions.
+The goal is not to clone Terraform directly. The goal is to explore whether
+Hiko can model infrastructure changes as explicit, reviewable, committed state
+transitions.
 
 ## Core idea
 
@@ -19,14 +24,16 @@ Dhall desired config + current StateCommit -> ChangeSet
 ChangeSet + provider apply operations          -> new StateCommit
 ```
 
-The important distinction is that the tool applies a previously generated ChangeSet, not whatever configuration happens to exist at apply time.
+The important distinction is that the tool applies a previously generated
+ChangeSet, not whatever configuration happens to exist at apply time.
 
 ## Why this is interesting
 
 Terraform state tends to force an awkward tradeoff:
 
 - Large state files preserve more of the dependency graph, but plans become slow and risky.
-- Small state files are faster, but cross-state dependencies become remote-state references with weak typing and weak global graph knowledge.
+- Small state files are faster, but cross-state dependencies become remote-state
+  references with weak typing and weak global graph knowledge.
 
 A Hiko demo could explore a different model:
 
@@ -92,7 +99,8 @@ The Hiko program/tool owns:
 
 ### Provider builtins
 
-Cloud/provider operations should be implemented as capability-gated Rust builtins with thin Hiko wrappers.
+Cloud/provider operations should be implemented as capability-gated Rust
+builtins with thin Hiko wrappers.
 
 For an AWS MVP, the provider layer might expose operations such as:
 
@@ -105,7 +113,8 @@ For an AWS MVP, the provider layer might expose operations such as:
 - `aws_s3_get_public_access_block`
 - `aws_s3_put_public_access_block`
 
-Hiko should own planning and orchestration. Provider builtins should own safe access to external APIs.
+Hiko should own planning and orchestration. Provider builtins should own safe
+access to external APIs.
 
 ## ChangeSet
 
@@ -137,7 +146,9 @@ ChangeSet
   expected_state_hash
 ```
 
-Apply should verify that the current state head still matches `from_state_hash`. If the state has advanced since planning, apply should reject the ChangeSet and require a replan or explicit rebase.
+Apply should verify that the current state head still matches
+`from_state_hash`. If the state has advanced since planning, apply should reject
+the ChangeSet and require a replan or explicit rebase.
 
 ## StateCommit
 
@@ -192,7 +203,8 @@ A local prototype could use a content-addressed directory:
   journal.jsonl
 ```
 
-A remote backend could later use object storage for immutable objects and a database or lock service for refs.
+A remote backend could later use object storage for immutable objects and a
+database or lock service for refs.
 
 ## Command flow
 
@@ -246,7 +258,8 @@ state_002  bob     2026-04-24  imported existing network
 
 ## Cross-stack contracts
 
-Instead of Terraform-style remote state as an untyped data source, this system could use typed imports and exports.
+Instead of Terraform-style remote state as an untyped data source, this system
+could use typed imports and exports.
 
 A producing stack exports a contract:
 
@@ -260,7 +273,8 @@ A consuming stack imports it:
 prod-app imports prod-network.Network.v1
 ```
 
-The state/index layer can then record explicit dependency edges. That enables impact queries and safer destroy behavior.
+The state/index layer can then record explicit dependency edges. That enables
+impact queries and safer destroy behavior.
 
 Example questions the tool should answer:
 
@@ -310,6 +324,10 @@ Initial resource behavior:
 
 The demo should showcase Hiko as a language for controlled effects and state transitions.
 
-Dhall provides typed desired configuration. Hiko computes and applies explicit ChangeSets. Provider builtins perform capability-gated external operations. State advances through committed StateCommits with history.
+Dhall provides typed desired configuration. Hiko computes and applies explicit
+ChangeSets. Provider builtins perform capability-gated external operations.
+State advances through committed StateCommits with history.
 
-This is not “Terraform with different syntax.” It is an experiment in making infrastructure changes explicit, reviewable, and auditable as first-class values.
+This is not “Terraform with different syntax.” It is an experiment in making
+infrastructure changes explicit, reviewable, and auditable as first-class
+values.

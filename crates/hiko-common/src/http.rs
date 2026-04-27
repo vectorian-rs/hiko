@@ -1,20 +1,20 @@
 pub fn dispatch_ureq(
     method: &str,
     url: &str,
-    headers: &[(String, String)],
+    headers: &[(&str, &str)],
     body: &str,
 ) -> Result<ureq::http::Response<ureq::Body>, String> {
     let send_no_body = |r: ureq::RequestBuilder<ureq::typestate::WithoutBody>| {
         let mut r = r;
         for (k, v) in headers {
-            r = r.header(k.as_str(), v.as_str());
+            r = r.header(*k, *v);
         }
         r.call().map_err(|e| format!("http: {e}"))
     };
     let send_with_body = |r: ureq::RequestBuilder<ureq::typestate::WithBody>| {
         let mut r = r;
         for (k, v) in headers {
-            r = r.header(k.as_str(), v.as_str());
+            r = r.header(*k, *v);
         }
         r.send(body.as_bytes()).map_err(|e| format!("http: {e}"))
     };

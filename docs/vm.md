@@ -5,7 +5,8 @@
 The VM is split by responsibility:
 
 - `crates/hiko-vm/src/vm/mod.rs`: `VM` state, constructors, public surface
-- `crates/hiko-vm/src/vm/runtime_bridge.rs`: `RunResult`, `RuntimeRequest`, slice transitions, child VM creation
+- `crates/hiko-vm/src/vm/runtime_bridge.rs`: `RunResult`,
+  `RuntimeRequest`, slice transitions, child VM creation
 - `crates/hiko-vm/src/vm/dispatch.rs`: opcode interpreter, stack helpers, operand decoding
 - `crates/hiko-vm/src/vm/builtins.rs`: builtin registration and builtin dispatch
 - `crates/hiko-vm/src/vm/gc.rs`: allocation helpers and root-set calculation
@@ -43,9 +44,15 @@ internals directly.
 
 ## Execution Boundaries
 
-`VM::run()` is an unbounded convenience entry point. It runs until the program halts, fails, exhausts configured fuel, or emits a runtime request. If no fuel limit is configured, `run()` is non-preemptive: the dispatch loop has no reduction boundary and a non-terminating program can keep control indefinitely.
+`VM::run()` is an unbounded convenience entry point. It runs until the
+program halts, fails, exhausts configured fuel, or emits a runtime request. If
+no fuel limit is configured, `run()` is non-preemptive: the dispatch loop has no
+reduction boundary and a non-terminating program can keep control indefinitely.
 
-Embedders that need bounded execution, scheduler fairness, or regular cancellation observation should use `VM::run_slice(reductions)`. The slice API installs a per-call reduction budget and returns a `RunResult` boundary that the runtime can map back into process state.
+Embedders that need bounded execution, scheduler fairness, or regular
+cancellation observation should use `VM::run_slice(reductions)`. The slice API
+installs a per-call reduction budget and returns a `RunResult` boundary that the
+runtime can map back into process state.
 
 ## Runtime/VM Transition Contract
 
