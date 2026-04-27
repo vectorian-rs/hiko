@@ -12,10 +12,18 @@ pub fn deliver_result_to_parent(
     parent_vm: &mut VM,
     sendable: SendableValue,
 ) -> Result<(), ProcessFailure> {
-    parent_vm.stack.pop(); // remove placeholder
+    pop_await_placeholder(parent_vm, "deliver result")?;
     let val = deserialize_with_heap_limit(sendable, &mut parent_vm.heap)?;
     parent_vm.push_value(val);
     Ok(())
+}
+
+fn pop_await_placeholder(parent_vm: &mut VM, what: &str) -> Result<(), ProcessFailure> {
+    parent_vm
+        .stack
+        .pop()
+        .map(|_| ())
+        .ok_or_else(|| ProcessFailure::runtime(format!("{what}: stack underflow")))
 }
 
 use hiko_builtin_meta::{
@@ -29,7 +37,7 @@ pub fn deliver_join_result_to_parent(
     parent_vm: &mut VM,
     result: Result<SendableValue, FiberJoinError>,
 ) -> Result<(), ProcessFailure> {
-    parent_vm.stack.pop(); // remove placeholder
+    pop_await_placeholder(parent_vm, "deliver join result")?;
     let wrapped = match result {
         Ok(sendable) => {
             let value = deserialize_with_heap_limit(sendable, &mut parent_vm.heap)?;
@@ -168,4 +176,48 @@ pub fn dedup_pids(child_pids: Vec<Pid>) -> Vec<Pid> {
         }
     }
     unique
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hiko_compile::compiler::Compiler;
+    use hiko_syntax::{lexer::Lexer, parser::Parser};
+
+    fn test_vm() -> VM {
+        let tokens = Lexer::new("val x = 0", 0).tokenize().expect("lex");
+        let program = Parser::new(tokens).parse_program().expect("parse");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        VM::try_new(compiled).expect("vm")
+    }
+
+    #[test]
+    fn deliver_result_rejects_missing_placeholder() {
+        let mut vm = test_vm();
+        let err = deliver_result_to_parent(&mut vm, SendableValue::Int(42)).unwrap_err();
+        assert_eq!(
+            err,
+            ProcessFailure::RuntimeError("deliver result: stack underflow".into())
+        );
+        assert!(vm.stack.is_empty());
+    }
+
+    #[test]
+    fn deliver_join_result_rejects_missing_placeholder() {
+        let mut vm = test_vm();
+        let err = deliver_join_result_to_parent(&mut vm, Ok(SendableValue::Int(42))).unwrap_err();
+        assert_eq!(
+            err,
+            ProcessFailure::RuntimeError("deliver join result: stack underflow".into())
+        );
+        assert!(vm.stack.is_empty());
+    }
+
+    #[test]
+    fn deliver_result_replaces_placeholder() {
+        let mut vm = test_vm();
+        vm.stack.push(Value::Unit);
+        deliver_result_to_parent(&mut vm, SendableValue::Int(42)).expect("deliver");
+        assert!(matches!(vm.stack.as_slice(), [Value::Int(42)]));
+    }
 }
