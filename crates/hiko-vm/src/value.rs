@@ -70,12 +70,15 @@ pub enum HeapObject {
         state: u64,
         inc: u64,
     },
-    Continuation {
-        saved_frames: Vec<SavedFrame>,
-        saved_stack: Vec<Value>,
-        /// Handler removed by Perform, for auto-reinstallation by Resume.
-        saved_handler: Option<SavedHandler>,
-    },
+    Continuation(Box<ContinuationData>),
+}
+
+#[derive(Debug)]
+pub struct ContinuationData {
+    pub saved_frames: Vec<SavedFrame>,
+    pub saved_stack: Vec<Value>,
+    /// Handler removed by Perform, for auto-reinstallation by Resume.
+    pub saved_handler: Option<SavedHandler>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,17 +128,15 @@ impl HeapObject {
             HeapObject::Closure { .. } => base,
             HeapObject::Bytes(bytes) => base + bytes.capacity(),
             HeapObject::Rng { .. } => base,
-            HeapObject::Continuation {
-                saved_frames,
-                saved_stack,
-                saved_handler,
-            } => {
-                let handler_clause_bytes = saved_handler
+            HeapObject::Continuation(data) => {
+                let handler_clause_bytes = data
+                    .saved_handler
                     .as_ref()
                     .map(|handler| handler.clauses.capacity() * size_of::<(u16, usize)>())
                     .unwrap_or(0);
-                base + saved_frames.capacity() * size_of::<SavedFrame>()
-                    + saved_stack.capacity() * size_of::<Value>()
+                base + size_of::<ContinuationData>()
+                    + data.saved_frames.capacity() * size_of::<SavedFrame>()
+                    + data.saved_stack.capacity() * size_of::<Value>()
                     + handler_clause_bytes
             }
         }
@@ -157,13 +158,9 @@ impl HeapObject {
             HeapObject::Tuple(elems) => visit(elems, &mut f),
             HeapObject::Data { fields, .. } => visit(fields, &mut f),
             HeapObject::Closure { captures, .. } => visit(captures, &mut f),
-            HeapObject::Continuation {
-                saved_stack,
-                saved_frames,
-                ..
-            } => {
-                visit(saved_stack, &mut f);
-                for frame in saved_frames {
+            HeapObject::Continuation(data) => {
+                visit(&data.saved_stack, &mut f);
+                for frame in &data.saved_frames {
                     visit(&frame.captures, &mut f);
                 }
             }
@@ -198,5 +195,20 @@ impl fmt::Display for Value {
             Value::Heap(_) => write!(f, "<heap>"),
             Value::Builtin(id) => write!(f, "<builtin:{id}>"),
         }
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn continuation_boxing_reduces_heap_object_size() {
+        const OLD_INLINE_CONTINUATION_HEAP_OBJECT_SIZE: usize = 112;
+        assert!(std::mem::size_of::<HeapObject>() < OLD_INLINE_CONTINUATION_HEAP_OBJECT_SIZE);
+        assert_eq!(std::mem::size_of::<Value>(), 16);
+        assert_eq!(std::mem::size_of::<SavedFrame>(), 40);
+        assert_eq!(std::mem::size_of::<SavedHandler>(), 64);
+        assert_eq!(std::mem::size_of::<Fields>(), 48);
     }
 }

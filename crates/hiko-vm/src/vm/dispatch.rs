@@ -574,17 +574,18 @@ impl VM {
                                 .ok_or_else(|| RuntimeError {
                                     message: "perform: invalid handler locals offset".into(),
                                 })?;
-                        let cont = self.alloc(HeapObject::Continuation {
-                            saved_frames,
-                            saved_stack,
-                            saved_handler: Some(SavedHandler {
-                                clauses: handler.clauses.clone(),
-                                proto_idx: handler.proto_idx,
-                                captures: handler.captures.clone(),
-                                locals_offset,
-                                handler_count_before,
-                            }),
-                        })?;
+                        let cont =
+                            self.alloc(HeapObject::Continuation(Box::new(ContinuationData {
+                                saved_frames,
+                                saved_stack,
+                                saved_handler: Some(SavedHandler {
+                                    clauses: handler.clauses.clone(),
+                                    proto_idx: handler.proto_idx,
+                                    captures: handler.captures.clone(),
+                                    locals_offset,
+                                    handler_count_before,
+                                }),
+                            })))?;
 
                         self.frames.truncate(handler.call_frame_idx + 1);
 
@@ -612,14 +613,10 @@ impl VM {
                     };
                     let (saved_frames, saved_stack, saved_handler) =
                         match self.heap_get(cont_ref)? {
-                            HeapObject::Continuation {
-                                saved_frames,
-                                saved_stack,
-                                saved_handler,
-                            } => (
-                                saved_frames.clone(),
-                                saved_stack.clone(),
-                                saved_handler.clone(),
+                            HeapObject::Continuation(data) => (
+                                data.saved_frames.clone(),
+                                data.saved_stack.clone(),
+                                data.saved_handler.clone(),
                             ),
                             _ => {
                                 return Err(RuntimeError {

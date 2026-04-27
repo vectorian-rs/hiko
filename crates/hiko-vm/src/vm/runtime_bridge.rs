@@ -98,11 +98,9 @@ impl VM {
     pub fn resume_blocked(&mut self, result: Value) -> Result<(), RuntimeError> {
         if let Some(cont_ref) = self.blocked_continuation.take() {
             let (saved_frames, saved_stack) = match self.heap.get(cont_ref) {
-                Ok(HeapObject::Continuation {
-                    saved_frames,
-                    saved_stack,
-                    ..
-                }) => (saved_frames.clone(), saved_stack.clone()),
+                Ok(HeapObject::Continuation(data)) => {
+                    (data.saved_frames.clone(), data.saved_stack.clone())
+                }
                 Ok(_) => {
                     return Err(RuntimeError {
                         message: "resume_blocked: expected continuation".into(),

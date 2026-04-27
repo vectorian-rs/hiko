@@ -19,7 +19,9 @@ use hiko_compile::op::Op;
 
 use crate::heap::Heap;
 use crate::process::ProcessFailure;
-use crate::value::{BuiltinEntry, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value};
+use crate::value::{
+    BuiltinEntry, ContinuationData, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
+};
 use crate::verify::{VerificationError, verify_program};
 
 mod builtins;
@@ -1044,7 +1046,7 @@ mod tests {
         vm.stack.push(Value::Unit);
         let cont = vm
             .heap
-            .alloc(HeapObject::Continuation {
+            .alloc(HeapObject::Continuation(Box::new(ContinuationData {
                 saved_frames: vec![
                     SavedFrame {
                         proto_idx: usize::MAX,
@@ -1061,7 +1063,7 @@ mod tests {
                 ],
                 saved_stack: vec![Value::Unit],
                 saved_handler: None,
-            })
+            })))
             .unwrap();
         vm.blocked_continuation = Some(cont);
 

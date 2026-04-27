@@ -228,7 +228,7 @@ impl VM {
                 Ok(HeapObject::AwsConfig(_)) => "<aws-config>".to_string(),
                 Ok(HeapObject::Rng { .. }) => "<rng>".to_string(),
                 Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),
-                Ok(HeapObject::Continuation { .. }) => "<continuation>".to_string(),
+                Ok(HeapObject::Continuation(_)) => "<continuation>".to_string(),
                 Err(_) => "<dangling ref>".to_string(),
             },
             other => other.to_string(),

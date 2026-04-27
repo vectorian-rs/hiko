@@ -106,7 +106,7 @@ fn serialize_heap(r: GcRef, heap: &Heap) -> Result<SendableValue, String> {
             })
         }
         HeapObject::Closure { .. } => Err("cannot send closures across processes".into()),
-        HeapObject::Continuation { .. } => Err("cannot send continuations across processes".into()),
+        HeapObject::Continuation(_) => Err("cannot send continuations across processes".into()),
         HeapObject::Rng { .. } => Err("cannot send Rng state across processes".into()),
         #[cfg(feature = "builtin-aws-config")]
         HeapObject::AwsConfig(_) => Err("cannot send AWS config handles across processes".into()),
@@ -458,11 +458,13 @@ mod tests {
     fn test_continuation_rejected() {
         let mut heap = Heap::new();
         let cont = Value::Heap(
-            heap.alloc(HeapObject::Continuation {
-                saved_frames: vec![],
-                saved_stack: vec![],
-                saved_handler: None,
-            })
+            heap.alloc(HeapObject::Continuation(Box::new(
+                crate::value::ContinuationData {
+                    saved_frames: vec![],
+                    saved_stack: vec![],
+                    saved_handler: None,
+                },
+            )))
             .unwrap(),
         );
         let result = serialize(cont, &heap);
