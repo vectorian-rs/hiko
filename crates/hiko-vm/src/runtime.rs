@@ -526,9 +526,16 @@ impl Runtime {
                 self.fail_missing_process(parent_pid, "wait_any");
                 return;
             };
-            crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, winner);
-            parent.status = ProcessStatus::Runnable;
-            self.scheduler.enqueue(parent_pid);
+            match crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, winner) {
+                Ok(()) => {
+                    parent.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(parent_pid);
+                }
+                Err(failure) => {
+                    parent.status = ProcessStatus::Failed(failure);
+                    self.scheduler.remove(parent_pid);
+                }
+            }
             return;
         }
 
@@ -612,9 +619,16 @@ impl Runtime {
             self.remove_wait_any_registration(waiter_pid, &child_pids);
 
             if let Some(process) = self.processes.get_mut(&waiter_pid) {
-                crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, winner);
-                process.status = ProcessStatus::Runnable;
-                self.scheduler.enqueue(waiter_pid);
+                match crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, winner) {
+                    Ok(()) => {
+                        process.status = ProcessStatus::Runnable;
+                        self.scheduler.enqueue(waiter_pid);
+                    }
+                    Err(failure) => {
+                        process.status = ProcessStatus::Failed(failure);
+                        self.scheduler.remove(waiter_pid);
+                    }
+                }
             }
         }
     }

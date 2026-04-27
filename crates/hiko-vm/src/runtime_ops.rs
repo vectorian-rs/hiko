@@ -61,9 +61,10 @@ pub fn deliver_join_result_to_parent(
 }
 
 /// Deliver a runtime-managed pid result to a waiting parent.
-pub fn deliver_pid_to_parent(parent_vm: &mut VM, pid: Pid) {
-    parent_vm.stack.pop(); // remove placeholder
+pub fn deliver_pid_to_parent(parent_vm: &mut VM, pid: Pid) -> Result<(), ProcessFailure> {
+    pop_await_placeholder(parent_vm, "deliver pid")?;
     parent_vm.push_value(Value::Pid(pid.0));
+    Ok(())
 }
 
 /// Create a child VM that inherits capabilities from the parent VM.
@@ -214,10 +215,29 @@ mod tests {
     }
 
     #[test]
+    fn deliver_pid_rejects_missing_placeholder() {
+        let mut vm = test_vm();
+        let err = deliver_pid_to_parent(&mut vm, Pid(42)).unwrap_err();
+        assert_eq!(
+            err,
+            ProcessFailure::RuntimeError("deliver pid: stack underflow".into())
+        );
+        assert!(vm.stack.is_empty());
+    }
+
+    #[test]
     fn deliver_result_replaces_placeholder() {
         let mut vm = test_vm();
         vm.stack.push(Value::Unit);
         deliver_result_to_parent(&mut vm, SendableValue::Int(42)).expect("deliver");
         assert!(matches!(vm.stack.as_slice(), [Value::Int(42)]));
+    }
+
+    #[test]
+    fn deliver_pid_replaces_placeholder() {
+        let mut vm = test_vm();
+        vm.stack.push(Value::Unit);
+        deliver_pid_to_parent(&mut vm, Pid(42)).expect("deliver pid");
+        assert!(matches!(vm.stack.as_slice(), [Value::Pid(42)]));
     }
 }

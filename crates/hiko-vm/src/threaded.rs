@@ -832,9 +832,16 @@ fn handle_wait_any(
                 return;
             }
             // Child already terminal — immediate winner
-            crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, child_pid);
-            table.return_process(parent);
-            scheduler.enqueue(parent_pid);
+            match crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, child_pid) {
+                Ok(()) => {
+                    table.return_process(parent);
+                    scheduler.enqueue(parent_pid);
+                }
+                Err(failure) => {
+                    parent.status = ProcessStatus::Failed(failure);
+                    table.return_process(parent);
+                }
+            }
             return;
         }
 
@@ -928,10 +935,16 @@ fn wake_any_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pi
                     let Some(winner) = winner else {
                         continue;
                     };
-                    crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, winner);
-                    waiter.status = ProcessStatus::Runnable;
-                    drop(waiter);
-                    scheduler.enqueue(waiter_pid);
+                    match crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, winner) {
+                        Ok(()) => {
+                            waiter.status = ProcessStatus::Runnable;
+                            drop(waiter);
+                            scheduler.enqueue(waiter_pid);
+                        }
+                        Err(failure) => {
+                            waiter.status = ProcessStatus::Failed(failure);
+                        }
+                    }
                     child_pids
                 }
                 _ => continue,
