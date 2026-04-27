@@ -53,6 +53,9 @@ Audit snapshot on 2026-04-21:
 
 - [builtins.md](builtins.md): builtin surface reference grouped by domain; open
   when adding, removing, renaming, or documenting builtins.
+- [builtin-domains.md](builtin-domains.md): builtin architecture, domain
+  ownership, Rust path conventions, and compile/runtime gating policy; open
+  before adding builtin domains or moving builtin implementation files.
 - [parquet.md](parquet.md): proposed Parquet API/capability design; open only
   for Parquet work or to confirm that the feature is still design-only.
 
@@ -136,10 +139,11 @@ Audit snapshot on 2026-04-21:
 ### Middleware Work
 
 1. [builtins.md](builtins.md)
-2. [error-handling.md](error-handling.md)
-3. [runtime.md](runtime.md) if the middleware suspends, spawns, or crosses
+2. [builtin-domains.md](builtin-domains.md)
+3. [error-handling.md](error-handling.md)
+4. [runtime.md](runtime.md) if the middleware suspends, spawns, or crosses
    process boundaries
-4. [full-builtin-run-config.example.toml](full-builtin-run-config.example.toml)
+5. [full-builtin-run-config.example.toml](full-builtin-run-config.example.toml)
    if capabilities/config are involved
 
 ### Migration / Adoption Work
