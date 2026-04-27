@@ -116,8 +116,17 @@ pub(super) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         },
         _ => return Err("split: expected String".into()),
     };
-    let mut parts = Vec::new();
+    let part_count = s.split(&sep).count();
+    let parts_bytes = part_count
+        .checked_mul(size_of::<Value>())
+        .ok_or_else(|| "split: part count overflow".to_string())?;
+    heap.ensure_can_allocate_bytes(parts_bytes)
+        .map_err(|e| format!("split: {e}"))?;
+
+    let mut parts = Vec::with_capacity(part_count);
     for p in s.split(&sep) {
+        heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(p.len()))
+            .map_err(|e| format!("split: {e}"))?;
         parts.push(heap_alloc(heap, HeapObject::String(p.to_string()))?);
     }
     alloc_list(heap, parts)
@@ -152,6 +161,29 @@ pub(super) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, S
         },
         _ => return Err("string_replace: expected String".into()),
     };
+
+    let replacement_count = if from.is_empty() {
+        s.chars()
+            .count()
+            .checked_add(1)
+            .ok_or_else(|| "string_replace: replacement count overflow".to_string())?
+    } else {
+        s.matches(&from).count()
+    };
+    let removed_bytes = replacement_count
+        .checked_mul(from.len())
+        .ok_or_else(|| "string_replace: output length overflow".to_string())?;
+    let added_bytes = replacement_count
+        .checked_mul(to.len())
+        .ok_or_else(|| "string_replace: output length overflow".to_string())?;
+    let output_len = s
+        .len()
+        .checked_sub(removed_bytes)
+        .and_then(|len| len.checked_add(added_bytes))
+        .ok_or_else(|| "string_replace: output length overflow".to_string())?;
+    heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(output_len))
+        .map_err(|e| format!("string_replace: {e}"))?;
+
     heap_alloc(heap, HeapObject::String(s.replace(&from, &to)))
 }
 
@@ -470,6 +502,18 @@ mod tests {
     }
 
     #[test]
+    fn split_checks_intermediate_part_vector_against_memory_limit() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "a,b,c");
+        let sep = string_arg(&mut heap, ",");
+        let arg = tuple2(&mut heap, s, sep);
+        heap.set_max_bytes(heap.live_bytes() + (2 * size_of::<Value>()));
+
+        let err = split(&[arg], &mut heap).unwrap_err();
+        assert!(err.contains("split: memory limit exceeded"));
+    }
+
+    #[test]
     fn string_replace_basic() {
         let mut heap = Heap::new();
         let s = string_arg(&mut heap, "hello world");
@@ -500,6 +544,30 @@ mod tests {
         let arg = tuple3(&mut heap, s, from, to);
         let result = string_replace(&[arg], &mut heap).unwrap();
         assert_eq!(heap_string(result, &heap), "hello");
+    }
+
+    #[test]
+    fn string_replace_empty_pattern_matches_rust_semantics() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "ab");
+        let from = string_arg(&mut heap, "");
+        let to = string_arg(&mut heap, "-");
+        let arg = tuple3(&mut heap, s, from, to);
+        let result = string_replace(&[arg], &mut heap).unwrap();
+        assert_eq!(heap_string(result, &heap), "-a-b-");
+    }
+
+    #[test]
+    fn string_replace_checks_output_against_memory_limit_before_building() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "aaa");
+        let from = string_arg(&mut heap, "a");
+        let to = string_arg(&mut heap, "bbbb");
+        let arg = tuple3(&mut heap, s, from, to);
+        heap.set_max_bytes(heap.live_bytes() + size_of::<HeapObject>() + 11);
+
+        let err = string_replace(&[arg], &mut heap).unwrap_err();
+        assert!(err.contains("string_replace: memory limit exceeded"));
     }
 
     #[test]
