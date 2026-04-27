@@ -6,4 +6,4 @@ mod http;
 #[cfg(feature = "hash")]
 pub use hash::blake3_hex;
 #[cfg(feature = "http")]
-pub use http::{dispatch_ureq, http_get_text};
+pub use http::{dispatch_ureq, http_get_text, http_get_text_limited};

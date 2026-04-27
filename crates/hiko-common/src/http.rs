@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 pub fn dispatch_ureq(
     method: &str,
     url: &str,
@@ -43,4 +45,22 @@ pub fn http_get_text(url: &str) -> Result<String, String> {
             .read_to_string()
             .map_err(|e| format!("http: {e}"))
     })
+}
+
+pub fn http_get_text_limited(
+    url: &str,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<String, String> {
+    ureq::get(url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
+        .call()
+        .map_err(|e| format!("http: {e}"))?
+        .into_body()
+        .into_with_config()
+        .limit(max_bytes)
+        .read_to_string()
+        .map_err(|e| format!("http: {e}"))
 }

@@ -2,12 +2,14 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "loader-http")]
+use std::time::Duration;
 
 use hiko_builtin_meta::{internal_builtin_module, is_internal_builtin_package};
 #[cfg(feature = "loader-integrity-blake3")]
 use hiko_common::blake3_hex;
 #[cfg(feature = "loader-http")]
-use hiko_common::http_get_text;
+use hiko_common::http_get_text_limited;
 use hiko_syntax::ast::*;
 use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
@@ -60,8 +62,13 @@ fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
 }
 
 #[cfg(feature = "loader-http")]
+const REMOTE_MODULE_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(feature = "loader-http")]
+const REMOTE_MODULE_MAX_BYTES: u64 = 1024 * 1024;
+
+#[cfg(feature = "loader-http")]
 fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileError> {
-    http_get_text(url).map_err(|e| {
+    http_get_text_limited(url, REMOTE_MODULE_TIMEOUT, REMOTE_MODULE_MAX_BYTES).map_err(|e| {
         CompileError::codegen(format!(
             "cannot fetch named import '{module_name}' from '{url}': {e}"
         ))
@@ -146,6 +153,7 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
                 path.display()
             )));
         }
+        validate_remote_base_url(package_name, &package.base_url, path)?;
         for (module_name, hash) in &package.modules {
             if module_name.trim().is_empty() {
                 return Err(CompileError::codegen(format!(
@@ -168,6 +176,36 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "loader-named-imports")]
+fn validate_remote_base_url(
+    package_name: &str,
+    base_url: &str,
+    path: &Path,
+) -> Result<(), CompileError> {
+    let base_url = base_url.trim();
+    if base_url.starts_with("https://") {
+        return Ok(());
+    }
+    if let Some(rest) = base_url.strip_prefix("http://") {
+        let authority = rest.split('/').next().unwrap_or_default();
+        let host = authority
+            .rsplit_once('@')
+            .map(|(_, host)| host)
+            .unwrap_or(authority);
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.split_once(']').map(|(host, _)| host))
+            .unwrap_or_else(|| host.split(':').next().unwrap_or(host));
+        if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+            return Ok(());
+        }
+    }
+    Err(CompileError::codegen(format!(
+        "package '{package_name}' in '{}' uses insecure base_url '{base_url}'; use https:// or local http://127.0.0.1/localhost for development",
+        path.display()
+    )))
 }
 
 fn validate_package_name(package_name: &str, context: &str) -> Result<(), CompileError> {
@@ -262,6 +300,11 @@ enum ResolvedImport {
         canonical: PathBuf,
         display_name: String,
     },
+    #[cfg(all(
+        feature = "loader-named-imports",
+        feature = "loader-http",
+        feature = "loader-integrity-blake3"
+    ))]
     VerifiedFile {
         canonical: PathBuf,
         display_name: String,
@@ -278,18 +321,27 @@ enum ResolvedImport {
 impl ResolvedImport {
     fn key(&self) -> ImportKey {
         match self {
-            Self::File { canonical, .. } | Self::VerifiedFile { canonical, .. } => {
-                ImportKey::File(canonical.clone())
-            }
+            Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
+            #[cfg(all(
+                feature = "loader-named-imports",
+                feature = "loader-http",
+                feature = "loader-integrity-blake3"
+            ))]
+            Self::VerifiedFile { canonical, .. } => ImportKey::File(canonical.clone()),
             Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
         }
     }
 
     fn display_name(&self) -> &str {
         match self {
-            Self::File { display_name, .. }
-            | Self::VerifiedFile { display_name, .. }
-            | Self::Synthetic { display_name, .. } => display_name,
+            Self::File { display_name, .. } => display_name,
+            #[cfg(all(
+                feature = "loader-named-imports",
+                feature = "loader-http",
+                feature = "loader-integrity-blake3"
+            ))]
+            Self::VerifiedFile { display_name, .. } => display_name,
+            Self::Synthetic { display_name, .. } => display_name,
         }
     }
 
@@ -302,6 +354,11 @@ impl ResolvedImport {
                 let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
                 Ok((Cow::Owned(source), base_dir))
             }
+            #[cfg(all(
+                feature = "loader-named-imports",
+                feature = "loader-http",
+                feature = "loader-integrity-blake3"
+            ))]
             Self::VerifiedFile {
                 canonical, source, ..
             } => {
@@ -2011,6 +2068,73 @@ val result = Box.get (Box.make 41)
         );
 
         let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_non_local_http_base_url() {
+        let project_dir = unique_temp_dir("named-import-insecure-http");
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "val answer = 42\n";
+        let module_hash = blake3_hex(module_source.as_bytes());
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://example.com/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(&entry_path, "import Test.Answer\nval result = answer\n");
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("insecure base_url"));
+                assert!(message.contains("https://"));
+            }
+            other => panic!("expected insecure base_url failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_oversized_remote_module() {
+        let project_dir = unique_temp_dir("named-import-too-large");
+        let entry_path = project_dir.join("main.hml");
+        let module_source = format!("val answer = \"{}\"\n", "x".repeat(1024 * 1024));
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (answer_url, server) =
+            spawn_single_response_server("/modules/Answer.hml", module_source);
+        let base_url = answer_url
+            .trim_end_matches("/modules/Answer.hml")
+            .to_string();
+        let cache_path =
+            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Test.Answer\nval result = Answer.answer\n",
+        );
+        let _ = std::fs::remove_file(&cache_path);
+
+        let result = compile_path(&entry_path);
+        server.join().expect("join server");
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("cannot fetch named import"));
+                assert!(message.contains("larger than request limit"));
+            }
+            other => panic!("expected oversized module failure, got {other:?}"),
+        }
+        assert!(!cache_path.exists());
+
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
