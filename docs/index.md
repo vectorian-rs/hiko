@@ -48,6 +48,9 @@ Audit snapshot on 2026-04-21:
 - [system.md](system.md): repo-wide crate map and pipeline snapshot; useful for
   fast orientation and locating code, but treat line counts and inventory totals
   as snapshot data, not invariants.
+- [rust-memory-layout.md](rust-memory-layout.md): Rust inline layout, enum size,
+  and boxing guidance for hot VM data structures; open before changing
+  `HeapObject`, process table state, or other high-cardinality runtime types.
 
 ## Middleware / Feature Docs
 
@@ -125,8 +128,9 @@ Audit snapshot on 2026-04-21:
 
 1. [vm.md](vm.md)
 2. [runtime.md](runtime.md)
-3. [system.md](system.md)
-4. Open code after you know whether the hot path is VM-local or runtime-wide
+3. [rust-memory-layout.md](rust-memory-layout.md) if changing hot Rust data structures
+4. [system.md](system.md)
+5. Open code after you know whether the hot path is VM-local or runtime-wide
 
 ### Correctness / Verification Work
 
