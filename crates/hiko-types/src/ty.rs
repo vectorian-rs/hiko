@@ -40,6 +40,9 @@ impl Type {
     pub fn rng() -> Type {
         Type::Con("Rng".into())
     }
+    pub fn aws_config() -> Type {
+        Type::Con("AwsConfig".into())
+    }
     pub fn unit() -> Type {
         Type::Con("Unit".into())
     }
@@ -83,6 +86,7 @@ impl Type {
             "Unit" => "unit",
             "Bytes" => "bytes",
             "Rng" => "rng",
+            "AwsConfig" => "aws_config",
             "Pid" => "pid",
             _ => name,
         }

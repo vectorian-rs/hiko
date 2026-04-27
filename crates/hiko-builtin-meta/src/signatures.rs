@@ -8,6 +8,9 @@ pub struct BuiltinTypeSignature {
 
 pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
     let ty = match name {
+        // AWS
+        "aws_config_sso_profile" => "string -> aws_config",
+
         // I/O
         "print" | "println" => "string -> unit",
         "read_line" | "read_stdin" => "unit -> string",

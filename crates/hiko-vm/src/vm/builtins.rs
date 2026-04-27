@@ -47,6 +47,8 @@ impl VM {
             "http_msgpack" => self.http_msgpack_builtin_id = Some(idx),
             "http_bytes" => self.http_bytes_builtin_id = Some(idx),
             "read_file" => self.read_file_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-aws-config")]
+            "aws_config_sso_profile" => self.aws_config_sso_profile_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -248,7 +250,29 @@ impl VM {
                     None
                 }
             } else {
-                None
+                #[cfg(feature = "builtin-aws-config")]
+                {
+                    if self.aws_config_sso_profile_builtin_id == Some(builtin_id) {
+                        let profile = crate::builtins::extract_string_arg(
+                            &self.stack[callee_pos + 1..callee_pos + 1 + arity],
+                            &self.heap,
+                            "aws_config_sso_profile",
+                        )
+                        .map_err(|msg| RuntimeError { message: msg })?;
+                        self.heap
+                            .check_aws_sso_profile(&profile)
+                            .map_err(|e| RuntimeError {
+                                message: format!("aws_config_sso_profile: {e}"),
+                            })?;
+                        Some(crate::io_backend::IoRequest::AwsConfigSsoProfile { profile })
+                    } else {
+                        None
+                    }
+                }
+                #[cfg(not(feature = "builtin-aws-config"))]
+                {
+                    None
+                }
             };
             if let Some(request) = io_request {
                 return self.suspend_for_runtime_request(RuntimeRequest::Io(request), callee_pos);

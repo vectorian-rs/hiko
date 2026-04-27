@@ -1,3 +1,5 @@
+#[cfg(feature = "builtin-aws-config")]
+mod aws_config;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -64,6 +66,8 @@ pub use signatures::{
 };
 
 pub const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
+    #[cfg(feature = "builtin-aws-config")]
+    aws_config::BUILTINS,
     #[cfg(feature = "builtin-stdio")]
     stdio::BUILTINS,
     #[cfg(feature = "builtin-convert")]

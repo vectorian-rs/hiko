@@ -95,6 +95,9 @@ pub struct Heap {
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    /// Allowed AWS SSO profile names for Aws.Config creation.
+    #[cfg(feature = "builtin-aws-config")]
+    aws_sso_profiles: Vec<String>,
     /// Optional injected stdin content for embedded runtimes.
     stdin_override: Option<String>,
     stdin_override_consumed: bool,
@@ -127,6 +130,8 @@ impl Heap {
             fs_builtin_dirs: HashMap::new(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
+            #[cfg(feature = "builtin-aws-config")]
+            aws_sso_profiles: Vec::new(),
             stdin_override: None,
             stdin_override_consumed: false,
         }
@@ -265,6 +270,29 @@ impl Heap {
 
     pub fn http_allowed_hosts_by_builtin(&self) -> &HashMap<String, Vec<String>> {
         &self.http_allowed_hosts_by_builtin
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn set_aws_sso_profiles(&mut self, profiles: Vec<String>) {
+        self.aws_sso_profiles = profiles;
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn aws_sso_profiles(&self) -> &[String] {
+        &self.aws_sso_profiles
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn check_aws_sso_profile(&self, profile: &str) -> Result<(), String> {
+        if self
+            .aws_sso_profiles
+            .iter()
+            .any(|allowed| allowed == profile)
+        {
+            Ok(())
+        } else {
+            Err(format!("AWS SSO profile '{profile}' is not allowed"))
+        }
     }
 
     /// Check if a path is within the allowed filesystem root.

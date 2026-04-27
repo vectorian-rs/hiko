@@ -17,6 +17,7 @@ const UPPERCASE_PRIMITIVE_ALIASES: &[(&str, &str)] = &[
     ("Unit", "unit"),
     ("Bytes", "bytes"),
     ("Rng", "rng"),
+    ("AwsConfig", "aws_config"),
     ("Pid", "pid"),
 ];
 
@@ -154,6 +155,7 @@ impl<'a> BuiltinTypeParser<'a> {
             "unit" => Ok(Type::unit()),
             "bytes" => Ok(Type::bytes()),
             "rng" => Ok(Type::rng()),
+            "aws_config" => Ok(Type::aws_config()),
             "pid" => Ok(Type::pid()),
             other => Err(format!("unknown type constructor '{other}")),
         }
@@ -1220,6 +1222,7 @@ impl InferCtx {
                     "unit" => return Ok(Type::unit()),
                     "bytes" => return Ok(Type::bytes()),
                     "rng" => return Ok(Type::rng()),
+                    "aws_config" => return Ok(Type::aws_config()),
                     "pid" => return Ok(Type::pid()),
                     _ => {}
                 }

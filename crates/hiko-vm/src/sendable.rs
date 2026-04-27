@@ -6,6 +6,8 @@
 use std::sync::Arc;
 
 use crate::heap::{Heap, HeapLimitExceeded};
+#[cfg(feature = "builtin-aws-config")]
+use crate::value::{AwsConfigAuthMethod, AwsConfigHandle};
 use crate::value::{GcRef, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 
@@ -22,6 +24,11 @@ pub enum SendableValue {
     Unit,
     String(Arc<str>),
     Bytes(Arc<[u8]>),
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfigSsoProfile {
+        profile: Arc<str>,
+        sdk_config: Arc<aws_config::SdkConfig>,
+    },
     Tuple(Vec<SendableValue>),
     List(Vec<SendableValue>),
     Data {
@@ -43,6 +50,8 @@ impl SendableValue {
             SendableValue::Unit => 0,
             SendableValue::String(text) => text.len(),
             SendableValue::Bytes(bytes) => bytes.len(),
+            #[cfg(feature = "builtin-aws-config")]
+            SendableValue::AwsConfigSsoProfile { profile, .. } => profile.len(),
             SendableValue::Tuple(fields) | SendableValue::List(fields) => {
                 fields.iter().map(Self::estimated_bytes).sum()
             }
@@ -53,7 +62,7 @@ impl SendableValue {
 
 /// Serialize a VM Value into a SendableValue.
 /// Returns Err if the value contains non-sendable types
-/// (closures, continuations, Rng).
+/// (closures, continuations, Rng, provider handles).
 pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
     match value {
         Value::Int(n) => Ok(SendableValue::Int(n)),
@@ -99,6 +108,8 @@ fn serialize_heap(r: GcRef, heap: &Heap) -> Result<SendableValue, String> {
         HeapObject::Closure { .. } => Err("cannot send closures across processes".into()),
         HeapObject::Continuation { .. } => Err("cannot send continuations across processes".into()),
         HeapObject::Rng { .. } => Err("cannot send Rng state across processes".into()),
+        #[cfg(feature = "builtin-aws-config")]
+        HeapObject::AwsConfig(_) => Err("cannot send AWS config handles across processes".into()),
     }
 }
 
@@ -138,6 +149,18 @@ pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLim
         SendableValue::Unit => Ok(Value::Unit),
         SendableValue::String(s) => Ok(Value::Heap(heap.alloc(HeapObject::String(s.to_string()))?)),
         SendableValue::Bytes(b) => Ok(Value::Heap(heap.alloc(HeapObject::Bytes(b.to_vec()))?)),
+        #[cfg(feature = "builtin-aws-config")]
+        SendableValue::AwsConfigSsoProfile {
+            profile,
+            sdk_config,
+        } => Ok(Value::Heap(heap.alloc(HeapObject::AwsConfig(
+            AwsConfigHandle {
+                auth: AwsConfigAuthMethod::SsoProfile {
+                    profile: profile.to_string(),
+                },
+                sdk_config,
+            },
+        ))?)),
         SendableValue::Tuple(fields) => {
             let mut values = smallvec::SmallVec::<[Value; 2]>::with_capacity(fields.len());
             for v in fields {

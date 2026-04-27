@@ -48,6 +48,9 @@ pub enum IoRequest {
         candidates: Vec<CapFsCandidate>,
         path: String,
     },
+    /// Load an AWS SDK config using an allowed SSO profile.
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfigSsoProfile { profile: String },
 }
 
 /// Result of a completed I/O operation.
@@ -124,6 +127,15 @@ impl IoBackend for MockIoBackend {
             #[cfg(feature = "builtin-filesystem")]
             IoRequest::CapReadFile { path, .. } => {
                 let value = SendableValue::String(format!("mock contents of {path}").into());
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
+            #[cfg(feature = "builtin-aws-config")]
+            IoRequest::AwsConfigSsoProfile { profile } => {
+                let value = SendableValue::AwsConfigSsoProfile {
+                    profile: Arc::from(profile),
+                    sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+                };
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
             }
@@ -263,6 +275,14 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             },
             Err(e) => IoResult::Err(format!("read_file: {e}")),
         },
+        #[cfg(feature = "builtin-aws-config")]
+        IoRequest::AwsConfigSsoProfile { profile } => match aio_aws_config_sso_profile(&profile) {
+            Ok(value) => IoResult::Ok {
+                io_bytes: value.estimated_bytes() as u64,
+                value,
+            },
+            Err(e) => IoResult::Err(e),
+        },
     }
 }
 
@@ -278,6 +298,24 @@ fn cap_read_to_string(candidates: &[CapFsCandidate], _path: &str) -> Result<Stri
     Err(last_err
         .map(|e| e.to_string())
         .unwrap_or_else(|| "no allowed folder matched".into()))
+}
+
+#[cfg(feature = "builtin-aws-config")]
+fn aio_aws_config_sso_profile(profile: &str) -> Result<SendableValue, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("aws_config_sso_profile: tokio runtime: {e}"))?;
+    runtime.block_on(async {
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .profile_name(profile)
+            .load()
+            .await;
+        Ok(SendableValue::AwsConfigSsoProfile {
+            profile: Arc::from(profile),
+            sdk_config: Arc::new(sdk_config),
+        })
+    })
 }
 
 /// Async HTTP GET — runs on I/O pool thread.

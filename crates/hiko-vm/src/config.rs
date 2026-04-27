@@ -1,3 +1,5 @@
+#[cfg(feature = "builtin-aws-config")]
+use crate::builder::AwsConfigPolicy as VmAwsConfigPolicy;
 #[cfg(feature = "builtin-exec")]
 use crate::builder::ExecPolicy as VmExecPolicy;
 use crate::builder::VMBuilder;
@@ -57,6 +59,16 @@ struct HttpLeaf {
     enabled: bool,
     #[serde(default)]
     allowed_hosts: Vec<String>,
+}
+
+#[cfg(feature = "builtin-aws-config")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AwsSsoProfileLeaf {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    allowed_profiles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -490,6 +502,71 @@ impl ExecCapabilities {
     }
 }
 
+#[cfg(feature = "builtin-aws-config")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct AwsCapabilities {
+    #[serde(default)]
+    config: AwsConfigCapabilities,
+}
+
+#[cfg(feature = "builtin-aws-config")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AwsConfigCapabilities {
+    sso_profile: Option<AwsSsoProfileLeaf>,
+}
+
+#[cfg(feature = "builtin-aws-config")]
+impl AwsCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        self.config.apply(builder)
+    }
+
+    fn emit(&self, out: &mut String) {
+        self.config.emit(out);
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        self.config.extend_enabled(out);
+    }
+}
+
+#[cfg(feature = "builtin-aws-config")]
+impl AwsConfigCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        if let Some(leaf) = &self.sso_profile
+            && leaf.enabled
+        {
+            return builder.with_aws_config(VmAwsConfigPolicy {
+                allowed_sso_profiles: leaf.allowed_profiles.clone(),
+            });
+        }
+        builder
+    }
+
+    fn emit(&self, out: &mut String) {
+        if let Some(leaf) = &self.sso_profile
+            && leaf.enabled
+        {
+            out.push_str(&format!(
+                "            .with_aws_config(hiko_vm::builder::AwsConfigPolicy {{\n\
+                 \x20               allowed_sso_profiles: vec![{}],\n\
+                 \x20           }})\n",
+                rust_string_vec(&leaf.allowed_profiles)
+            ));
+        }
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        if let Some(leaf) = &self.sso_profile
+            && leaf.enabled
+        {
+            out.insert("aws_config_sso_profile");
+        }
+    }
+}
+
 impl ProcessCapabilities {
     fn requires_runtime(&self) -> bool {
         self.spawn.as_ref().is_some_and(|leaf| leaf.enabled)
@@ -502,6 +579,9 @@ impl ProcessCapabilities {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
+    #[cfg(feature = "builtin-aws-config")]
+    #[serde(default)]
+    pub aws: AwsCapabilities,
     #[serde(default)]
     pub stdio: StdioCapabilities,
     #[serde(default)]
@@ -548,6 +628,8 @@ impl Capabilities {
         for name in unrestricted_runtime_builtin_names() {
             builder = builder.register_builtin_name(name);
         }
+        #[cfg(feature = "builtin-aws-config")]
+        let builder = self.aws.apply(builder);
         let builder = self.stdio.apply(builder);
         let builder = self.convert.apply(builder);
         let builder = self.string.apply(builder);
@@ -573,6 +655,8 @@ impl Capabilities {
         for name in unrestricted_runtime_builtin_names() {
             out.push_str(&format!("            .register_builtin_name({name:?})\n"));
         }
+        #[cfg(feature = "builtin-aws-config")]
+        self.aws.emit(out);
         self.stdio.emit(out);
         self.convert.emit(out);
         self.string.emit(out);
@@ -596,6 +680,8 @@ impl Capabilities {
 
     fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
         let mut out: BTreeSet<_> = unrestricted_runtime_builtin_names().collect();
+        #[cfg(feature = "builtin-aws-config")]
+        self.aws.extend_enabled(&mut out);
         self.stdio.extend_enabled(&mut out);
         self.convert.extend_enabled(&mut out);
         self.string.extend_enabled(&mut out);

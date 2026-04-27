@@ -46,6 +46,7 @@ builtin-http = ["hiko-builtin-meta/builtin-http"]
 builtin-exec = ["hiko-builtin-meta/builtin-exec"]
 builtin-system = ["hiko-builtin-meta/builtin-system"]
 builtin-testing = ["hiko-builtin-meta/builtin-testing"]
+builtin-aws-config = ["hiko-builtin-meta/builtin-aws-config"]
 
 [dependencies]
 hiko-builtin-meta = { version = "0.7.0", path = "../hiko-builtin-meta", default-features = false }

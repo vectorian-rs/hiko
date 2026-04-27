@@ -9,6 +9,11 @@ pub struct InternalBuiltinModule {
     pub source: &'static str,
 }
 
+const AWS_CONFIG_SOURCE: &str = r#"structure BuiltinAwsConfig = struct
+  val sso_profile_raw = aws_config_sso_profile
+end
+"#;
+
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
   val read_text_raw = read_file
   val read_bytes_raw = read_file_bytes
@@ -176,6 +181,13 @@ end
 "#;
 
 const MODULES: &[InternalBuiltinModule] = &[
+    InternalBuiltinModule {
+        leaf_name: "AwsConfig",
+        import_name: "__Builtin.AwsConfig",
+        feature_name: "builtin-aws-config",
+        enabled: cfg!(feature = "builtin-aws-config"),
+        source: AWS_CONFIG_SOURCE,
+    },
     InternalBuiltinModule {
         leaf_name: "Filesystem",
         import_name: "__Builtin.Filesystem",

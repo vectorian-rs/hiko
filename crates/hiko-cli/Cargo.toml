@@ -141,6 +141,12 @@ builtin-testing = [
     "hiko-types/builtin-testing",
     "hiko-vm/builtin-testing",
 ]
+builtin-aws-config = [
+    "hiko-builtin-meta/builtin-aws-config",
+    "hiko-compile/builtin-aws-config",
+    "hiko-types/builtin-aws-config",
+    "hiko-vm/builtin-aws-config",
+]
 
 [dependencies]
 hiko-common = { version = "0.7.0", path = "../hiko-common", default-features = false, features = ["hash"], optional = true }

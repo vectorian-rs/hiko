@@ -117,6 +117,8 @@ pub struct VM {
     http_msgpack_builtin_id: Option<u16>,
     http_bytes_builtin_id: Option<u16>,
     read_file_builtin_id: Option<u16>,
+    #[cfg(feature = "builtin-aws-config")]
+    aws_config_sso_profile_builtin_id: Option<u16>,
     /// When true, I/O builtins suspend via `RuntimeRequest::Io` instead of blocking.
     async_io: bool,
     /// Pending runtime request from a process/runtime builtin.
@@ -255,6 +257,8 @@ impl VM {
             http_msgpack_builtin_id: None,
             http_bytes_builtin_id: None,
             read_file_builtin_id: None,
+            #[cfg(feature = "builtin-aws-config")]
+            aws_config_sso_profile_builtin_id: None,
             async_io: false,
             pending_runtime_request: None,
             blocked_continuation: None,
@@ -295,6 +299,12 @@ impl VM {
     /// Set per-builtin HTTP host allowlists.
     pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
         self.heap.set_http_allowed_hosts_by_builtin(hosts);
+    }
+
+    /// Set allowed AWS SSO profile names.
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn set_aws_sso_profiles(&mut self, profiles: Vec<String>) {
+        self.heap.set_aws_sso_profiles(profiles);
     }
 
     /// Check if a filesystem path is within the allowed root.

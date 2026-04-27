@@ -1,5 +1,12 @@
 schema_version = 1
 
+[packages.Aws]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Aws-v0.1.0"
+
+[packages.Aws.modules]
+Config = "blake3:52c31e945fee1755b631318ede90e08431901faa51d1909b3266c0ce07c9fb01"
+
 [packages.Std]
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Std-v0.1.0"

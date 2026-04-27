@@ -27,6 +27,27 @@ pub enum Value {
     Builtin(u16),
 }
 
+#[cfg(feature = "builtin-aws-config")]
+pub struct AwsConfigHandle {
+    pub auth: AwsConfigAuthMethod,
+    pub sdk_config: Arc<aws_config::SdkConfig>,
+}
+
+#[cfg(feature = "builtin-aws-config")]
+impl fmt::Debug for AwsConfigHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AwsConfigHandle")
+            .field("auth", &self.auth)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "builtin-aws-config")]
+#[derive(Debug)]
+pub enum AwsConfigAuthMethod {
+    SsoProfile { profile: String },
+}
+
 /// Heap-allocated objects managed by the GC.
 #[derive(Debug)]
 pub enum HeapObject {
@@ -41,6 +62,9 @@ pub enum HeapObject {
         captures: Arc<[Value]>,
     },
     Bytes(Vec<u8>),
+    /// Opaque AWS SDK config handle. The SDK config is loaded by the host/provider layer.
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfig(AwsConfigHandle),
     /// Opaque RNG state (PCG-XSH-RR-64/32).
     Rng {
         state: u64,
@@ -88,6 +112,13 @@ impl HeapObject {
 
         let base = size_of::<HeapObject>();
         match self {
+            #[cfg(feature = "builtin-aws-config")]
+            HeapObject::AwsConfig(handle) => {
+                let auth_bytes = match &handle.auth {
+                    AwsConfigAuthMethod::SsoProfile { profile } => profile.capacity(),
+                };
+                base + auth_bytes
+            }
             HeapObject::String(s) => base + s.capacity(),
             HeapObject::Tuple(fields) => base + spilled_value_bytes(fields),
             HeapObject::Data { fields, .. } => base + spilled_value_bytes(fields),
@@ -120,6 +151,8 @@ impl HeapObject {
             }
         };
         match self {
+            #[cfg(feature = "builtin-aws-config")]
+            HeapObject::AwsConfig(_) => {}
             HeapObject::String(_) | HeapObject::Bytes(_) | HeapObject::Rng { .. } => {}
             HeapObject::Tuple(elems) => visit(elems, &mut f),
             HeapObject::Data { fields, .. } => visit(fields, &mut f),

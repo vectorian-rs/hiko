@@ -198,6 +198,8 @@ impl VM {
                     }
                 }
                 Ok(HeapObject::Bytes(b)) => format!("<bytes:{}>", b.len()),
+                #[cfg(feature = "builtin-aws-config")]
+                Ok(HeapObject::AwsConfig(_)) => "<aws-config>".to_string(),
                 Ok(HeapObject::Rng { .. }) => "<rng>".to_string(),
                 Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),
                 Ok(HeapObject::Continuation { .. }) => "<continuation>".to_string(),

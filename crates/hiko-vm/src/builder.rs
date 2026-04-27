@@ -5,6 +5,12 @@ use hiko_builtin_meta::core_builtin_names;
 use hiko_compile::chunk::CompiledProgram;
 use std::collections::HashMap;
 
+/// Policy for AWS SDK configuration access.
+#[cfg(feature = "builtin-aws-config")]
+pub struct AwsConfigPolicy {
+    pub allowed_sso_profiles: Vec<String>,
+}
+
 /// Policy for filesystem access.
 #[cfg(feature = "builtin-filesystem")]
 pub struct FilesystemPolicy {
@@ -38,6 +44,8 @@ pub struct VMBuilder {
     fs_builtin_folders: HashMap<String, Vec<String>>,
     http_allowed_hosts: Vec<String>,
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    #[cfg(feature = "builtin-aws-config")]
+    aws_sso_profiles: Vec<String>,
     max_heap: Option<usize>,
     max_memory_bytes: Option<usize>,
     max_io_bytes: Option<u64>,
@@ -62,6 +70,8 @@ impl VMBuilder {
             fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
+            #[cfg(feature = "builtin-aws-config")]
+            aws_sso_profiles: Vec::new(),
             max_heap: None,
             max_memory_bytes: None,
             max_io_bytes: None,
@@ -120,6 +130,13 @@ impl VMBuilder {
             self = self.register_builtin_name(name);
         }
         self
+    }
+
+    /// Include AWS config builtins filtered by policy.
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn with_aws_config(mut self, policy: AwsConfigPolicy) -> Self {
+        self.aws_sso_profiles = policy.allowed_sso_profiles;
+        self.register_builtin_name("aws_config_sso_profile")
     }
 
     /// Include filesystem builtins filtered by policy.
@@ -249,6 +266,8 @@ impl VMBuilder {
         vm.set_fs_builtin_folders(self.fs_builtin_folders);
         vm.set_http_allowed_hosts(self.http_allowed_hosts);
         vm.set_http_allowed_hosts_by_builtin(self.http_allowed_hosts_by_builtin);
+        #[cfg(feature = "builtin-aws-config")]
+        vm.set_aws_sso_profiles(self.aws_sso_profiles);
 
         if let Some(max) = self.max_heap {
             vm.set_max_heap(max);

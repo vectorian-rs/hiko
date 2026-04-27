@@ -1,0 +1,13 @@
+import __Builtin.AwsConfig
+
+structure Config = struct
+  datatype auth_method =
+      SsoProfile of string
+
+  fun from_auth auth =
+    case auth of
+      SsoProfile profile => BuiltinAwsConfig.sso_profile_raw profile
+
+  fun sso_profile profile =
+    from_auth (SsoProfile profile)
+end

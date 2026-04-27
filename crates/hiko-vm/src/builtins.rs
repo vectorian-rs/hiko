@@ -1,5 +1,6 @@
 #[cfg(any(
     test,
+    feature = "builtin-aws-config",
     feature = "builtin-bytes",
     feature = "builtin-convert",
     feature = "builtin-env",
@@ -40,7 +41,29 @@ use crate::value::BuiltinFn;
     feature = "builtin-testing",
     feature = "builtin-time"
 ))]
-use crate::value::{HeapObject, Value};
+use crate::value::HeapObject;
+#[cfg(any(
+    test,
+    feature = "builtin-aws-config",
+    feature = "builtin-bytes",
+    feature = "builtin-convert",
+    feature = "builtin-env",
+    feature = "builtin-exec",
+    feature = "builtin-filesystem",
+    feature = "builtin-hash",
+    feature = "builtin-http",
+    feature = "builtin-json",
+    feature = "builtin-math",
+    feature = "builtin-path",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-stdio",
+    feature = "builtin-string",
+    feature = "builtin-system",
+    feature = "builtin-testing",
+    feature = "builtin-time"
+))]
+use crate::value::Value;
 
 mod support;
 
@@ -88,6 +111,8 @@ pub(crate) use http_args::extract_http_args;
 #[cfg(feature = "builtin-http")]
 pub(crate) use http_args::{HttpArgRefs, extract_http_arg_refs};
 
+#[cfg(feature = "builtin-aws-config")]
+mod aws_config;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -136,6 +161,9 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
 }
 
 fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
+    #[cfg(feature = "builtin-aws-config")]
+    _entries.extend(aws_config::entries());
+
     #[cfg(feature = "builtin-stdio")]
     _entries.extend(stdio::entries());
 

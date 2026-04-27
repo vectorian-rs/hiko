@@ -1,0 +1,5 @@
+name = "Aws"
+version = "0.1.0"
+
+[modules]
+Config = "blake3:52c31e945fee1755b631318ede90e08431901faa51d1909b3266c0ce07c9fb01"
