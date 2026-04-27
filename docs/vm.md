@@ -41,6 +41,12 @@ The runtime should treat `RunResult` as the only public execution transition.
 It can request cancellation or resume blocked work, but it should not mutate VM
 internals directly.
 
+## Execution Boundaries
+
+`VM::run()` is an unbounded convenience entry point. It runs until the program halts, fails, exhausts configured fuel, or emits a runtime request. If no fuel limit is configured, `run()` is non-preemptive: the dispatch loop has no reduction boundary and a non-terminating program can keep control indefinitely.
+
+Embedders that need bounded execution, scheduler fairness, or regular cancellation observation should use `VM::run_slice(reductions)`. The slice API installs a per-call reduction budget and returns a `RunResult` boundary that the runtime can map back into process state.
+
 ## Runtime/VM Transition Contract
 
 The steady-state flow is:

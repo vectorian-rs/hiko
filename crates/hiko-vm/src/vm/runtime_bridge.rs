@@ -241,6 +241,11 @@ impl VM {
         }
     }
 
+    /// Run until the program halts, fails, exhausts configured fuel, or emits a runtime request.
+    ///
+    /// When no fuel limit is configured, this call is non-preemptive: the dispatch loop has no
+    /// reduction boundary and can run indefinitely for non-terminating programs. Embedders that
+    /// need bounded execution or scheduler fairness should call [`VM::run_slice`] instead.
     pub fn run(&mut self) -> Result<(), RuntimeError> {
         if let Some(message) = self.startup_error.as_ref() {
             return Err(RuntimeError {
