@@ -206,10 +206,10 @@ impl VM {
         child.exec_allowed_paths = self.exec_allowed_paths.clone();
         child.exec_allowed_resolution_errors = self.exec_allowed_resolution_errors.clone();
         child.exec_timeout = self.exec_timeout;
-        child.set_fs_root(self.fs_root.clone());
-        child.set_fs_builtin_folders(self.fs_builtin_folders.clone());
-        child.set_http_allowed_hosts(self.http_allowed_hosts.clone());
-        child.set_http_allowed_hosts_by_builtin(self.http_allowed_hosts_by_builtin.clone());
+        child.set_fs_root(self.heap.fs_root().to_string());
+        child.set_fs_builtin_folders(self.heap.fs_builtin_folders().clone());
+        child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
+        child.set_http_allowed_hosts_by_builtin(self.heap.http_allowed_hosts_by_builtin().clone());
         if let Some(max_heap) = self.heap.max_objects() {
             child.set_max_heap(max_heap);
         }

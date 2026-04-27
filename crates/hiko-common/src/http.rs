@@ -19,14 +19,20 @@ pub fn dispatch_ureq(
         r.send(body.as_bytes()).map_err(|e| format!("http: {e}"))
     };
 
-    match method.to_uppercase().as_str() {
-        "GET" => send_no_body(ureq::get(url)),
-        "HEAD" => send_no_body(ureq::head(url)),
-        "DELETE" => send_no_body(ureq::delete(url)),
-        "POST" => send_with_body(ureq::post(url)),
-        "PUT" => send_with_body(ureq::put(url)),
-        "PATCH" => send_with_body(ureq::patch(url)),
-        other => Err(format!("http: unsupported method '{other}'")),
+    if method.eq_ignore_ascii_case("GET") {
+        send_no_body(ureq::get(url))
+    } else if method.eq_ignore_ascii_case("HEAD") {
+        send_no_body(ureq::head(url))
+    } else if method.eq_ignore_ascii_case("DELETE") {
+        send_no_body(ureq::delete(url))
+    } else if method.eq_ignore_ascii_case("POST") {
+        send_with_body(ureq::post(url))
+    } else if method.eq_ignore_ascii_case("PUT") {
+        send_with_body(ureq::put(url))
+    } else if method.eq_ignore_ascii_case("PATCH") {
+        send_with_body(ureq::patch(url))
+    } else {
+        Err(format!("http: unsupported method '{method}'"))
     }
 }
 

@@ -102,14 +102,6 @@ pub struct VM {
     exec_allowed_paths: Vec<PathBuf>,
     exec_allowed_resolution_errors: Vec<String>,
     exec_timeout: u64,
-    /// Filesystem root for path enforcement. Empty means no restriction.
-    fs_root: String,
-    /// Per-builtin filesystem folder allowlists.
-    fs_builtin_folders: HashMap<String, Vec<String>>,
-    /// Allowed HTTP hosts. Empty means no restriction.
-    http_allowed_hosts: Vec<String>,
-    /// Per-builtin HTTP host allowlists.
-    http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
@@ -248,10 +240,6 @@ impl VM {
             exec_allowed_paths: Vec::new(),
             exec_allowed_resolution_errors: Vec::new(),
             exec_timeout: 30,
-            fs_root: String::new(),
-            fs_builtin_folders: HashMap::new(),
-            http_allowed_hosts: Vec::new(),
-            http_allowed_hosts_by_builtin: HashMap::new(),
             exec_builtin_id: None,
             print_builtin_id: None,
             println_builtin_id: None,
@@ -291,32 +279,28 @@ impl VM {
 
     /// Set the filesystem root for path enforcement.
     pub fn set_fs_root(&mut self, root: String) {
-        self.fs_root = root.clone();
         self.heap.set_fs_root(root);
     }
 
     /// Set per-builtin filesystem folder allowlists.
     pub fn set_fs_builtin_folders(&mut self, folders: HashMap<String, Vec<String>>) {
-        self.fs_builtin_folders = folders.clone();
         self.heap.set_fs_builtin_folders(folders);
     }
 
     /// Set allowed HTTP hosts.
     pub fn set_http_allowed_hosts(&mut self, hosts: Vec<String>) {
-        self.http_allowed_hosts = hosts.clone();
         self.heap.set_http_allowed_hosts(hosts);
     }
 
     /// Set per-builtin HTTP host allowlists.
     pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
-        self.http_allowed_hosts_by_builtin = hosts.clone();
         self.heap.set_http_allowed_hosts_by_builtin(hosts);
     }
 
     /// Check if a filesystem path is within the allowed root.
     /// Returns the canonicalized path or an error.
     pub fn check_fs_path(&self, path: &str) -> Result<std::path::PathBuf, String> {
-        crate::heap::resolve_fs_path(&self.fs_root, path)
+        self.heap.check_fs_path(path)
     }
 
     /// Check if a URL's host is in the allowed hosts list.
