@@ -1,4 +1,6 @@
 use super::*;
+use crate::vm::{TAG_CONS, TAG_NIL};
+use std::mem::size_of;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -224,32 +226,78 @@ pub(super) fn to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String>
 }
 
 pub(super) fn string_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let (v0, v1) = match &args[0] {
+    let (list_value, separator_value) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
             _ => return Err("string_join: expected (String list, String)".into()),
         },
         _ => return Err("string_join: expected (String list, String)".into()),
     };
-    let sep = match v1 {
+    let separator = match separator_value {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.as_str(),
             _ => return Err("string_join: expected String for separator".into()),
         },
         _ => return Err("string_join: expected String for separator".into()),
     };
-    let elems = collect_list(heap, v0)?;
-    let mut parts = Vec::new();
-    for elem in elems {
-        match elem {
-            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-                HeapObject::String(s) => parts.push(s.clone()),
-                _ => return Err("string_join: list elements must be strings".into()),
-            },
-            _ => return Err("string_join: list elements must be strings".into()),
+
+    let mut count = 0usize;
+    let mut output_len = 0usize;
+    for_each_join_part(heap, list_value, |part| {
+        if count > 0 {
+            output_len = output_len
+                .checked_add(separator.len())
+                .ok_or_else(|| "string_join: output length overflow".to_string())?;
+        }
+        output_len = output_len
+            .checked_add(part.len())
+            .ok_or_else(|| "string_join: output length overflow".to_string())?;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| "string_join: element count overflow".to_string())?;
+        Ok(())
+    })?;
+
+    heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(output_len))
+        .map_err(|e| format!("string_join: {e}"))?;
+
+    let mut output = String::with_capacity(output_len);
+    let mut first = true;
+    for_each_join_part(heap, list_value, |part| {
+        if first {
+            first = false;
+        } else {
+            output.push_str(separator);
+        }
+        output.push_str(part);
+        Ok(())
+    })?;
+    heap_alloc(heap, HeapObject::String(output))
+}
+
+fn for_each_join_part(
+    heap: &Heap,
+    list_value: Value,
+    mut f: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut current = list_value;
+    while let Value::Heap(list_ref) = current {
+        match heap.get(list_ref).map_err(|e| e.to_string())? {
+            HeapObject::Data { tag, .. } if *tag == TAG_NIL => break,
+            HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
+                match fields[0] {
+                    Value::Heap(item_ref) => match heap.get(item_ref).map_err(|e| e.to_string())? {
+                        HeapObject::String(part) => f(part)?,
+                        _ => return Err("string_join: list elements must be strings".into()),
+                    },
+                    _ => return Err("string_join: list elements must be strings".into()),
+                }
+                current = fields[1];
+            }
+            _ => break,
         }
     }
-    heap_alloc(heap, HeapObject::String(parts.join(&sep)))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -569,6 +617,20 @@ mod tests {
         let arg = tuple2(&mut heap, list, sep);
         let result = string_join(&[arg], &mut heap).unwrap();
         assert_eq!(heap_string(result, &heap), "xy");
+    }
+
+    #[test]
+    fn string_join_checks_output_against_memory_limit_before_building() {
+        let mut heap = Heap::new();
+        let a = string_arg(&mut heap, "abcd");
+        let b = string_arg(&mut heap, "efgh");
+        let list = alloc_list(&mut heap, vec![a, b]).unwrap();
+        let sep = string_arg(&mut heap, ",");
+        let arg = tuple2(&mut heap, list, sep);
+        heap.set_max_bytes(heap.live_bytes() + size_of::<HeapObject>() + 8);
+
+        let err = string_join(&[arg], &mut heap).unwrap_err();
+        assert!(err.contains("string_join: memory limit exceeded"));
     }
 }
 

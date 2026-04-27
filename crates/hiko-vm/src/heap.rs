@@ -431,6 +431,23 @@ impl Heap {
         Ok(())
     }
 
+    pub fn ensure_can_allocate_bytes(
+        &self,
+        attempted_bytes: usize,
+    ) -> Result<(), HeapLimitExceeded> {
+        if let Some(limit_bytes) = self.max_bytes {
+            let next_bytes = self.current_bytes.saturating_add(attempted_bytes);
+            if next_bytes > limit_bytes {
+                return Err(HeapLimitExceeded::Bytes {
+                    used_bytes: self.current_bytes,
+                    limit_bytes,
+                    attempted_bytes,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn allocation_would_exceed_limits(&self, object_bytes: usize) -> bool {
         if let Some(max) = self.max_objects {
             let live = self.objects.len() - self.free_list.len();
