@@ -255,47 +255,7 @@ impl ThreadedRuntime {
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
             for (token, result) in completions {
-                if let Some((_, pid)) = self.table.io_waiters.remove(&token)
-                    && let Some(mut process) = self.table.processes.get_mut(&pid)
-                {
-                    match result {
-                        crate::io_backend::IoResult::Ok { value, io_bytes } => {
-                            match process
-                                .vm
-                                .heap
-                                .charge_io_bytes(io_bytes)
-                                .map_err(|e| ProcessFailure::runtime(e.to_string()))
-                                .and_then(|()| deliver_result_to_parent(&mut process.vm, value))
-                            {
-                                Ok(()) => {
-                                    process.status = ProcessStatus::Runnable;
-                                    drop(process);
-                                    self.scheduler.enqueue(pid);
-                                }
-                                Err(failure) => {
-                                    process.status = ProcessStatus::Failed(failure);
-                                    drop(process);
-                                    self.scheduler.remove(pid);
-                                    wake_any_waiters(&self.table, &*self.scheduler, pid);
-                                    wake_join_waiters(&self.table, &*self.scheduler, pid);
-                                }
-                            }
-                        }
-                        crate::io_backend::IoResult::Err(msg) => {
-                            process.status = match process.vm.heap.charge_io_bytes(msg.len() as u64)
-                            {
-                                Ok(()) => ProcessStatus::Failed(ProcessFailure::runtime(msg)),
-                                Err(err) => {
-                                    ProcessStatus::Failed(ProcessFailure::runtime(err.to_string()))
-                                }
-                            };
-                            drop(process);
-                            self.scheduler.remove(pid);
-                            wake_any_waiters(&self.table, &*self.scheduler, pid);
-                            wake_join_waiters(&self.table, &*self.scheduler, pid);
-                        }
-                    }
-                }
+                handle_io_completion(&self.table, &*self.scheduler, token, result);
             }
 
             // `active_workers` is part of the shutdown/deadlock decision, so
@@ -356,6 +316,66 @@ impl ThreadedRuntime {
         }
 
         Ok(self.table.all_outputs())
+    }
+}
+
+fn handle_io_completion(
+    table: &ProcessTable,
+    scheduler: &dyn Scheduler,
+    token: IoToken,
+    result: crate::io_backend::IoResult,
+) {
+    let Some((_, pid)) = table.io_waiters.remove(&token) else {
+        return;
+    };
+
+    let Some(mut process) = table.processes.get_mut(&pid) else {
+        remove_io_waiters_for_pid(table, pid);
+        return;
+    };
+
+    match &process.status {
+        ProcessStatus::Blocked(BlockReason::Io(blocked_token)) if *blocked_token == token => {}
+        _ => {
+            drop(process);
+            remove_io_waiters_for_pid(table, pid);
+            return;
+        }
+    }
+
+    match result {
+        crate::io_backend::IoResult::Ok { value, io_bytes } => {
+            match process
+                .vm
+                .heap
+                .charge_io_bytes(io_bytes)
+                .map_err(|e| ProcessFailure::runtime(e.to_string()))
+                .and_then(|()| deliver_result_to_parent(&mut process.vm, value))
+            {
+                Ok(()) => {
+                    process.status = ProcessStatus::Runnable;
+                    drop(process);
+                    scheduler.enqueue(pid);
+                }
+                Err(failure) => {
+                    process.status = ProcessStatus::Failed(failure);
+                    drop(process);
+                    scheduler.remove(pid);
+                    wake_any_waiters(table, scheduler, pid);
+                    wake_join_waiters(table, scheduler, pid);
+                }
+            }
+        }
+        crate::io_backend::IoResult::Err(msg) => {
+            process.status = match process.vm.heap.charge_io_bytes(msg.len() as u64) {
+                Ok(()) => ProcessStatus::Failed(ProcessFailure::runtime(msg)),
+                Err(err) => ProcessStatus::Failed(ProcessFailure::runtime(err.to_string())),
+            };
+            drop(process);
+            scheduler.remove(pid);
+            wake_any_waiters(table, scheduler, pid);
+            wake_join_waiters(table, scheduler, pid);
+        }
     }
 }
 
@@ -1155,6 +1175,18 @@ fn remove_any_waiter_registration(table: &ProcessTable, waiter_pid: Pid, child_p
     }
 }
 
+fn remove_io_waiters_for_pid(table: &ProcessTable, pid: Pid) {
+    let tokens: Vec<IoToken> = table
+        .io_waiters
+        .iter()
+        .filter(|entry| *entry.value() == pid)
+        .map(|entry| *entry.key())
+        .collect();
+    for token in tokens {
+        table.io_waiters.remove(&token);
+    }
+}
+
 fn remove_waiter_globally(waiters: &DashMap<Pid, Vec<Pid>>, waiter_pid: Pid) {
     let child_pids: Vec<Pid> = waiters.iter().map(|entry| *entry.key()).collect();
     for child_pid in child_pids {
@@ -1278,6 +1310,62 @@ mod tests {
                 .get(&child2)
                 .is_some_and(|waiters| waiters.contains(&waiter))
         );
+    }
+
+    #[test]
+    fn test_io_completion_removes_missing_waiter_registrations() {
+        let table = ProcessTable::new();
+        let scheduler = FifoScheduler::new(1000);
+        let pid = Pid(10);
+        let token1 = IoToken(1);
+        let token2 = IoToken(2);
+        table.io_waiters.insert(token1, pid);
+        table.io_waiters.insert(token2, pid);
+
+        handle_io_completion(
+            &table,
+            &scheduler,
+            token1,
+            crate::io_backend::IoResult::Ok {
+                value: crate::sendable::SendableValue::Unit,
+                io_bytes: 0,
+            },
+        );
+
+        assert!(!table.io_waiters.contains_key(&token1));
+        assert!(!table.io_waiters.contains_key(&token2));
+    }
+
+    #[test]
+    fn test_io_completion_removes_non_blocked_waiter_registrations() {
+        let table = ProcessTable::new();
+        let scheduler = FifoScheduler::new(1000);
+        let pid = Pid(10);
+        let token1 = IoToken(1);
+        let token2 = IoToken(2);
+        table.insert(Process::new(pid, VM::new(compile("val _ = ()")), None));
+        table.io_waiters.insert(token1, pid);
+        table.io_waiters.insert(token2, pid);
+
+        handle_io_completion(
+            &table,
+            &scheduler,
+            token1,
+            crate::io_backend::IoResult::Ok {
+                value: crate::sendable::SendableValue::Unit,
+                io_bytes: 0,
+            },
+        );
+
+        assert!(!table.io_waiters.contains_key(&token1));
+        assert!(!table.io_waiters.contains_key(&token2));
+        assert!(matches!(
+            table
+                .processes
+                .get(&pid)
+                .map(|process| process.is_runnable()),
+            Some(true)
+        ));
     }
 
     #[test]
