@@ -74,6 +74,9 @@ Audit snapshot on 2026-04-21:
   non-guarantees, formal-spec inventory, and verification roadmap; open first
   for verifier, fuzzing, model-checking, deadlock, wakeup, cancellation, or
   scheduler-correctness work.
+- [verification-status-20260428.md](verification-status-20260428.md): dated
+  verification grade snapshot and reassessment prompt; use as historical context
+  when updating verification priorities.
 - [verification-tla.md](verification-tla.md): older focused status page for the
   TLA+/Quint specs; useful for extra detail, but prefer
   [verification.md](verification.md) for the current overview.

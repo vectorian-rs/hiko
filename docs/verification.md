@@ -9,6 +9,9 @@ Hiko currently has three complementary verification layers:
 2. Rust unit/regression tests around runtime and VM invariants, and
 3. formal models under [`specs/`](../specs).
 
+For a point-in-time grade and reassessment prompt, see
+[`verification-status-20260428.md`](verification-status-20260428.md).
+
 The executable Rust implementation remains the source of truth. Formal specs
 and docs should make intended behavior explicit and catch classes of bugs early,
 but they do not replace tests against the real implementation.
