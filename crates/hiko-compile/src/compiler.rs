@@ -39,16 +39,57 @@ impl CompileError {
 }
 
 #[cfg(feature = "loader-named-imports")]
-fn find_lockfile_path(entry_file: &Path) -> Option<PathBuf> {
+fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
     let mut dir = entry_file.parent();
     while let Some(current) = dir {
-        let candidate = current.join("hiko.lock.toml");
+        let candidate = current.join("hiko.toml");
         if candidate.is_file() {
             return Some(candidate);
         }
         dir = current.parent();
     }
     None
+}
+
+#[cfg(feature = "loader-named-imports")]
+fn load_import_loader_config(entry_file: &Path) -> Result<ImportLoaderConfig, CompileError> {
+    let manifest_path = find_project_manifest_path(entry_file).ok_or_else(|| {
+        CompileError::codegen(format!(
+            "named imports require a project hiko.toml above '{}'",
+            entry_file.display()
+        ))
+    })?;
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|e| {
+        CompileError::codegen(format!(
+            "cannot read project manifest '{}': {e}",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest: ImportProjectManifest = toml::from_str(&manifest_text).map_err(|e| {
+        CompileError::codegen(format!(
+            "invalid project manifest '{}': {e}",
+            manifest_path.display()
+        ))
+    })?;
+    let lockfile = manifest
+        .defaults
+        .lockfile
+        .as_deref()
+        .unwrap_or("hiko.lock.toml");
+    let lockfile_path = manifest_dir.join(lockfile);
+    if !lockfile_path.is_file() {
+        return Err(CompileError::codegen(format!(
+            "project manifest '{}' references missing module lockfile '{}'",
+            manifest_path.display(),
+            lockfile_path.display()
+        )));
+    }
+    Ok(ImportLoaderConfig {
+        manifest_path,
+        lockfile_path,
+        manifest,
+    })
 }
 
 #[cfg(feature = "loader-named-imports")]
@@ -179,6 +220,75 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
 }
 
 #[cfg(feature = "loader-named-imports")]
+fn validate_lockfile_against_manifest(
+    lockfile: &ImportLockfile,
+    lockfile_path: &Path,
+    config: &ImportLoaderConfig,
+) -> Result<(), CompileError> {
+    let dependencies = &config.manifest.dependencies;
+    if dependencies.is_empty() {
+        return Ok(());
+    }
+
+    for package_name in lockfile.packages.keys() {
+        if !dependencies.contains_key(package_name) {
+            return Err(CompileError::codegen(format!(
+                "package '{package_name}' in '{}' is not declared in project manifest '{}'",
+                lockfile_path.display(),
+                config.manifest_path.display()
+            )));
+        }
+    }
+
+    for (package_name, dependency) in dependencies {
+        let package = lockfile.packages.get(package_name).ok_or_else(|| {
+            CompileError::codegen(format!(
+                "dependency '{package_name}' declared in project manifest '{}' is missing from module lockfile '{}'",
+                config.manifest_path.display(),
+                lockfile_path.display()
+            ))
+        })?;
+        if package.version != dependency.version {
+            return Err(CompileError::codegen(format!(
+                "dependency '{package_name}' version mismatch: project manifest '{}' requires {}, but module lockfile '{}' resolves {}",
+                config.manifest_path.display(),
+                dependency.version,
+                lockfile_path.display(),
+                package.version
+            )));
+        }
+        let registry = config
+            .manifest
+            .registries
+            .get(&dependency.registry)
+            .ok_or_else(|| {
+                CompileError::codegen(format!(
+                    "dependency '{package_name}' references unknown registry '{}' in project manifest '{}'",
+                    dependency.registry,
+                    config.manifest_path.display()
+                ))
+            })?;
+        let expected_base_url = format!(
+            "{}/{}-v{}",
+            registry.url.trim_end_matches('/'),
+            package_name,
+            dependency.version
+        );
+        if package.base_url.trim_end_matches('/') != expected_base_url {
+            return Err(CompileError::codegen(format!(
+                "dependency '{package_name}' source mismatch: project manifest '{}' expects '{}', but module lockfile '{}' resolves '{}'",
+                config.manifest_path.display(),
+                expected_base_url,
+                lockfile_path.display(),
+                package.base_url
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "loader-named-imports")]
 fn validate_remote_base_url(
     package_name: &str,
     base_url: &str,
@@ -264,6 +374,57 @@ struct FuncCtx {
     scope_depth: u32,
     arity: u8,
     name: Option<String>,
+}
+
+#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[derive(Debug, Clone)]
+struct ImportLoaderConfig {
+    manifest_path: PathBuf,
+    lockfile_path: PathBuf,
+    manifest: ImportProjectManifest,
+}
+
+#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportManifestDefaults {
+    lockfile: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "policy")]
+    _policy: Option<String>,
+}
+
+#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportRegistry {
+    url: String,
+}
+
+#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportDependency {
+    version: String,
+    registry: String,
+}
+
+#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportProjectManifest {
+    #[serde(default)]
+    #[serde(rename = "project")]
+    _project: toml::Table,
+    #[serde(default)]
+    defaults: ImportManifestDefaults,
+    #[serde(default)]
+    registries: HashMap<String, ImportRegistry>,
+    #[serde(default)]
+    dependencies: HashMap<String, ImportDependency>,
+    #[serde(default)]
+    #[serde(rename = "policies")]
+    _policies: toml::Table,
 }
 
 #[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
@@ -984,12 +1145,9 @@ impl Compiler {
                     "named import '{module_name}' requires file-based compilation context"
                 ))
             })?;
-            let lockfile_path = find_lockfile_path(entry_file).ok_or_else(|| {
-                CompileError::codegen(format!(
-                    "named import '{module_name}' requires hiko.lock.toml alongside the entry file"
-                ))
-            })?;
-            let lockfile_text = std::fs::read_to_string(&lockfile_path).map_err(|e| {
+            let loader_config = load_import_loader_config(entry_file)?;
+            let lockfile_path = &loader_config.lockfile_path;
+            let lockfile_text = std::fs::read_to_string(lockfile_path).map_err(|e| {
                 CompileError::codegen(format!(
                     "cannot read module lockfile '{}': {e}",
                     lockfile_path.display()
@@ -1001,7 +1159,8 @@ impl Compiler {
                     lockfile_path.display()
                 ))
             })?;
-            validate_lockfile(&lockfile, &lockfile_path)?;
+            validate_lockfile(&lockfile, lockfile_path)?;
+            validate_lockfile_against_manifest(&lockfile, lockfile_path, &loader_config)?;
             self.import_lockfile = Some(lockfile);
             self.module_cache_dir = Some(default_module_cache_dir()?);
         }
@@ -1941,6 +2100,27 @@ mod tests {
         std::fs::write(path, contents).expect("write file");
     }
 
+    fn write_project_manifest(project_dir: &Path) {
+        write_file(
+            &project_dir.join("hiko.toml"),
+            "[defaults]\nlockfile = \"hiko.lock.toml\"\n",
+        );
+    }
+
+    fn write_project_manifest_with_dependency(
+        project_dir: &Path,
+        package: &str,
+        version: &str,
+        registry_url: &str,
+    ) {
+        write_file(
+            &project_dir.join("hiko.toml"),
+            &format!(
+                "[defaults]\nlockfile = \"hiko.lock.toml\"\n\n[registries.local]\nurl = \"{registry_url}\"\n\n[dependencies]\n{package} = {{ version = \"{version}\", registry = \"local\" }}\n"
+            ),
+        );
+    }
+
     fn cached_module_path(url: &str, hash: &str) -> PathBuf {
         default_module_cache_dir()
             .expect("default cache dir")
@@ -2036,6 +2216,7 @@ val result = Box.get (Box.make 41)
     #[test]
     fn named_import_fetches_over_http_and_reuses_cache() {
         let project_dir = unique_temp_dir("named-import-ok");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "structure List = struct\n  val forty_two = 42\nend\n".to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
@@ -2072,8 +2253,79 @@ val result = Box.get (Box.make 41)
     }
 
     #[test]
+    fn named_import_uses_project_lockfile_above_entry_file() {
+        let project_dir = unique_temp_dir("named-import-project-lockfile");
+        write_project_manifest(&project_dir);
+        let entry_path = project_dir.join("examples/main.hml");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            r#"schema_version = 1
+
+[packages.Std]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Std-v0.1.0"
+
+[packages.Std.modules]
+Prelude = "blake3:deadbeef"
+"#,
+        );
+        write_file(&entry_path, "import Std.List\nval answer = 1\n");
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("module 'List'"));
+                assert!(message.contains("not found"));
+            }
+            other => panic!("expected project lockfile to be used, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_manifest_lockfile_version_mismatch() {
+        let project_dir = unique_temp_dir("named-import-manifest-version-mismatch");
+        write_project_manifest_with_dependency(
+            &project_dir,
+            "Test",
+            "0.2.0",
+            "http://127.0.0.1:8000",
+        );
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            r#"schema_version = 1
+
+[packages.Test]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Test-v0.1.0"
+
+[packages.Test.modules]
+Answer = "blake3:deadbeef"
+"#,
+        );
+        write_file(&entry_path, "import Test.Answer\nval answer = 1\n");
+
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("version mismatch"));
+                assert!(message.contains("requires 0.2.0"));
+                assert!(message.contains("resolves 0.1.0"));
+            }
+            other => panic!("expected manifest/lockfile mismatch, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
     fn named_import_rejects_non_local_http_base_url() {
         let project_dir = unique_temp_dir("named-import-insecure-http");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "val answer = 42\n";
         let module_hash = blake3_hex(module_source.as_bytes());
@@ -2101,6 +2353,7 @@ val result = Box.get (Box.make 41)
     #[test]
     fn named_import_rejects_oversized_remote_module() {
         let project_dir = unique_temp_dir("named-import-too-large");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = format!("val answer = \"{}\"\n", "x".repeat(1024 * 1024));
         let module_hash = blake3_hex(module_source.as_bytes());
@@ -2141,6 +2394,7 @@ val result = Box.get (Box.make 41)
     #[test]
     fn named_import_rejects_bad_blake3() {
         let project_dir = unique_temp_dir("named-import-bad-hash");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "val remote_answer = 42\n".to_string();
         let (answer_url, server) =
@@ -2196,6 +2450,7 @@ val result = Box.get (Box.make 41)
     #[test]
     fn named_import_revalidates_cached_file_on_later_load() {
         let project_dir = unique_temp_dir("named-import-revalidate");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "structure Cache = struct\n  val value = 7\nend\n".to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
@@ -2242,6 +2497,7 @@ val result = Box.get (Box.make 41)
     #[test]
     fn named_import_rejects_missing_package_in_lockfile() {
         let project_dir = unique_temp_dir("named-import-missing-package");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
 
         write_file(
@@ -2273,6 +2529,7 @@ List = "blake3:deadbeef"
     #[test]
     fn named_import_rejects_missing_module_in_lockfile() {
         let project_dir = unique_temp_dir("named-import-missing-module");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
 
         write_file(
@@ -2393,6 +2650,7 @@ Prelude = "blake3:deadbeef"
     #[test]
     fn named_import_rejects_reserved_package_name_in_lockfile() {
         let project_dir = unique_temp_dir("named-import-reserved-package");
+        write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
 
         write_file(

@@ -161,6 +161,8 @@ struct FmtOptions {
 #[serde(deny_unknown_fields)]
 struct ManifestDefaults {
     policy: Option<String>,
+    #[serde(rename = "lockfile")]
+    _lockfile: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -177,6 +179,12 @@ struct ProjectManifest {
     _project: toml::Table,
     #[serde(default)]
     defaults: ManifestDefaults,
+    #[serde(default)]
+    #[serde(rename = "registries")]
+    _registries: toml::Table,
+    #[serde(default)]
+    #[serde(rename = "dependencies")]
+    _dependencies: toml::Table,
     #[serde(default)]
     policies: HashMap<String, ManifestPolicy>,
 }

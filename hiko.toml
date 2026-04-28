@@ -6,6 +6,17 @@ name = "hiko"
 # policies and default to the configured policy when `--config` is omitted.
 [defaults]
 policy = "software-developer-role"
+lockfile = "hiko.lock.toml"
+
+[registries.local]
+url = "http://127.0.0.1:8000"
+
+[dependencies]
+Aws = { version = "0.1.0", registry = "local" }
+Harness = { version = "0.1.0", registry = "local" }
+Hash = { version = "0.1.0", registry = "local" }
+Http = { version = "0.1.0", registry = "local" }
+Std = { version = "0.1.0", registry = "local" }
 
 [policies.docs-writer]
 path = "policies/docs-writer.policy.toml"
