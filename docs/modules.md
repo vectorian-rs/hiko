@@ -276,18 +276,31 @@ Module names do not nest. Published modules live in one flat directory:
 
 Listing the `modules/` directory should show the entire package surface at a glance.
 
-### Locking And Integrity
+### Manifest, Locking, And Integrity
 
-Named imports resolve through a lockfile.
+Named imports resolve through the project manifest and lockfile.
 
-Resolution should be **strict**:
+The project manifest (`hiko.toml`) declares dependency intent:
 
-- if a named import is missing from `hiko.lock.toml`, compilation fails
-- the compiler should not silently resolve and rewrite the lockfile during ordinary builds
+```toml
+[defaults]
+lockfile = "hiko.lock.toml"
 
-That keeps the lockfile as the one source of truth for remote module identity.
+[registries.local]
+url = "http://127.0.0.1:8000"
 
-Conceptually:
+[dependencies]
+Std = { version = "0.1.0", registry = "local" }
+Aws = { version = "0.1.0", registry = "local" }
+```
+
+`defaults.lockfile` is resolved relative to the directory containing
+`hiko.toml`. Named imports search upward from the entry file for `hiko.toml` and
+then use that one configured project lockfile. Entry-file-relative lockfiles are
+not part of the model.
+
+The lockfile (`hiko.lock.toml`) records exact resolved package roots and module
+hashes:
 
 ```toml
 schema_version = 1
@@ -302,13 +315,24 @@ List = "blake3:..."
 ListExtras = "blake3:..."
 ```
 
+Resolution is **strict**:
+
+- if a named import is missing from `hiko.lock.toml`, compilation fails
+- if `hiko.toml` declares dependencies, every locked package must be declared
+- dependency versions must match between `hiko.toml` and `hiko.lock.toml`
+- dependency registries must exist in `hiko.toml`
+- the locked package `base_url` must match `<registry-url>/<Package>-v<version>`
+- the compiler does not silently resolve, rewrite, or update the lockfile during ordinary builds
+
 Important points:
 
-- **version is included**
-- **package base URL is included**
+- **`hiko.toml` is intent**: package names, versions, registries, defaults, and policies
+- **`hiko.lock.toml` is exact identity**: resolved package roots and per-module hashes
 - **BLAKE3 is the actual byte-level authority**
 
-Version tells us what release we intended to use. The package base URL tells us where the release lives. The BLAKE3 hash tells us whether the bytes of an individual module are exactly the bytes we locked.
+Version tells us what release we intended to use. The package base URL tells us
+where the release lives. The BLAKE3 hash tells us whether the bytes of an
+individual module are exactly the bytes we locked.
 
 ### Cache Model
 
@@ -352,14 +376,34 @@ We do **not** want keyed hashes as the primary package trust model. Shared-secre
 
 The cache should be treated as **untrusted storage**. Verification on reuse is not an optimization detail; it is part of the security model.
 
+## Local `use` Versus Named `import`
+
+Local source files are included with `use`:
+
+```hiko
+use "./support.hml"
+```
+
+The path is resolved relative to the file containing the `use`. Local `use`
+files are project source, not locked package dependencies, so they are not
+verified through `hiko.lock.toml` today.
+
+Named package modules are imported with `import`:
+
+```hiko
+import Std.Option
+import Aws.S3
+```
+
+Named imports are resolved through `hiko.toml` and `hiko.lock.toml`, fetched from
+package roots, cached, and BLAKE3-verified before compiling.
+
 ## What Is Next
 
-The next module work is still not deeper module theory. It is the **library/import boundary**:
+The remaining library/import work is operational hardening rather than deeper
+module theory:
 
-- keep `use` as explicit local inclusion
-- add `import` as the named-module mechanism
-- load named modules from HTTP
-- add manifest and lockfile support
-- add cache and integrity verification
-
-That is what turns the current module syntax into a real library system.
+- add a lock update/verify command for proactive remote drift checks
+- make the remote module cache location configurable
+- support generated artifacts embedding exact locked content and selected policy
+- optionally include local `use` source hashes in generated artifacts for release reproducibility
