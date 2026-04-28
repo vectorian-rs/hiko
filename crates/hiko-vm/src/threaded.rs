@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::{DashMap, DashSet};
 
-use crate::io_backend::{IoBackend, IoToken, ThreadPoolIoBackend};
+use crate::io_backend::{IoBackend, IoResult, IoToken, ThreadPoolIoBackend};
 use crate::process::{
     AwaitKind, BlockReason, ChildOutcome, ChildRecord, FiberJoinError, Pid, Process,
     ProcessFailure, ProcessStatus, Scope, ScopeId,
@@ -323,7 +323,7 @@ fn handle_io_completion(
     table: &ProcessTable,
     scheduler: &dyn Scheduler,
     token: IoToken,
-    result: crate::io_backend::IoResult,
+    result: IoResult,
 ) {
     let Some((_, pid)) = table.io_waiters.remove(&token) else {
         return;
@@ -344,7 +344,7 @@ fn handle_io_completion(
     }
 
     match result {
-        crate::io_backend::IoResult::Ok { value, io_bytes } => {
+        IoResult::Ok { value, io_bytes } => {
             match process
                 .vm
                 .heap
@@ -366,7 +366,7 @@ fn handle_io_completion(
                 }
             }
         }
-        crate::io_backend::IoResult::Err(msg) => {
+        IoResult::Err(msg) => {
             process.status = match process.vm.heap.charge_io_bytes(msg.len() as u64) {
                 Ok(()) => ProcessStatus::Failed(ProcessFailure::runtime(msg)),
                 Err(err) => ProcessStatus::Failed(ProcessFailure::runtime(err.to_string())),
@@ -1247,6 +1247,20 @@ mod tests {
             .join(name)
     }
 
+    fn ok_unit_io_result() -> IoResult {
+        IoResult::Ok {
+            value: crate::sendable::SendableValue::Unit,
+            io_bytes: 0,
+        }
+    }
+
+    fn ready_unit_child(parent: Pid) -> ChildRecord {
+        ChildRecord::Ready {
+            parent,
+            outcome: ChildOutcome::Ok(crate::sendable::SendableValue::Unit),
+        }
+    }
+
     #[test]
     fn test_threaded_single_process() {
         let program = compile("val _ = println \"hello threaded\"");
@@ -1322,15 +1336,7 @@ mod tests {
         table.io_waiters.insert(token1, pid);
         table.io_waiters.insert(token2, pid);
 
-        handle_io_completion(
-            &table,
-            &scheduler,
-            token1,
-            crate::io_backend::IoResult::Ok {
-                value: crate::sendable::SendableValue::Unit,
-                io_bytes: 0,
-            },
-        );
+        handle_io_completion(&table, &scheduler, token1, ok_unit_io_result());
 
         assert!(!table.io_waiters.contains_key(&token1));
         assert!(!table.io_waiters.contains_key(&token2));
@@ -1347,15 +1353,7 @@ mod tests {
         table.io_waiters.insert(token1, pid);
         table.io_waiters.insert(token2, pid);
 
-        handle_io_completion(
-            &table,
-            &scheduler,
-            token1,
-            crate::io_backend::IoResult::Ok {
-                value: crate::sendable::SendableValue::Unit,
-                io_bytes: 0,
-            },
-        );
+        handle_io_completion(&table, &scheduler, token1, ok_unit_io_result());
 
         assert!(!table.io_waiters.contains_key(&token1));
         assert!(!table.io_waiters.contains_key(&token2));
@@ -1377,13 +1375,7 @@ mod tests {
         let child2 = Pid(12);
         table.waiters.insert(child1, vec![waiter]);
         table.waiters.insert(child2, vec![waiter]);
-        table.tombstones.insert(
-            child1,
-            ChildRecord::Ready {
-                parent: waiter,
-                outcome: ChildOutcome::Ok(crate::sendable::SendableValue::Unit),
-            },
-        );
+        table.tombstones.insert(child1, ready_unit_child(waiter));
 
         wake_join_waiters(&table, &scheduler, child1);
 
@@ -1406,13 +1398,7 @@ mod tests {
         table.insert(Process::new(waiter, VM::new(compile("val _ = ()")), None));
         table.waiters.insert(child1, vec![waiter]);
         table.waiters.insert(child2, vec![waiter]);
-        table.tombstones.insert(
-            child1,
-            ChildRecord::Ready {
-                parent: waiter,
-                outcome: ChildOutcome::Ok(crate::sendable::SendableValue::Unit),
-            },
-        );
+        table.tombstones.insert(child1, ready_unit_child(waiter));
 
         wake_join_waiters(&table, &scheduler, child1);
 
