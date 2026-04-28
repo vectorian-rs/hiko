@@ -7,7 +7,11 @@ pub fn pretty_program(prog: &Program) -> String {
     let mut buf = String::new();
     for (i, decl) in prog.decls.iter().enumerate() {
         if i > 0 {
-            buf.push('\n');
+            if is_import_decl(&prog.decls[i - 1]) && is_import_decl(decl) {
+                buf.push('\n');
+            } else {
+                buf.push_str("\n\n");
+            }
         }
         pretty_decl(&mut buf, decl, 0, interner);
     }
@@ -16,14 +20,24 @@ pub fn pretty_program(prog: &Program) -> String {
 
 // ── Declarations ─────────────────────────────────────────────────────
 
+fn is_import_decl(decl: &Decl) -> bool {
+    matches!(decl.kind, DeclKind::Import(_))
+}
+
 fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringInterner) {
     match &decl.kind {
         DeclKind::Val(pat, expr) => {
             write_indent(buf, indent);
             buf.push_str("val ");
             pretty_pat(buf, pat, interner);
-            buf.push_str(" = ");
-            pretty_expr(buf, expr, indent, interner);
+            if is_multiline_expr(expr) {
+                buf.push_str(" =\n");
+                write_indent(buf, indent + 2);
+                pretty_expr(buf, expr, indent + 2, interner);
+            } else {
+                buf.push_str(" = ");
+                pretty_expr(buf, expr, indent, interner);
+            }
         }
         DeclKind::ValRec(name, expr) => {
             write_indent(buf, indent);
@@ -191,9 +205,22 @@ fn pretty_fun_binding(
             buf.push(' ');
             pretty_atom_pat(buf, pat, interner);
         }
-        buf.push_str(" = ");
-        pretty_expr(buf, &clause.body, indent + 2, interner);
+        if is_multiline_expr(&clause.body) {
+            buf.push_str(" =\n");
+            write_indent(buf, indent + 2);
+            pretty_expr(buf, &clause.body, indent + 2, interner);
+        } else {
+            buf.push_str(" = ");
+            pretty_expr(buf, &clause.body, indent + 2, interner);
+        }
     }
+}
+
+fn is_multiline_expr(expr: &Expr) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::Case(_, _) | ExprKind::Let(_, _) | ExprKind::Handle { .. }
+    )
 }
 
 fn pretty_tyvars(buf: &mut String, tyvars: &[crate::intern::Symbol], interner: &StringInterner) {
@@ -321,12 +348,16 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringIn
                 write_indent(buf, indent + 2);
                 if i > 0 {
                     buf.push_str("| ");
-                } else {
-                    buf.push_str("  ");
                 }
                 pretty_pat(buf, pat, interner);
-                buf.push_str(" => ");
-                pretty_expr(buf, body, indent + 4, interner);
+                if is_multiline_expr(body) {
+                    buf.push_str(" =>\n");
+                    write_indent(buf, indent + 4);
+                    pretty_expr(buf, body, indent + 4, interner);
+                } else {
+                    buf.push_str(" => ");
+                    pretty_expr(buf, body, indent + 4, interner);
+                }
                 if i + 1 < branches.len() {
                     buf.push('\n');
                 }

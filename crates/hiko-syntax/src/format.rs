@@ -1,5 +1,6 @@
-use crate::lexer::LexError;
-use crate::parser::ParseError;
+use crate::lexer::{LexError, Lexer};
+use crate::parser::{ParseError, Parser};
+use crate::pretty::pretty_program;
 use tree_sitter::{Node, Parser as TsParser};
 use tree_sitter_hiko::LANGUAGE;
 
@@ -22,8 +23,23 @@ impl From<ParseError> for FormatError {
     }
 }
 
-pub fn format_source(source: &str, _file_id: u32) -> Result<String, FormatError> {
-    cst_format_source(source)
+pub fn format_source(source: &str, file_id: u32) -> Result<String, FormatError> {
+    // Use the AST formatter for normal source files. It rebuilds the program from
+    // syntax and gives stable layout for nested expressions instead of preserving
+    // accidental one-line source layout. Keep the CST formatter for commented
+    // files because comments are not represented in the AST today.
+    if source.contains("(*") {
+        return cst_format_source(source);
+    }
+
+    let tokens = Lexer::new(source, file_id).tokenize()?;
+    let mut parser = Parser::new(tokens);
+    let program = parser.parse_program()?;
+    let mut formatted = pretty_program(&program);
+    if !formatted.is_empty() && !formatted.ends_with('\n') {
+        formatted.push('\n');
+    }
+    Ok(formatted)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,6 +381,15 @@ mod tests {
     }
 
     #[test]
+    fn keeps_consecutive_imports_together() {
+        let source = "import Aws.Config\nimport Aws.S3\nimport Std.Option\nfun main x=x\n";
+        assert_eq!(
+            fmt(source),
+            "import Aws.Config\nimport Aws.S3\nimport Std.Option\n\nfun main x = x\n"
+        );
+    }
+
+    #[test]
     fn preserves_single_blank_lines_between_top_level_decls() {
         let source = "import Std.List\nval answer=41\nfun inc x=x+1\nfun dec x=x-1\n";
         assert_eq!(
@@ -378,7 +403,7 @@ mod tests {
         let source = "val x = let\n  val a=1\n  val b=2\nin\n  a + b\nend\n";
         assert_eq!(
             fmt(source),
-            "val x = let\n    val a = 1\n    val b = 2\nin\n  a + b\nend\n"
+            "val x =\n  let\n    val a = 1\n    val b = 2\n  in\n    a + b\n  end\n"
         );
     }
 
@@ -387,7 +412,7 @@ mod tests {
         let source = "fun walk dir = let\n  val entries = list_dir dir\nin\n  walk_entries dir entries\nend\nand walk_entries dir entries = case entries of\n  [] => ()\n| name :: rest => walk_entries dir rest\n";
         assert_eq!(
             fmt(source),
-            "fun walk dir = let\n    val entries = list_dir dir\nin\n  walk_entries dir entries\nend\n\nand walk_entries dir entries = case entries of\n[] => ()\n | name :: rest => walk_entries dir rest\n"
+            "fun walk dir =\n  let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries =\n  case entries of\n    [] => ()\n    | name :: rest => walk_entries dir rest\n"
         );
     }
 }
