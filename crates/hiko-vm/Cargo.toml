@@ -84,6 +84,12 @@ builtin-aws-config = [
     "dep:aws-config",
     "dep:tokio",
 ]
+builtin-aws-s3 = [
+    "builtin-aws-config",
+    "hiko-builtin-meta/builtin-aws-s3",
+    "hiko-compile/builtin-aws-s3",
+    "dep:aws-sdk-s3",
+]
 
 [dependencies]
 hiko-builtin-meta = { version = "0.8.0", path = "../hiko-builtin-meta", default-features = false }
@@ -102,6 +108,7 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 url = { version = "2", optional = true }
 aws-config = { version = "1.8.16", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio", "sso"], optional = true }
+aws-sdk-s3 = { version = "1.131.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"], optional = true }
 tokio = { version = "1", features = ["rt", "time"], optional = true }
 cap-std = { version = "4", optional = true }
 

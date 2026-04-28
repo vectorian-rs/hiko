@@ -1,0 +1,40 @@
+# SRE AWS read-only role policy.
+# Narrow AWS profile for read-oriented SRE workflows.
+#
+# This policy grants:
+# - stdout printing for reporting results
+# - Aws.Config SSO profile construction, restricted to the local datadeft-dev profile
+# - Aws.S3 list_buckets
+#
+# It intentionally does not grant filesystem, environment, exec, or generic HTTP
+# capabilities. Cargo features still control whether the AWS builtins are compiled;
+# this policy only controls runtime availability.
+
+[limits]
+max_fuel = 100_000_000
+max_heap = 1_000_000
+
+[capabilities.stdio.print]
+enabled = true
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.convert.float_to_string]
+enabled = true
+
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.aws.config.sso_profile]
+enabled = true
+allowed_profiles = ["datadeft-dev"]
+
+[capabilities.aws.s3.list_buckets]
+enabled = true

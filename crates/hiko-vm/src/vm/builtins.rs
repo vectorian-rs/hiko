@@ -49,6 +49,8 @@ impl VM {
             "read_file" => self.read_file_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-config")]
             "aws_config_sso_profile" => self.aws_config_sso_profile_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-aws-s3")]
+            "aws_s3_list_buckets" => self.aws_s3_list_buckets_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -266,7 +268,42 @@ impl VM {
                             })?;
                         Some(crate::io_backend::IoRequest::AwsConfigSsoProfile { profile })
                     } else {
-                        None
+                        #[cfg(feature = "builtin-aws-s3")]
+                        {
+                            if self.aws_s3_list_buckets_builtin_id == Some(builtin_id) {
+                                let config = self.stack[callee_pos + 1];
+                                let handle = match config {
+                                    Value::Heap(r) => match self.heap.get(r).map_err(|e| {
+                                        RuntimeError {
+                                            message: format!("aws_s3_list_buckets: {e}"),
+                                        }
+                                    })? {
+                                        crate::value::HeapObject::AwsConfig(handle) => handle,
+                                        _ => {
+                                            return Err(RuntimeError {
+                                                message: "aws_s3_list_buckets: expected aws_config"
+                                                    .into(),
+                                            });
+                                        }
+                                    },
+                                    _ => {
+                                        return Err(RuntimeError {
+                                            message: "aws_s3_list_buckets: expected aws_config"
+                                                .into(),
+                                        });
+                                    }
+                                };
+                                Some(crate::io_backend::IoRequest::AwsS3ListBuckets {
+                                    sdk_config: handle.sdk_config.clone(),
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        #[cfg(not(feature = "builtin-aws-s3"))]
+                        {
+                            None
+                        }
                     }
                 }
                 #[cfg(not(feature = "builtin-aws-config"))]

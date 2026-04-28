@@ -1,6 +1,7 @@
 #[cfg(any(
     test,
     feature = "builtin-aws-config",
+    feature = "builtin-aws-s3",
     feature = "builtin-bytes",
     feature = "builtin-convert",
     feature = "builtin-env",
@@ -45,6 +46,7 @@ use crate::value::HeapObject;
 #[cfg(any(
     test,
     feature = "builtin-aws-config",
+    feature = "builtin-aws-s3",
     feature = "builtin-bytes",
     feature = "builtin-convert",
     feature = "builtin-env",
@@ -111,8 +113,8 @@ pub(crate) use http_args::extract_http_args;
 #[cfg(feature = "builtin-http")]
 pub(crate) use http_args::{HttpArgRefs, extract_http_arg_refs};
 
-#[cfg(feature = "builtin-aws-config")]
-mod aws_config;
+#[cfg(any(feature = "builtin-aws-config", feature = "builtin-aws-s3"))]
+mod aws;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -161,8 +163,8 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
 }
 
 fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
-    #[cfg(feature = "builtin-aws-config")]
-    _entries.extend(aws_config::entries());
+    #[cfg(any(feature = "builtin-aws-config", feature = "builtin-aws-s3"))]
+    _entries.extend(aws::entries());
 
     #[cfg(feature = "builtin-stdio")]
     _entries.extend(stdio::entries());

@@ -1,0 +1,9 @@
+import Std.Result
+import __Builtin.AwsS3
+
+structure S3 = struct
+  fun list_buckets config =
+    case BuiltinAwsS3.list_buckets_raw config of
+      (true, output, _) => Result.Ok output
+    | (false, _, message) => Result.Err message
+end

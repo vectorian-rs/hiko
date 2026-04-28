@@ -11,6 +11,12 @@ pub struct AwsConfigPolicy {
     pub allowed_sso_profiles: Vec<String>,
 }
 
+/// Policy for AWS S3 operations.
+#[cfg(feature = "builtin-aws-s3")]
+pub struct AwsS3Policy {
+    pub allow_list_buckets: bool,
+}
+
 /// Policy for filesystem access.
 #[cfg(feature = "builtin-filesystem")]
 pub struct FilesystemPolicy {
@@ -137,6 +143,15 @@ impl VMBuilder {
     pub fn with_aws_config(mut self, policy: AwsConfigPolicy) -> Self {
         self.aws_sso_profiles = policy.allowed_sso_profiles;
         self.register_builtin_name("aws_config_sso_profile")
+    }
+
+    /// Include AWS S3 builtins filtered by policy.
+    #[cfg(feature = "builtin-aws-s3")]
+    pub fn with_aws_s3(mut self, policy: AwsS3Policy) -> Self {
+        if policy.allow_list_buckets {
+            self = self.register_builtin_name("aws_s3_list_buckets");
+        }
+        self
     }
 
     /// Include filesystem builtins filtered by policy.

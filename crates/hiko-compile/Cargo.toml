@@ -54,6 +54,7 @@ builtin-exec = ["hiko-builtin-meta/builtin-exec", "hiko-types/builtin-exec"]
 builtin-system = ["hiko-builtin-meta/builtin-system", "hiko-types/builtin-system"]
 builtin-testing = ["hiko-builtin-meta/builtin-testing", "hiko-types/builtin-testing"]
 builtin-aws-config = ["hiko-builtin-meta/builtin-aws-config", "hiko-types/builtin-aws-config"]
+builtin-aws-s3 = ["builtin-aws-config", "hiko-builtin-meta/builtin-aws-s3", "hiko-types/builtin-aws-s3"]
 
 [dependencies]
 hiko-builtin-meta = { version = "0.8.0", path = "../hiko-builtin-meta", default-features = false }

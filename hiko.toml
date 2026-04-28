@@ -19,6 +19,12 @@ path = "policies/harness-tools.policy.toml"
 [policies.test-runner]
 path = "policies/test-runner.policy.toml"
 
+[policies.aws-s3-list-buckets]
+path = "policies/aws-s3-list-buckets.policy.toml"
+
+[policies.sre-aws-read-role]
+path = "policies/sre-aws-read-role.policy.toml"
+
 [policies.should-fail-io]
 path = "policies/should-fail-io.policy.toml"
 

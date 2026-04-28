@@ -1,0 +1,9 @@
+[capabilities.aws.config.sso_profile]
+enabled = true
+allowed_profiles = ["datadeft-dev"]
+
+[capabilities.aws.s3.list_buckets]
+enabled = true
+
+[capabilities.stdio.println]
+enabled = true

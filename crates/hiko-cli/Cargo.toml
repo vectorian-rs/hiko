@@ -147,6 +147,13 @@ builtin-aws-config = [
     "hiko-types/builtin-aws-config",
     "hiko-vm/builtin-aws-config",
 ]
+builtin-aws-s3 = [
+    "builtin-aws-config",
+    "hiko-builtin-meta/builtin-aws-s3",
+    "hiko-compile/builtin-aws-s3",
+    "hiko-types/builtin-aws-s3",
+    "hiko-vm/builtin-aws-s3",
+]
 
 [dependencies]
 hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"], optional = true }

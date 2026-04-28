@@ -2,4 +2,5 @@ name = "Aws"
 version = "0.1.0"
 
 [modules]
-Config = "blake3:52c31e945fee1755b631318ede90e08431901faa51d1909b3266c0ce07c9fb01"
+Config = "blake3:065f54858c89e5fff82e61d4e8147026fb165711123e213cbfc6242c38bb8f3b"
+S3 = "blake3:07691113ad69fc02e56db05ffd9a13be57aa18749ab9956ec978acae363e8c37"

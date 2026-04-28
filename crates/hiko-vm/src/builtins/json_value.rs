@@ -22,6 +22,7 @@ fn check_value_vec_capacity(heap: &Heap, context: &str, len: usize) -> Result<()
     check_host_bytes(heap, context, bytes)
 }
 
+#[cfg(feature = "builtin-json")]
 fn check_string_vec_capacity(heap: &Heap, context: &str, len: usize) -> Result<(), String> {
     let bytes = len
         .checked_mul(size_of::<String>())
@@ -29,6 +30,7 @@ fn check_string_vec_capacity(heap: &Heap, context: &str, len: usize) -> Result<(
     check_host_bytes(heap, context, bytes)
 }
 
+#[cfg(feature = "builtin-json")]
 fn check_json_output(heap: &Heap, context: &str, output: String) -> Result<String, String> {
     check_host_bytes(
         heap,
@@ -126,6 +128,7 @@ pub(crate) fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<V
     }
 }
 
+#[cfg(feature = "builtin-json")]
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -146,6 +149,7 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+#[cfg(feature = "builtin-json")]
 pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, String> {
     match val {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {

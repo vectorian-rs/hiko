@@ -1,5 +1,7 @@
 #[cfg(feature = "builtin-aws-config")]
 use crate::builder::AwsConfigPolicy as VmAwsConfigPolicy;
+#[cfg(feature = "builtin-aws-s3")]
+use crate::builder::AwsS3Policy as VmAwsS3Policy;
 #[cfg(feature = "builtin-exec")]
 use crate::builder::ExecPolicy as VmExecPolicy;
 use crate::builder::VMBuilder;
@@ -508,6 +510,9 @@ impl ExecCapabilities {
 pub struct AwsCapabilities {
     #[serde(default)]
     config: AwsConfigCapabilities,
+    #[cfg(feature = "builtin-aws-s3")]
+    #[serde(default)]
+    s3: AwsS3Capabilities,
 }
 
 #[cfg(feature = "builtin-aws-config")]
@@ -517,18 +522,32 @@ struct AwsConfigCapabilities {
     sso_profile: Option<AwsSsoProfileLeaf>,
 }
 
+#[cfg(feature = "builtin-aws-s3")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AwsS3Capabilities {
+    list_buckets: Option<EnabledLeaf>,
+}
+
 #[cfg(feature = "builtin-aws-config")]
 impl AwsCapabilities {
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        self.config.apply(builder)
+        let builder = self.config.apply(builder);
+        #[cfg(feature = "builtin-aws-s3")]
+        let builder = self.s3.apply(builder);
+        builder
     }
 
     fn emit(&self, out: &mut String) {
         self.config.emit(out);
+        #[cfg(feature = "builtin-aws-s3")]
+        self.s3.emit(out);
     }
 
     fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
         self.config.extend_enabled(out);
+        #[cfg(feature = "builtin-aws-s3")]
+        self.s3.extend_enabled(out);
     }
 }
 
@@ -567,12 +586,69 @@ impl AwsConfigCapabilities {
     }
 }
 
+#[cfg(feature = "builtin-aws-s3")]
+impl AwsS3Capabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        if let Some(leaf) = &self.list_buckets
+            && leaf.enabled
+        {
+            return builder.with_aws_s3(VmAwsS3Policy {
+                allow_list_buckets: true,
+            });
+        }
+        builder
+    }
+
+    fn emit(&self, out: &mut String) {
+        if let Some(leaf) = &self.list_buckets
+            && leaf.enabled
+        {
+            out.push_str(
+                "            .with_aws_s3(hiko_vm::builder::AwsS3Policy {\n\
+                 \x20               allow_list_buckets: true,\n\
+                 \x20           })\n",
+            );
+        }
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        if let Some(leaf) = &self.list_buckets
+            && leaf.enabled
+        {
+            out.insert("aws_s3_list_buckets");
+        }
+    }
+}
+
 impl ProcessCapabilities {
     fn requires_runtime(&self) -> bool {
         self.spawn.as_ref().is_some_and(|leaf| leaf.enabled)
             || self.await_process.as_ref().is_some_and(|leaf| leaf.enabled)
             || self.cancel.as_ref().is_some_and(|leaf| leaf.enabled)
             || self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled)
+    }
+}
+
+#[cfg(feature = "builtin-aws-config")]
+impl AwsCapabilities {
+    fn requires_runtime(&self) -> bool {
+        self.config
+            .sso_profile
+            .as_ref()
+            .is_some_and(|leaf| leaf.enabled)
+            || {
+                #[cfg(feature = "builtin-aws-s3")]
+                {
+                    self.s3
+                        .list_buckets
+                        .as_ref()
+                        .is_some_and(|leaf| leaf.enabled)
+                }
+                #[cfg(not(feature = "builtin-aws-s3"))]
+                {
+                    false
+                }
+            }
     }
 }
 
@@ -705,7 +781,16 @@ impl Capabilities {
     }
 
     fn requires_runtime(&self) -> bool {
-        self.process.requires_runtime()
+        self.process.requires_runtime() || {
+            #[cfg(feature = "builtin-aws-config")]
+            {
+                self.aws.requires_runtime()
+            }
+            #[cfg(not(feature = "builtin-aws-config"))]
+            {
+                false
+            }
+        }
     }
 }
 

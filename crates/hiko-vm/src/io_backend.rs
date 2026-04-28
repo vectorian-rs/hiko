@@ -51,6 +51,11 @@ pub enum IoRequest {
     /// Load an AWS SDK config using an allowed SSO profile.
     #[cfg(feature = "builtin-aws-config")]
     AwsConfigSsoProfile { profile: String },
+    /// List S3 buckets using an opaque AWS SDK config handle.
+    #[cfg(feature = "builtin-aws-s3")]
+    AwsS3ListBuckets {
+        sdk_config: Arc<aws_config::SdkConfig>,
+    },
 }
 
 /// Result of a completed I/O operation.
@@ -136,6 +141,12 @@ impl IoBackend for MockIoBackend {
                     profile: Arc::from(profile),
                     sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
                 };
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
+            #[cfg(feature = "builtin-aws-s3")]
+            IoRequest::AwsS3ListBuckets { .. } => {
+                let value = list_buckets_success(empty_list_buckets_output());
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
             }
@@ -283,6 +294,17 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             },
             Err(e) => IoResult::Err(e),
         },
+        #[cfg(feature = "builtin-aws-s3")]
+        IoRequest::AwsS3ListBuckets { sdk_config } => {
+            let value = match aio_aws_s3_list_buckets(sdk_config) {
+                Ok(value) => list_buckets_success(value),
+                Err(e) => list_buckets_error(e),
+            };
+            IoResult::Ok {
+                io_bytes: value.estimated_bytes() as u64,
+                value,
+            }
+        }
     }
 }
 
@@ -300,6 +322,112 @@ fn cap_read_to_string(candidates: &[CapFsCandidate], _path: &str) -> Result<Stri
         .unwrap_or_else(|| "no allowed folder matched".into()))
 }
 
+#[cfg(feature = "builtin-aws-s3")]
+fn sendable_option(value: Option<SendableValue>) -> SendableValue {
+    const OPTION_NONE_TAG: u16 = 0;
+    const OPTION_SOME_TAG: u16 = 1;
+    match value {
+        Some(value) => SendableValue::Data {
+            tag: OPTION_SOME_TAG,
+            fields: vec![value],
+        },
+        None => SendableValue::Data {
+            tag: OPTION_NONE_TAG,
+            fields: vec![],
+        },
+    }
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn sendable_option_string(value: Option<&str>) -> SendableValue {
+    sendable_option(value.map(|text| SendableValue::String(Arc::from(text))))
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn sendable_bucket(bucket: &aws_sdk_s3::types::Bucket) -> SendableValue {
+    let creation_date = bucket
+        .creation_date()
+        .map(|date| SendableValue::String(date.to_string().into()));
+    SendableValue::Tuple(vec![
+        sendable_option_string(bucket.name()),
+        sendable_option(creation_date),
+        sendable_option_string(bucket.bucket_arn()),
+    ])
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn sendable_owner(owner: &aws_sdk_s3::types::Owner) -> SendableValue {
+    SendableValue::Tuple(vec![
+        sendable_option_string(owner.display_name()),
+        sendable_option_string(owner.id()),
+    ])
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn sendable_list_buckets_output(
+    output: &aws_sdk_s3::operation::list_buckets::ListBucketsOutput,
+) -> SendableValue {
+    let buckets = output
+        .buckets
+        .as_ref()
+        .map(|buckets| SendableValue::List(buckets.iter().map(sendable_bucket).collect()));
+    SendableValue::Tuple(vec![
+        sendable_option(buckets),
+        sendable_option(output.owner().map(sendable_owner)),
+        sendable_option_string(output.continuation_token()),
+        sendable_option_string(output.prefix()),
+    ])
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn empty_list_buckets_output() -> SendableValue {
+    SendableValue::Tuple(vec![
+        sendable_option(Some(SendableValue::List(Vec::new()))),
+        sendable_option(None),
+        sendable_option_string(None),
+        sendable_option_string(None),
+    ])
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn list_buckets_success(output: SendableValue) -> SendableValue {
+    SendableValue::Tuple(vec![
+        SendableValue::Bool(true),
+        output,
+        SendableValue::String(Arc::from("")),
+    ])
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn list_buckets_error(message: String) -> SendableValue {
+    SendableValue::Tuple(vec![
+        SendableValue::Bool(false),
+        empty_list_buckets_output(),
+        SendableValue::String(Arc::from(message)),
+    ])
+}
+
+#[cfg(any(feature = "builtin-aws-config", feature = "builtin-aws-s3"))]
+fn format_aws_error<E>(context: &str, err: &E) -> String
+where
+    E: std::error::Error + std::fmt::Debug + std::fmt::Display,
+{
+    let mut message = format!("{context}: {err}");
+    let debug = format!("{err:?}");
+    if debug != err.to_string() {
+        message.push_str(&format!("; debug: {debug}"));
+    }
+
+    let mut source = err.source();
+    let mut source_index = 1;
+    while let Some(err) = source {
+        message.push_str(&format!("; source {source_index}: {err}"));
+        source = err.source();
+        source_index += 1;
+    }
+    message
+}
+
 #[cfg(feature = "builtin-aws-config")]
 fn aio_aws_config_sso_profile(profile: &str) -> Result<SendableValue, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -315,6 +443,32 @@ fn aio_aws_config_sso_profile(profile: &str) -> Result<SendableValue, String> {
             profile: Arc::from(profile),
             sdk_config: Arc::new(sdk_config),
         })
+    })
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+fn aio_aws_s3_list_buckets(
+    sdk_config: Arc<aws_config::SdkConfig>,
+) -> Result<SendableValue, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("aws_s3_list_buckets: tokio runtime: {e}"))?;
+    runtime.block_on(async {
+        let client = if sdk_config.region().is_some() {
+            aws_sdk_s3::Client::new(&sdk_config)
+        } else {
+            let config = aws_sdk_s3::config::Builder::from(sdk_config.as_ref())
+                .region(aws_sdk_s3::config::Region::new("us-east-1"))
+                .build();
+            aws_sdk_s3::Client::from_conf(config)
+        };
+        let output = client
+            .list_buckets()
+            .send()
+            .await
+            .map_err(|e| format_aws_error("aws_s3_list_buckets", &e))?;
+        Ok(sendable_list_buckets_output(&output))
     })
 }
 

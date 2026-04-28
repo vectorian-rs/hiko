@@ -5,7 +5,29 @@ version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Aws-v0.1.0"
 
 [packages.Aws.modules]
-Config = "blake3:52c31e945fee1755b631318ede90e08431901faa51d1909b3266c0ce07c9fb01"
+Config = "blake3:065f54858c89e5fff82e61d4e8147026fb165711123e213cbfc6242c38bb8f3b"
+S3 = "blake3:07691113ad69fc02e56db05ffd9a13be57aa18749ab9956ec978acae363e8c37"
+
+[packages.Harness]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Harness-v0.1.0"
+
+[packages.Harness.modules]
+Hashline = "blake3:92ea541241b07cae4dcd2508e38de574475cf95e3b24de63933a32a3f5a4579a"
+
+[packages.Hash]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Hash-v0.1.0"
+
+[packages.Hash.modules]
+Blake3 = "blake3:4ac08134cb227944583c7c84c8a503b17bee85fcb96ed7e6487d651be1b99114"
+
+[packages.Http]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Http-v0.1.0"
+
+[packages.Http.modules]
+Client = "blake3:b5c01e25fac5a0e2985798202698eb8474a5f83698ba14c0a2b1c00b9e99848c"
 
 [packages.Std]
 version = "0.1.0"
@@ -13,9 +35,10 @@ base_url = "http://127.0.0.1:8000/Std-v0.1.0"
 
 [packages.Std.modules]
 List = "blake3:04f88f15696c4cd2422703e211a5e8a16d855601324b7af2c09fb973f62abb6e"
-Option = "blake3:8cf8ec09b27dbfd081fc58ca8604c20fd6eb7f6812729b7e863ca8dc714cea53"
+Option = "blake3:38abd25043b85d6cc78b3bd91705fece3fbbd4e34b3dbdc8ac83ceda01c9e303"
 Either = "blake3:f25001f4a4c6a57490cf80abd65ee7aad0c5f5721154557516f6d5e8d68acdd1"
 Result = "blake3:b0d1bca7932f625075b6c637a859653d3b55d1d791d684051062433f953eead3"
+Format = "blake3:a559dd0b6843da5733efc6ab7b361154bd656588900769e819fab34d6ddafbe0"
 Json = "blake3:3b6498e260b3b3ce0d30c6c26307204d07ecac4c299bb597a63b6da7c5929f7c"
 Filesystem = "blake3:cec38c58183ff2a79e74a2bc90f06fbc460492eb36b5db3a487211b6ce2b62a3"
 Time = "blake3:65bcb26f08e1356064ae4a859d552b3b9326b8d79b848339265b9dd5613ffdbc"

@@ -47,5 +47,6 @@ builtin-exec = []
 builtin-system = []
 builtin-testing = []
 builtin-aws-config = []
+builtin-aws-s3 = ["builtin-aws-config"]
 
 [dependencies]

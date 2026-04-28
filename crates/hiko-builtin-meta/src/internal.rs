@@ -14,6 +14,13 @@ const AWS_CONFIG_SOURCE: &str = r#"structure BuiltinAwsConfig = struct
 end
 "#;
 
+const AWS_S3_SOURCE: &str = r#"import Std.Option
+
+structure BuiltinAwsS3 = struct
+  val list_buckets_raw = aws_s3_list_buckets
+end
+"#;
+
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
   val read_text_raw = read_file
   val read_bytes_raw = read_file_bytes
@@ -187,6 +194,13 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-aws-config",
         enabled: cfg!(feature = "builtin-aws-config"),
         source: AWS_CONFIG_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "AwsS3",
+        import_name: "__Builtin.AwsS3",
+        feature_name: "builtin-aws-s3",
+        enabled: cfg!(feature = "builtin-aws-s3"),
+        source: AWS_S3_SOURCE,
     },
     InternalBuiltinModule {
         leaf_name: "Filesystem",

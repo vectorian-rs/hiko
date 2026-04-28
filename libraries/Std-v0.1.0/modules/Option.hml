@@ -11,15 +11,19 @@ structure Option = struct
       None   => true
     | Some _ => false
 
-  fun map_option f opt =
+  fun map f opt =
     case opt of
       None   => None
     | Some x => Some (f x)
 
-  fun get_or opt default =
+  fun map_option f opt = map f opt
+
+  fun with_default default opt =
     case opt of
       None   => default
     | Some x => x
+
+  fun get_or opt default = with_default default opt
 
   fun flat_map_option f opt =
     case opt of

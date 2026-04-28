@@ -65,8 +65,10 @@
       <ul class="siglist">
         <li><code>is_some : 'a option -> bool</code></li>
         <li><code>is_none : 'a option -> bool</code></li>
-        <li><code>map_option : ('a -> 'b) -> 'a option -> 'b option</code></li>
-        <li><code>get_or : 'a option -> 'a -> 'a</code></li>
+        <li><code>map : ('a -> 'b) -> 'a option -> 'b option</code></li>
+        <li><code>map_option : ('a -> 'b) -> 'a option -> 'b option</code> <span class="meta">alias for map</span></li>
+        <li><code>with_default : 'a -> 'a option -> 'a</code></li>
+        <li><code>get_or : 'a option -> 'a -> 'a</code> <span class="meta">alias for with_default with the legacy argument order</span></li>
         <li><code>flat_map_option : ('a -> 'b option) -> 'a option -> 'b option</code></li>
       </ul>
     </section>
@@ -81,8 +83,8 @@
 <span class="tok-keyword">val</span> <span class="tok-variable">some_check</span> = <span class="tok-namespace">Option</span>.<span class="tok-variable-member">is_some</span> <span class="tok-variable">some_value</span>
 <span class="tok-keyword">val</span> <span class="tok-variable">none_check</span> = <span class="tok-namespace">Option</span>.<span class="tok-variable-member">is_none</span> <span class="tok-variable">none_value</span>
 
-<span class="tok-keyword">val</span> <span class="tok-variable">mapped</span> = <span class="tok-namespace">Option</span>.<span class="tok-variable-member">map_option</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> + <span class="tok-number">1</span>) <span class="tok-variable">some_value</span>
-<span class="tok-keyword">val</span> <span class="tok-variable">fallback</span> = <span class="tok-namespace">Option</span>.<span class="tok-variable-member">get_or</span> <span class="tok-variable">none_value</span> <span class="tok-number">0</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">mapped</span> = <span class="tok-namespace">Option</span>.<span class="tok-variable-member">map</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span> + <span class="tok-number">1</span>) <span class="tok-variable">some_value</span>
+<span class="tok-keyword">val</span> <span class="tok-variable">fallback</span> = <span class="tok-namespace">Option</span>.<span class="tok-variable-member">with_default</span> <span class="tok-number">0</span> <span class="tok-variable">none_value</span>
 <span class="tok-keyword">val</span> <span class="tok-variable">chained</span> =
   <span class="tok-namespace">Option</span>.<span class="tok-variable-member">flat_map_option</span>
     (<span class="tok-keyword">fn</span> <span class="tok-variable">x</span> =&gt;

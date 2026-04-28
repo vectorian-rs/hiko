@@ -1,0 +1,5 @@
+name = "Http"
+version = "0.1.0"
+
+[modules]
+Client = "blake3:b5c01e25fac5a0e2985798202698eb8474a5f83698ba14c0a2b1c00b9e99848c"

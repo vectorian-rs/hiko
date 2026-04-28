@@ -1,0 +1,49 @@
+structure Format = struct
+  datatype fmt_item =
+      INT of int
+    | BOOL of bool
+    | STR of string
+    | REAL of float
+
+  fun bool_to_string value =
+    if value then "true" else "false"
+
+  fun item_to_string spec item =
+    case (spec, item) of
+      ("d", INT value) => int_to_string value
+    | ("b", BOOL value) => bool_to_string value
+    | ("s", STR value) => value
+    | ("f", REAL value) => float_to_string value
+    | (_, _) => "<format-mismatch>"
+
+  fun format_loop fmt len index items acc =
+    if index >= len then acc
+    else
+      let
+        val ch = substring (fmt, index, 1)
+      in
+        if ch = "%" then
+          if index + 1 >= len then acc ^ "%"
+          else
+            let
+              val spec = substring (fmt, index + 1, 1)
+            in
+              if spec = "%" then
+                format_loop fmt len (index + 2) items (acc ^ "%")
+              else
+                case items of
+                  [] => format_loop fmt len (index + 2) [] (acc ^ "<missing-format-item>")
+                | item :: rest =>
+                    let
+                      val rendered = item_to_string spec item
+                    in
+                      format_loop fmt len (index + 2) rest (acc ^ rendered)
+                    end
+            end
+        else
+          format_loop fmt len (index + 1) items (acc ^ ch)
+      end
+
+  fun format fmt items =
+    format_loop fmt (string_length fmt) 0 items ""
+end

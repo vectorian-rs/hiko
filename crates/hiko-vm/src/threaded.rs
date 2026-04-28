@@ -209,14 +209,27 @@ impl ThreadedRuntime {
     }
 
     pub fn spawn_root(&self, program: CompiledProgram) -> Pid {
+        self.spawn_root_vm(VM::new(program))
+    }
+
+    pub fn spawn_root_vm(&self, mut vm: VM) -> Pid {
         let pid = self.new_pid();
-        let mut vm = VM::new(program);
         vm.enable_output_capture();
         vm.set_async_io(true);
         let process = Process::new(pid, vm, None);
         self.table.insert(process);
         self.scheduler.enqueue(pid);
         pid
+    }
+
+    pub fn failure(&self, pid: Pid) -> Option<ProcessFailure> {
+        self.table
+            .processes
+            .get(&pid)
+            .and_then(|process| match &process.status {
+                ProcessStatus::Failed(failure) => Some(failure.clone()),
+                _ => None,
+            })
     }
 
     #[cfg(test)]

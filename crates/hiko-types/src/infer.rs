@@ -118,6 +118,8 @@ impl<'a> BuiltinTypeParser<'a> {
             self.skip_ws();
             if self.consume_word("list") {
                 ty = Type::list(ty);
+            } else if self.consume_word("Option.option") {
+                ty = Type::App("Option.option".into(), vec![ty]);
             } else {
                 break;
             }
@@ -165,7 +167,9 @@ impl<'a> BuiltinTypeParser<'a> {
         self.skip_ws();
         let start = self.pos;
         while self.pos < self.chars.len()
-            && (self.chars[self.pos].is_ascii_alphanumeric() || self.chars[self.pos] == '_')
+            && (self.chars[self.pos].is_ascii_alphanumeric()
+                || self.chars[self.pos] == '_'
+                || self.chars[self.pos] == '.')
         {
             self.pos += 1;
         }

@@ -1,0 +1,42 @@
+import Aws.Config
+import Aws.S3
+import Std.Format
+import Std.Option
+import Std.Result
+
+fun print_bucket bucket =
+  case bucket of
+    (name, creation_date, arn) =>
+      println
+        (Format.format
+          "name: %s | created=%s | arn=%s"
+          [ Format.STR (Option.with_default "<unnamed>" name)
+          , Format.STR (Option.with_default "<none>" creation_date)
+          , Format.STR (Option.with_default "<none>" arn)
+          ])
+
+fun print_buckets buckets =
+  case buckets of
+    [] => ()
+  | bucket :: rest =>
+      let
+        val _ = print_bucket bucket
+      in
+        print_buckets rest
+      end
+
+fun print_output output =
+  case output of
+    (buckets, owner, continuation_token, prefix) =>
+      case buckets of
+        Option.Some xs => print_buckets xs
+      | Option.None => ()
+
+val config = Config.sso_profile "datadeft-dev"
+
+val result = S3.list_buckets config
+
+val _ =
+  case result of
+    Result.Ok output => print_output output
+  | Result.Err message => println message

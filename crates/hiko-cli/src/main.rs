@@ -22,8 +22,7 @@ use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
 use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
-use hiko_vm::process::ProcessStatus;
-use hiko_vm::runtime::Runtime;
+use hiko_vm::threaded::ThreadedRuntime;
 use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
 
@@ -1004,16 +1003,16 @@ fn run_file(options: &ScriptOptions) {
             .build_vm(compiled.program);
         vm.set_output_sink(output_sink);
 
-        let mut runtime = Runtime::new();
+        let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root_vm(vm);
         if let Err(message) = runtime.run_to_completion() {
             compiled.ctx.error(&message, None);
             process::exit(1);
         }
 
-        if let Some(ProcessStatus::Failed(failure)) = runtime.get_status(pid) {
+        if let Some(failure) = runtime.failure(pid) {
             let message = runtime_error_message(&failure.to_string(), &surface);
-            compiled.ctx.error(&message, runtime.get_error_span(pid));
+            compiled.ctx.error(&message, None);
             process::exit(1);
         }
         return;

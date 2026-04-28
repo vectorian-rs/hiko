@@ -1,0 +1,18 @@
+import __Builtin.Http
+
+structure Client = struct
+  fun get url =
+    BuiltinHttp.get_raw url
+
+  fun request args =
+    BuiltinHttp.request_raw args
+
+  fun request_json args =
+    BuiltinHttp.request_json_raw args
+
+  fun request_msgpack args =
+    BuiltinHttp.request_msgpack_raw args
+
+  fun request_bytes args =
+    BuiltinHttp.request_bytes_raw args
+end
