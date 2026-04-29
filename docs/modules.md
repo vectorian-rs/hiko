@@ -367,6 +367,16 @@ Failure behavior should be explicit:
 
 There should be no silent lockfile update or automatic hash rewrite on mismatch.
 
+Use the lock verifier to proactively check every locked remote module, not just
+modules imported by the current program:
+
+```sh
+hiko lock verify --config hiko.toml
+```
+
+The command fetches every locked module, recomputes BLAKE3, and exits nonzero on
+any remote drift or manifest/lockfile inconsistency.
+
 The intended security model is:
 
 - **non-keyed BLAKE3 for integrity**
@@ -403,7 +413,7 @@ package roots, cached, and BLAKE3-verified before compiling.
 The remaining library/import work is operational hardening rather than deeper
 module theory:
 
-- add a lock update/verify command for proactive remote drift checks
+- add a lock update command for intentional dependency upgrades
 - make the remote module cache location configurable
 - support generated artifacts embedding exact locked content and selected policy
 - optionally include local `use` source hashes in generated artifacts for release reproducibility

@@ -26,6 +26,9 @@ use hiko_vm::threaded::ThreadedRuntime;
 use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
 
+#[cfg(feature = "cli-lock")]
+mod lock_verify;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -39,6 +42,8 @@ fn main() {
             "  check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>  Type-check without executing"
         );
         eprintln!("  fmt [--check] [--recurse] <file.hml|dir>...  Format Hiko source files");
+        #[cfg(feature = "cli-lock")]
+        eprintln!("  lock verify [--config <hiko.toml>]  Verify locked remote modules");
         eprintln!("  inspect-work <file.hml>  Print static bytecode opcode counts");
         #[cfg(feature = "cli-hash")]
         eprintln!("  hash <file>...  Print BLAKE3 hashes for files");
@@ -62,6 +67,15 @@ fn main() {
         "inspect-work" => {
             let path = parse_inspect_work_args(&args[2..]);
             inspect_work_file(&path);
+        }
+        "lock" => {
+            #[cfg(feature = "cli-lock")]
+            lock_verify::lock_command(&args[2..]);
+            #[cfg(not(feature = "cli-lock"))]
+            {
+                eprintln!("This build of hiko was compiled without the 'lock' command");
+                process::exit(1);
+            }
         }
         "hash" => {
             #[cfg(feature = "cli-hash")]

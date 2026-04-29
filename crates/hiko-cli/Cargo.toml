@@ -7,7 +7,7 @@ description = "hiko-cli: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
-default = ["builtin-all", "loader-all", "cli-hash"]
+default = ["builtin-all", "loader-all", "cli-hash", "cli-lock"]
 builtin-all = [
     "builtin-stdio",
     "builtin-convert",
@@ -32,7 +32,8 @@ loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
 loader-named-imports = ["hiko-compile/loader-named-imports"]
 loader-http = ["loader-named-imports", "hiko-compile/loader-http"]
 loader-integrity-blake3 = ["loader-http", "hiko-compile/loader-integrity-blake3"]
-cli-hash = ["dep:hiko-common"]
+cli-hash = ["dep:hiko-common", "hiko-common/hash"]
+cli-lock = ["dep:hiko-common", "hiko-common/hash", "hiko-common/http"]
 builtin-stdio = [
     "hiko-builtin-meta/builtin-stdio",
     "hiko-compile/builtin-stdio",
@@ -156,7 +157,7 @@ builtin-aws-s3 = [
 ]
 
 [dependencies]
-hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"], optional = true }
+hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, optional = true }
 hiko-builtin-meta = { version = "0.8.0", path = "../hiko-builtin-meta", default-features = false }
 hiko-syntax = { version = "0.8.0", path = "../hiko-syntax" }
 hiko-types = { version = "0.8.0", path = "../hiko-types", default-features = false }
