@@ -42,6 +42,8 @@ Audit snapshot on 2026-04-21:
 - [modules.md](modules.md): current module-system status and explicit non-goals;
   open before changing `signature`, `structure`, `:`, `:>`, or qualified-name
   behavior.
+- [language-evaluation-prompt.md](language-evaluation-prompt.md): reusable prompt
+  for terse skeptical correctness/performance/safety grading of Hiko.
 
 ## Implementation / Architecture Docs
 
