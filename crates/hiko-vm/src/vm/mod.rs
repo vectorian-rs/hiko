@@ -106,8 +106,16 @@ pub struct VM {
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
     string_cache: HashMap<(usize, usize), GcRef>,
+    /// Slice-local opcode budget for the currently active dispatch loop.
+    ///
+    /// This value is intentionally transient. `run_slice` installs it from the
+    /// scheduler's reduction grant, and `create_child` does not copy it into
+    /// child VMs.
     fuel: Option<u64>,
-    /// Persistent total fuel budget (from VMBuilder.max_fuel). Not reset per slice.
+    /// Persistent total fuel budget from `VMBuilder::max_fuel` / `set_fuel`.
+    ///
+    /// Unlike `fuel`, this carries across scheduling slices and is inherited by
+    /// child VMs so spawned work cannot escape the parent's remaining budget.
     max_fuel_remaining: Option<u64>,
     exec_allowed: Vec<String>,
     exec_allowed_paths: Vec<ExecAllowedPath>,
@@ -1190,6 +1198,18 @@ mod tests {
         assert!(Arc::ptr_eq(&vm.main_chunk, &child.main_chunk));
         assert!(Arc::ptr_eq(&vm.protos, &child.protos));
         assert!(Arc::ptr_eq(&vm.effect_metadata, &child.effect_metadata));
+    }
+
+    #[test]
+    fn test_create_child_inherits_persistent_fuel_not_slice_fuel() {
+        let mut vm = compile_vm("val x = 1");
+        vm.fuel = Some(3);
+        vm.max_fuel_remaining = Some(42);
+
+        let child = vm.create_child();
+
+        assert_eq!(child.fuel, None);
+        assert_eq!(child.max_fuel_remaining, Some(42));
     }
 
     #[test]

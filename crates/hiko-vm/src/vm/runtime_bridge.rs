@@ -225,6 +225,10 @@ impl VM {
         if let Some(sink) = &self.output_sink {
             child.set_output_sink(sink.clone());
         }
+        // Inherit only the persistent fuel budget. The active `fuel` field is
+        // a slice-local dispatch counter installed by `run_slice`; copying it
+        // here would make child execution depend on the parent's current
+        // scheduler quantum rather than the configured remaining budget.
         if let Some(remaining) = self.max_fuel_remaining {
             child.max_fuel_remaining = Some(remaining);
         }

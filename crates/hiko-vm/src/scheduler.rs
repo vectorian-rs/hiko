@@ -15,7 +15,13 @@ pub trait Scheduler: Send + Sync {
     /// Returns None on shutdown.
     fn dequeue(&self) -> Option<Pid>;
 
-    /// A process finished or failed — remove it from scheduling.
+    /// Remove queued runnable entries for a process that finished, failed, or
+    /// became non-runnable through another runtime transition.
+    ///
+    /// Implementations may still treat the process table as the lifecycle
+    /// source of truth, but this method must not promise stronger behavior than
+    /// it provides. The default FIFO scheduler performs a best-effort queue
+    /// cleanup by removing all currently queued entries for `pid`.
     fn remove(&self, pid: Pid);
 
     /// Hint: how many reductions to grant this process.
@@ -73,9 +79,9 @@ impl Scheduler for FifoScheduler {
         }
     }
 
-    fn remove(&self, _pid: Pid) {
-        // FIFO scheduler doesn't track individual processes.
-        // The process table handles lifecycle.
+    fn remove(&self, pid: Pid) {
+        let mut state = self.state.lock().unwrap();
+        state.queue.retain(|queued| *queued != pid);
     }
 
     fn reductions(&self, _pid: Pid) -> u64 {
@@ -123,5 +129,20 @@ mod tests {
     fn test_fifo_reductions() {
         let sched = FifoScheduler::new(500);
         assert_eq!(sched.reductions(Pid(1)), 500);
+    }
+
+    #[test]
+    fn test_fifo_remove_drops_queued_entries() {
+        let sched = FifoScheduler::new(1000);
+        sched.enqueue(Pid(1));
+        sched.enqueue(Pid(2));
+        sched.enqueue(Pid(1));
+        sched.enqueue(Pid(3));
+
+        sched.remove(Pid(1));
+
+        assert_eq!(sched.try_dequeue(), Some(Pid(2)));
+        assert_eq!(sched.try_dequeue(), Some(Pid(3)));
+        assert_eq!(sched.try_dequeue(), None);
     }
 }
