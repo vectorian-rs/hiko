@@ -1041,7 +1041,7 @@ folders = ["."]
     #[test]
     fn parse_full_builtin_example_config() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/full-builtin-run-config.example.toml");
+            .join("../../docs/builtins/full-builtin-run-config.example.toml");
         let text = std::fs::read_to_string(path).expect("example config should exist");
         RunConfig::from_toml(&text).expect("full builtin example config should parse");
     }

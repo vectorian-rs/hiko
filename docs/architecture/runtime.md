@@ -147,7 +147,7 @@ Joining a child no longer fails the parent process. Process-level outcomes such
 as cancellation, fuel exhaustion, heap exhaustion, and runtime failure are
 returned as `Fiber.error`.
 
-See [error-handling.md](error-handling.md) for the standard library/application error-layering pattern.
+See [error-handling.md](../language/error-handling.md) for the standard library/application error-layering pattern.
 
 ---
 

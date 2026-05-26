@@ -2,7 +2,7 @@
 
 A strict, statically typed, ML-family scripting language implemented in Rust with a bytecode VM.
 
-Hiko's semantics are anchored in Core SML (Standard ML), with Hindley-Milner type inference, algebraic data types, exhaustive pattern matching, and OCaml 5-style algebraic effect handlers for structured concurrency. Hiko is SML-derived, but it deliberately repairs or omits several historically messy parts of the SML specification; see [docs/sml-deltas.md](docs/sml-deltas.md).
+Hiko's semantics are anchored in Core SML (Standard ML), with Hindley-Milner type inference, algebraic data types, exhaustive pattern matching, and OCaml 5-style algebraic effect handlers for structured concurrency. Hiko is SML-derived, but it deliberately repairs or omits several historically messy parts of the SML specification; see [docs/language/sml-deltas.md](docs/language/sml-deltas.md).
 
 ## Current Snapshot
 
@@ -18,7 +18,7 @@ than daemon-style runtime tuning.
 - `hiko-vm` uses zero `unsafe`
 
 For the runtime model and VM/process creation details, start with
-[docs/runtime.md](docs/runtime.md) and [docs/vm.md](docs/vm.md).
+[docs/architecture/runtime.md](docs/architecture/runtime.md) and [docs/architecture/vm.md](docs/architecture/vm.md).
 
 ## Quick Start
 

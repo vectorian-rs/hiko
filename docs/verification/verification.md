@@ -7,7 +7,7 @@ Hiko currently has three complementary verification layers:
 
 1. the Rust bytecode verifier in `hiko-vm`,
 2. Rust unit/regression tests around runtime and VM invariants, and
-3. formal models under [`specs/`](../specs).
+3. formal models under [`specs/`](../../specs).
 
 For a point-in-time grade and reassessment prompt, see
 [`verification-status-20260428.md`](verification-status-20260428.md).
@@ -19,7 +19,7 @@ but they do not replace tests against the real implementation.
 ## Bytecode verifier
 
 The bytecode verifier lives in
-[`crates/hiko-vm/src/verify.rs`](../crates/hiko-vm/src/verify.rs). VM
+[`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs). VM
 construction calls it before executing compiled programs.
 
 ### What it currently checks
@@ -42,7 +42,9 @@ The verifier is primarily a structural bytecode verifier. It currently checks:
 - stack depth does not underflow along reachable control-flow paths,
 - verifier stack-depth arithmetic does not overflow,
 - handler-clause entry stack depth is modeled as the post-install-handler depth
-  plus the handler payload values, and
+  plus the handler payload values,
+- `Perform` and `InstallHandler` effect tags refer to declared effect metadata,
+  and
 - function chunks start with stack depth equal to function arity while the main
   chunk starts at depth `0`.
 
@@ -86,16 +88,17 @@ guarantees, and several are explicitly runtime concerns:
   - The verifier does not prove that bytecode halts.
 - Resource safety.
   - The verifier does not prove that memory or fuel limits will not be exceeded.
-- Effect/resume protocol semantic correctness.
-  - Stack depth is checked for `Perform` and `Resume`, but the verifier does not
-    prove full effect-handler protocol validity.
+- Full effect/resume protocol semantic correctness for arbitrary bytecode.
+  - The verifier checks declared effect tags and stack depth for `Perform` and
+    `Resume`, but it does not prove the full source-level effect-handler
+    protocol for hand-written malformed bytecode.
 
 Indirect `Call` and `TailCall` callable-ness and arity failures remain runtime
 errors.
 
 ## Formal specifications
 
-Formal specs live under [`specs/`](../specs). They are small bounded models for
+Formal specs live under [`specs/`](../../specs). They are small bounded models for
 specific runtime or semantic questions. They should be read as executable design
 contracts and regression tools, not as full proofs of the Rust implementation.
 
@@ -103,9 +106,9 @@ contracts and regression tools, not as full proofs of the Rust implementation.
 
 Current TLA+ files:
 
-- [`specs/tla/ProcessLifecycle.tla`](../specs/tla/ProcessLifecycle.tla)
-  with [`ProcessLifecycle.cfg`](../specs/tla/ProcessLifecycle.cfg) and
-  [`ProcessLifecycleLive.cfg`](../specs/tla/ProcessLifecycleLive.cfg)
+- [`specs/tla/ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla)
+  with [`ProcessLifecycle.cfg`](../../specs/tla/ProcessLifecycle.cfg) and
+  [`ProcessLifecycleLive.cfg`](../../specs/tla/ProcessLifecycleLive.cfg)
   - Semantic model of process lifecycle behavior.
   - Covers spawn, `await`, `await_result`, `wait_any`, cooperative
     cancellation, parent-exit scope cleanup, I/O blocking/completion, and
@@ -113,9 +116,9 @@ Current TLA+ files:
   - This is the current formal source of truth for user-visible process
     lifecycle semantics.
 
-- [`specs/tla/ThreadedSchedulerImpl.tla`](../specs/tla/ThreadedSchedulerImpl.tla)
-  with [`ThreadedSchedulerImpl.cfg`](../specs/tla/ThreadedSchedulerImpl.cfg)
-  and [`ThreadedSchedulerImplLive.cfg`](../specs/tla/ThreadedSchedulerImplLive.cfg)
+- [`specs/tla/ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla)
+  with [`ThreadedSchedulerImpl.cfg`](../../specs/tla/ThreadedSchedulerImpl.cfg)
+  and [`ThreadedSchedulerImplLive.cfg`](../../specs/tla/ThreadedSchedulerImplLive.cfg)
   - Lower-level worker/scheduler implementation model.
   - Covers queue behavior, worker ownership, stale queue entries, join waiters,
     I/O waiters, and shutdown/deadlock structure.
@@ -123,30 +126,30 @@ Current TLA+ files:
     hardening around stale `wait_any`, join, and I/O waiter registrations should
     eventually be reflected more directly here.
 
-- [`specs/tla/CancelIoRace.tla`](../specs/tla/CancelIoRace.tla) with
-  [`CancelIoRace.cfg`](../specs/tla/CancelIoRace.cfg) and
-  [`CancelIoRaceLive.cfg`](../specs/tla/CancelIoRaceLive.cfg)
+- [`specs/tla/CancelIoRace.tla`](../../specs/tla/CancelIoRace.tla) with
+  [`CancelIoRace.cfg`](../../specs/tla/CancelIoRace.cfg) and
+  [`CancelIoRaceLive.cfg`](../../specs/tla/CancelIoRaceLive.cfg)
   - Focused model for cancellation racing asynchronous I/O completion.
   - Covers cancel-before-completion, completion-before-cancel, failure-before-
     cancel, and stale completion after cancellation.
 
-- [`specs/tla/WaitAnyLeftmost.tla`](../specs/tla/WaitAnyLeftmost.tla) with
-  [`WaitAnyLeftmost.cfg`](../specs/tla/WaitAnyLeftmost.cfg),
-  [`WaitAnyLeftmostLive.cfg`](../specs/tla/WaitAnyLeftmostLive.cfg), and
-  [`WaitAnyLeftmostRightNotifier.scenario`](../specs/tla/WaitAnyLeftmostRightNotifier.scenario)
+- [`specs/tla/WaitAnyLeftmost.tla`](../../specs/tla/WaitAnyLeftmost.tla) with
+  [`WaitAnyLeftmost.cfg`](../../specs/tla/WaitAnyLeftmost.cfg),
+  [`WaitAnyLeftmostLive.cfg`](../../specs/tla/WaitAnyLeftmostLive.cfg), and
+  [`WaitAnyLeftmostRightNotifier.scenario`](../../specs/tla/WaitAnyLeftmostRightNotifier.scenario)
   - Focused model for deterministic `wait_any` selection.
   - Covers the rule that delivery chooses the leftmost ready child from the
     caller's requested child list, not whichever notifier happened to run first.
 
-- [`specs/tla/NumericWidthSemantics.tla`](../specs/tla/NumericWidthSemantics.tla)
-  with [`NumericWidthSemantics.cfg`](../specs/tla/NumericWidthSemantics.cfg)
+- [`specs/tla/NumericWidthSemantics.tla`](../../specs/tla/NumericWidthSemantics.tla)
+  with [`NumericWidthSemantics.cfg`](../../specs/tla/NumericWidthSemantics.cfg)
   - Focused semantic model for width-specific numeric modules.
   - Covers bounded Int32/Word32 conversion decisions, add variant invariants,
     wrapping/saturating boundary values, and symbolic Float32 rounding
     invariants.
 
-- [`specs/tla/broken/WaitAnyNotifierBroken.tla`](../specs/tla/broken/WaitAnyNotifierBroken.tla)
-  with [`WaitAnyNotifierBroken.cfg`](../specs/tla/broken/WaitAnyNotifierBroken.cfg)
+- [`specs/tla/broken/WaitAnyNotifierBroken.tla`](../../specs/tla/broken/WaitAnyNotifierBroken.tla)
+  with [`WaitAnyNotifierBroken.cfg`](../../specs/tla/broken/WaitAnyNotifierBroken.cfg)
   - Intentionally broken negative-check model for the `wait_any` notifier
     policy.
   - Useful as a sanity check that the focused `wait_any` property can catch the
@@ -154,25 +157,25 @@ Current TLA+ files:
 
 Scenario files:
 
-- [`specs/tla/CancelIoRaceStaleCompletion.scenario`](../specs/tla/CancelIoRaceStaleCompletion.scenario)
-- [`specs/tla/WaitAnyLeftmostRightNotifier.scenario`](../specs/tla/WaitAnyLeftmostRightNotifier.scenario)
+- [`specs/tla/CancelIoRaceStaleCompletion.scenario`](../../specs/tla/CancelIoRaceStaleCompletion.scenario)
+- [`specs/tla/WaitAnyLeftmostRightNotifier.scenario`](../../specs/tla/WaitAnyLeftmostRightNotifier.scenario)
 
 These are focused traces/examples for specific interleavings.
 
 ### Quint
 
-Quint files live under [`specs/quint`](../specs/quint):
+Quint files live under [`specs/quint`](../../specs/quint):
 
-- [`specs/quint/README.md`](../specs/quint/README.md)
-- [`specs/quint/ProcessLifecycle.qnt`](../specs/quint/ProcessLifecycle.qnt)
-- [`specs/quint/ThreadedSchedulerImpl.qnt`](../specs/quint/ThreadedSchedulerImpl.qnt)
+- [`specs/quint/README.md`](../../specs/quint/README.md)
+- [`specs/quint/ProcessLifecycle.qnt`](../../specs/quint/ProcessLifecycle.qnt)
+- [`specs/quint/ThreadedSchedulerImpl.qnt`](../../specs/quint/ThreadedSchedulerImpl.qnt)
 
 Current status:
 
 - `ThreadedSchedulerImpl.qnt` tracks the lower-level scheduler model and is
   useful for typechecking and model-checking that structure.
 - `ProcessLifecycle.qnt` is a lagging port of an older lifecycle model. Prefer
-  [`specs/tla/ProcessLifecycle.tla`](../specs/tla/ProcessLifecycle.tla) for
+  [`specs/tla/ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla) for
   current cancellation, `wait_any`, and `await_result` semantics.
 
 If Rust source, maintained docs, TLA+, and Quint disagree, prefer them in this

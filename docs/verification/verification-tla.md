@@ -23,14 +23,14 @@ runtime is fully modeled.
 
 ## Current source of truth
 
-- [`specs/tla/ProcessLifecycle.tla`](../specs/tla/ProcessLifecycle.tla)
+- [`specs/tla/ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla)
   - Semantic model of the user-visible process lifecycle.
   - Covers spawn, `await`, `await_result`, `wait_any`, cooperative cancellation,
     parent-exit scope cleanup, I/O blocking/completion, and deadlock detection.
   - Does **not** model mailbox send/receive. That surface no longer exists in
     the Rust runtime.
 
-- [`specs/tla/ThreadedSchedulerImpl.tla`](../specs/tla/ThreadedSchedulerImpl.tla)
+- [`specs/tla/ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla)
   - Lower-level worker/scheduler model.
   - Covers queue behavior, worker ownership, stale queue entries, join waiters,
     I/O waiters, and shutdown-on-deadlock structure.
@@ -40,7 +40,7 @@ runtime is fully modeled.
     `child_parents`, `pending_cancels`, tombstones, and the full TOCTOU
     mitigation logic in `threaded.rs`.
 
-- [`specs/tla/NumericWidthSemantics.tla`](../specs/tla/NumericWidthSemantics.tla)
+- [`specs/tla/NumericWidthSemantics.tla`](../../specs/tla/NumericWidthSemantics.tla)
   - Focused semantic model for width-specific numeric modules.
   - Covers bounded Int32/Word32 conversion decisions, add variant invariants,
     wrapping/saturating boundary values, and symbolic Float32 rounding
@@ -93,7 +93,7 @@ More concretely, it does **not** yet model all of:
 
 ## Quint
 
-The Quint ports live in [`specs/quint`](../specs/quint).
+The Quint ports live in [`specs/quint`](../../specs/quint).
 
 - `ThreadedSchedulerImpl.qnt` now matches the mailbox removal on the lower-level
   scheduler model.
@@ -111,22 +111,22 @@ new lifecycle model.
 
 ## Configs
 
-- [`specs/tla/ProcessLifecycle.cfg`](../specs/tla/ProcessLifecycle.cfg)
+- [`specs/tla/ProcessLifecycle.cfg`](../../specs/tla/ProcessLifecycle.cfg)
   - Safety checking for the lifecycle model.
 
-- [`specs/tla/ProcessLifecycleLive.cfg`](../specs/tla/ProcessLifecycleLive.cfg)
+- [`specs/tla/ProcessLifecycleLive.cfg`](../../specs/tla/ProcessLifecycleLive.cfg)
   - Uses `SPECIFICATION Spec`.
   - Checks:
     - `CancelRequestedEventuallySettles`
     - `IoEventuallyCompletes`
 
-- [`specs/tla/ThreadedSchedulerImpl.cfg`](../specs/tla/ThreadedSchedulerImpl.cfg)
+- [`specs/tla/ThreadedSchedulerImpl.cfg`](../../specs/tla/ThreadedSchedulerImpl.cfg)
   - Safety checking for the lower-level worker/scheduler model.
 
-- [`specs/tla/NumericWidthSemantics.cfg`](../specs/tla/NumericWidthSemantics.cfg)
+- [`specs/tla/NumericWidthSemantics.cfg`](../../specs/tla/NumericWidthSemantics.cfg)
   - Safety checking for width-specific numeric semantic invariants.
 
-- [`specs/tla/ThreadedSchedulerImplLive.cfg`](../specs/tla/ThreadedSchedulerImplLive.cfg)
+- [`specs/tla/ThreadedSchedulerImplLive.cfg`](../../specs/tla/ThreadedSchedulerImplLive.cfg)
   - Uses `SPECIFICATION LiveSpec`.
   - Still checks the existing lower-level liveness properties, now with domain
     guards so TLC does not index unallocated pids.
@@ -138,6 +138,6 @@ new lifecycle model.
 
 1. Read `ProcessLifecycle.tla` for meaning.
 2. Read `ThreadedSchedulerImpl.tla` for current worker/scheduler structure.
-3. Read [`crates/hiko-vm/src/runtime.rs`](../crates/hiko-vm/src/runtime.rs) and
-   [`crates/hiko-vm/src/threaded.rs`](../crates/hiko-vm/src/threaded.rs) for
+3. Read [`crates/hiko-vm/src/runtime.rs`](../../crates/hiko-vm/src/runtime.rs) and
+   [`crates/hiko-vm/src/threaded.rs`](../../crates/hiko-vm/src/threaded.rs) for
    the actual implementation details that still exceed the lower-level model.

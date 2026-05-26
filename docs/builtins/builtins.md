@@ -3,13 +3,13 @@
 All builtins are available as global functions. No imports needed.
 
 Width-specific numeric APIs live in stdlib modules such as `Int32`, `Word32`,
-and `Float32`; see [numerics.md](./numerics.md). Their raw runtime builtins are
+and `Float32`; see [numerics.md](../language/numerics.md). Their raw runtime builtins are
 internal aliases, not the public surface.
 
 ## I/O
 
-| Builtin     | Type             | Description                         |
-| ----------- | ---------------- | ----------------------------------- |
+| Builtin      | Type             | Description                         |
+| ------------ | ---------------- | ----------------------------------- |
 | `print`      | `string -> unit` | Print string to stdout (no newline) |
 | `println`    | `string -> unit` | Print string to stdout with newline |
 | `read_line`  | `unit -> string` | Read a line from stdin              |
@@ -17,18 +17,18 @@ internal aliases, not the public surface.
 
 ## Type Conversion
 
-| Builtin           | Type              | Description                     |
-| ----------------- | ----------------- | ------------------------------- |
-| `int_to_string`   | `int -> string`   | Integer to decimal string       |
-| `float_to_string` | `float -> string` | float to string                 |
-| `string_to_int`   | `string -> int`   | Parse decimal string to integer |
-| `char_to_int`     | `char -> int`     | Character to Unicode codepoint  |
+| Builtin           | Type              | Description                                                             |
+| ----------------- | ----------------- | ----------------------------------------------------------------------- |
+| `int_to_string`   | `int -> string`   | Integer to decimal string                                               |
+| `float_to_string` | `float -> string` | float to string                                                         |
+| `string_to_int`   | `string -> int`   | Parse decimal string to integer                                         |
+| `char_to_int`     | `char -> int`     | Character to Unicode codepoint                                          |
 | `int_to_char`     | `int -> char`     | Unicode codepoint to character; errors on invalid or out-of-range input |
-| `int_to_float`    | `int -> float`    | Integer to float                |
-| `word_to_int`     | `word -> int`     | Word to integer; errors if value is above `i64::MAX` |
-| `int_to_word`     | `int -> word`     | Integer to word; errors if value is negative |
-| `word_to_string`  | `word -> string`  | Word to decimal string          |
-| `string_to_word`  | `string -> word`  | Parse decimal string to word; errors on invalid input or overflow |
+| `int_to_float`    | `int -> float`    | Integer to float                                                        |
+| `word_to_int`     | `word -> int`     | Word to integer; errors if value is above `i64::MAX`                    |
+| `int_to_word`     | `int -> word`     | Integer to word; errors if value is negative                            |
+| `word_to_string`  | `word -> string`  | Word to decimal string                                                  |
+| `string_to_word`  | `string -> word`  | Parse decimal string to word; errors on invalid input or overflow       |
 
 ## string Operations
 
@@ -80,10 +80,10 @@ internal aliases, not the public surface.
 
 ## Hashline (content-addressed editing)
 
-| Builtin            | Type                           | Description                       |
-| ------------------ | ------------------------------ | --------------------------------- |
+| Builtin            | Type                           | Description                              |
+| ------------------ | ------------------------------ | ---------------------------------------- |
 | `read_file_tagged` | `(string, int, int) -> string` | Read file with 64-bit FNV-1a line hashes |
-| `edit_file_tagged` | `(string, string) -> string`   | Apply hashline-based edit         |
+| `edit_file_tagged` | `(string, string) -> string`   | Apply hashline-based edit                |
 
 ## HTTP
 
@@ -157,12 +157,12 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 
 ## Concurrency (threaded runtime)
 
-| Builtin         | Type                    | Description                                          |
-| --------------- | ----------------------- | ---------------------------------------------------- |
-| `spawn`         | `(unit -> 'a) -> pid`   | Spawn an isolated process                            |
-| `await_process` | `pid -> 'a`             | Block until a child process completes                |
-| `cancel`        | `pid -> unit`           | Cooperatively cancel a child process                 |
-| `wait_any`      | `pid list -> pid`       | Wait until any child in the set finishes             |
+| Builtin         | Type                  | Description                              |
+| --------------- | --------------------- | ---------------------------------------- |
+| `spawn`         | `(unit -> 'a) -> pid` | Spawn an isolated process                |
+| `await_process` | `pid -> 'a`           | Block until a child process completes    |
+| `cancel`        | `pid -> unit`         | Cooperatively cancel a child process     |
+| `wait_any`      | `pid list -> pid`     | Wait until any child in the set finishes |
 
 `wait_any [p1, p2, ..., pn]` is deterministic: it blocks until at least one listed child has completed, then returns the leftmost PID in the original input list whose child is complete. If multiple children complete concurrently, input list order breaks ties. A child completion is only a wakeup signal; it is not automatically the winner.
 

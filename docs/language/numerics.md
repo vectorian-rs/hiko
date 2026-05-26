@@ -13,10 +13,10 @@ word  = u64
 float = f64
 ```
 
-| Hiko type | VM/Rust representation | Notes |
-| --------- | ---------------------- | ----- |
-| `int`     | `i64`                  | Signed 64-bit integer |
-| `word`    | `u64`                  | Unsigned 64-bit integer |
+| Hiko type | VM/Rust representation | Notes                    |
+| --------- | ---------------------- | ------------------------ |
+| `int`     | `i64`                  | Signed 64-bit integer    |
+| `word`    | `u64`                  | Unsigned 64-bit integer  |
 | `float`   | `f64`                  | IEEE-754 binary64 double |
 
 These representations are part of the language/runtime contract. Conversion
@@ -55,10 +55,10 @@ The initial stdlib module set is:
 
 These modules reuse existing immediate VM values:
 
-| Module type | Runtime representation | Required invariant |
-| ----------- | ---------------------- | ------------------ |
-| `Int32.t`   | `Value::Int(i64)`      | Stored value fits `i32` |
-| `Word32.t`  | `Value::Word(u64)`     | Stored value fits `u32` |
+| Module type | Runtime representation | Required invariant                     |
+| ----------- | ---------------------- | -------------------------------------- |
+| `Int32.t`   | `Value::Int(i64)`      | Stored value fits `i32`                |
+| `Word32.t`  | `Value::Word(u64)`     | Stored value fits `u32`                |
 | `Float32.t` | `Value::Float(f64)`    | Stored value was rounded through `f32` |
 
 Rust builtins validate inputs and canonicalize outputs at every boundary. This
@@ -71,11 +71,11 @@ future optimization if profiling shows the builtin path is too slow.
 Widening conversions from width-specific module types to wider core types are
 infallible:
 
-| Conversion | Reason |
-| ---------- | ------ |
-| `Int32.to_int` | `i32 -> i64` always fits |
-| `Word32.to_word` | `u32 -> u64` always fits |
-| `Word32.to_int` | `u32 -> i64` always fits because `u32::MAX < i64::MAX` |
+| Conversion         | Reason                                                        |
+| ------------------ | ------------------------------------------------------------- |
+| `Int32.to_int`     | `i32 -> i64` always fits                                      |
+| `Word32.to_word`   | `u32 -> u64` always fits                                      |
+| `Word32.to_int`    | `u32 -> i64` always fits because `u32::MAX < i64::MAX`        |
 | `Float32.to_float` | `f32 -> f64` is exact; the stored `f64` is returned unchanged |
 
 Narrowing integer conversions from core types are checked by default:
@@ -153,7 +153,7 @@ Width-specific modules need boundary tests for:
   zero, and no accidental `f64` precision accumulation
 
 The bounded TLA+ model in
-[`specs/tla/NumericWidthSemantics.tla`](../specs/tla/NumericWidthSemantics.tla)
+[`specs/tla/NumericWidthSemantics.tla`](../../specs/tla/NumericWidthSemantics.tla)
 captures the semantic invariant checks for Int32/Word32 conversion and add
 variants, plus a symbolic Float32 rounding invariant. Rust unit tests remain the
 source of truth for actual `TryFrom`, `checked_*`, `wrapping_*`, `saturating_*`,

@@ -3,7 +3,7 @@
 This document records how Hiko classifies builtin modules and how those modules
 are gated at compile time and at runtime. It is an architecture guide for adding
 or moving builtins; the user-facing builtin reference remains
-[builtins.md](./builtins.md).
+[builtins.md](builtins.md).
 
 ## Goals
 
@@ -160,7 +160,7 @@ stable domains.
 Recommended ownership:
 
 | Public Hiko domain | Category | Notes |
-| ------------------ | -------- | ----- |
+| | - | - |
 | `Std.String` | pure core | String processing and formatting helpers. |
 | `Std.Bytes` | pure core | Byte buffers and UTF-8 conversion. |
 | `Std.Json` | pure core | JSON ADT helpers, parse, serialize, object/array helpers. |

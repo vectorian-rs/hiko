@@ -41,7 +41,7 @@ This whitepaper is about **language and runtime meaning**, not about freezing
 surface spelling too early.
 
 The semantics described here are substantially more stable than the exact
-syntax. The current parser and [hiko.ebnf](hiko.ebnf) are snapshots, not the
+syntax. The current parser and [hiko.ebnf](../language/hiko.ebnf) are snapshots, not the
 final language contract. In particular:
 
 - package-loading syntax is still settling
@@ -74,18 +74,18 @@ changes or reviews, verify each area against the maintained docs and source:
 
 | Area                                           | Primary verification point                                                                                                                                                                                                                                                   |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Core language surface and types                | [system.md](system.md)                                                                                                                                                                                                                                                       |
-| SML divergences and simplification policy      | [sml-deltas.md](sml-deltas.md)                                                                                                                                                                                                                                               |
-| Module semantics                               | [modules.md](modules.md)                                                                                                                                                                                                                                                     |
-| Error layering and `Result` discipline         | [error-handling.md](error-handling.md)                                                                                                                                                                                                                                       |
-| Runtime/process model                          | [runtime.md](runtime.md)                                                                                                                                                                                                                                                     |
-| VM/runtime seam and process-creation cost      | [vm.md](vm.md)                                                                                                                                                                                                                                                               |
-| Current `Std.Fiber` API                        | [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml)                                                                                                                                                                                       |
-| Current `Result`/`Option`/`Either` definitions | [../libraries/Std-v0.1.0/modules/Result.hml](../libraries/Std-v0.1.0/modules/Result.hml), [../libraries/Std-v0.1.0/modules/Option.hml](../libraries/Std-v0.1.0/modules/Option.hml), [../libraries/Std-v0.1.0/modules/Either.hml](../libraries/Std-v0.1.0/modules/Either.hml) |
-| Runtime lifecycle and join/cancel state        | [../crates/hiko-vm/src/process.rs](../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../crates/hiko-vm/src/threaded.rs)                                                           |
-| Process-boundary transfer                      | [../crates/hiko-vm/src/sendable.rs](../crates/hiko-vm/src/sendable.rs)                                                                                                                                                                                                       |
-| VM execution transitions                       | [../crates/hiko-vm/src/vm/runtime_bridge.rs](../crates/hiko-vm/src/vm/runtime_bridge.rs)                                                                                                                                                                                     |
-| Formal verification status                     | [verification-tla.md](verification-tla.md), [../specs/tla/ProcessLifecycle.tla](../specs/tla/ProcessLifecycle.tla), [../specs/tla/ThreadedSchedulerImpl.tla](../specs/tla/ThreadedSchedulerImpl.tla), [../specs/quint/README.md](../specs/quint/README.md)               |
+| Core language surface and types                | [system.md](../architecture/system.md)                                                                                                                                                                                                                                                       |
+| SML divergences and simplification policy      | [sml-deltas.md](../language/sml-deltas.md)                                                                                                                                                                                                                                               |
+| Module semantics                               | [modules.md](../language/modules.md)                                                                                                                                                                                                                                                     |
+| Error layering and `Result` discipline         | [error-handling.md](../language/error-handling.md)                                                                                                                                                                                                                                       |
+| Runtime/process model                          | [runtime.md](../architecture/runtime.md)                                                                                                                                                                                                                                                     |
+| VM/runtime seam and process-creation cost      | [vm.md](../architecture/vm.md)                                                                                                                                                                                                                                                               |
+| Current `Std.Fiber` API                        | [../libraries/Std-v0.1.0/modules/Fiber.hml](../../libraries/Std-v0.1.0/modules/Fiber.hml)                                                                                                                                                                                       |
+| Current `Result`/`Option`/`Either` definitions | [../libraries/Std-v0.1.0/modules/Result.hml](../../libraries/Std-v0.1.0/modules/Result.hml), [../libraries/Std-v0.1.0/modules/Option.hml](../../libraries/Std-v0.1.0/modules/Option.hml), [../libraries/Std-v0.1.0/modules/Either.hml](../../libraries/Std-v0.1.0/modules/Either.hml) |
+| Runtime lifecycle and join/cancel state        | [../crates/hiko-vm/src/process.rs](../../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../../crates/hiko-vm/src/threaded.rs)                                                           |
+| Process-boundary transfer                      | [../crates/hiko-vm/src/sendable.rs](../../crates/hiko-vm/src/sendable.rs)                                                                                                                                                                                                       |
+| VM execution transitions                       | [../crates/hiko-vm/src/vm/runtime_bridge.rs](../../crates/hiko-vm/src/vm/runtime_bridge.rs)                                                                                                                                                                                     |
+| Formal verification status                     | [verification-tla.md](../verification/verification-tla.md), [../specs/tla/ProcessLifecycle.tla](../../specs/tla/ProcessLifecycle.tla), [../specs/tla/ThreadedSchedulerImpl.tla](../../specs/tla/ThreadedSchedulerImpl.tla), [../specs/quint/README.md](../../specs/quint/README.md)                   |
 
 If this whitepaper and those files disagree, the code and the maintained
 implementation docs win.
@@ -94,12 +94,12 @@ implementation docs win.
 
 Use this document for meaning, then load the narrower source-of-truth docs:
 
-- language syntax, precedence, and primitive types: [system.md](system.md) and [sml-deltas.md](sml-deltas.md)
-- error conventions and `Result` layering: [error-handling.md](error-handling.md)
-- modules and package-loading direction: [modules.md](modules.md)
-- process lifecycle, join, wait-any, and cancellation: [runtime.md](runtime.md), [../crates/hiko-vm/src/process.rs](../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../crates/hiko-vm/src/threaded.rs)
-- VM slice transitions, async suspension, and child creation: [vm.md](vm.md), [../crates/hiko-vm/src/vm/runtime_bridge.rs](../crates/hiko-vm/src/vm/runtime_bridge.rs), [../crates/hiko-vm/src/runtime_ops.rs](../crates/hiko-vm/src/runtime_ops.rs)
-- current stdlib concurrency surface: [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml)
+- language syntax, precedence, and primitive types: [system.md](../architecture/system.md) and [sml-deltas.md](../language/sml-deltas.md)
+- error conventions and `Result` layering: [error-handling.md](../language/error-handling.md)
+- modules and package-loading direction: [modules.md](../language/modules.md)
+- process lifecycle, join, wait-any, and cancellation: [runtime.md](../architecture/runtime.md), [../crates/hiko-vm/src/process.rs](../../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../../crates/hiko-vm/src/threaded.rs)
+- VM slice transitions, async suspension, and child creation: [vm.md](../architecture/vm.md), [../crates/hiko-vm/src/vm/runtime_bridge.rs](../../crates/hiko-vm/src/vm/runtime_bridge.rs), [../crates/hiko-vm/src/runtime_ops.rs](../../crates/hiko-vm/src/runtime_ops.rs)
+- current stdlib concurrency surface: [../libraries/Std-v0.1.0/modules/Fiber.hml](../../libraries/Std-v0.1.0/modules/Fiber.hml)
 
 ### 1.4 Documentation update obligations
 
@@ -107,15 +107,15 @@ When a semantic change lands, update the narrow docs and specs immediately. In
 practice:
 
 - change `spawn`, join, cancel, `wait_any`, or child-result consumption:
-  update [runtime.md](runtime.md), [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml), [../crates/hiko-vm/src/process.rs](../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../crates/hiko-vm/src/threaded.rs), and [../specs/tla/ProcessLifecycle.tla](../specs/tla/ProcessLifecycle.tla)
+  update [runtime.md](../architecture/runtime.md), [../libraries/Std-v0.1.0/modules/Fiber.hml](../../libraries/Std-v0.1.0/modules/Fiber.hml), [../crates/hiko-vm/src/process.rs](../../crates/hiko-vm/src/process.rs), [../crates/hiko-vm/src/runtime.rs](../../crates/hiko-vm/src/runtime.rs), [../crates/hiko-vm/src/threaded.rs](../../crates/hiko-vm/src/threaded.rs), and [../specs/tla/ProcessLifecycle.tla](../../specs/tla/ProcessLifecycle.tla)
 - change the VM/runtime seam or add/remove a `RunResult` transition:
-  update [vm.md](vm.md), [../crates/hiko-vm/src/vm/runtime_bridge.rs](../crates/hiko-vm/src/vm/runtime_bridge.rs), the affected runtime implementations, and the threaded spec if the transition is concurrency-visible
+  update [vm.md](../architecture/vm.md), [../crates/hiko-vm/src/vm/runtime_bridge.rs](../../crates/hiko-vm/src/vm/runtime_bridge.rs), the affected runtime implementations, and the threaded spec if the transition is concurrency-visible
 - change package/module semantics:
-  update [modules.md](modules.md), [system.md](system.md), and the syntax reference if parsing or import shape changes
+  update [modules.md](../language/modules.md), [system.md](../architecture/system.md), and the syntax reference if parsing or import shape changes
 - change the visible process/fiber error surface:
-  update [error-handling.md](error-handling.md), [../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml), and the join/cancellation sections of this paper
+  update [error-handling.md](../language/error-handling.md), [../libraries/Std-v0.1.0/modules/Fiber.hml](../../libraries/Std-v0.1.0/modules/Fiber.hml), and the join/cancellation sections of this paper
 - change formal-model coverage or trust boundaries:
-  update [verification-tla.md](verification-tla.md), [../specs/quint/README.md](../specs/quint/README.md), and the formal-verification section here
+  update [verification-tla.md](../verification/verification-tla.md), [../specs/quint/README.md](../../specs/quint/README.md), and the formal-verification section here
 
 ### 1.5 Semantic layers
 
@@ -226,7 +226,7 @@ semantically boring.
 
 ### 3.4 Numeric policy
 
-See [numerics.md](numerics.md) for the source-of-truth numeric policy. The core
+See [numerics.md](../language/numerics.md) for the source-of-truth numeric policy. The core
 numeric representations are:
 
 ```text
@@ -235,10 +235,10 @@ word  = u64
 float = f64
 ```
 
-| Hiko type | VM/Rust representation | Notes |
-| --------- | ---------------------- | ----- |
-| `int`     | `i64`                  | Signed 64-bit integer |
-| `word`    | `u64`                  | Unsigned 64-bit integer |
+| Hiko type | VM/Rust representation | Notes                    |
+| --------- | ---------------------- | ------------------------ |
+| `int`     | `i64`                  | Signed 64-bit integer    |
+| `word`    | `u64`                  | Unsigned 64-bit integer  |
 | `float`   | `f64`                  | IEEE-754 binary64 double |
 
 The core numeric surface is intentionally small. Core operators are a closed
@@ -294,19 +294,19 @@ mutable cells hidden behind familiar syntax.
 
 ### 3.6 Semantic cheat sheet
 
-| Construct | Meaning |
-| --- | --- |
-| ``x \|> f`` | Pure desugaring to `f x` |
-| `handle e with ...` | Install a local effect handler around `e` |
-| `perform Tag v` | Invoke the nearest matching local handler for `Tag` |
-| `resume k v` | Resume a captured continuation exactly once |
-| `spawn (fn () => e)` | Create a new isolated child process to evaluate `e` |
-| `Fiber.join child` | Wait for child completion and return `Result`, not a re-thrown child failure |
-| `Fiber.cancel child` | Request cooperative child cancellation |
-| `structure M = ...` | Introduce a compile-time namespace |
-| `signature S = ...` | Describe a compile-time module interface |
-| `use "./x.hml"` | Include local source by path |
-| `import P.M` | Refer to a named package/module import surface |
+| Construct            | Meaning                                                                      |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `x \|> f`            | Pure desugaring to `f x`                                                     |
+| `handle e with ...`  | Install a local effect handler around `e`                                    |
+| `perform Tag v`      | Invoke the nearest matching local handler for `Tag`                          |
+| `resume k v`         | Resume a captured continuation exactly once                                  |
+| `spawn (fn () => e)` | Create a new isolated child process to evaluate `e`                          |
+| `Fiber.join child`   | Wait for child completion and return `Result`, not a re-thrown child failure |
+| `Fiber.cancel child` | Request cooperative child cancellation                                       |
+| `structure M = ...`  | Introduce a compile-time namespace                                           |
+| `signature S = ...`  | Describe a compile-time module interface                                     |
+| `use "./x.hml"`      | Include local source by path                                                 |
+| `import P.M`         | Refer to a named package/module import surface                               |
 
 ## 4. Standard Data Types for Absence, Branching, and Failure
 
@@ -658,7 +658,7 @@ The language surface stays the same.
 ### 8.2 Process creation cost today
 
 The source of truth for process creation cost is
-[vm.md](vm.md#measuring-cost) and the benchmark example:
+[vm.md](../architecture/vm.md#measuring-cost) and the benchmark example:
 
 ```bash
 cargo run -p hiko-vm --example process_creation_cost --release
@@ -710,12 +710,12 @@ The layering is:
 | user-facing stdlib   | `Fiber.spawn`, `Fiber.join`, `Fiber.cancel`, `Fiber.first`, `Fiber.any`, `Fiber.both`, `Fiber.all` |
 
 The source of truth for the user-facing semantics is
-[../libraries/Std-v0.1.0/modules/Fiber.hml](../libraries/Std-v0.1.0/modules/Fiber.hml).
+[../libraries/Std-v0.1.0/modules/Fiber.hml](../../libraries/Std-v0.1.0/modules/Fiber.hml).
 The source of truth for process lifecycle and join/cancel behavior is
-[runtime.md](runtime.md) plus
-[../crates/hiko-vm/src/process.rs](../crates/hiko-vm/src/process.rs),
-[../crates/hiko-vm/src/runtime.rs](../crates/hiko-vm/src/runtime.rs), and
-[../crates/hiko-vm/src/threaded.rs](../crates/hiko-vm/src/threaded.rs).
+[runtime.md](../architecture/runtime.md) plus
+[../crates/hiko-vm/src/process.rs](../../crates/hiko-vm/src/process.rs),
+[../crates/hiko-vm/src/runtime.rs](../../crates/hiko-vm/src/runtime.rs), and
+[../crates/hiko-vm/src/threaded.rs](../../crates/hiko-vm/src/threaded.rs).
 
 ### 9.1 Core operations
 
@@ -989,10 +989,10 @@ They are **not** a claim that the entire implementation is formally verified.
 
 The current formal verification source of truth is:
 
-- [verification-tla.md](verification-tla.md) for coverage/status
-- [../specs/tla/ProcessLifecycle.tla](../specs/tla/ProcessLifecycle.tla) for
+- [verification-tla.md](../verification/verification-tla.md) for coverage/status
+- [../specs/tla/ProcessLifecycle.tla](../../specs/tla/ProcessLifecycle.tla) for
   semantic lifecycle behavior
-- [../specs/tla/ThreadedSchedulerImpl.tla](../specs/tla/ThreadedSchedulerImpl.tla)
+- [../specs/tla/ThreadedSchedulerImpl.tla](../../specs/tla/ThreadedSchedulerImpl.tla)
   for lower-level worker/scheduler structure
 
 The trust order is:
@@ -1112,16 +1112,16 @@ shape:
 The highest-risk documentation failure for Hiko is to blur implemented behavior
 with intended direction. The current boundary is:
 
-| Topic                                      | Implemented today                                                              | Intended direction                                        | Still open                                                                             |
-| ------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Local source composition                   | `use "./file.hml"` style inclusion exists in repo examples and docs            | keep local composition path-based and explicit            | exact long-term package/source split UX                                                |
-| Named package imports                      | `import Package.Module` is documented and used in the published stdlib sources | converge on named package imports for stdlib and packages | loader, packaging, lockfile, and fetch workflow details                                |
-| `Std.Fiber` handle shape                   | `'a Fiber.t = pid` in the current stdlib                                       | likely move toward a more explicit typed handle story     | whether that becomes opaque in the surface language                                    |
-| Recoverable errors                         | `Std.Result` plus library-owned `error` datatypes                              | keep this as the default application/library style        | whether any effect-typed error surface is ever added                                   |
-| Numeric operators                          | closed core operators over `int`, `word`, and `float`; `Int32`, `Word32`, and `Float32` stdlib modules | keep width-specific numeric domains as explicit modules   | additional widths such as `Int64`, `Word64`, and `Float16` |
-| Effects                                    | one-shot local handlers with deep continuation capture                         | keep effects local, not the async substrate               | whether effect typing is added                                                         |
-| Async I/O                                  | runtime-managed suspension via builtins and `RunResult`/`RuntimeRequest`       | preserve fixed runtime ownership of async behavior        | backend and packaging evolution, not the semantic split                                |
-| Process handles and structured concurrency | raw runtime builtins plus `Std.Fiber` library layer                            | keep `Fiber` as the main user-facing concurrency surface  | exact future surface for typed handles and richer combinators                          |
+| Topic                                      | Implemented today                                                                                      | Intended direction                                        | Still open                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------- |
+| Local source composition                   | `use "./file.hml"` style inclusion exists in repo examples and docs                                    | keep local composition path-based and explicit            | exact long-term package/source split UX                       |
+| Named package imports                      | `import Package.Module` is documented and used in the published stdlib sources                         | converge on named package imports for stdlib and packages | loader, packaging, lockfile, and fetch workflow details       |
+| `Std.Fiber` handle shape                   | `'a Fiber.t = pid` in the current stdlib                                                               | likely move toward a more explicit typed handle story     | whether that becomes opaque in the surface language           |
+| Recoverable errors                         | `Std.Result` plus library-owned `error` datatypes                                                      | keep this as the default application/library style        | whether any effect-typed error surface is ever added          |
+| Numeric operators                          | closed core operators over `int`, `word`, and `float`; `Int32`, `Word32`, and `Float32` stdlib modules | keep width-specific numeric domains as explicit modules   | additional widths such as `Int64`, `Word64`, and `Float16`    |
+| Effects                                    | one-shot local handlers with deep continuation capture                                                 | keep effects local, not the async substrate               | whether effect typing is added                                |
+| Async I/O                                  | runtime-managed suspension via builtins and `RunResult`/`RuntimeRequest`                               | preserve fixed runtime ownership of async behavior        | backend and packaging evolution, not the semantic split       |
+| Process handles and structured concurrency | raw runtime builtins plus `Std.Fiber` library layer                                                    | keep `Fiber` as the main user-facing concurrency surface  | exact future surface for typed handles and richer combinators |
 
 ## 15. Conclusion
 

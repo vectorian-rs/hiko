@@ -54,7 +54,7 @@ structure Word32 :> WORD32 = struct
   fun to_word value =
     BuiltinNumeric.word32_to_word_raw value
 
-  (* Infallible because Hiko int is i64 and every u32 fits; see docs/numerics.md. *)
+  (* Infallible because Hiko int is i64 and every u32 fits; see docs/language/numerics.md. *)
   fun to_int value =
     BuiltinNumeric.word32_to_int_raw value
 

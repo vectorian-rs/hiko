@@ -20,6 +20,12 @@ The intended rule is:
 - higher-level libraries wrap lower-level errors with more context
 - boundary code decides how errors are rendered to users
 
+Algebraic effects should not replace this model for ordinary recoverable
+failures. The preferred direction is: effects express required capabilities or
+host/provider operations, while those operations return `Result` when failure is
+an expected outcome. See [`effects.md`](effects.md) for the capability-oriented
+effect design direction.
+
 ## Library-Owned Error Types
 
 Each library should define its own error type close to the API that returns it.

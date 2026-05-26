@@ -3,8 +3,6 @@
 **File extension:** `.hml`
 **CLI command:** `hiko`
 
----
-
 ## 1. Project Summary
 
 Hiko implements **Core SML**, the core language of Standard ML as defined in the Definition of Standard ML (chapters 2, 4, 6), **excluding the module language** (chapters 3, 5, 7: structures, signatures, functors, sharing constraints).
@@ -15,26 +13,26 @@ v0 implements the functional nucleus of Core SML first. Some Core SML features (
 
 v0 prioritizes semantic correctness over Basis compatibility, optimization, and advanced abstraction mechanisms.
 
-Hiko is SML-derived, but not bug-for-bug compatible with SML'97. Known SML defect clusters are triaged explicitly in [sml-deltas.md](./sml-deltas.md), and Hiko prefers documented simplification over inheriting historical ambiguity.
+Hiko is SML-derived, but not bug-for-bug compatible with SML'97. Known SML defect clusters are triaged explicitly in [sml-deltas.md](../language/sml-deltas.md), and Hiko prefers documented simplification over inheriting historical ambiguity.
 
 ## 2. Core SML Feature Status
 
 ### 2.1 Included in v0 (matches Core SML closely)
 
-| Feature                                                                                               | SML core reference |
-| ----------------------------------------------------------------------------------------------------- | ------------------ |
-| Call-by-value evaluation, strict left-to-right                                                        | §6                 |
-| Hindley–Milner type inference (Algorithm W implementation strategy)                                   | §4.5–4.7           |
-| Value restriction (only syntactic values generalized)                                                 | §4.7               |
-| Algebraic datatypes, single-datatype recursion                                                        | §2.4, §4.2         |
-| Pattern matching (left-to-right, first-match, exhaustiveness **error**, redundant clause **warning**) | §2.6, §6.7         |
-| Let-polymorphism                                                                                      | §4.6               |
-| Lexical scoping and closures                                                                          | §6                 |
-| Recursive bindings (`fun`, `val rec`), mutual recursion via `and`                                     | §2.9               |
-| Tuples and lists (`::`, `[]`)                                                                         | §2.5               |
-| `local ... in ... end`                                                                                | §2.8               |
-| Type aliases (`type`)                                                                                 | §2.4               |
-| Wildcard, as-patterns, layered patterns                                                               | §2.6               |
+| Feature | SML core reference |
+| -- | |
+| Call-by-value evaluation, strict left-to-right | §6 |
+| Hindley–Milner type inference (Algorithm W implementation strategy) | §4.5–4.7 |
+| Value restriction (only syntactic values generalized) | §4.7 |
+| Algebraic datatypes, single-datatype recursion | §2.4, §4.2 |
+| Pattern matching (left-to-right, first-match, exhaustiveness **error**, redundant clause **warning**) | §2.6, §6.7 |
+| Let-polymorphism | §4.6 |
+| Lexical scoping and closures | §6 |
+| Recursive bindings (`fun`, `val rec`), mutual recursion via `and` | §2.9 |
+| Tuples and lists (`::`, `[]`) | §2.5 |
+| `local ... in ... end` | §2.8 |
+| Type aliases (`type`) | §2.4 |
+| Wildcard, as-patterns, layered patterns | §2.6 |
 
 ### 2.2 Core SML features deferred to later phases
 
@@ -50,27 +48,27 @@ These are part of Core SML but excluded from v0. Each is a deliberate staging de
 
 ### 2.2.1 Core SML features permanently excluded
 
-| Feature                  | SML core behavior                   | Why excluded                                                           |
-| ------------------------ | ----------------------------------- | ---------------------------------------------------------------------- |
-| **Overloaded operators** | `+` works on int, word, real        | Replaced by monomorphic operator names (see §2.3)                      |
-| **`abstype`**            | Abstract types in the core language | Effectively dead in SML practice; subsumed by opaque module ascription |
-| **Exceptions**           | `exception`, `raise`, `handle`      | Hiko prefers `Result`-style values and effect-based control flow instead of a separate exception subsystem |
-| **Full Basis Library**   | Standard Basis                      | Enormous and module-dependent; Hiko provides its own small stdlib      |
+| Feature | SML core behavior | Why excluded |
+| | -- | - |
+| **Overloaded operators** | `+` works on int, word, real | Replaced by monomorphic operator names (see §2.3) |
+| **`abstype`** | Abstract types in the core language | Effectively dead in SML practice; subsumed by opaque module ascription |
+| **Exceptions** | `exception`, `raise`, `handle` | Hiko prefers `Result`-style values and effect-based control flow instead of a separate exception subsystem |
+| **Full Basis Library** | Standard Basis | Enormous and module-dependent; Hiko provides its own small stdlib |
 
 ### 2.3 Non-SML divergences in v0
 
 These are deliberate deviations from Core SML.
 
-| Divergence                | SML behavior                                            | Hiko v0 behavior                                                                  | Justification                                         |
-| ------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| **Operator names**        | `+`, `*`, etc. are overloaded across int/real/word      | Monomorphic: `+` (int), `+.` (float), `^` (string concat)                         | Avoids ad-hoc overloading machinery                   |
-| **Exhaustiveness policy** | Non-exhaustive match is a warning in most SML compilers | Non-exhaustive match is a **compile-time error**                                  | Stronger guarantee; avoids runtime `Match` failures   |
-| **Import mechanism**      | No import in Core SML (modules handle composition)      | `use "file.hml"` loads a file and imports its top-level bindings                  | Practical replacement for deferred modules            |
-| **Equality**              | Polymorphic `=` with equality type tracking             | `=` restricted to scalar types only in v0                                         | Avoids a partial `eqtype` system                      |
-| **Comparison operators**  | `<`, `<=`, etc. are polymorphic across numeric types    | Monomorphic: `<`, `>`, `<=`, `>=` for `int`; `<.`, `>.`, `<=.`, `>=.` for `float` | Keeps operator design consistent with arithmetic      |
-| **Type shadowing**        | Allowed; later type bindings shadow earlier ones        | Disallowed in v0; redefining a type name in the same scope is an error            | Simplifies type environment handling                  |
-| **Constructor shadowing** | Constructors can be shadowed by value bindings          | Constructors cannot be shadowed by value bindings                                 | Prevents confusing pattern matching interactions      |
-| **Surface syntax**        | Standard SML syntax                                     | Minor syntax preferences and implementation-oriented simplifications              | Semantics matter more than full source-level fidelity |
+| Divergence | SML behavior | Hiko v0 behavior | Justification |
+| - | - | | -- |
+| **Operator names** | `+`, `*`, etc. are overloaded across int/real/word | Monomorphic: `+` (int), `+.` (float), `^` (string concat) | Avoids ad-hoc overloading machinery |
+| **Exhaustiveness policy** | Non-exhaustive match is a warning in most SML compilers | Non-exhaustive match is a **compile-time error** | Stronger guarantee; avoids runtime `Match` failures |
+| **Import mechanism** | No import in Core SML (modules handle composition) | `use "file.hml"` loads a file and imports its top-level bindings | Practical replacement for deferred modules |
+| **Equality** | Polymorphic `=` with equality type tracking | `=` restricted to scalar types only in v0 | Avoids a partial `eqtype` system |
+| **Comparison operators** | `<`, `<=`, etc. are polymorphic across numeric types | Monomorphic: `<`, `>`, `<=`, `>=` for `int`; `<.`, `>.`, `<=.`, `>=.` for `float` | Keeps operator design consistent with arithmetic |
+| **Type shadowing** | Allowed; later type bindings shadow earlier ones | Disallowed in v0; redefining a type name in the same scope is an error | Simplifies type environment handling |
+| **Constructor shadowing** | Constructors can be shadowed by value bindings | Constructors cannot be shadowed by value bindings | Prevents confusing pattern matching interactions |
+| **Surface syntax** | Standard SML syntax | Minor syntax preferences and implementation-oriented simplifications | Semantics matter more than full source-level fidelity |
 
 ### 2.4 Module language (excluded entirely)
 
@@ -82,8 +80,6 @@ Everything from the Definition's module language (chapters 3, 5, 7):
 - Derived forms that depend on modules
 
 This is the primary scope boundary. The module language is absent, not simplified.
-
----
 
 ## 3. MVP Language Specification
 
@@ -240,19 +236,17 @@ Hiko follows the Standard ML split between **type-level names** and **value-leve
 
 ### 3.7 Operator precedence (highest to lowest)
 
-| Precedence | Operators                                                 | Associativity |
-| ---------- | --------------------------------------------------------- | ------------- |
-| 7          | function application                                      | left          |
-| 6          | `~`, `not`                                                | prefix        |
-| 5          | `*`, `/`, `*.`, `/.`, `mod`                               | left          |
-| 4          | `+`, `-`, `+.`, `-.`, `^`                                 | left          |
-| 3          | `::`                                                      | right         |
-| 2          | `=`, `<>`, `<`, `>`, `<=`, `>=`, `<.`, `>.`, `<=.`, `>=.` | non-assoc     |
-| 1          | `andalso`                                                 | right         |
-| 0          | `orelse`                                                  | right         |
-| -1         | `|>`                                                      | left          |
-
----
+| Precedence | Operators | Associativity |
+| - | | - |
+| 7 | function application | left |
+| 6 | `~`, `not` | prefix |
+| 5 | `*`, `/`, `*.`, `/.`, `mod` | left |
+| 4 | `+`, `-`, `+.`, `-.`, `^` | left |
+| 3 | `::` | right |
+| 2 | `=`, `<>`, `<`, `>`, `<=`, `>=`, `<.`, `>.`, `<=.`, `>=.` | non-assoc |
+| 1 | `andalso` | right |
+| 0 | `orelse` | right |
+| -1 | `|>` | left |
 
 ## 4. Example Programs
 
@@ -337,8 +331,6 @@ fun clamp (lo : Float) (hi : Float) (x : Float) =
   else x
 ```
 
----
-
 ## 5. Architecture
 
 ```text
@@ -374,8 +366,6 @@ For v0, the typed Core AST is the IR. A separate SSA/ANF IR would help with opti
 
 Every AST node carries a `Span { file_id, start, end }`. Errors are structured diagnostics rendered with source context using `codespan-reporting`.
 
----
-
 ## 6. Equality in v0
 
 **Policy: `=` and `<>` are defined only on scalar types.**
@@ -409,8 +399,6 @@ fun list_eq eq xs ys =
   | _                  => false
 ```
 
----
-
 ## 7. Value Restriction and Syntactic Values
 
 A type is generalized at a `let`-binding only if the right-hand side is a **syntactic value**.
@@ -437,8 +425,6 @@ Examples:
 - `case e of ...` → not a value
 
 This is the rule used by the type checker, not an informal guideline.
-
----
 
 ## 8. Phased Implementation Roadmap
 
@@ -518,8 +504,6 @@ Representative test: `use "math.hml"` followed by calling a function defined in 
 
 Main risk: REPL state management across re-definitions.
 
----
-
 ## 9. Rust Workspace Layout
 
 ```text
@@ -542,8 +526,6 @@ hiko-cli → hiko-compile → hiko-types → hiko-syntax
               ↓
            hiko-vm
 ```
-
----
 
 ## 10. VM Design
 
@@ -644,8 +626,6 @@ pub struct FunctionProto {
 
 Both are stored in order and accessed by zero-based runtime index.
 
----
-
 ## 11. Runtime Representation
 
 ### 11.1 Value
@@ -723,8 +703,6 @@ The VM uses a shared value stack. Each `CallFrame` records a `base` index; the f
 
 Mark-and-sweep with index-based `GcRef<T>` into `Vec<Option<HeapObject>>`. No raw pointers, no trait objects, no `unsafe` required for the initial implementation.
 
----
-
 ## 12. Type System Plan
 
 ### 12.1 Type Representation
@@ -796,8 +774,6 @@ Literal exhaustiveness rules:
 **Non-exhaustive match:** compile-time error
 **Redundant clause:** warning
 
----
-
 ## 13. Clausal `fun` Desugaring
 
 Multi-clause function definitions are desugared through a **single `case` on the tuple of arguments**.
@@ -822,8 +798,6 @@ val rec f =
 
 This makes exhaustiveness and redundancy checking precise and uniform.
 
----
-
 ## 14. REPL Semantics
 
 The REPL maintains persistent type and value environments across inputs.
@@ -831,8 +805,6 @@ The REPL maintains persistent type and value environments across inputs.
 - Later REPL bindings may shadow earlier value bindings.
 - Redefining a type name in the same REPL session is a compile-time error.
 - Imported duplicate names remain errors.
-
----
 
 ## 15. Testing Plan
 
@@ -855,8 +827,6 @@ Key areas:
 - pattern matching
 - equality restriction
 - imports and collision behavior
-
----
 
 ## 16. Final Recommendation
 

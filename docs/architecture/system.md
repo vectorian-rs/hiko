@@ -124,7 +124,7 @@ Hiko also has a left-associative pipeline operator `|>`, which desugars to ordin
 - Recoverable failures use `Std.Result` with `Ok` / `Err`.
 - `Std.Result` helpers are data-last so they compose naturally with `|>`.
 - Structured concurrency lives in `Std.Fiber`, where `Fiber.join` returns `Result` and raw runtime process primitives stay hidden behind the library surface.
-- See [error-handling.md](error-handling.md) for the library error-type and rendering conventions.
+- See [error-handling.md](../language/error-handling.md) for the library error-type and rendering conventions.
 
 ## Runtime representation
 
@@ -522,7 +522,7 @@ Http.get url
 
 ### Erlang-style process runtime (issue #10)
 
-Multi-process execution with isolated VMs, message passing, per-process GC. Effects stay local to each process. See `docs/runtime.md` for the full design.
+Multi-process execution with isolated VMs, message passing, per-process GC. Effects stay local to each process. See `docs/architecture/runtime.md` for the full design.
 
 Key design decisions:
 - One heap per process, per-process GC

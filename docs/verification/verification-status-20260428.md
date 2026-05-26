@@ -34,14 +34,14 @@ Overall: B-
 | Remote module loading | B | Verification TOCTOU and HTTPS/body caps are good; more fuzzing would help. |
 | Allocation/resource accounting | B | Many high-risk builtins now preflight intermediates; full resource policy docs remain. |
 | Fuzz/property testing | D | Important next step. |
-| Documentation of guarantees | B | Much better now with `docs/verification.md`, `docs/runtime.md`, `docs/vm.md`, etc. |
+| Documentation of guarantees | B | Much better now with `docs/verification/verification.md`, `docs/architecture/runtime.md`, `docs/architecture/vm.md`, etc. |
 
 ## Why the grade is not lower
 
 Hiko has multiple verification layers already:
 
 - a bytecode verifier in
-  [`crates/hiko-vm/src/verify.rs`](../crates/hiko-vm/src/verify.rs),
+  [`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs),
 - runtime hardening tests for missing processes, stale waiters, placeholder
   validation, allocation accounting, exec identity revalidation, and filesystem
   capability boundaries,
@@ -120,7 +120,7 @@ runtime/security work:
 
 ```text
 Review the current Hiko repository verification posture. Read docs/index.md,
-docs/verification.md, the latest docs/verification-status-*.md snapshot,
+docs/verification/verification.md, the latest docs/verification/verification-status-*.md snapshot,
 crates/hiko-vm/src/verify.rs, crates/hiko-vm/src/runtime.rs,
 crates/hiko-vm/src/threaded.rs, and the specs/ tree. Compare the current state
 against the previous snapshot. Grade the project by area using the same table
