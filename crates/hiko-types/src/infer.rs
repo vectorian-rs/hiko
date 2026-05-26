@@ -941,9 +941,9 @@ impl InferCtx {
             ExprKind::Perform(sym, arg) => {
                 let name = self.interner.resolve(*sym).to_string();
                 let arg_ty = self.infer_expr(arg)?;
-                if let Some((declared_arg, _declared_res)) = self.effect_sigs.get(&name).cloned() {
+                if let Some((declared_arg, declared_res)) = self.effect_sigs.get(&name).cloned() {
                     self.unify(&arg_ty, &declared_arg, expr.span)?;
-                    Ok(self.fresh())
+                    Ok(declared_res)
                 } else {
                     Err(self.err(&format!("undeclared effect: {name}"), expr.span))
                 }
@@ -955,27 +955,22 @@ impl InferCtx {
                 return_body,
                 handlers,
             } => {
-                let _body_ty = self.infer_expr(body)?;
+                let body_ty = self.infer_expr(body)?;
                 self.push_scope();
-                let ret_var = self.fresh();
                 let return_var_name = self.interner.resolve(*return_var).to_string();
-                self.bind(return_var_name, Scheme::mono(ret_var));
+                self.bind(return_var_name, Scheme::mono(body_ty.clone()));
                 let return_ty = self.infer_expr(return_body)?;
                 self.pop_scope();
                 for handler in handlers {
                     self.push_scope();
                     let effect_name = self.interner.resolve(handler.effect_name).to_string();
-                    let payload_ty = if let Some((declared_arg, _)) =
-                        self.effect_sigs.get(&effect_name).cloned()
-                    {
-                        declared_arg
-                    } else {
-                        self.fresh()
-                    };
+                    let (payload_ty, effect_result_ty) =
+                        self.effect_sigs.get(&effect_name).cloned().ok_or_else(|| {
+                            self.err(&format!("undeclared effect: {effect_name}"), handler.span)
+                        })?;
                     let payload_var_name = self.interner.resolve(handler.payload_var).to_string();
                     self.bind(payload_var_name, Scheme::mono(payload_ty));
-                    let resume_arg = self.fresh();
-                    let cont_ty = Type::arrow(resume_arg, return_ty.clone());
+                    let cont_ty = Type::arrow(effect_result_ty, body_ty.clone());
                     let cont_var_name = self.interner.resolve(handler.cont_var).to_string();
                     self.bind(cont_var_name, Scheme::mono(cont_ty));
                     let handler_ty = self.infer_expr(&handler.body)?;
@@ -986,9 +981,11 @@ impl InferCtx {
             }
 
             ExprKind::Resume(cont, arg) => {
-                let _cont_ty = self.infer_expr(cont)?;
-                let _arg_ty = self.infer_expr(arg)?;
-                Ok(self.fresh())
+                let cont_ty = self.infer_expr(cont)?;
+                let arg_ty = self.infer_expr(arg)?;
+                let result_ty = self.fresh();
+                self.unify(&cont_ty, &Type::arrow(arg_ty, result_ty.clone()), expr.span)?;
+                Ok(result_ty)
             }
         }
     }
@@ -2013,6 +2010,94 @@ mod tests {
              val y = 1 |> inc",
         );
         assert_eq!(type_of(&ctx, "y"), "int");
+    }
+
+    // ── Algebraic effects ────────────────────────────────────────────
+
+    #[test]
+    fn test_perform_undeclared_effect_rejected() {
+        let msg = infer_err("val x = perform Missing ()");
+        assert!(msg.contains("undeclared effect: Missing"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_perform_payload_type_checked() {
+        let msg = infer_err("effect Log of string val x = perform Log 1");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_perform_result_type_flows_to_context() {
+        let ctx = infer(
+            "effect Get of unit
+             val x = (perform Get ()) + 1",
+        );
+        assert_eq!(type_of(&ctx, "x"), "int");
+    }
+
+    #[test]
+    fn test_handler_undeclared_effect_rejected() {
+        let msg = infer_err(
+            "val x = handle
+               1
+             with
+               return y => y
+             | Missing payload k => 0",
+        );
+        assert!(msg.contains("undeclared effect: Missing"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_handler_body_return_type_checked() {
+        let msg = infer_err(
+            "effect Fail of string
+             val x = handle
+               1
+             with
+               return y => y
+             | Fail message k => true",
+        );
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_resume_argument_type_checked() {
+        let msg = infer_err(
+            "effect Get of unit
+             val x = handle
+               (perform Get ()) + 1
+             with
+               return y => y
+             | Get _ k => resume k true",
+        );
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_resume_result_matches_handled_body_type() {
+        let ctx = infer(
+            "effect Get of unit
+             val x = handle
+               (perform Get ()) + 1
+             with
+               return y => y
+             | Get _ k => resume k 41",
+        );
+        assert_eq!(type_of(&ctx, "x"), "int");
+    }
+
+    #[test]
+    fn test_resume_result_allows_generator_wrapper() {
+        let ctx = infer(
+            "effect Yield of int
+             fun collect f = handle
+               f ()
+             with
+               return _ => []
+             | Yield n k => n :: collect (fn _ => resume k ())
+             val xs = collect (fn _ => perform Yield 1)",
+        );
+        assert_eq!(type_of(&ctx, "xs"), "int list");
     }
 
     // ── Exhaustiveness checking ──────────────────────────────────────

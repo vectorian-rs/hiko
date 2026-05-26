@@ -966,6 +966,33 @@ mod tests {
     }
 
     #[test]
+    fn test_unhandled_effect_is_controlled_runtime_error() {
+        let mut vm = compile_vm("effect Fail of string val result = perform Fail \"boom\"");
+        let err = vm.run().expect_err("unhandled effect should fail");
+        assert!(
+            err.message.contains("unhandled effect"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_resume_rejects_non_continuation_without_panicking() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::Unit as u8, Op::Unit as u8, Op::Resume as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+        };
+        let mut vm = VM::new(program);
+        let err = vm.run().expect_err("invalid resume should fail");
+        assert_eq!(err.message, "resume: expected continuation");
+    }
+
+    #[test]
     fn test_effect_nested_handlers() {
         // Nested handle blocks with different effects
         let vm = run("effect A of unit

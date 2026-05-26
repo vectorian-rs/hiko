@@ -44,18 +44,25 @@ enum StackRule {
 }
 
 pub fn verify_program(program: &CompiledProgram) -> Result<(), VerificationError> {
-    verify_chunk(&program.main, None, &program.functions)
+    let effect_tags = program
+        .effects
+        .iter()
+        .map(|effect| effect.tag)
+        .collect::<BTreeSet<_>>();
+    verify_chunk(&program.main, None, &program.functions, &effect_tags)
         .map_err(|err| VerificationError::new(format!("main chunk: {err}")))?;
 
     for (proto_idx, proto) in program.functions.iter().enumerate() {
-        verify_chunk(&proto.chunk, Some(proto), &program.functions).map_err(|err| {
-            let name = proto
-                .name
-                .as_deref()
-                .map(|name| format!("function {proto_idx} ('{name}')"))
-                .unwrap_or_else(|| format!("function {proto_idx}"));
-            VerificationError::new(format!("{name}: {err}"))
-        })?;
+        verify_chunk(&proto.chunk, Some(proto), &program.functions, &effect_tags).map_err(
+            |err| {
+                let name = proto
+                    .name
+                    .as_deref()
+                    .map(|name| format!("function {proto_idx} ('{name}')"))
+                    .unwrap_or_else(|| format!("function {proto_idx}"));
+                VerificationError::new(format!("{name}: {err}"))
+            },
+        )?;
     }
 
     Ok(())
@@ -65,8 +72,9 @@ fn verify_chunk(
     chunk: &Chunk,
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
+    effect_tags: &BTreeSet<u16>,
 ) -> Result<(), String> {
-    let decoded = decode_chunk(chunk, proto, functions)?;
+    let decoded = decode_chunk(chunk, proto, functions, effect_tags)?;
     let initial_depth = proto.map_or(0usize, |p| p.arity as usize);
     verify_stack_effects(&decoded, initial_depth)?;
     Ok(())
@@ -76,6 +84,7 @@ fn decode_chunk(
     chunk: &Chunk,
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
+    effect_tags: &BTreeSet<u16>,
 ) -> Result<Vec<DecodedInst>, String> {
     let mut decoded = Vec::with_capacity(chunk.code.len() / 2);
     let mut starts = BTreeSet::new();
@@ -88,7 +97,7 @@ fn decode_chunk(
         ip += 1;
         let op =
             Op::try_from(op_byte).map_err(|b| format!("invalid opcode {b} at offset {start}"))?;
-        let inst = decode_instruction(chunk, proto, functions, start, op, &mut ip)?;
+        let inst = decode_instruction(chunk, proto, functions, effect_tags, start, op, &mut ip)?;
         decoded.push(inst);
     }
 
@@ -109,6 +118,7 @@ fn decode_instruction(
     chunk: &Chunk,
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
+    effect_tags: &BTreeSet<u16>,
     start: usize,
     op: Op,
     ip: &mut usize,
@@ -389,7 +399,8 @@ fn decode_instruction(
         Op::InstallHandler => {
             let n_clauses = read_u16(chunk, ip, "InstallHandler")? as usize;
             for _ in 0..n_clauses {
-                let _effect_tag = read_u16(chunk, ip, "InstallHandler clause")?;
+                let effect_tag = read_u16(chunk, ip, "InstallHandler clause")?;
+                validate_effect_tag(effect_tag, effect_tags, "InstallHandler clause")?;
                 let offset = read_i16(chunk, ip, "InstallHandler clause")?;
                 let target = read_relative_target(*ip, offset, "InstallHandler clause")?;
                 handler_clause_targets.push(target);
@@ -408,7 +419,8 @@ fn decode_instruction(
             }
         }
         Op::Perform => {
-            let _effect_tag = read_u16(chunk, ip, "Perform")?;
+            let effect_tag = read_u16(chunk, ip, "Perform")?;
+            validate_effect_tag(effect_tag, effect_tags, "Perform")?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: 1,
@@ -425,6 +437,20 @@ fn decode_instruction(
         successors,
         handler_clause_targets,
     })
+}
+
+fn validate_effect_tag(
+    effect_tag: u16,
+    effect_tags: &BTreeSet<u16>,
+    context: &str,
+) -> Result<(), String> {
+    if effect_tags.contains(&effect_tag) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} references unknown effect tag {effect_tag}"
+        ))
+    }
 }
 
 fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result<(), String> {
@@ -516,11 +542,15 @@ fn apply_delta(inst: &DecodedInst, depth: usize, delta: isize) -> Result<usize, 
 #[cfg(test)]
 mod tests {
     use super::verify_program;
-    use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
+    use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta};
     use hiko_compile::op::Op;
     use std::sync::Arc;
 
     fn empty_program(code: Vec<u8>) -> CompiledProgram {
+        program_with_effects(code, Vec::new())
+    }
+
+    fn program_with_effects(code: Vec<u8>, effects: Vec<EffectMeta>) -> CompiledProgram {
         CompiledProgram {
             main: Arc::new(Chunk {
                 code,
@@ -528,7 +558,14 @@ mod tests {
                 spans: Vec::new(),
             }),
             functions: Arc::from([]),
-            effects: Arc::from([]),
+            effects: Arc::from(effects),
+        }
+    }
+
+    fn effect_zero() -> EffectMeta {
+        EffectMeta {
+            name: "Test".into(),
+            tag: 0,
         }
     }
 
@@ -563,9 +600,41 @@ mod tests {
 
     #[test]
     fn rejects_perform_without_payload() {
-        let program = empty_program(vec![Op::Perform as u8, 0, 0, Op::Halt as u8]);
+        let program = program_with_effects(
+            vec![Op::Perform as u8, 0, 0, Op::Halt as u8],
+            vec![effect_zero()],
+        );
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("requires stack depth >= 1"));
+    }
+
+    #[test]
+    fn rejects_perform_unknown_effect_tag() {
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::Perform as u8,
+            7,
+            0,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("unknown effect tag 7"));
+    }
+
+    #[test]
+    fn rejects_install_handler_unknown_effect_tag() {
+        let program = empty_program(vec![
+            Op::InstallHandler as u8,
+            1,
+            0,
+            7,
+            0,
+            0,
+            0,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("unknown effect tag 7"));
     }
 
     #[test]
