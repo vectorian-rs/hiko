@@ -323,43 +323,17 @@ fn cap_read_to_string(candidates: &[CapFsCandidate], _path: &str) -> Result<Stri
 }
 
 #[cfg(feature = "builtin-aws-s3")]
-fn sendable_option(value: Option<SendableValue>) -> SendableValue {
-    const OPTION_NONE_TAG: u16 = 0;
-    const OPTION_SOME_TAG: u16 = 1;
-    match value {
-        Some(value) => SendableValue::Data {
-            tag: OPTION_SOME_TAG,
-            fields: vec![value],
-        },
-        None => SendableValue::Data {
-            tag: OPTION_NONE_TAG,
-            fields: vec![],
-        },
-    }
-}
-
-#[cfg(feature = "builtin-aws-s3")]
-fn sendable_option_string(value: Option<&str>) -> SendableValue {
-    sendable_option(value.map(|text| SendableValue::String(Arc::from(text))))
-}
-
-#[cfg(feature = "builtin-aws-s3")]
 fn sendable_bucket(bucket: &aws_sdk_s3::types::Bucket) -> SendableValue {
+    let name = bucket.name().unwrap_or("").to_string();
     let creation_date = bucket
         .creation_date()
-        .map(|date| SendableValue::String(date.to_string().into()));
+        .map(|d| d.to_string())
+        .unwrap_or_default();
+    let arn = bucket.bucket_arn().unwrap_or("").to_string();
     SendableValue::Tuple(vec![
-        sendable_option_string(bucket.name()),
-        sendable_option(creation_date),
-        sendable_option_string(bucket.bucket_arn()),
-    ])
-}
-
-#[cfg(feature = "builtin-aws-s3")]
-fn sendable_owner(owner: &aws_sdk_s3::types::Owner) -> SendableValue {
-    SendableValue::Tuple(vec![
-        sendable_option_string(owner.display_name()),
-        sendable_option_string(owner.id()),
+        SendableValue::String(Arc::from(name)),
+        SendableValue::String(Arc::from(creation_date)),
+        SendableValue::String(Arc::from(arn)),
     ])
 }
 
@@ -367,26 +341,16 @@ fn sendable_owner(owner: &aws_sdk_s3::types::Owner) -> SendableValue {
 fn sendable_list_buckets_output(
     output: &aws_sdk_s3::operation::list_buckets::ListBucketsOutput,
 ) -> SendableValue {
-    let buckets = output
+    output
         .buckets
         .as_ref()
-        .map(|buckets| SendableValue::List(buckets.iter().map(sendable_bucket).collect()));
-    SendableValue::Tuple(vec![
-        sendable_option(buckets),
-        sendable_option(output.owner().map(sendable_owner)),
-        sendable_option_string(output.continuation_token()),
-        sendable_option_string(output.prefix()),
-    ])
+        .map(|bs| SendableValue::List(bs.iter().map(sendable_bucket).collect()))
+        .unwrap_or(SendableValue::List(Vec::new()))
 }
 
 #[cfg(feature = "builtin-aws-s3")]
 fn empty_list_buckets_output() -> SendableValue {
-    SendableValue::Tuple(vec![
-        sendable_option(Some(SendableValue::List(Vec::new()))),
-        sendable_option(None),
-        sendable_option_string(None),
-        sendable_option_string(None),
-    ])
+    SendableValue::List(Vec::new())
 }
 
 #[cfg(feature = "builtin-aws-s3")]

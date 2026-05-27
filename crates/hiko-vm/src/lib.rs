@@ -8,6 +8,7 @@ pub mod runtime;
 pub mod runtime_ops;
 pub mod scheduler;
 pub mod sendable;
+pub mod shape_check;
 pub mod threaded;
 pub mod value;
 pub mod verify;

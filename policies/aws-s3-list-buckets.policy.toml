@@ -5,5 +5,17 @@ allowed_profiles = ["datadeft-dev"]
 [capabilities.aws.s3.list_buckets]
 enabled = true
 
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.convert.float_to_string]
+enabled = true
+
 [capabilities.stdio.println]
 enabled = true

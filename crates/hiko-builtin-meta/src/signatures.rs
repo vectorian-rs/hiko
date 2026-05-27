@@ -11,7 +11,7 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         // AWS
         "aws_config_sso_profile" => "string -> aws_config",
         "aws_s3_list_buckets" => {
-            "aws_config -> bool * ((string Option.option * string Option.option * string Option.option) list Option.option * ((string Option.option * string Option.option) Option.option) * string Option.option * string Option.option) * string"
+            "aws_config -> bool * (string * string * string) list * string"
         }
 
         // I/O

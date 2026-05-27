@@ -14,9 +14,7 @@ const AWS_CONFIG_SOURCE: &str = r#"structure BuiltinAwsConfig = struct
 end
 "#;
 
-const AWS_S3_SOURCE: &str = r#"import Std.Option
-
-structure BuiltinAwsS3 = struct
+const AWS_S3_SOURCE: &str = r#"structure BuiltinAwsS3 = struct
   val list_buckets_raw = aws_s3_list_buckets
 end
 "#;
