@@ -10,9 +10,7 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
     let ty = match name {
         // AWS
         "aws_config_sso_profile" => "string -> aws_config",
-        "aws_s3_list_buckets" => {
-            "aws_config -> bool * (string * string * string) list * string"
-        }
+        "aws_s3_list_buckets" => "aws_config -> bool * (string * string * string) list * string",
 
         // I/O
         "print" | "println" => "string -> unit",

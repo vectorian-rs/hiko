@@ -274,8 +274,7 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
                         fields.len()
                     ));
                 }
-                for (i, (field, elem_shape)) in
-                    fields.iter().zip(expected_elems.iter()).enumerate()
+                for (i, (field, elem_shape)) in fields.iter().zip(expected_elems.iter()).enumerate()
                 {
                     check_shape(field, elem_shape)
                         .map_err(|e| format!("tuple field {}: {}", i, e))?;
@@ -291,15 +290,11 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
         Shape::List(elem_shape) => match value {
             SendableValue::List(items) => {
                 for (i, item) in items.iter().enumerate() {
-                    check_shape(item, elem_shape)
-                        .map_err(|e| format!("list[{}]: {}", i, e))?;
+                    check_shape(item, elem_shape).map_err(|e| format!("list[{}]: {}", i, e))?;
                 }
                 Ok(())
             }
-            _ => Err(format!(
-                "expected list, got {}",
-                value_kind(value)
-            )),
+            _ => Err(format!("expected list, got {}", value_kind(value))),
         },
         Shape::Option(inner_shape) => match value {
             SendableValue::Data { tag, fields } => {
@@ -319,10 +314,7 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
                     _ => Err(format!("Option expected tag 0 or 1, got {}", tag)),
                 }
             }
-            _ => Err(format!(
-                "expected Option (Data), got {}",
-                value_kind(value)
-            )),
+            _ => Err(format!("expected Option (Data), got {}", value_kind(value))),
         },
     }
 }
@@ -380,10 +372,7 @@ mod tests {
     #[test]
     fn parse_simple_tuple() {
         let rt = parse_return_type("string -> int * string").unwrap();
-        assert_eq!(
-            rt.shape,
-            Shape::Tuple(vec![Shape::Int, Shape::String])
-        );
+        assert_eq!(rt.shape, Shape::Tuple(vec![Shape::Int, Shape::String]));
     }
 
     #[test]
@@ -407,10 +396,8 @@ mod tests {
 
     #[test]
     fn parse_aws_s3_signature() {
-        let rt = parse_return_type(
-            "aws_config -> bool * (string * string * string) list * string",
-        )
-        .unwrap();
+        let rt = parse_return_type("aws_config -> bool * (string * string * string) list * string")
+            .unwrap();
         assert_eq!(
             rt.shape,
             Shape::Tuple(vec![
@@ -486,11 +473,7 @@ mod tests {
 
     #[test]
     fn check_string_matches() {
-        assert!(check_shape(
-            &SendableValue::String(Arc::from("hello")),
-            &Shape::String
-        )
-        .is_ok());
+        assert!(check_shape(&SendableValue::String(Arc::from("hello")), &Shape::String).is_ok());
     }
 
     #[test]
@@ -603,11 +586,7 @@ mod tests {
 
     #[test]
     fn check_bytes_matches() {
-        assert!(check_shape(
-            &SendableValue::Bytes(Arc::from([1, 2, 3])),
-            &Shape::Bytes
-        )
-        .is_ok());
+        assert!(check_shape(&SendableValue::Bytes(Arc::from([1, 2, 3])), &Shape::Bytes).is_ok());
     }
 
     // --- Regression: the exact bug from issue #76 ---
@@ -617,11 +596,10 @@ mod tests {
     #[test]
     fn aws_s3_bucket_shape_no_options() {
         // The current (fixed) return shape for aws_s3_list_buckets
-        let shape = parse_return_type(
-            "aws_config -> bool * (string * string * string) list * string",
-        )
-        .unwrap()
-        .shape;
+        let shape =
+            parse_return_type("aws_config -> bool * (string * string * string) list * string")
+                .unwrap()
+                .shape;
 
         // Simulate what sendable_list_buckets_output actually produces
         let bucket = SendableValue::Tuple(vec![
@@ -688,8 +666,14 @@ mod tests {
             ("file_exists", "string -> bool"),
             ("list_dir", "string -> string list"),
             ("path_join", "string * string -> string"),
-            ("http_get", "string -> int * (string * string) list * string"),
-            ("http", "string * string * (string * string) list * string -> int * (string * string) list * string"),
+            (
+                "http_get",
+                "string -> int * (string * string) list * string",
+            ),
+            (
+                "http",
+                "string * string * (string * string) list * string -> int * (string * string) list * string",
+            ),
             ("exec", "string * string list -> int * string * string"),
             ("exit", "int -> unit"),
             ("json_get", "string * string -> string"),
@@ -707,7 +691,10 @@ mod tests {
             ("epoch", "unit -> int"),
             ("sleep", "int -> unit"),
             ("aws_config_sso_profile", "string -> aws_config"),
-            ("aws_s3_list_buckets", "aws_config -> bool * (string * string * string) list * string"),
+            (
+                "aws_s3_list_buckets",
+                "aws_config -> bool * (string * string * string) list * string",
+            ),
             ("spawn", "(unit -> 'a) -> pid"),
             ("await_process", "pid -> 'a"),
             ("cancel", "pid -> unit"),
@@ -721,7 +708,12 @@ mod tests {
 
         for (name, sig) in signatures {
             let result = parse_return_type(sig);
-            assert!(result.is_ok(), "failed to parse signature for '{}': {:?}", name, result.err());
+            assert!(
+                result.is_ok(),
+                "failed to parse signature for '{}': {:?}",
+                name,
+                result.err()
+            );
         }
     }
 }
