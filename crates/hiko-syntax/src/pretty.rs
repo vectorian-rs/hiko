@@ -21,7 +21,10 @@ pub fn pretty_program(prog: &Program) -> String {
 // ── Declarations ─────────────────────────────────────────────────────
 
 fn is_import_decl(decl: &Decl) -> bool {
-    matches!(decl.kind, DeclKind::Import(_))
+    matches!(
+        decl.kind,
+        DeclKind::Import(_) | DeclKind::ImportWithNames(_, _)
+    )
 }
 
 fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringInterner) {
@@ -101,6 +104,17 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
         DeclKind::Import(name) => {
             write_indent(buf, indent);
             write!(buf, "import {}", interner.resolve(*name)).unwrap();
+        }
+        DeclKind::ImportWithNames(name, names) => {
+            write_indent(buf, indent);
+            write!(buf, "import {} (", interner.resolve(*name)).unwrap();
+            for (i, sym) in names.iter().enumerate() {
+                if i > 0 {
+                    buf.push_str(", ");
+                }
+                buf.push_str(interner.resolve(*sym));
+            }
+            buf.push_str(")");
         }
         DeclKind::Use(path) => {
             write_indent(buf, indent);

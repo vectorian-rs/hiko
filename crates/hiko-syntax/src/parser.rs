@@ -119,6 +119,15 @@ impl Parser {
         }
     }
 
+    fn expect_exposed_import_name(&mut self) -> Result<(Symbol, Span), ParseError> {
+        if matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_)) {
+            let span = self.span();
+            Ok((self.take_symbol(), span))
+        } else {
+            Err(self.err("expected exposed import name"))
+        }
+    }
+
     fn expect_import_package_name(&mut self) -> Result<(Symbol, Span), ParseError> {
         match self.peek() {
             TokenKind::UpperIdent(_) => {
@@ -482,7 +491,7 @@ impl Parser {
         self.advance(); // consume `import`
         let (package, _) = self.expect_import_package_name()?;
         self.expect(&TokenKind::Dot, ".")?;
-        let (module, end) = self.expect_upper_ident()?;
+        let (module, mut end) = self.expect_upper_ident()?;
         if matches!(self.peek(), TokenKind::Dot) {
             return Err(self.err("import expects exactly two segments: Package.Module"));
         }
@@ -491,6 +500,29 @@ impl Parser {
             self.interner.resolve(package),
             self.interner.resolve(module)
         ));
+
+        // Check for optional (Name1, Name2, ...) exposure list
+        if matches!(self.peek(), TokenKind::LParen) {
+            self.advance(); // consume `(`
+            let mut names = Vec::new();
+            if matches!(self.peek(), TokenKind::RParen) {
+                return Err(self.err("import exposure list cannot be empty"));
+            }
+            let (first, _) = self.expect_exposed_import_name()?;
+            names.push(first);
+            while matches!(self.peek(), TokenKind::Comma) {
+                self.advance(); // consume `,`
+                let (n, _) = self.expect_exposed_import_name()?;
+                names.push(n);
+            }
+            self.expect(&TokenKind::RParen, ")")?;
+            end = self.span();
+            return Ok(Decl {
+                kind: DeclKind::ImportWithNames(name, names),
+                span: start.merge(end),
+            });
+        }
+
         Ok(Decl {
             kind: DeclKind::Import(name),
             span: start.merge(end),
@@ -1673,6 +1705,25 @@ mod tests {
         assert!(
             matches!(&prog.decls[0].kind, DeclKind::Import(name) if prog.interner.resolve(*name) == "__Builtin.Filesystem")
         );
+    }
+
+    #[test]
+    fn test_import_decl_with_exposed_names() {
+        let prog = parse("import Std.Result (Ok, Err, map)");
+        match &prog.decls[0].kind {
+            DeclKind::ImportWithNames(name, names) => {
+                assert_eq!(prog.interner.resolve(*name), "Std.Result");
+                let names: Vec<&str> = names.iter().map(|s| prog.interner.resolve(*s)).collect();
+                assert_eq!(names, vec!["Ok", "Err", "map"]);
+            }
+            other => panic!("expected import-with-names, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_import_decl_with_empty_exposure_list_rejected() {
+        let err = parse_err("import Std.Result ()");
+        assert!(err.contains("cannot be empty"));
     }
 
     #[test]

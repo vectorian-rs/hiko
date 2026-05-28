@@ -106,10 +106,37 @@ pub struct CheckResult {
     pub redundant_clauses: Vec<usize>,
 }
 
+/// Resolve a constructor name to its canonical (first) name.
+/// If the name is already in datatype_constructors, return it as-is.
+/// Otherwise, find the canonical name with the same tag.
+fn resolve_canonical_name(
+    name: &str,
+    tag: u16,
+    con_tags: &std::collections::HashMap<String, u16>,
+    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
+) -> String {
+    // If the name is already in some datatype's constructor list, it's canonical
+    for cons in dt_constructors.values() {
+        if cons.iter().any(|(n, _)| n == name) {
+            return name.to_string();
+        }
+    }
+    // Find the first canonical constructor with the same tag
+    for cons in dt_constructors.values() {
+        for (canonical_name, _) in cons {
+            if con_tags.get(canonical_name).copied() == Some(tag) {
+                return canonical_name.clone();
+            }
+        }
+    }
+    name.to_string()
+}
+
 /// Convert a surface pattern to a simplified pattern.
 fn simplify_pat(
     pat: &Pat,
     con_tags: &std::collections::HashMap<String, u16>,
+    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
     interner: &StringInterner,
 ) -> SPat {
     match &pat.kind {
@@ -128,9 +155,11 @@ fn simplify_pat(
         PatKind::Constructor(sym, payload) => {
             let name = interner.resolve(*sym);
             let tag = con_tags.get(name).copied().unwrap_or(0);
-            let type_name = name.to_string();
+            // Normalize: resolve aliases to the canonical constructor name
+            // (the first name in any datatype_constructors entry with the same tag)
+            let type_name = resolve_canonical_name(name, tag, con_tags, dt_constructors);
             let sub_pats = match payload {
-                Some(p) => vec![simplify_pat(p, con_tags, interner)],
+                Some(p) => vec![simplify_pat(p, con_tags, dt_constructors, interner)],
                 None => vec![],
             };
             SPat::Con(Constructor::Adt(type_name, tag), sub_pats)
@@ -139,15 +168,15 @@ fn simplify_pat(
         PatKind::Tuple(pats) => {
             let sub = pats
                 .iter()
-                .map(|p| simplify_pat(p, con_tags, interner))
+                .map(|p| simplify_pat(p, con_tags, dt_constructors, interner))
                 .collect();
             SPat::Con(Constructor::Tuple(pats.len()), sub)
         }
 
         PatKind::Cons(hd, tl) => {
             let sub = vec![
-                simplify_pat(hd, con_tags, interner),
-                simplify_pat(tl, con_tags, interner),
+                simplify_pat(hd, con_tags, dt_constructors, interner),
+                simplify_pat(tl, con_tags, dt_constructors, interner),
             ];
             SPat::Con(Constructor::Cons, sub)
         }
@@ -161,15 +190,17 @@ fn simplify_pat(
                 for p in pats.iter().rev() {
                     result = SPat::Con(
                         Constructor::Cons,
-                        vec![simplify_pat(p, con_tags, interner), result],
+                        vec![simplify_pat(p, con_tags, dt_constructors, interner), result],
                     );
                 }
                 result
             }
         }
 
-        PatKind::As(_, p) => simplify_pat(p, con_tags, interner),
-        PatKind::Paren(p) | PatKind::Ann(p, _) => simplify_pat(p, con_tags, interner),
+        PatKind::As(_, p) => simplify_pat(p, con_tags, dt_constructors, interner),
+        PatKind::Paren(p) | PatKind::Ann(p, _) => {
+            simplify_pat(p, con_tags, dt_constructors, interner)
+        }
     }
 }
 
@@ -189,7 +220,7 @@ pub fn check_match(
 ) -> CheckResult {
     let matrix: PatternMatrix = patterns
         .iter()
-        .map(|p| vec![simplify_pat(p, con_tags, interner)])
+        .map(|p| vec![simplify_pat(p, con_tags, dt_constructors, interner)])
         .collect();
 
     let wildcard = vec![SPat::Wild];

@@ -560,7 +560,7 @@ impl InferCtx {
                 }
                 Ok(())
             }
-            DeclKind::Import(_) | DeclKind::Use(_) => Ok(()),
+            DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) | DeclKind::Use(_) => Ok(()),
             DeclKind::Signature(_) => unreachable!("signatures must be removed before inference"),
             DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference")
@@ -1396,9 +1396,67 @@ impl InferCtx {
         }
     }
 
-    /// Get the inferred type of a binding by name (for testing/REPL).
     pub fn lookup_type(&self, name: &str) -> Option<Scheme> {
         self.lookup(name).map(|s| self.apply_scheme(s))
+    }
+
+    /// Check if a constructor name exists.
+    pub fn has_constructor(&self, name: &str) -> bool {
+        self.constructors.contains_key(name)
+    }
+
+    /// Get the tag for a constructor, if it exists.
+    pub fn constructor_tag(&self, name: &str) -> Option<u16> {
+        self.constructor_tags.get(name).copied()
+    }
+
+    /// Get the scheme for a constructor, if it exists.
+    pub fn constructor_scheme(&self, name: &str) -> Option<&Scheme> {
+        self.constructors.get(name)
+    }
+
+    /// Check if a value binding name exists.
+    pub fn has_value(&self, name: &str) -> bool {
+        self.lookup(name).is_some()
+    }
+
+    /// Bind an alias for a value: make `alias_name` resolve to the same
+    /// type scheme as `target_name`.
+    pub fn bind_value_alias(&mut self, alias_name: &str, target_name: &str) -> Result<(), String> {
+        let scheme = self
+            .lookup(target_name)
+            .cloned()
+            .ok_or_else(|| format!("import alias: '{}' not found in module scope", target_name))?;
+        let scheme = self.apply_scheme(&scheme);
+        self.bind(alias_name.to_string(), scheme);
+        Ok(())
+    }
+
+    /// Bind an alias for a constructor: make `alias_name` resolve to the same
+    /// constructor as `target_name`. Also copies tag and arity metadata.
+    pub fn bind_constructor_alias(
+        &mut self,
+        alias_name: &str,
+        target_name: &str,
+    ) -> Result<(), String> {
+        let scheme = self
+            .constructors
+            .get(target_name)
+            .cloned()
+            .ok_or_else(|| format!("import alias: constructor '{}' not found", target_name))?;
+        if self.constructors.contains_key(alias_name) {
+            return Err(format!(
+                "import alias: '{}' conflicts with an existing constructor",
+                alias_name
+            ));
+        }
+        self.constructors
+            .insert(alias_name.to_string(), scheme.clone());
+        self.bind(alias_name.to_string(), scheme);
+        if let Some(&tag) = self.constructor_tags.get(target_name) {
+            self.constructor_tags.insert(alias_name.to_string(), tag);
+        }
+        Ok(())
     }
 }
 

@@ -117,6 +117,8 @@ pub enum DeclKind {
     Local(Vec<Decl>, Vec<Decl>),
     /// `import Foo.Bar`
     Import(Symbol),
+    /// `import Foo.Bar (Name1, Name2, ...)`
+    ImportWithNames(Symbol, Vec<Symbol>),
     /// `use "path/to/file.hml"`
     Use(String),
     /// `signature NAME = sig val x : t ... end`

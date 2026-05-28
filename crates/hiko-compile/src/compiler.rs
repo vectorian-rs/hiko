@@ -15,6 +15,7 @@ use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_types::infer::{InferCtx, TypeError};
+use hiko_types::ty::Type;
 use serde::Deserialize;
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
@@ -938,6 +939,9 @@ impl Compiler {
                 Ok(())
             }
             DeclKind::Import(name) => self.compile_named_import(*name),
+            DeclKind::ImportWithNames(name, names) => {
+                self.compile_named_import_with_names(*name, names)
+            }
             DeclKind::Use(path) => self.compile_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before codegen")
@@ -1173,6 +1177,9 @@ impl Compiler {
     fn infer_decl_pass(&mut self, decl: &Decl) -> Result<(), CompileError> {
         match &decl.kind {
             DeclKind::Import(name) => self.infer_named_import(*name),
+            DeclKind::ImportWithNames(name, names) => {
+                self.infer_named_import_with_names(*name, names)
+            }
             DeclKind::Use(path) => self.infer_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before inference pass")
@@ -1264,6 +1271,70 @@ impl Compiler {
         self.infer_import_source(resolved)
     }
 
+    fn infer_named_import_with_names(
+        &mut self,
+        module_name: Symbol,
+        names: &[Symbol],
+    ) -> Result<(), CompileError> {
+        let module_name_str = self.interner.resolve(module_name).to_string();
+
+        // First, import and infer the module normally
+        let resolved = self.resolve_named_import(&module_name_str)?;
+        self.infer_import_source(resolved)?;
+
+        // Now bind aliases for each exposed name. Exposed names are explicit
+        // imports, so collisions are compile errors rather than silent shadowing.
+        let module_short = module_name_str
+            .split('.')
+            .last()
+            .unwrap_or(&module_name_str);
+        let mut seen_exposed = HashSet::new();
+        for sym in names {
+            let name = self.interner.resolve(*sym).to_string();
+            if !seen_exposed.insert(name.clone()) {
+                return Err(CompileError::codegen(format!(
+                    "duplicate exposed import name '{}' in import '{}'",
+                    name, module_name_str
+                )));
+            }
+            if self.infer_ctx.has_constructor(&name) || self.infer_ctx.has_value(&name) {
+                return Err(CompileError::codegen(format!(
+                    "exposed import name '{}' from '{}' conflicts with an existing binding; use the qualified name instead",
+                    name, module_name_str
+                )));
+            }
+            let qualified = format!("{}.{}", module_short, name);
+
+            // Try constructor first, then value
+            if self.infer_ctx.has_constructor(&qualified) {
+                self.infer_ctx
+                    .bind_constructor_alias(&name, &qualified)
+                    .map_err(|e| CompileError::codegen(e))?;
+                // Also register in the compiler's constructor tag/arity maps
+                // so codegen can resolve the aliased name.
+                // Use infer_ctx's tags since compile_datatype hasn't run yet.
+                if let Some(tag) = self.infer_ctx.constructor_tag(&qualified) {
+                    self.constructor_tags.insert(name.clone(), tag);
+                }
+                // Arity: 1 if the constructor has a payload, 0 otherwise
+                if let Some(scheme) = self.infer_ctx.constructor_scheme(&qualified) {
+                    let arity = matches!(&scheme.ty, Type::Arrow(_, _)) as u8;
+                    self.constructor_arities.insert(name.clone(), arity);
+                }
+            } else if self.infer_ctx.has_value(&qualified) {
+                self.infer_ctx
+                    .bind_value_alias(&name, &qualified)
+                    .map_err(|e| CompileError::codegen(e))?;
+            } else {
+                return Err(CompileError::codegen(format!(
+                    "import '{}' does not export '{}'",
+                    module_name_str, name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Pass 2 for imported source: compile from cached desugared AST.
     fn compile_import_source(&mut self, key: ImportKey) -> Result<(), CompileError> {
         if self.compiled_imports.contains(&key) {
@@ -1294,6 +1365,36 @@ impl Compiler {
         let module_name = self.interner.resolve(module_name).to_string();
         let resolved = self.resolve_named_import(&module_name)?;
         self.compile_import_source(resolved.key())
+    }
+
+    fn compile_named_import_with_names(
+        &mut self,
+        module_name: Symbol,
+        names: &[Symbol],
+    ) -> Result<(), CompileError> {
+        // First compile the module normally
+        let module_name_str = self.interner.resolve(module_name).to_string();
+        let resolved = self.resolve_named_import(&module_name_str)?;
+        self.compile_import_source(resolved.key())?;
+
+        // Now create global aliases for each exposed name
+        let module_short = module_name_str
+            .split('.')
+            .last()
+            .unwrap_or(&module_name_str);
+        for sym in names {
+            let name = self.interner.resolve(*sym).to_string();
+            let qualified = format!("{}.{}", module_short, name);
+            // Emit a runtime global alias: Ok = Result.Ok, map = Result.map, etc.
+            // Type inference already verified that the qualified export exists.
+            self.emit_get_var(&qualified)?;
+            self.emit_set_global(&name)?;
+            // Preserve direct-call optimization for aliased functions.
+            if let Some(&proto_idx) = self.global_protos.get(&qualified) {
+                self.global_protos.insert(name, proto_idx);
+            }
+        }
+        Ok(())
     }
 
     fn compile_binding_pattern(&mut self, pat: &Pat) -> Result<(), CompileError> {
@@ -2247,6 +2348,89 @@ val result = Box.get (Box.make 41)
             cache_path.is_file(),
             "expected fetched module in default cache"
         );
+
+        let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn selective_named_import_exposes_values_and_constructors() {
+        let project_dir = unique_temp_dir("selective-named-import");
+        write_project_manifest(&project_dir);
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "structure Result = struct\n  datatype ('a, 'e) result = Ok of 'a | Err of 'e\n  fun map f r = case r of Ok x => Ok (f x) | Err e => Err e\nend\n".to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (result_url, server) =
+            spawn_single_response_server("/modules/Result.hml", module_source);
+        let base_url = result_url
+            .trim_end_matches("/modules/Result.hml")
+            .to_string();
+        let cache_path =
+            cached_module_path(&format!("{base_url}/modules/Result.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Std.Result (Ok, Err, map)\nval x : (int, string) Result.result = Ok 41\nval y = map (fn n => n + 1) x\nval z = case y of Ok n => n | Err _ => 0\n",
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+        let result = compile_path(&entry_path);
+        server.join().expect("join server");
+        assert!(
+            result.is_ok(),
+            "selective import should typecheck and compile, got {result:?}"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn selective_named_import_rejects_collisions() {
+        let project_dir = unique_temp_dir("selective-named-import-collision");
+        write_project_manifest(&project_dir);
+        let entry_path = project_dir.join("main.hml");
+        let module_source =
+            "structure Result = struct\n  datatype ('a, 'e) result = Ok of 'a | Err of 'e\nend\n"
+                .to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (result_url, server) =
+            spawn_single_response_server("/modules/Result.hml", module_source);
+        let base_url = result_url
+            .trim_end_matches("/modules/Result.hml")
+            .to_string();
+        let cache_path =
+            cached_module_path(&format!("{base_url}/modules/Result.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Std.Result (Ok)\nimport Std.Result (Ok)\nval x = Ok 1\n",
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+        let result = compile_path(&entry_path);
+        server.join().expect("join server");
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(
+                    message.contains("conflicts with an existing binding"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected exposed import collision, got {other:?}"),
+        }
 
         let _ = std::fs::remove_file(&cache_path);
         std::fs::remove_dir_all(&project_dir).ok();
