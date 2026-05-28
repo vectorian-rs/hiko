@@ -1,10 +1,12 @@
 (* Test the hashline edit cycle: read -> edit -> verify *)
 
 (* Create a test file *)
-val _ = write_file ("/tmp/hiko_edit_test.txt", "line one\nline two\nline three\nline four\n")
+val path = "target/hiko_edit_test.txt"
+
+val _ = write_file (path, "line one\nline two\nline three\nline four\n")
 
 (* Read it with hashline tags *)
-val tagged = read_file_tagged ("/tmp/hiko_edit_test.txt", 0, 0)
+val tagged = read_file_tagged (path, 0, 0)
 
 val _ = println "=== Before edit ==="
 
@@ -45,14 +47,14 @@ val _ = println ("\n=== Edits ===")
 
 val _ = println edits
 
-val result = edit_file_tagged ("/tmp/hiko_edit_test.txt", edits)
+val result = edit_file_tagged (path, edits)
 
 val _ = println ("\n=== Result ===")
 
 val _ = println result
 
 (* Read again to verify *)
-val after = read_file_tagged ("/tmp/hiko_edit_test.txt", 0, 0)
+val after = read_file_tagged (path, 0, 0)
 
 val _ = println "\n=== After edit ==="
 
@@ -61,7 +63,7 @@ val _ = print after
 (* Test hash mismatch rejection *)
 val bad_edit = "R 1:zz wrong hash should fail"
 
-val bad_result = edit_file_tagged ("/tmp/hiko_edit_test.txt", bad_edit)
+val bad_result = edit_file_tagged (path, bad_edit)
 
 val _ = println ("\n=== Bad edit result ===")
 

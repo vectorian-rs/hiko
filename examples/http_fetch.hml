@@ -1,6 +1,6 @@
 (* Fetch a URL and print status, headers, and body *)
 
-val (status, headers, body) = http_get "https://www.google.com/"
+val (status, headers, body) = http_get "http://127.0.0.1:8000/index.html"
 
 val _ = println ("Status: " ^ int_to_string status)
 

@@ -32,25 +32,31 @@ fun read_nonempty path = let
 
 val _ = println "--- Error effects wrapping I/O ---"
 
-val _ = write_file ("/tmp/hiko_demo_nonempty.txt", "hello")
+val nonempty_path = "target/hiko_demo_nonempty.txt"
 
-val _ = write_file ("/tmp/hiko_demo_empty.txt", "")
+val empty_path = "target/hiko_demo_empty.txt"
 
-val r1 = try (fn () => read_nonempty "/tmp/hiko_demo_nonempty.txt")
+val log_path = "target/hiko_log_test.txt"
+
+val _ = write_file (nonempty_path, "hello")
+
+val _ = write_file (empty_path, "")
+
+val r1 = try (fn () => read_nonempty nonempty_path)
 
 val _ = case r1 of
     Ok s => println ("Read: " ^ s)
   | Err e => println ("Failed: " ^ e)
 
-val r2 = try (fn () => read_nonempty "/tmp/hiko_demo_empty.txt")
+val r2 = try (fn () => read_nonempty empty_path)
 
 val _ = case r2 of
     Ok s => println ("Read: " ^ s)
   | Err e => println ("Failed: " ^ e)
 
-val _ = remove_file "/tmp/hiko_demo_nonempty.txt"
+val _ = remove_file nonempty_path
 
-val _ = remove_file "/tmp/hiko_demo_empty.txt"
+val _ = remove_file empty_path
 
 (* ── Effect: accumulate log entries while doing I/O ─────── *)
 
@@ -68,11 +74,11 @@ fun with_log f = let
 
 fun process_files () = let
     val _ = perform Log "starting"
-    val _ = write_file ("/tmp/hiko_log_test.txt", "data")
+    val _ = write_file (log_path, "data")
     val _ = perform Log "wrote file"
-    val contents = read_file "/tmp/hiko_log_test.txt"
+    val contents = read_file log_path
     val _ = perform Log ("read back: " ^ contents)
-    val _ = remove_file "/tmp/hiko_log_test.txt"
+    val _ = remove_file log_path
     val _ = perform Log "cleaned up"
   in
     ()
@@ -122,8 +128,8 @@ fun count_files_in dir = let
 
 val _ = println "\n--- State effect with list_dir I/O ---"
 
-val file_count = run_state 0 (fn () => count_files_in "/tmp")
+val file_count = run_state 0 (fn () => count_files_in ".")
 
-val _ = println ("Entries in /tmp: " ^ int_to_string file_count)
+val _ = println ("Entries in .: " ^ int_to_string file_count)
 
 val _ = println "\nAll effects + I/O demos passed."

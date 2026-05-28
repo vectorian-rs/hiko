@@ -21,9 +21,9 @@ fun fetch url = let
   end
 
 fun fetch_all () = let
-    val a = fetch "http://httpbin.org/get"
-    val b = fetch "http://httpbin.org/ip"
-    val c = fetch "http://httpbin.org/user-agent"
+    val a = fetch "http://127.0.0.1:8000/index.html"
+    val b = fetch "http://127.0.0.1:8000/Std-v0.1.0/package.toml"
+    val c = fetch "http://127.0.0.1:8000/Std-v0.1.0/modules/Result.hml"
   in
     [a, b, c]
   end

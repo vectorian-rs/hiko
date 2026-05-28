@@ -9,7 +9,7 @@ import Std.List
 
 val (status, _, body) = http_get "https://api.github.com/repos/vectorian-rs/hiko/contents/"
 
-fun lookup key fs = case fs of
+fun lookup (key : string) fs = case fs of
       [] => Json.JNull
     | (k, v) :: rest => if k = key then v else lookup key rest
 

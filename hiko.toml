@@ -33,6 +33,9 @@ path = "policies/test-runner.policy.toml"
 [policies.aws-s3-list-buckets]
 path = "policies/aws-s3-list-buckets.policy.toml"
 
+[policies.github-api]
+path = "policies/github-api.policy.toml"
+
 [policies.sre-aws-read-role]
 path = "policies/sre-aws-read-role.policy.toml"
 

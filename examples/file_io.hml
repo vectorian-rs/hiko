@@ -1,8 +1,10 @@
 (* Read, write, and check files *)
 
-val _ = write_file ("/tmp/hiko_example.txt", "Hello from Hiko!\nLine 2\n")
+val path = "target/hiko_example.txt"
 
-val contents = read_file "/tmp/hiko_example.txt"
+val _ = write_file (path, "Hello from Hiko!\nLine 2\n")
+
+val contents = read_file path
 
 val _ = println contents
 
@@ -18,10 +20,10 @@ fun print_lines xs = case xs of
 
 val _ = print_lines lines
 
-val _ = assert (file_exists "/tmp/hiko_example.txt", "file should exist")
+val _ = assert (file_exists path, "file should exist")
 
-val _ = remove_file "/tmp/hiko_example.txt"
+val _ = remove_file path
 
-val _ = assert (not (file_exists "/tmp/hiko_example.txt"), "file should be gone")
+val _ = assert (not (file_exists path), "file should be gone")
 
 val _ = println "file_io test passed"
