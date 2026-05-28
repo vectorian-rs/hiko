@@ -4,6 +4,7 @@ Language semantics, source syntax, public surface conventions, and deliberate di
 
 | File | Status | Summary |
 |---|---|---|
+| [`definition.md`](definition.md) | Draft spec entry point | Short first draft of the future Definition-style specification: what syntax is valid, how it is typed, and what it does. |
 | [`modules.md`](modules.md) | Current source of truth | Module-system status, syntax, semantics, `use`/`import` relationship, and explicit non-goals. |
 | [`effects.md`](effects.md) | Current policy/direction | Algebraic effect mental model, current guarantees/non-guarantees, and proposed direction for capability-oriented effect handling. |
 | [`error-handling.md`](error-handling.md) | Current source of truth | Recoverable error policy, library-owned error types, wrapping, rendering, `Result` combinators, fiber joins, and cancellation. |
@@ -13,6 +14,7 @@ Language semantics, source syntax, public surface conventions, and deliberate di
 
 ## Recommended use
 
+- Looking for the language definition/spec: start with [`definition.md`](definition.md), then fall back to the relevant current source-of-truth doc.
 - Changing public syntax: start with [`hiko.ebnf`](hiko.ebnf), then the relevant semantic doc.
 - Changing module behavior: start with [`modules.md`](modules.md).
 - Changing `effect`, `perform`, `handle`, or `resume`: start with [`effects.md`](effects.md).

@@ -16,6 +16,26 @@ The executable Rust implementation remains the source of truth. Formal specs
 and docs should make intended behavior explicit and catch classes of bugs early,
 but they do not replace tests against the real implementation.
 
+## Definition coverage matrix
+
+[`docs/language/definition.md`](../language/definition.md) is the entry point
+for the future language/runtime Definition. The table below records which
+Definition-level claims currently have verification evidence. "Modeled" means a
+focused formal model exists; "tested" means Rust implementation tests cover the
+claim; "partial" means important gaps remain.
+
+| Definition area | Claim or invariant | Verification evidence | Status | Remaining gap |
+|---|---|---|---|---|
+| Core bytecode execution | Malformed bytecode should be rejected before execution when structural errors are knowable. | Bytecode verifier in [`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs) plus verifier regression tests. | Partial | Does not prove value types, local-slot bounds, local capture bounds, indirect-call arity, data-tag validity, or resource safety. |
+| Effects | `perform` and handler clauses refer to declared effect metadata; invalid `resume` paths fail deterministically. | Type-inference tests, VM effect/resume tests, and verifier checks for `Perform` / `InstallHandler` effect tags. | Partial | No complete static effect-row/type-and-effect discipline yet; arbitrary malformed bytecode can still violate source-level effect protocol invariants. |
+| Process lifecycle | Spawn, await, await-result, cancellation, I/O blocking/completion, parent-exit cleanup, and deadlock transitions follow the intended lifecycle model. | [`ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla), configs, runtime tests, and runtime docs. | Modeled / partial implementation evidence | TLA+ is a design model, not a refinement proof of Rust; Quint lifecycle port lags. |
+| Threaded scheduler | Workers should not duplicate process ownership, stale queue entries should not resurrect invalid work, and waiter/I/O registrations should remain consistent. | [`ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla), runtime tests, scheduler tests. | Partial | Model lags current tombstone, `child_parents`, `pending_cancels`, `AwaitKind::Result`, and stale-waiter cleanup behavior. |
+| Cancellation and async I/O | A cancelled process should not be resurrected by a stale I/O completion. | [`CancelIoRace.tla`](../../specs/tla/CancelIoRace.tla), scenario file, runtime cancellation/I/O tests. | Modeled | More direct refinement tests against threaded runtime interleavings would improve confidence. |
+| `wait_any` | When multiple requested children are ready, selection is deterministic and follows the caller's leftmost child order. | [`WaitAnyLeftmost.tla`](../../specs/tla/WaitAnyLeftmost.tla), scenario file, negative broken model, runtime tests. | Modeled | Continue aligning runtime edge-case tests with the focused model. |
+| Numeric width semantics | Width-specific numeric modules preserve documented conversion, wrapping, saturating, checked, and Float32 boundary behavior. | [`NumericWidthSemantics.tla`](../../specs/tla/NumericWidthSemantics.tla), numeric module tests, [`docs/language/numerics.md`](../language/numerics.md). | Modeled / tested | Float32 model is symbolic; implementation tests remain necessary for concrete host behavior. |
+| Capability and builtin boundaries | Host access happens only through registered, policy-gated builtins. | Builtin/domain tests, config parsing tests, capability-specific unit/regression tests, [`docs/builtins/builtin-domains.md`](../builtins/builtin-domains.md). | Tested / partial | Fuel/host-work accounting and some provider/security boundaries remain incomplete; see #63 and #75. |
+| Resource limits | Fuel, heap, memory, and I/O limits should fail closed and report controlled errors. | VM/builtin resource tests and runtime error tests. | Partial | Builtin and async I/O host-work accounting is not complete. |
+
 ## Bytecode verifier
 
 The bytecode verifier lives in

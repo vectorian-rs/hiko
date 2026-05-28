@@ -9,11 +9,9 @@ Keep the whitepaper narrative-focused. Put formal phrase classes, judgment forms
 
 ## Recommended specification structure
 
-Use a Definition-style document such as `docs/definition.md`, or split it by topic when it grows:
+Use [`../language/definition.md`](../language/definition.md) as the single entry point. Keep it short and accurate first.
 
-- `docs/definition-core.md`
-- `docs/definition-runtime.md`
-- `docs/definition-modules.md`
+Do not point agents at split files until those files actually exist. If the specification grows too large later, split it under `docs/language/` and update the indexes in the same change.
 
 A useful initial outline is:
 

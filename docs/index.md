@@ -8,15 +8,15 @@ Review snapshot: 2026-05-26.
 
 ## Documentation map
 
-| Area | Folder | Status | What we have | Start here |
-|---|---|---|---|---|
-| Project intent and workflow | [`project/`](project/index.md) | Mixed: current standards plus historical bootstrap | Whitepaper, development standard, documentation guidance, early bootstrap, evaluation prompt | [`project/whitepaper.md`](project/whitepaper.md), then [`project/dev-standard.md`](project/dev-standard.md) |
-| Language semantics | [`language/`](language/index.md) | Current policy docs plus grammar artifact | Effects, errors, modules, numeric policy, SML deltas, EBNF grammar | [`language/modules.md`](language/modules.md) or [`language/effects.md`](language/effects.md), depending on task |
-| Runtime and VM architecture | [`architecture/`](architecture/index.md) | Current architecture docs plus one historical note | System snapshot, runtime/process model, VM/runtime seam, Rust memory layout, structured concurrency note | [`architecture/runtime.md`](architecture/runtime.md) and [`architecture/vm.md`](architecture/vm.md) |
-| Builtins and capabilities | [`builtins/`](builtins/index.md) | Current reference plus design proposals | Builtin reference, builtin-domain gating, full config example, Parquet proposal | [`builtins/builtins.md`](builtins/builtins.md), then [`builtins/builtin-domains.md`](builtins/builtin-domains.md) |
-| Verification and testing | [`verification/`](verification/index.md) | Current overview plus older/dater snapshots | Bytecode verifier status, formal spec inventory, TLA+/Quint details, dated grade snapshot | [`verification/verification.md`](verification/verification.md) |
-| Agent prompts | [`prompts/`](prompts/index.md) | Operational prompts | Code simplifier and review prompts | [`prompts/index.md`](prompts/index.md) |
-| Research and experiments | [`rnd/`](rnd/index.md) | Experimental/design-only | Infrastructure-as-code demo | [`rnd/iac-demo.md`](rnd/iac-demo.md) |
+| Area                        | Folder                                   | Status                                                         | What we have                                                                                             | Start here                                                                                                                                                               |
+| --------------------------- | ---------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Project intent and workflow | [`project/`](project/index.md)           | Mixed: current standards plus historical bootstrap             | Whitepaper, development standard, documentation guidance, early bootstrap, evaluation prompt             | [`project/whitepaper.md`](project/whitepaper.md), then [`project/dev-standard.md`](project/dev-standard.md)                                                              |
+| Language semantics          | [`language/`](language/index.md)         | Current policy docs plus draft spec and grammar artifact       | Draft definition, effects, errors, modules, numeric policy, SML deltas, EBNF grammar                    | [`language/definition.md`](language/definition.md), then [`language/modules.md`](language/modules.md) or [`language/effects.md`](language/effects.md), depending on task |
+| Runtime and VM architecture | [`architecture/`](architecture/index.md) | Current architecture docs plus one historical note             | System snapshot, runtime/process model, VM/runtime seam, Rust memory layout, structured concurrency note | [`architecture/runtime.md`](architecture/runtime.md) and [`architecture/vm.md`](architecture/vm.md)                                                                      |
+| Builtins and capabilities   | [`builtins/`](builtins/index.md)         | Current reference plus design proposals                        | Builtin reference, builtin-domain gating, full config example, Parquet proposal                          | [`builtins/builtins.md`](builtins/builtins.md), then [`builtins/builtin-domains.md`](builtins/builtin-domains.md)                                                        |
+| Verification and testing    | [`verification/`](verification/index.md) | Current overview plus older/dater snapshots                    | Bytecode verifier status, formal spec inventory, TLA+/Quint details, dated grade snapshot                | [`verification/verification.md`](verification/verification.md)                                                                                                           |
+| Agent prompts               | [`prompts/`](prompts/index.md)           | Operational prompts                                            | Code simplifier and review prompts                                                                       | [`prompts/index.md`](prompts/index.md)                                                                                                                                   |
+| Research and experiments    | [`rnd/`](rnd/index.md)                   | Experimental/design-only                                       | Infrastructure-as-code demo                                                                              | [`rnd/iac-demo.md`](rnd/iac-demo.md)                                                                                                                                     |
 
 ## Status legend
 
@@ -27,7 +27,7 @@ Review snapshot: 2026-05-26.
 
 ## Recommended reading routes
 
-### Understanding the product
+### Understanding the project
 
 1. [README.md](../README.md)
 2. [project/whitepaper.md](project/whitepaper.md)
@@ -69,7 +69,7 @@ Review snapshot: 2026-05-26.
 
 ## Current documentation gaps
 
-- There is no single formal language definition yet. See [project/how-to-document-hiko.md](project/how-to-document-hiko.md) for the intended definition-style spec structure.
+- There is no complete formal language definition yet. [`language/definition.md`](language/definition.md) is the short first draft and entry point; see [project/how-to-document-hiko.md](project/how-to-document-hiko.md) for the documentation strategy.
 - [architecture/system.md](architecture/system.md) is a useful architecture snapshot, but its exact counts should be treated as non-authoritative.
 - [project/bootstrap.md](project/bootstrap.md), [architecture/structured-concurrency.md](architecture/structured-concurrency.md), and dated verification snapshots are historical context, not primary implementation contracts.
 - [builtins/parquet.md](builtins/parquet.md) and [`rnd/`](rnd/index.md) are proposal/R&D material unless implementation work explicitly says otherwise.
