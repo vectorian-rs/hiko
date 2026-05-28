@@ -1,8 +1,7 @@
-use "../libraries/Std-v0.1.0/modules/Int32.hml"
-
-use "../libraries/Std-v0.1.0/modules/Word32.hml"
-
-use "../libraries/Std-v0.1.0/modules/Float32.hml"
+import Std.Int32
+import Std.Word32
+import Std.Float32
+import Std.Option (Some, None)
 
 val int32_max = Int32.of_int 2147483647
 
@@ -11,12 +10,12 @@ val int32_one = Int32.of_int 1
 val _ = assert_eq (Int32.to_int int32_max, 2147483647, "Int32.to_int max")
 
 val _ = case Int32.checked_of_int 2147483648 of
-    Option.None => ()
-  | Option.Some _ => assert (false, "Int32.checked_of_int rejects overflow")
+    None => ()
+  | Some _ => assert (false, "Int32.checked_of_int rejects overflow")
 
 val _ = case Int32.checked_add int32_one int32_max of
-    Option.None => ()
-  | Option.Some _ => assert (false, "Int32.checked_add detects overflow")
+    None => ()
+  | Some _ => assert (false, "Int32.checked_add detects overflow")
 
 val int32_wrapped = Int32.wrapping_add int32_one int32_max
 
@@ -37,16 +36,16 @@ val word32_wrapped = Word32.add word32_one word32_max
 val _ = assert (Word32.to_word word32_wrapped = 0w0, "Word32.add wraps")
 
 val _ = case Word32.checked_of_word 0w4294967296 of
-    Option.None => ()
-  | Option.Some _ => assert (false, "Word32.checked_of_word rejects overflow")
+    None => ()
+  | Some _ => assert (false, "Word32.checked_of_word rejects overflow")
 
 val _ = case Word32.checked_of_int (~1) of
-    Option.None => ()
-  | Option.Some _ => assert (false, "Word32.checked_of_int rejects negative input")
+    None => ()
+  | Some _ => assert (false, "Word32.checked_of_int rejects negative input")
 
 val _ = case Word32.checked_add word32_one word32_max of
-    Option.None => ()
-  | Option.Some _ => assert (false, "Word32.checked_add detects overflow")
+    None => ()
+  | Some _ => assert (false, "Word32.checked_add detects overflow")
 
 val f32_large = Float32.of_float 16777216.0
 

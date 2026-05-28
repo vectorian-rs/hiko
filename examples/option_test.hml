@@ -1,6 +1,6 @@
-import Std.Option
+import Std.Option (Some, None)
 
-val x = Option.map_option (fn n => n + 1) (Option.Some 41)
+val x = Option.map_option (fn n => n + 1) (Some 41)
 
 val n = Option.get_or x 0
 
@@ -8,4 +8,4 @@ val _ = println (int_to_string n)
 
 val _ = println (if Option.is_some x then "some" else "none")
 
-val _ = println (if Option.is_none Option.None then "none" else "some")
+val _ = println (if Option.is_none None then "none" else "some")

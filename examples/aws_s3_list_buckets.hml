@@ -1,27 +1,18 @@
 import Aws.Config
 import Aws.S3
-import Std.Result
-
-fun print_bucket bucket =
-  case bucket of
-    (name, creation_date, arn) =>
-      println ("name: " ^ name ^ " | created=" ^ creation_date ^ " | arn=" ^ arn)
+import Std.Result (Ok, Err)
 
 fun print_buckets buckets =
   case buckets of
     [] => ()
-  | bucket :: rest =>
-      let
-        val _ = print_bucket bucket
-      in
-        print_buckets rest
+  | (name, created, arn) :: rest =>
+      let val _ = println ("name: " ^ name ^ " | created=" ^ created ^ " | arn=" ^ arn)
+      in print_buckets rest
       end
 
-val config = Config.sso_profile "datadeft-dev"
-
-val result = S3.list_buckets config
+val result = S3.list_buckets (Config.sso_profile "datadeft-dev")
 
 val _ =
   case result of
-    Result.Ok buckets => print_buckets buckets
-  | Result.Err message => println message
+    Ok buckets => print_buckets buckets
+  | Err message => println message
