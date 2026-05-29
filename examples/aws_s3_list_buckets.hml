@@ -1,6 +1,6 @@
 import Aws.Config
 import Aws.S3
-import Std.Result (Ok, Err)
+import Std.Result
 
 fun print_buckets buckets =
   case buckets of
@@ -8,15 +8,15 @@ fun print_buckets buckets =
   | (name, created, arn) :: rest =>
       let
         val _ = println ("name: " ^ name ^ " | created=" ^ created ^ " | arn=" ^ arn)
-      in print_buckets rest
+      in
+        print_buckets rest
       end
 
-val result =
+fun print_error message =
+  println message
+
+val _ =
   Config.sso_profile "datadeft-dev"
   |> S3.client
   |> S3.list_buckets
-
-val _ =
-  case result of
-    Ok buckets => print_buckets buckets
-  | Err message => println message
+  |> Result.fold print_buckets print_error
