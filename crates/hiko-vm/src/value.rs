@@ -27,6 +27,22 @@ pub enum Value {
     Builtin(u16),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HostHandleId(pub u64);
+
+/// Runtime kind tag for an opaque host resource handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostHandleKind {
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfig,
+    #[cfg(feature = "builtin-aws-s3")]
+    AwsS3Client,
+    #[cfg(feature = "builtin-aws-sqs")]
+    AwsSqsClient,
+    #[doc(hidden)]
+    Unsupported,
+}
+
 #[cfg(feature = "builtin-aws-config")]
 pub struct AwsConfigHandle {
     pub auth: AwsConfigAuthMethod,
@@ -46,6 +62,59 @@ impl fmt::Debug for AwsConfigHandle {
 #[derive(Debug)]
 pub enum AwsConfigAuthMethod {
     SsoProfile { profile: String },
+    InstanceProfile,
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+pub struct AwsS3ClientHandle {
+    pub client: Arc<aws_sdk_s3::Client>,
+}
+
+#[cfg(feature = "builtin-aws-s3")]
+impl fmt::Debug for AwsS3ClientHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AwsS3ClientHandle").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "builtin-aws-sqs")]
+pub struct AwsSqsClientHandle {
+    pub client: Arc<aws_sdk_sqs::Client>,
+}
+
+#[cfg(feature = "builtin-aws-sqs")]
+impl fmt::Debug for AwsSqsClientHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AwsSqsClientHandle").finish_non_exhaustive()
+    }
+}
+
+/// VM-owned opaque native resource. Heap values store only a small typed handle;
+/// the native Rust object is kept in the owning heap's host-resource table.
+#[derive(Debug)]
+pub enum HostResource {
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfig(AwsConfigHandle),
+    #[cfg(feature = "builtin-aws-s3")]
+    AwsS3Client(AwsS3ClientHandle),
+    #[cfg(feature = "builtin-aws-sqs")]
+    AwsSqsClient(AwsSqsClientHandle),
+    #[doc(hidden)]
+    Unsupported,
+}
+
+impl HostResource {
+    pub fn kind(&self) -> HostHandleKind {
+        match self {
+            #[cfg(feature = "builtin-aws-config")]
+            HostResource::AwsConfig(_) => HostHandleKind::AwsConfig,
+            #[cfg(feature = "builtin-aws-s3")]
+            HostResource::AwsS3Client(_) => HostHandleKind::AwsS3Client,
+            #[cfg(feature = "builtin-aws-sqs")]
+            HostResource::AwsSqsClient(_) => HostHandleKind::AwsSqsClient,
+            HostResource::Unsupported => HostHandleKind::Unsupported,
+        }
+    }
 }
 
 /// Heap-allocated objects managed by the GC.
@@ -62,9 +131,11 @@ pub enum HeapObject {
         captures: Arc<[Value]>,
     },
     Bytes(Vec<u8>),
-    /// Opaque AWS SDK config handle. The SDK config is loaded by the host/provider layer.
-    #[cfg(feature = "builtin-aws-config")]
-    AwsConfig(AwsConfigHandle),
+    /// Opaque native host resource. The actual Rust object lives in the VM heap's host-resource table.
+    HostHandle {
+        kind: HostHandleKind,
+        id: HostHandleId,
+    },
     /// Opaque RNG state (PCG-XSH-RR-64/32).
     Rng {
         state: u64,
@@ -115,12 +186,8 @@ impl HeapObject {
 
         let base = size_of::<HeapObject>();
         match self {
-            #[cfg(feature = "builtin-aws-config")]
-            HeapObject::AwsConfig(handle) => {
-                let auth_bytes = match &handle.auth {
-                    AwsConfigAuthMethod::SsoProfile { profile } => profile.capacity(),
-                };
-                base + auth_bytes
+            HeapObject::HostHandle { .. } => {
+                base + size_of::<HostHandleKind>() + size_of::<HostHandleId>()
             }
             HeapObject::String(s) => base + s.capacity(),
             HeapObject::Tuple(fields) => base + spilled_value_bytes(fields),
@@ -152,8 +219,7 @@ impl HeapObject {
             }
         };
         match self {
-            #[cfg(feature = "builtin-aws-config")]
-            HeapObject::AwsConfig(_) => {}
+            HeapObject::HostHandle { .. } => {}
             HeapObject::String(_) | HeapObject::Bytes(_) | HeapObject::Rng { .. } => {}
             HeapObject::Tuple(elems) => visit(elems, &mut f),
             HeapObject::Data { fields, .. } => visit(fields, &mut f),

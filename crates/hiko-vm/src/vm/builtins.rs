@@ -49,8 +49,14 @@ impl VM {
             "read_file" => self.read_file_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-config")]
             "aws_config_sso_profile" => self.aws_config_sso_profile_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-aws-config")]
+            "aws_config_instance_profile" => {
+                self.aws_config_instance_profile_builtin_id = Some(idx)
+            }
             #[cfg(feature = "builtin-aws-s3")]
             "aws_s3_list_buckets" => self.aws_s3_list_buckets_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-aws-sqs")]
+            "aws_sqs_list_queues" => self.aws_sqs_list_queues_builtin_id = Some(idx),
             _ => {}
         }
     }
@@ -267,40 +273,69 @@ impl VM {
                                 message: format!("aws_config_sso_profile: {e}"),
                             })?;
                         Some(crate::io_backend::IoRequest::AwsConfigSsoProfile { profile })
+                    } else if self.aws_config_instance_profile_builtin_id == Some(builtin_id) {
+                        self.heap
+                            .check_aws_instance_profile()
+                            .map_err(|e| RuntimeError {
+                                message: format!("aws_config_instance_profile: {e}"),
+                            })?;
+                        Some(crate::io_backend::IoRequest::AwsConfigInstanceProfile)
                     } else {
                         #[cfg(feature = "builtin-aws-s3")]
                         {
                             if self.aws_s3_list_buckets_builtin_id == Some(builtin_id) {
-                                let config = self.stack[callee_pos + 1];
-                                let handle = match config {
-                                    Value::Heap(r) => match self.heap.get(r).map_err(|e| {
-                                        RuntimeError {
-                                            message: format!("aws_s3_list_buckets: {e}"),
-                                        }
-                                    })? {
-                                        crate::value::HeapObject::AwsConfig(handle) => handle,
-                                        _ => {
-                                            return Err(RuntimeError {
-                                                message: "aws_s3_list_buckets: expected aws_config"
-                                                    .into(),
-                                            });
-                                        }
-                                    },
-                                    _ => {
-                                        return Err(RuntimeError {
-                                            message: "aws_s3_list_buckets: expected aws_config"
-                                                .into(),
-                                        });
-                                    }
-                                };
+                                let client = self.stack[callee_pos + 1];
+                                let handle = self
+                                    .heap
+                                    .aws_s3_client_handle_from_value(client, "aws_s3_list_buckets")
+                                    .map_err(|message| RuntimeError { message })?;
                                 Some(crate::io_backend::IoRequest::AwsS3ListBuckets {
-                                    sdk_config: handle.sdk_config.clone(),
+                                    client: handle.client.clone(),
+                                })
+                            } else {
+                                #[cfg(feature = "builtin-aws-sqs")]
+                                {
+                                    if self.aws_sqs_list_queues_builtin_id == Some(builtin_id) {
+                                        let client = self.stack[callee_pos + 1];
+                                        let handle = self
+                                            .heap
+                                            .aws_sqs_client_handle_from_value(
+                                                client,
+                                                "aws_sqs_list_queues",
+                                            )
+                                            .map_err(|message| RuntimeError { message })?;
+                                        Some(crate::io_backend::IoRequest::AwsSqsListQueues {
+                                            client: handle.client.clone(),
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                }
+                                #[cfg(not(feature = "builtin-aws-sqs"))]
+                                {
+                                    None
+                                }
+                            }
+                        }
+                        #[cfg(all(not(feature = "builtin-aws-s3"), feature = "builtin-aws-sqs"))]
+                        {
+                            if self.aws_sqs_list_queues_builtin_id == Some(builtin_id) {
+                                let client = self.stack[callee_pos + 1];
+                                let handle = self
+                                    .heap
+                                    .aws_sqs_client_handle_from_value(client, "aws_sqs_list_queues")
+                                    .map_err(|message| RuntimeError { message })?;
+                                Some(crate::io_backend::IoRequest::AwsSqsListQueues {
+                                    client: handle.client.clone(),
                                 })
                             } else {
                                 None
                             }
                         }
-                        #[cfg(not(feature = "builtin-aws-s3"))]
+                        #[cfg(all(
+                            not(feature = "builtin-aws-s3"),
+                            not(feature = "builtin-aws-sqs")
+                        ))]
                         {
                             None
                         }

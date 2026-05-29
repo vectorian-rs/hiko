@@ -224,8 +224,15 @@ impl VM {
                     }
                 }
                 Ok(HeapObject::Bytes(b)) => format!("<bytes:{}>", b.len()),
-                #[cfg(feature = "builtin-aws-config")]
-                Ok(HeapObject::AwsConfig(_)) => "<aws-config>".to_string(),
+                Ok(HeapObject::HostHandle { kind, .. }) => match kind {
+                    #[cfg(feature = "builtin-aws-config")]
+                    crate::value::HostHandleKind::AwsConfig => "<aws-config>".to_string(),
+                    #[cfg(feature = "builtin-aws-s3")]
+                    crate::value::HostHandleKind::AwsS3Client => "<aws-s3-client>".to_string(),
+                    #[cfg(feature = "builtin-aws-sqs")]
+                    crate::value::HostHandleKind::AwsSqsClient => "<aws-sqs-client>".to_string(),
+                    crate::value::HostHandleKind::Unsupported => "<host-handle>".to_string(),
+                },
                 Ok(HeapObject::Rng { .. }) => "<rng>".to_string(),
                 Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),
                 Ok(HeapObject::Continuation(_)) => "<continuation>".to_string(),

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::heap::{Heap, HeapLimitExceeded};
 #[cfg(feature = "builtin-aws-config")]
-use crate::value::{AwsConfigAuthMethod, AwsConfigHandle};
+use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
 use crate::value::{GcRef, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 
@@ -27,6 +27,10 @@ pub enum SendableValue {
     #[cfg(feature = "builtin-aws-config")]
     AwsConfigSsoProfile {
         profile: Arc<str>,
+        sdk_config: Arc<aws_config::SdkConfig>,
+    },
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfigInstanceProfile {
         sdk_config: Arc<aws_config::SdkConfig>,
     },
     Tuple(Vec<SendableValue>),
@@ -52,6 +56,8 @@ impl SendableValue {
             SendableValue::Bytes(bytes) => bytes.len(),
             #[cfg(feature = "builtin-aws-config")]
             SendableValue::AwsConfigSsoProfile { profile, .. } => profile.len(),
+            #[cfg(feature = "builtin-aws-config")]
+            SendableValue::AwsConfigInstanceProfile { .. } => 0,
             SendableValue::Tuple(fields) | SendableValue::List(fields) => {
                 fields.iter().map(Self::estimated_bytes).sum()
             }
@@ -108,8 +114,9 @@ fn serialize_heap(r: GcRef, heap: &Heap) -> Result<SendableValue, String> {
         HeapObject::Closure { .. } => Err("cannot send closures across processes".into()),
         HeapObject::Continuation(_) => Err("cannot send continuations across processes".into()),
         HeapObject::Rng { .. } => Err("cannot send Rng state across processes".into()),
-        #[cfg(feature = "builtin-aws-config")]
-        HeapObject::AwsConfig(_) => Err("cannot send AWS config handles across processes".into()),
+        HeapObject::HostHandle { .. } => {
+            Err("cannot send host resource handles across processes".into())
+        }
     }
 }
 
@@ -153,14 +160,19 @@ pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLim
         SendableValue::AwsConfigSsoProfile {
             profile,
             sdk_config,
-        } => Ok(Value::Heap(heap.alloc(HeapObject::AwsConfig(
-            AwsConfigHandle {
-                auth: AwsConfigAuthMethod::SsoProfile {
-                    profile: profile.to_string(),
-                },
-                sdk_config,
+        } => heap.alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+            auth: AwsConfigAuthMethod::SsoProfile {
+                profile: profile.to_string(),
             },
-        ))?)),
+            sdk_config,
+        })),
+        #[cfg(feature = "builtin-aws-config")]
+        SendableValue::AwsConfigInstanceProfile { sdk_config } => {
+            heap.alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config,
+            }))
+        }
         SendableValue::Tuple(fields) => {
             let mut values = smallvec::SmallVec::<[Value; 2]>::with_capacity(fields.len());
             for v in fields {
@@ -479,6 +491,23 @@ mod tests {
         let result = serialize(rng, &heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Rng"));
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    #[test]
+    fn test_host_handle_rejected() {
+        use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
+
+        let mut heap = Heap::new();
+        let handle = heap
+            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+            }))
+            .unwrap();
+        let result = serialize(handle, &heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("host resource"));
     }
 
     #[test]

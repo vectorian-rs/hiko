@@ -18,6 +18,8 @@ const UPPERCASE_PRIMITIVE_ALIASES: &[(&str, &str)] = &[
     ("Bytes", "bytes"),
     ("Rng", "rng"),
     ("AwsConfig", "aws_config"),
+    ("AwsS3Client", "aws_s3_client"),
+    ("AwsSqsClient", "aws_sqs_client"),
     ("Pid", "pid"),
 ];
 
@@ -158,6 +160,8 @@ impl<'a> BuiltinTypeParser<'a> {
             "bytes" => Ok(Type::bytes()),
             "rng" => Ok(Type::rng()),
             "aws_config" => Ok(Type::aws_config()),
+            "aws_s3_client" => Ok(Type::aws_s3_client()),
+            "aws_sqs_client" => Ok(Type::aws_sqs_client()),
             "pid" => Ok(Type::pid()),
             other => Err(format!("unknown type constructor '{other}")),
         }
@@ -1224,6 +1228,8 @@ impl InferCtx {
                     "bytes" => return Ok(Type::bytes()),
                     "rng" => return Ok(Type::rng()),
                     "aws_config" => return Ok(Type::aws_config()),
+                    "aws_s3_client" => return Ok(Type::aws_s3_client()),
+                    "aws_sqs_client" => return Ok(Type::aws_sqs_client()),
                     "pid" => return Ok(Type::pid()),
                     _ => {}
                 }

@@ -51,11 +51,15 @@ pub enum IoRequest {
     /// Load an AWS SDK config using an allowed SSO profile.
     #[cfg(feature = "builtin-aws-config")]
     AwsConfigSsoProfile { profile: String },
-    /// List S3 buckets using an opaque AWS SDK config handle.
+    /// Load an AWS SDK config using the ambient provider chain / instance metadata.
+    #[cfg(feature = "builtin-aws-config")]
+    AwsConfigInstanceProfile,
+    /// List S3 buckets using an opaque reusable AWS S3 client handle.
     #[cfg(feature = "builtin-aws-s3")]
-    AwsS3ListBuckets {
-        sdk_config: Arc<aws_config::SdkConfig>,
-    },
+    AwsS3ListBuckets { client: Arc<aws_sdk_s3::Client> },
+    /// List SQS queue URLs using an opaque reusable AWS SQS client handle.
+    #[cfg(feature = "builtin-aws-sqs")]
+    AwsSqsListQueues { client: Arc<aws_sdk_sqs::Client> },
 }
 
 /// Result of a completed I/O operation.
@@ -144,9 +148,23 @@ impl IoBackend for MockIoBackend {
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
             }
+            #[cfg(feature = "builtin-aws-config")]
+            IoRequest::AwsConfigInstanceProfile => {
+                let value = SendableValue::AwsConfigInstanceProfile {
+                    sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+                };
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
             #[cfg(feature = "builtin-aws-s3")]
             IoRequest::AwsS3ListBuckets { .. } => {
                 let value = list_buckets_success(empty_list_buckets_output());
+                let io_bytes = value.estimated_bytes() as u64;
+                IoResult::Ok { value, io_bytes }
+            }
+            #[cfg(feature = "builtin-aws-sqs")]
+            IoRequest::AwsSqsListQueues { .. } => {
+                let value = list_queues_success(SendableValue::List(Vec::new()));
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
             }
@@ -294,11 +312,30 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             },
             Err(e) => IoResult::Err(e),
         },
+        #[cfg(feature = "builtin-aws-config")]
+        IoRequest::AwsConfigInstanceProfile => match aio_aws_config_instance_profile() {
+            Ok(value) => IoResult::Ok {
+                io_bytes: value.estimated_bytes() as u64,
+                value,
+            },
+            Err(e) => IoResult::Err(e),
+        },
         #[cfg(feature = "builtin-aws-s3")]
-        IoRequest::AwsS3ListBuckets { sdk_config } => {
-            let value = match aio_aws_s3_list_buckets(sdk_config) {
+        IoRequest::AwsS3ListBuckets { client } => {
+            let value = match aio_aws_s3_list_buckets(client) {
                 Ok(value) => list_buckets_success(value),
                 Err(e) => list_buckets_error(e),
+            };
+            IoResult::Ok {
+                io_bytes: value.estimated_bytes() as u64,
+                value,
+            }
+        }
+        #[cfg(feature = "builtin-aws-sqs")]
+        IoRequest::AwsSqsListQueues { client } => {
+            let value = match aio_aws_sqs_list_queues(client) {
+                Ok(value) => list_queues_success(value),
+                Err(e) => list_queues_error(e),
             };
             IoResult::Ok {
                 io_bytes: value.estimated_bytes() as u64,
@@ -371,7 +408,29 @@ fn list_buckets_error(message: String) -> SendableValue {
     ])
 }
 
-#[cfg(any(feature = "builtin-aws-config", feature = "builtin-aws-s3"))]
+#[cfg(feature = "builtin-aws-sqs")]
+fn list_queues_success(output: SendableValue) -> SendableValue {
+    SendableValue::Tuple(vec![
+        SendableValue::Bool(true),
+        output,
+        SendableValue::String(Arc::from("")),
+    ])
+}
+
+#[cfg(feature = "builtin-aws-sqs")]
+fn list_queues_error(message: String) -> SendableValue {
+    SendableValue::Tuple(vec![
+        SendableValue::Bool(false),
+        SendableValue::List(Vec::new()),
+        SendableValue::String(Arc::from(message)),
+    ])
+}
+
+#[cfg(any(
+    feature = "builtin-aws-config",
+    feature = "builtin-aws-s3",
+    feature = "builtin-aws-sqs"
+))]
 fn format_aws_error<E>(context: &str, err: &E) -> String
 where
     E: std::error::Error + std::fmt::Debug + std::fmt::Display,
@@ -410,29 +469,57 @@ fn aio_aws_config_sso_profile(profile: &str) -> Result<SendableValue, String> {
     })
 }
 
+#[cfg(feature = "builtin-aws-config")]
+fn aio_aws_config_instance_profile() -> Result<SendableValue, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("aws_config_instance_profile: tokio runtime: {e}"))?;
+    runtime.block_on(async {
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await;
+        Ok(SendableValue::AwsConfigInstanceProfile {
+            sdk_config: Arc::new(sdk_config),
+        })
+    })
+}
+
 #[cfg(feature = "builtin-aws-s3")]
-fn aio_aws_s3_list_buckets(
-    sdk_config: Arc<aws_config::SdkConfig>,
-) -> Result<SendableValue, String> {
+fn aio_aws_s3_list_buckets(client: Arc<aws_sdk_s3::Client>) -> Result<SendableValue, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("aws_s3_list_buckets: tokio runtime: {e}"))?;
     runtime.block_on(async {
-        let client = if sdk_config.region().is_some() {
-            aws_sdk_s3::Client::new(&sdk_config)
-        } else {
-            let config = aws_sdk_s3::config::Builder::from(sdk_config.as_ref())
-                .region(aws_sdk_s3::config::Region::new("us-east-1"))
-                .build();
-            aws_sdk_s3::Client::from_conf(config)
-        };
         let output = client
             .list_buckets()
             .send()
             .await
             .map_err(|e| format_aws_error("aws_s3_list_buckets", &e))?;
         Ok(sendable_list_buckets_output(&output))
+    })
+}
+
+#[cfg(feature = "builtin-aws-sqs")]
+fn aio_aws_sqs_list_queues(client: Arc<aws_sdk_sqs::Client>) -> Result<SendableValue, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("aws_sqs_list_queues: tokio runtime: {e}"))?;
+    runtime.block_on(async {
+        let output = client
+            .list_queues()
+            .send()
+            .await
+            .map_err(|e| format_aws_error("aws_sqs_list_queues", &e))?;
+        Ok(SendableValue::List(
+            output
+                .queue_urls()
+                .iter()
+                .map(|url| SendableValue::String(Arc::from(url.as_str())))
+                .collect(),
+        ))
     })
 }
 

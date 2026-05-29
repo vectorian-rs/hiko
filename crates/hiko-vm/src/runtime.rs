@@ -878,8 +878,9 @@ mod tests {
             std::fs::read_to_string(&list_module_path).expect("read Std.List source");
         let list_module_hash = blake3_hex(list_module_source.as_bytes());
         let (list_url, server) =
-            spawn_single_response_server("/modules/List.hml", list_module_source);
+            spawn_single_response_server("/Std-v0.1.0/modules/List.hml", list_module_source);
         let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
+        let registry_url = base_url.trim_end_matches("/Std-v0.1.0");
 
         let project_dir = unique_temp_dir("spawn-stress-example");
         let entry_path = project_dir.join(
@@ -887,6 +888,13 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .expect("example filename"),
         );
+        std::fs::write(
+            project_dir.join("hiko.toml"),
+            format!(
+                "[registries.local]\nurl = \"{registry_url}\"\n\n[dependencies]\nStd = {{ version = \"0.1.0\", registry = \"local\" }}\n"
+            ),
+        )
+        .expect("write project manifest");
         std::fs::write(
             project_dir.join("hiko.lock.toml"),
             format!(

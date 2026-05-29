@@ -4,14 +4,14 @@ const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
     BuiltinMeta {
-        name: "aws_config_sso_profile",
-        capability_path: Some("capabilities.aws.config.sso_profile"),
+        name: "aws_sqs_client",
+        capability_path: Some("capabilities.aws.sqs.client"),
         in_core_default: false,
         surface: PUBLIC,
     },
     BuiltinMeta {
-        name: "aws_config_instance_profile",
-        capability_path: Some("capabilities.aws.config.instance_profile"),
+        name: "aws_sqs_list_queues",
+        capability_path: Some("capabilities.aws.sqs.list_queues"),
         in_core_default: false,
         surface: PUBLIC,
     },

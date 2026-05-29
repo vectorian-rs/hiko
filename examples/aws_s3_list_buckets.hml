@@ -10,7 +10,9 @@ fun print_buckets buckets =
       in print_buckets rest
       end
 
-val result = S3.list_buckets (Config.sso_profile "datadeft-dev")
+val cfg = Config.sso_profile "datadeft-dev"
+val s3 = S3.client cfg
+val result = S3.list_buckets s3
 
 val _ =
   case result of

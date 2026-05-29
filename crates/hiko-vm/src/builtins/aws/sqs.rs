@@ -1,11 +1,11 @@
 use super::{BuiltinFn, Heap, Value};
-use crate::value::{AwsS3ClientHandle, HostResource};
+use crate::value::{AwsSqsClientHandle, HostResource};
 use std::sync::Arc;
 
 pub(super) fn entries() -> Vec<(&'static str, BuiltinFn)> {
     [
-        ("aws_s3_client", client as BuiltinFn),
-        ("aws_s3_list_buckets", list_buckets as BuiltinFn),
+        ("aws_sqs_client", client as BuiltinFn),
+        ("aws_sqs_list_queues", list_queues as BuiltinFn),
     ]
     .to_vec()
 }
@@ -14,24 +14,24 @@ pub(super) fn client(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let config_value = args
         .first()
         .copied()
-        .ok_or_else(|| "aws_s3_client: expected aws_config".to_string())?;
-    let config = heap.aws_config_handle_from_value(config_value, "aws_s3_client")?;
+        .ok_or_else(|| "aws_sqs_client: expected aws_config".to_string())?;
+    let config = heap.aws_config_handle_from_value(config_value, "aws_sqs_client")?;
     let client = if config.sdk_config.region().is_some() {
-        aws_sdk_s3::Client::new(&config.sdk_config)
+        aws_sdk_sqs::Client::new(&config.sdk_config)
     } else {
-        let conf = aws_sdk_s3::config::Builder::from(config.sdk_config.as_ref())
-            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+        let conf = aws_sdk_sqs::config::Builder::from(config.sdk_config.as_ref())
+            .region(aws_sdk_sqs::config::Region::new("us-east-1"))
             .build();
-        aws_sdk_s3::Client::from_conf(conf)
+        aws_sdk_sqs::Client::from_conf(conf)
     };
-    heap.alloc_host_resource(HostResource::AwsS3Client(AwsS3ClientHandle {
+    heap.alloc_host_resource(HostResource::AwsSqsClient(AwsSqsClientHandle {
         client: Arc::new(client),
     }))
     .map_err(|e| e.to_string())
 }
 
-pub(super) fn list_buckets(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
-    Err("aws_s3_list_buckets: requires async I/O runtime".into())
+pub(super) fn list_queues(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Err("aws_sqs_list_queues: requires async I/O runtime".into())
 }
 
 #[cfg(test)]
@@ -49,12 +49,12 @@ mod tests {
             }))
             .unwrap();
 
-        let s3 = client(&[cfg], &mut heap).unwrap();
+        let sqs = client(&[cfg], &mut heap).unwrap();
         let id = heap
-            .host_handle_from_value(s3, HostHandleKind::AwsS3Client, "aws_s3_client", "test")
+            .host_handle_from_value(sqs, HostHandleKind::AwsSqsClient, "aws_sqs_client", "test")
             .unwrap();
         assert!(
-            heap.get_host_resource(id, HostHandleKind::AwsS3Client, "aws_s3_client", "test")
+            heap.get_host_resource(id, HostHandleKind::AwsSqsClient, "aws_sqs_client", "test")
                 .is_ok()
         );
     }
@@ -68,9 +68,9 @@ mod tests {
                 sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
             }))
             .unwrap();
-        let s3 = client(&[cfg], &mut heap).unwrap();
+        let sqs = client(&[cfg], &mut heap).unwrap();
 
-        let err = client(&[s3], &mut heap).unwrap_err();
+        let err = client(&[sqs], &mut heap).unwrap_err();
         assert!(err.contains("expected aws_config"), "{err}");
     }
 }

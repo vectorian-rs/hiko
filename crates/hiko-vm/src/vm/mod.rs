@@ -138,8 +138,12 @@ pub struct VM {
     read_file_builtin_id: Option<u16>,
     #[cfg(feature = "builtin-aws-config")]
     aws_config_sso_profile_builtin_id: Option<u16>,
+    #[cfg(feature = "builtin-aws-config")]
+    aws_config_instance_profile_builtin_id: Option<u16>,
     #[cfg(feature = "builtin-aws-s3")]
     aws_s3_list_buckets_builtin_id: Option<u16>,
+    #[cfg(feature = "builtin-aws-sqs")]
+    aws_sqs_list_queues_builtin_id: Option<u16>,
     /// When true, I/O builtins suspend via `RuntimeRequest::Io` instead of blocking.
     async_io: bool,
     /// Pending runtime request from a process/runtime builtin.
@@ -280,8 +284,12 @@ impl VM {
             read_file_builtin_id: None,
             #[cfg(feature = "builtin-aws-config")]
             aws_config_sso_profile_builtin_id: None,
+            #[cfg(feature = "builtin-aws-config")]
+            aws_config_instance_profile_builtin_id: None,
             #[cfg(feature = "builtin-aws-s3")]
             aws_s3_list_buckets_builtin_id: None,
+            #[cfg(feature = "builtin-aws-sqs")]
+            aws_sqs_list_queues_builtin_id: None,
             async_io: false,
             pending_runtime_request: None,
             blocked_continuation: None,
@@ -328,6 +336,11 @@ impl VM {
     #[cfg(feature = "builtin-aws-config")]
     pub fn set_aws_sso_profiles(&mut self, profiles: Vec<String>) {
         self.heap.set_aws_sso_profiles(profiles);
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn set_aws_allow_instance_profile(&mut self, allowed: bool) {
+        self.heap.set_aws_allow_instance_profile(allowed);
     }
 
     /// Check if a filesystem path is within the allowed root.

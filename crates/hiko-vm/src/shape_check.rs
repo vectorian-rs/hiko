@@ -24,6 +24,8 @@ pub enum Shape {
     Pid,
     Rng,
     AwsConfig,
+    AwsS3Client,
+    AwsSqsClient,
     /// Type variable — matches anything (polymorphic builtins like json_parse).
     Var,
     /// Tuple with N fields of specific shapes.
@@ -42,7 +44,7 @@ pub struct ReturnType {
 
 /// Parse the return type from a full signature string.
 /// Example: "string -> int" returns Shape::Int.
-/// Example: "aws_config -> bool * (string * string * string) list * string" returns a tuple shape.
+/// Example: "aws_s3_client -> bool * (string * string * string) list * string" returns a tuple shape.
 pub fn parse_return_type(sig: &str) -> Result<ReturnType, String> {
     // Find the last -> to isolate the return type
     let return_str = if let Some(idx) = sig.rfind("->") {
@@ -146,6 +148,8 @@ impl ShapeParser {
             "pid" => Ok(Shape::Pid),
             "rng" => Ok(Shape::Rng),
             "aws_config" => Ok(Shape::AwsConfig),
+            "aws_s3_client" => Ok(Shape::AwsS3Client),
+            "aws_sqs_client" => Ok(Shape::AwsSqsClient),
             other => Err(format!("unknown type '{}'", other)),
         }
     }
@@ -256,7 +260,8 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
         Shape::AwsConfig => {
             #[cfg(feature = "builtin-aws-config")]
             match value {
-                SendableValue::AwsConfigSsoProfile { .. } => Ok(()),
+                SendableValue::AwsConfigSsoProfile { .. }
+                | SendableValue::AwsConfigInstanceProfile { .. } => Ok(()),
                 _ => Err(format!("expected aws_config, got {}", value_kind(value))),
             }
             #[cfg(not(feature = "builtin-aws-config"))]
@@ -265,6 +270,8 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
                 Err("aws_config not available in this build".into())
             }
         }
+        Shape::AwsS3Client => Err("aws_s3_client cannot cross process boundary".into()),
+        Shape::AwsSqsClient => Err("aws_sqs_client cannot cross process boundary".into()),
         Shape::Tuple(expected_elems) => match value {
             SendableValue::Tuple(fields) => {
                 if fields.len() != expected_elems.len() {
@@ -332,6 +339,8 @@ fn value_kind(value: &SendableValue) -> &'static str {
         SendableValue::Bytes(_) => "bytes",
         #[cfg(feature = "builtin-aws-config")]
         SendableValue::AwsConfigSsoProfile { .. } => "aws_config",
+        #[cfg(feature = "builtin-aws-config")]
+        SendableValue::AwsConfigInstanceProfile { .. } => "aws_config",
         SendableValue::Tuple(_) => "tuple",
         SendableValue::List(_) => "list",
         SendableValue::Data { .. } => "data",
@@ -396,8 +405,9 @@ mod tests {
 
     #[test]
     fn parse_aws_s3_signature() {
-        let rt = parse_return_type("aws_config -> bool * (string * string * string) list * string")
-            .unwrap();
+        let rt =
+            parse_return_type("aws_s3_client -> bool * (string * string * string) list * string")
+                .unwrap();
         assert_eq!(
             rt.shape,
             Shape::Tuple(vec![
@@ -597,7 +607,7 @@ mod tests {
     fn aws_s3_bucket_shape_no_options() {
         // The current (fixed) return shape for aws_s3_list_buckets
         let shape =
-            parse_return_type("aws_config -> bool * (string * string * string) list * string")
+            parse_return_type("aws_s3_client -> bool * (string * string * string) list * string")
                 .unwrap()
                 .shape;
 
@@ -691,9 +701,16 @@ mod tests {
             ("epoch", "unit -> int"),
             ("sleep", "int -> unit"),
             ("aws_config_sso_profile", "string -> aws_config"),
+            ("aws_config_instance_profile", "unit -> aws_config"),
+            ("aws_s3_client", "aws_config -> aws_s3_client"),
             (
                 "aws_s3_list_buckets",
-                "aws_config -> bool * (string * string * string) list * string",
+                "aws_s3_client -> bool * (string * string * string) list * string",
+            ),
+            ("aws_sqs_client", "aws_config -> aws_sqs_client"),
+            (
+                "aws_sqs_list_queues",
+                "aws_sqs_client -> bool * string list * string",
             ),
             ("spawn", "(unit -> 'a) -> pid"),
             ("await_process", "pid -> 'a"),

@@ -11,11 +11,19 @@ pub struct InternalBuiltinModule {
 
 const AWS_CONFIG_SOURCE: &str = r#"structure BuiltinAwsConfig = struct
   val sso_profile_raw = aws_config_sso_profile
+  val instance_profile_raw = aws_config_instance_profile
 end
 "#;
 
 const AWS_S3_SOURCE: &str = r#"structure BuiltinAwsS3 = struct
+  val client_raw = aws_s3_client
   val list_buckets_raw = aws_s3_list_buckets
+end
+"#;
+
+const AWS_SQS_SOURCE: &str = r#"structure BuiltinAwsSqs = struct
+  val client_raw = aws_sqs_client
+  val list_queues_raw = aws_sqs_list_queues
 end
 "#;
 
@@ -199,6 +207,13 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-aws-s3",
         enabled: cfg!(feature = "builtin-aws-s3"),
         source: AWS_S3_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "AwsSqs",
+        import_name: "__Builtin.AwsSqs",
+        feature_name: "builtin-aws-sqs",
+        enabled: cfg!(feature = "builtin-aws-sqs"),
+        source: AWS_SQS_SOURCE,
     },
     InternalBuiltinModule {
         leaf_name: "Filesystem",

@@ -2,6 +2,8 @@
 use crate::builder::AwsConfigPolicy as VmAwsConfigPolicy;
 #[cfg(feature = "builtin-aws-s3")]
 use crate::builder::AwsS3Policy as VmAwsS3Policy;
+#[cfg(feature = "builtin-aws-sqs")]
+use crate::builder::AwsSqsPolicy as VmAwsSqsPolicy;
 #[cfg(feature = "builtin-exec")]
 use crate::builder::ExecPolicy as VmExecPolicy;
 use crate::builder::VMBuilder;
@@ -513,6 +515,9 @@ pub struct AwsCapabilities {
     #[cfg(feature = "builtin-aws-s3")]
     #[serde(default)]
     s3: AwsS3Capabilities,
+    #[cfg(feature = "builtin-aws-sqs")]
+    #[serde(default)]
+    sqs: AwsSqsCapabilities,
 }
 
 #[cfg(feature = "builtin-aws-config")]
@@ -520,6 +525,7 @@ pub struct AwsCapabilities {
 #[serde(deny_unknown_fields)]
 struct AwsConfigCapabilities {
     sso_profile: Option<AwsSsoProfileLeaf>,
+    instance_profile: Option<EnabledLeaf>,
 }
 
 #[cfg(feature = "builtin-aws-s3")]
@@ -529,12 +535,21 @@ struct AwsS3Capabilities {
     list_buckets: Option<EnabledLeaf>,
 }
 
+#[cfg(feature = "builtin-aws-sqs")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AwsSqsCapabilities {
+    list_queues: Option<EnabledLeaf>,
+}
+
 #[cfg(feature = "builtin-aws-config")]
 impl AwsCapabilities {
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
         let builder = self.config.apply(builder);
         #[cfg(feature = "builtin-aws-s3")]
         let builder = self.s3.apply(builder);
+        #[cfg(feature = "builtin-aws-sqs")]
+        let builder = self.sqs.apply(builder);
         builder
     }
 
@@ -542,37 +557,59 @@ impl AwsCapabilities {
         self.config.emit(out);
         #[cfg(feature = "builtin-aws-s3")]
         self.s3.emit(out);
+        #[cfg(feature = "builtin-aws-sqs")]
+        self.sqs.emit(out);
     }
 
     fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
         self.config.extend_enabled(out);
         #[cfg(feature = "builtin-aws-s3")]
         self.s3.extend_enabled(out);
+        #[cfg(feature = "builtin-aws-sqs")]
+        self.sqs.extend_enabled(out);
     }
 }
 
 #[cfg(feature = "builtin-aws-config")]
 impl AwsConfigCapabilities {
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        if let Some(leaf) = &self.sso_profile
-            && leaf.enabled
-        {
+        let sso_enabled = self.sso_profile.as_ref().is_some_and(|leaf| leaf.enabled);
+        let instance_enabled = self
+            .instance_profile
+            .as_ref()
+            .is_some_and(|leaf| leaf.enabled);
+        if sso_enabled || instance_enabled {
             return builder.with_aws_config(VmAwsConfigPolicy {
-                allowed_sso_profiles: leaf.allowed_profiles.clone(),
+                allowed_sso_profiles: self
+                    .sso_profile
+                    .as_ref()
+                    .map(|leaf| leaf.allowed_profiles.clone())
+                    .unwrap_or_default(),
+                allow_instance_profile: instance_enabled,
             });
         }
         builder
     }
 
     fn emit(&self, out: &mut String) {
-        if let Some(leaf) = &self.sso_profile
-            && leaf.enabled
-        {
+        let sso_enabled = self.sso_profile.as_ref().is_some_and(|leaf| leaf.enabled);
+        let instance_enabled = self
+            .instance_profile
+            .as_ref()
+            .is_some_and(|leaf| leaf.enabled);
+        if sso_enabled || instance_enabled {
+            let allowed_profiles = self
+                .sso_profile
+                .as_ref()
+                .map(|leaf| leaf.allowed_profiles.clone())
+                .unwrap_or_default();
             out.push_str(&format!(
                 "            .with_aws_config(hiko_vm::builder::AwsConfigPolicy {{\n\
                  \x20               allowed_sso_profiles: vec![{}],\n\
+                 \x20               allow_instance_profile: {},\n\
                  \x20           }})\n",
-                rust_string_vec(&leaf.allowed_profiles)
+                rust_string_vec(&allowed_profiles),
+                instance_enabled
             ));
         }
     }
@@ -582,6 +619,11 @@ impl AwsConfigCapabilities {
             && leaf.enabled
         {
             out.insert("aws_config_sso_profile");
+        }
+        if let Some(leaf) = &self.instance_profile
+            && leaf.enabled
+        {
+            out.insert("aws_config_instance_profile");
         }
     }
 }
@@ -615,7 +657,43 @@ impl AwsS3Capabilities {
         if let Some(leaf) = &self.list_buckets
             && leaf.enabled
         {
+            out.insert("aws_s3_client");
             out.insert("aws_s3_list_buckets");
+        }
+    }
+}
+
+#[cfg(feature = "builtin-aws-sqs")]
+impl AwsSqsCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        if let Some(leaf) = &self.list_queues
+            && leaf.enabled
+        {
+            return builder.with_aws_sqs(VmAwsSqsPolicy {
+                allow_list_queues: true,
+            });
+        }
+        builder
+    }
+
+    fn emit(&self, out: &mut String) {
+        if let Some(leaf) = &self.list_queues
+            && leaf.enabled
+        {
+            out.push_str(
+                "            .with_aws_sqs(hiko_vm::builder::AwsSqsPolicy {\n\
+                 \x20               allow_list_queues: true,\n\
+                 \x20           })\n",
+            );
+        }
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        if let Some(leaf) = &self.list_queues
+            && leaf.enabled
+        {
+            out.insert("aws_sqs_client");
+            out.insert("aws_sqs_list_queues");
         }
     }
 }
@@ -636,6 +714,11 @@ impl AwsCapabilities {
             .sso_profile
             .as_ref()
             .is_some_and(|leaf| leaf.enabled)
+            || self
+                .config
+                .instance_profile
+                .as_ref()
+                .is_some_and(|leaf| leaf.enabled)
             || {
                 #[cfg(feature = "builtin-aws-s3")]
                 {
@@ -645,6 +728,19 @@ impl AwsCapabilities {
                         .is_some_and(|leaf| leaf.enabled)
                 }
                 #[cfg(not(feature = "builtin-aws-s3"))]
+                {
+                    false
+                }
+            }
+            || {
+                #[cfg(feature = "builtin-aws-sqs")]
+                {
+                    self.sqs
+                        .list_queues
+                        .as_ref()
+                        .is_some_and(|leaf| leaf.enabled)
+                }
+                #[cfg(not(feature = "builtin-aws-sqs"))]
                 {
                     false
                 }

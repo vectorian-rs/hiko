@@ -13,30 +13,33 @@
       <p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p>
       <section class="panel">
         <h2>Use</h2>
-        <pre
-          class="code-block"
-        ><code><span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">Config</span></code></pre>
+        <pre class="code-block"><code>import Aws.Config</code></pre>
         <p class="meta">
           Raw source: <a href="./Config.hml">Config.hml</a><br />BLAKE3:
-          <code title="blake3:065f54858c89e5fff82e61d4e8147026fb165711123e213cbfc6242c38bb8f3b">blake3:065f5485...38bb8f3b</code>
+          <code title="blake3:37f96ff4e67575d565783bc65ea705dbd9e7e88632482011d7f6de60b8019b81">blake3:37f96ff4...b8019b81</code>
         </p>
       </section>
       <section class="panel">
         <h2>Detected exports</h2>
         <ul class="siglist">
-          <li><code>fun</code> <strong>sso_profile</strong></li>
+          <li><code>type config</code></li>
+          <li><code>val sso_profile</code></li>
+          <li><code>val instance_profile</code></li>
         </ul>
       </section>
       <section class="panel">
         <h2>Source</h2>
-        <pre
-          class="code-block"
-        ><code><span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">AwsConfig</span>
+        <pre class="code-block"><code>import __Builtin.AwsConfig
 
-<span class="tok-keyword">structure</span> <span class="tok-module">Config</span> = <span class="tok-keyword">struct</span>
-  <span class="tok-keyword">fun</span> <span class="tok-function">sso_profile</span> <span class="tok-variable">profile</span> =
-    <span class="tok-namespace">BuiltinAwsConfig</span>.<span class="tok-variable-member">sso_profile_raw</span> <span class="tok-variable">profile</span>
-<span class="tok-keyword">end</span>
+structure Config = struct
+  type config = aws_config
+
+  val sso_profile : string -&gt; config = fn profile =&gt;
+    (BuiltinAwsConfig.sso_profile_raw profile : aws_config)
+
+  val instance_profile : unit -&gt; config = fn () =&gt;
+    (BuiltinAwsConfig.instance_profile_raw () : aws_config)
+end
 </code></pre>
       </section>
     </main>

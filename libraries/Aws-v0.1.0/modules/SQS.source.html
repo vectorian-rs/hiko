@@ -3,48 +3,46 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Aws.S3 source</title>
+    <title>Aws.SQS source</title>
     <link rel="stylesheet" href="../../_assets/docgen.css" />
   </head>
   <body>
     <main>
       <div class="eyebrow"><a href="./index.html">Aws modules</a></div>
-      <h1>Aws.S3</h1>
+      <h1>Aws.SQS</h1>
       <p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p>
       <section class="panel">
         <h2>Use</h2>
-        <pre class="code-block"><code>import Aws.S3</code></pre>
+        <pre class="code-block"><code>import Aws.SQS</code></pre>
         <p class="meta">
-          Raw source: <a href="./S3.hml">S3.hml</a><br />BLAKE3:
-          <code title="blake3:5471e19745b2c822947947984fe679e98efdd4d90b79e05684382b29cf0d271b">blake3:5471e197...cf0d271b</code>
+          Raw source: <a href="./SQS.hml">SQS.hml</a><br />BLAKE3:
+          <code title="blake3:1a71e3d302048d15c06ce85aba8528a43198b32e270388e01a8bea87ec148b43">blake3:1a71e3d3...ec148b43</code>
         </p>
       </section>
       <section class="panel">
         <h2>Detected exports</h2>
         <ul class="siglist">
-          <li><code>type bucket</code></li>
           <li><code>type error</code></li>
           <li><code>type client</code></li>
           <li><code>val client</code></li>
-          <li><code>val list_buckets</code></li>
+          <li><code>val list_queues</code></li>
         </ul>
       </section>
       <section class="panel">
         <h2>Source</h2>
         <pre class="code-block"><code>import Std.Result
 import Aws.Config
-import __Builtin.AwsS3
+import __Builtin.AwsSqs
 
-structure S3 = struct
-  type bucket = string * string * string
+structure SQS = struct
   type error = string
-  type client = aws_s3_client
+  type client = aws_sqs_client
 
   val client : Config.config -&gt; client = fn config =&gt;
-    (BuiltinAwsS3.client_raw config : aws_s3_client)
+    (BuiltinAwsSqs.client_raw config : aws_sqs_client)
 
-  val list_buckets : client -&gt; (bucket list, error) Result.result = fn client =&gt;
-    case (BuiltinAwsS3.list_buckets_raw client : bool * (string * string * string) list * string) of
+  val list_queues : client -&gt; (string list, error) Result.result = fn client =&gt;
+    case (BuiltinAwsSqs.list_queues_raw client : bool * string list * string) of
       (true, output, _) =&gt; Result.Ok output
     | (false, _, message) =&gt; Result.Err message
 end

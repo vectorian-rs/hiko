@@ -1,0 +1,8 @@
+use "../../libraries/Aws-v0.1.0/modules/S3.hml"
+
+fun shape cfg =
+  let val client = S3.client cfg in
+    S3.list_buckets client
+  end
+
+val _ = println "aws api shape compiled"

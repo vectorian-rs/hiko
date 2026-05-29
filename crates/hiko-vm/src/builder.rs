@@ -9,12 +9,19 @@ use std::collections::HashMap;
 #[cfg(feature = "builtin-aws-config")]
 pub struct AwsConfigPolicy {
     pub allowed_sso_profiles: Vec<String>,
+    pub allow_instance_profile: bool,
 }
 
 /// Policy for AWS S3 operations.
 #[cfg(feature = "builtin-aws-s3")]
 pub struct AwsS3Policy {
     pub allow_list_buckets: bool,
+}
+
+/// Policy for AWS SQS operations.
+#[cfg(feature = "builtin-aws-sqs")]
+pub struct AwsSqsPolicy {
+    pub allow_list_queues: bool,
 }
 
 /// Policy for filesystem access.
@@ -52,6 +59,8 @@ pub struct VMBuilder {
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
     #[cfg(feature = "builtin-aws-config")]
     aws_sso_profiles: Vec<String>,
+    #[cfg(feature = "builtin-aws-config")]
+    aws_allow_instance_profile: bool,
     max_heap: Option<usize>,
     max_memory_bytes: Option<usize>,
     max_io_bytes: Option<u64>,
@@ -78,6 +87,8 @@ impl VMBuilder {
             http_allowed_hosts_by_builtin: HashMap::new(),
             #[cfg(feature = "builtin-aws-config")]
             aws_sso_profiles: Vec::new(),
+            #[cfg(feature = "builtin-aws-config")]
+            aws_allow_instance_profile: false,
             max_heap: None,
             max_memory_bytes: None,
             max_io_bytes: None,
@@ -142,14 +153,28 @@ impl VMBuilder {
     #[cfg(feature = "builtin-aws-config")]
     pub fn with_aws_config(mut self, policy: AwsConfigPolicy) -> Self {
         self.aws_sso_profiles = policy.allowed_sso_profiles;
-        self.register_builtin_name("aws_config_sso_profile")
+        self.aws_allow_instance_profile = policy.allow_instance_profile;
+        self = self.register_builtin_name("aws_config_sso_profile");
+        self = self.register_builtin_name("aws_config_instance_profile");
+        self
     }
 
     /// Include AWS S3 builtins filtered by policy.
     #[cfg(feature = "builtin-aws-s3")]
     pub fn with_aws_s3(mut self, policy: AwsS3Policy) -> Self {
         if policy.allow_list_buckets {
+            self = self.register_builtin_name("aws_s3_client");
             self = self.register_builtin_name("aws_s3_list_buckets");
+        }
+        self
+    }
+
+    /// Include AWS SQS builtins filtered by policy.
+    #[cfg(feature = "builtin-aws-sqs")]
+    pub fn with_aws_sqs(mut self, policy: AwsSqsPolicy) -> Self {
+        if policy.allow_list_queues {
+            self = self.register_builtin_name("aws_sqs_client");
+            self = self.register_builtin_name("aws_sqs_list_queues");
         }
         self
     }
@@ -282,7 +307,10 @@ impl VMBuilder {
         vm.set_http_allowed_hosts(self.http_allowed_hosts);
         vm.set_http_allowed_hosts_by_builtin(self.http_allowed_hosts_by_builtin);
         #[cfg(feature = "builtin-aws-config")]
-        vm.set_aws_sso_profiles(self.aws_sso_profiles);
+        {
+            vm.set_aws_sso_profiles(self.aws_sso_profiles);
+            vm.set_aws_allow_instance_profile(self.aws_allow_instance_profile);
+        }
 
         if let Some(max) = self.max_heap {
             vm.set_max_heap(max);

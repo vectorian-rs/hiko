@@ -43,6 +43,12 @@ impl Type {
     pub fn aws_config() -> Type {
         Type::Con("AwsConfig".into())
     }
+    pub fn aws_s3_client() -> Type {
+        Type::Con("AwsS3Client".into())
+    }
+    pub fn aws_sqs_client() -> Type {
+        Type::Con("AwsSqsClient".into())
+    }
     pub fn unit() -> Type {
         Type::Con("Unit".into())
     }
@@ -87,6 +93,8 @@ impl Type {
             "Bytes" => "bytes",
             "Rng" => "rng",
             "AwsConfig" => "aws_config",
+            "AwsS3Client" => "aws_s3_client",
+            "AwsSqsClient" => "aws_sqs_client",
             "Pid" => "pid",
             _ => name,
         }

@@ -1,4 +1,4 @@
-use crate::value::{GcRef, HeapObject};
+use crate::value::{GcRef, HeapObject, HostHandleId, HostHandleKind, HostResource, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "builtin-filesystem")]
@@ -82,6 +82,8 @@ pub struct Heap {
     max_bytes: Option<usize>,
     current_bytes: usize,
     peak_bytes: usize,
+    host_resources: HashMap<HostHandleId, HostResource>,
+    next_host_handle_id: u64,
     io_bytes_used: u64,
     max_io_bytes: Option<u64>,
     /// Filesystem root for path enforcement (empty = unrestricted).
@@ -98,6 +100,9 @@ pub struct Heap {
     /// Allowed AWS SSO profile names for Aws.Config creation.
     #[cfg(feature = "builtin-aws-config")]
     aws_sso_profiles: Vec<String>,
+    /// Whether Aws.Config.instance_profile may use the ambient provider chain/IMDS.
+    #[cfg(feature = "builtin-aws-config")]
+    aws_allow_instance_profile: bool,
     /// Optional injected stdin content for embedded runtimes.
     stdin_override: Option<String>,
     stdin_override_consumed: bool,
@@ -122,6 +127,8 @@ impl Heap {
             max_bytes: None,
             current_bytes: 0,
             peak_bytes: 0,
+            host_resources: HashMap::new(),
+            next_host_handle_id: 1,
             io_bytes_used: 0,
             max_io_bytes: None,
             fs_root: String::new(),
@@ -132,6 +139,8 @@ impl Heap {
             http_allowed_hosts_by_builtin: HashMap::new(),
             #[cfg(feature = "builtin-aws-config")]
             aws_sso_profiles: Vec::new(),
+            #[cfg(feature = "builtin-aws-config")]
+            aws_allow_instance_profile: false,
             stdin_override: None,
             stdin_override_consumed: false,
         }
@@ -280,6 +289,25 @@ impl Heap {
     #[cfg(feature = "builtin-aws-config")]
     pub fn aws_sso_profiles(&self) -> &[String] {
         &self.aws_sso_profiles
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn set_aws_allow_instance_profile(&mut self, allowed: bool) {
+        self.aws_allow_instance_profile = allowed;
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn aws_allow_instance_profile(&self) -> bool {
+        self.aws_allow_instance_profile
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn check_aws_instance_profile(&self) -> Result<(), String> {
+        if self.aws_allow_instance_profile {
+            Ok(())
+        } else {
+            Err("AWS instance profile auth is not allowed".into())
+        }
     }
 
     #[cfg(feature = "builtin-aws-config")]
@@ -464,6 +492,123 @@ impl Heap {
         false
     }
 
+    pub fn alloc_host_resource(
+        &mut self,
+        resource: HostResource,
+    ) -> Result<Value, HeapLimitExceeded> {
+        let kind = resource.kind();
+        let id = HostHandleId(self.next_host_handle_id);
+        self.next_host_handle_id = self.next_host_handle_id.saturating_add(1);
+        self.host_resources.insert(id, resource);
+        match self.alloc(HeapObject::HostHandle { kind, id }) {
+            Ok(r) => Ok(Value::Heap(r)),
+            Err(err) => {
+                self.host_resources.remove(&id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn host_resource_count(&self) -> usize {
+        self.host_resources.len()
+    }
+
+    pub fn host_handle_from_value(
+        &self,
+        value: Value,
+        expected_kind: HostHandleKind,
+        expected_type: &str,
+        context: &str,
+    ) -> Result<HostHandleId, String> {
+        match value {
+            Value::Heap(r) => match self.get(r).map_err(|e| format!("{context}: {e}"))? {
+                HeapObject::HostHandle { kind, id } if *kind == expected_kind => {
+                    self.get_host_resource(*id, expected_kind, expected_type, context)?;
+                    Ok(*id)
+                }
+                HeapObject::HostHandle { kind, .. } => Err(format!(
+                    "{context}: expected {expected_type}, got host handle kind {kind:?}"
+                )),
+                _ => Err(format!("{context}: expected {expected_type}")),
+            },
+            _ => Err(format!("{context}: expected {expected_type}")),
+        }
+    }
+
+    pub fn get_host_resource(
+        &self,
+        id: HostHandleId,
+        expected_kind: HostHandleKind,
+        expected_type: &str,
+        context: &str,
+    ) -> Result<&HostResource, String> {
+        let resource = self
+            .host_resources
+            .get(&id)
+            .ok_or_else(|| format!("{context}: dangling {expected_type} host handle"))?;
+        if resource.kind() == expected_kind {
+            Ok(resource)
+        } else {
+            Err(format!(
+                "{context}: expected {expected_type}, host resource table entry is {:?}",
+                resource.kind()
+            ))
+        }
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    pub fn aws_config_handle_from_value(
+        &self,
+        value: Value,
+        context: &str,
+    ) -> Result<&crate::value::AwsConfigHandle, String> {
+        let id =
+            self.host_handle_from_value(value, HostHandleKind::AwsConfig, "aws_config", context)?;
+        match self.get_host_resource(id, HostHandleKind::AwsConfig, "aws_config", context)? {
+            HostResource::AwsConfig(handle) => Ok(handle),
+            #[allow(unreachable_patterns)]
+            _ => Err(format!("{context}: expected aws_config")),
+        }
+    }
+
+    #[cfg(feature = "builtin-aws-s3")]
+    pub fn aws_s3_client_handle_from_value(
+        &self,
+        value: Value,
+        context: &str,
+    ) -> Result<&crate::value::AwsS3ClientHandle, String> {
+        let id = self.host_handle_from_value(
+            value,
+            HostHandleKind::AwsS3Client,
+            "aws_s3_client",
+            context,
+        )?;
+        match self.get_host_resource(id, HostHandleKind::AwsS3Client, "aws_s3_client", context)? {
+            HostResource::AwsS3Client(handle) => Ok(handle),
+            #[allow(unreachable_patterns)]
+            _ => Err(format!("{context}: expected aws_s3_client")),
+        }
+    }
+
+    #[cfg(feature = "builtin-aws-sqs")]
+    pub fn aws_sqs_client_handle_from_value(
+        &self,
+        value: Value,
+        context: &str,
+    ) -> Result<&crate::value::AwsSqsClientHandle, String> {
+        let id = self.host_handle_from_value(
+            value,
+            HostHandleKind::AwsSqsClient,
+            "aws_sqs_client",
+            context,
+        )?;
+        match self.get_host_resource(id, HostHandleKind::AwsSqsClient, "aws_sqs_client", context)? {
+            HostResource::AwsSqsClient(handle) => Ok(handle),
+            #[allow(unreachable_patterns)]
+            _ => Err(format!("{context}: expected aws_sqs_client")),
+        }
+    }
+
     pub fn alloc(&mut self, obj: HeapObject) -> Result<GcRef, HeapLimitExceeded> {
         let object_bytes = obj.estimated_bytes();
         if let Some(max) = self.max_objects {
@@ -562,6 +707,9 @@ impl Heap {
         self.free_list.clear();
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
+                if let Some(HeapObject::HostHandle { id, .. }) = self.objects[i].as_ref() {
+                    self.host_resources.remove(id);
+                }
                 self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);
                 self.objects[i] = None;
                 self.object_bytes[i] = 0;
@@ -882,6 +1030,38 @@ mod tests {
             .check_http_host("http://localhost:80@evil.example/path")
             .unwrap_err();
         assert!(err.contains("evil.example"));
+    }
+
+    #[cfg(feature = "builtin-aws-s3")]
+    #[test]
+    fn host_resource_table_validates_kind_and_drops_on_gc() {
+        use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostHandleKind, HostResource};
+        use std::sync::Arc;
+
+        let mut heap = Heap::new();
+        let config = heap
+            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+            }))
+            .unwrap();
+        let id = heap
+            .host_handle_from_value(config, HostHandleKind::AwsConfig, "aws_config", "test")
+            .unwrap();
+        assert_eq!(heap.host_resource_count(), 1);
+        assert!(
+            heap.get_host_resource(id, HostHandleKind::AwsS3Client, "aws_s3_client", "test")
+                .unwrap_err()
+                .contains("expected aws_s3_client")
+        );
+
+        heap.collect(std::iter::empty());
+        assert_eq!(heap.host_resource_count(), 0);
+        assert!(
+            heap.get_host_resource(id, HostHandleKind::AwsConfig, "aws_config", "test")
+                .unwrap_err()
+                .contains("dangling")
+        );
     }
 
     #[test]
