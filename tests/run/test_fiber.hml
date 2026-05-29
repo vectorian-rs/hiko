@@ -1,27 +1,29 @@
 (* Tests for Std-v0.1.0/modules/Fiber.hml *)
 
-use "../../libraries/Std-v0.1.0/modules/Result.hml"
 use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
 
 val joined = Fiber.join (Fiber.spawn (fn () => 42))
 val joined_value =
   case joined of
-      Result.Ok value => value
-    | Result.Err err => panic ("join failed: " ^ Fiber.render_error err)
+      Ok value => value
+    | Err err => panic ("join failed: " ^ Fiber.render_error err)
+    | _ => panic "join failed: unexpected result shape"
 
 val _ = assert_eq (joined_value, 42, "join")
 
 val both_value =
   case Fiber.both ((fn () => 21), (fn () => 21)) of
-      Result.Ok (left, right) => left + right
-    | Result.Err err => panic ("both failed: " ^ Fiber.render_error err)
+      Ok (left, right) => left + right
+    | Err err => panic ("both failed: " ^ Fiber.render_error err)
+    | _ => panic "both failed: unexpected result shape"
 
 val _ = assert_eq (both_value, 42, "both")
 
 val all_values =
   case Fiber.all [fn () => 1, fn () => 2, fn () => 3] of
-      Result.Ok values => values
-    | Result.Err err => panic ("all failed: " ^ Fiber.render_error err)
+      Ok values => values
+    | Err err => panic ("all failed: " ^ Fiber.render_error err)
+    | _ => panic "all failed: unexpected result shape"
 
 val _ = assert_eq (all_values, [1, 2, 3], "all")
 
@@ -30,8 +32,9 @@ val first_value =
     (fn () => let val _ = sleep 50 in 10 end),
     (fn () => 20)
   ) of
-      Result.Ok value => value
-    | Result.Err err => panic ("first failed: " ^ Fiber.render_error err)
+      Ok value => value
+    | Err err => panic ("first failed: " ^ Fiber.render_error err)
+    | _ => panic "first failed: unexpected result shape"
 
 val _ = assert_eq (first_value, 20, "first")
 
@@ -40,8 +43,9 @@ val any_value =
     fn () => let val _ = sleep 50 in 1 end,
     fn () => 2
   ] of
-      Result.Ok value => value
-    | Result.Err err => panic ("any failed: " ^ Fiber.render_error err)
+      Ok value => value
+    | Err err => panic ("any failed: " ^ Fiber.render_error err)
+    | _ => panic "any failed: unexpected result shape"
 
 val _ = assert_eq (any_value, 2, "any")
 

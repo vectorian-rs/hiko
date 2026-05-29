@@ -1,4 +1,3 @@
-use "../../libraries/Std-v0.1.0/modules/Result.hml"
 use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
 
 val child =
@@ -1509,11 +1508,11 @@ val child =
     end)
 
 val fuel_status =
-  Result.fold
-    (fn _ => 0)
-    (fn err =>
-      if string_contains (Fiber.render_error err, "fuel exhausted") then 1 else 0)
-    (Fiber.join child)
+  case Fiber.join child of
+    Ok _ => 0
+  | Err err =>
+      if string_contains (Fiber.render_error err, "fuel exhausted") then 1 else 0
+  | _ => 0
 
 val _ = assert_eq (fuel_status, 1, "fuel exhausted")
 val _ = println "fiber fuel tests passed"

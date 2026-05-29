@@ -64,6 +64,7 @@ structure Fiber = struct
     case Fiber.join fiber of
       Ok value => value
     | Err err => panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
+    | _ => panic "Fiber.join_or_fail: unexpected result shape"
 
   fun cancel fiber =
     BuiltinProcess.cancel_raw fiber
@@ -80,6 +81,7 @@ structure Fiber = struct
           Ok (left_value, right_value)
       | (Err err, _) => Err err
       | (_, Err err) => Err err
+      | _ => Err (BuiltinProcess.RuntimeError "Fiber.both: unexpected result shape")
     end
 
   fun join_all fibers =
@@ -94,6 +96,7 @@ structure Fiber = struct
             (Ok value, Ok values) => Ok (value :: values)
           | (Err err, _) => Err err
           | (_, Err err) => Err err
+          | _ => Err (BuiltinProcess.RuntimeError "Fiber.join_all: unexpected result shape")
         end
 
   fun all fs =
