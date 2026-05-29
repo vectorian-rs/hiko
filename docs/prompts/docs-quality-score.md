@@ -32,10 +32,13 @@ Score each axis from 0 to 10:
    - Do docs match current implementation, tests, and repo structure?
    - Are current/proposed/historical claims clearly separated?
    - Are broken links, stale paths, or inaccurate status claims present?
+   - Does it provide sufficient low-level implementation details for VM/engineer work (opcode semantics, GC internals, bytecode verifier rules)?
 
 3. Completeness
    - Can a maintainer find the necessary docs for language, runtime, VM, builtins, capabilities, verification, and workflow?
    - Are important gaps explicitly named rather than hidden?
+   - Are known missing specifications (like full language definition or effect typing) explicitly documented with clear status?
+   - Are there reference implementations, benchmarks, or extension examples for compiler/tool builders?
 
 4. Understandability
    - Can a new contributor or agent quickly understand what to read first and why?
