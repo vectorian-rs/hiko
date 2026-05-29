@@ -676,6 +676,110 @@ fn aio_http(
 mod tests {
     use super::*;
 
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    #[derive(Debug)]
+    struct TestSourceError;
+
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    impl std::fmt::Display for TestSourceError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "socket closed")
+        }
+    }
+
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    impl std::error::Error for TestSourceError {}
+
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    #[derive(Debug)]
+    struct TestAwsError {
+        source: TestSourceError,
+    }
+
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    impl std::fmt::Display for TestAwsError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "request failed")
+        }
+    }
+
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    impl std::error::Error for TestAwsError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.source)
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        feature = "builtin-aws-config",
+        feature = "builtin-aws-s3",
+        feature = "builtin-aws-sqs"
+    ))]
+    fn test_format_aws_error_preserves_context_and_source_chain() {
+        let message = format_aws_error(
+            "aws_s3_list_buckets",
+            &TestAwsError {
+                source: TestSourceError,
+            },
+        );
+
+        assert!(message.contains("aws_s3_list_buckets"), "{message}");
+        assert!(message.contains("request failed"), "{message}");
+        assert!(message.contains("socket closed"), "{message}");
+        assert!(message.contains("source 1"), "{message}");
+    }
+
+    #[test]
+    #[cfg(feature = "builtin-aws-s3")]
+    fn test_s3_errors_are_returned_as_hiko_result_tuple_with_message() {
+        let value = list_buckets_error("connection reset by peer".to_string());
+
+        match value {
+            SendableValue::Tuple(fields) => {
+                assert!(matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer"));
+            }
+            other => panic!("unexpected S3 error value: {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "builtin-aws-sqs")]
+    fn test_sqs_errors_are_returned_as_hiko_result_tuple_with_message() {
+        let value = list_queues_error("connection reset by peer".to_string());
+
+        match value {
+            SendableValue::Tuple(fields) => {
+                assert!(matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer"));
+            }
+            other => panic!("unexpected SQS error value: {other:?}"),
+        }
+    }
+
     #[test]
     #[cfg(feature = "builtin-http")]
     fn test_json_value_to_sendable_normal_float() {
