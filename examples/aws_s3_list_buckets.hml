@@ -6,7 +6,8 @@ fun print_buckets buckets =
   case buckets of
     [] => ()
   | (name, created, arn) :: rest =>
-      let val _ = println ("name: " ^ name ^ " | created=" ^ created ^ " | arn=" ^ arn)
+      let
+        val _ = println ("name: " ^ name ^ " | created=" ^ created ^ " | arn=" ^ arn)
       in print_buckets rest
       end
 

@@ -615,14 +615,16 @@ impl AwsConfigCapabilities {
     }
 
     fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        if let Some(leaf) = &self.sso_profile
-            && leaf.enabled
-        {
+        let sso_enabled = self.sso_profile.as_ref().is_some_and(|leaf| leaf.enabled);
+        let instance_enabled = self
+            .instance_profile
+            .as_ref()
+            .is_some_and(|leaf| leaf.enabled);
+        if sso_enabled || instance_enabled {
+            // The public Aws.Config module exposes both constructors. Compile-time
+            // builtin discovery therefore needs both raw names whenever the config
+            // domain is present; runtime policy checks still gate actual use.
             out.insert("aws_config_sso_profile");
-        }
-        if let Some(leaf) = &self.instance_profile
-            && leaf.enabled
-        {
             out.insert("aws_config_instance_profile");
         }
     }
@@ -1155,6 +1157,22 @@ folders = ["."]
         assert!(rust_source.contains(".register_builtin_name(\"numeric_int32_min_value\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_word32_add\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_float32_add\")"));
+    }
+
+    #[test]
+    fn aws_config_policy_exposes_config_module_builtins_but_runtime_gates_use() {
+        let config = RunConfig::from_toml(
+            r#"
+[capabilities.aws.config.sso_profile]
+enabled = true
+allowed_profiles = ["dev"]
+"#,
+        )
+        .expect("AWS config policy should parse");
+        let enabled = config.enabled_builtin_names();
+
+        assert!(enabled.contains("aws_config_sso_profile"));
+        assert!(enabled.contains("aws_config_instance_profile"));
     }
 
     #[test]
