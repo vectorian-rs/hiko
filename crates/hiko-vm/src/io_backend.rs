@@ -433,21 +433,40 @@ fn list_queues_error(message: String) -> SendableValue {
 ))]
 fn format_aws_error<E>(context: &str, err: &E) -> String
 where
-    E: std::error::Error + std::fmt::Debug + std::fmt::Display,
+    E: std::error::Error + std::fmt::Display,
 {
+    const MAX_SOURCES: usize = 16;
+
     let mut message = format!("{context}: {err}");
-    let debug = format!("{err:?}");
-    if debug != err.to_string() {
-        message.push_str(&format!("; debug: {debug}"));
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(err.to_string());
+
+    let mut sources = Vec::new();
+    let mut source = err.source();
+    let mut source_count = 0;
+    let mut truncated = false;
+    while let Some(err) = source {
+        if source_count >= MAX_SOURCES {
+            truncated = true;
+            break;
+        }
+
+        let source_message = err.to_string();
+        if !source_message.is_empty() && seen.insert(source_message.clone()) {
+            sources.push(source_message);
+        }
+        source = err.source();
+        source_count += 1;
     }
 
-    let mut source = err.source();
-    let mut source_index = 1;
-    while let Some(err) = source {
-        message.push_str(&format!("; source {source_index}: {err}"));
-        source = err.source();
-        source_index += 1;
+    if !sources.is_empty() {
+        message.push_str("; caused by: ");
+        message.push_str(&sources.join("; "));
+        if truncated {
+            message.push_str("; ...");
+        }
     }
+
     message
 }
 
@@ -682,34 +701,9 @@ mod tests {
         feature = "builtin-aws-sqs"
     ))]
     #[derive(Debug)]
-    struct TestSourceError;
-
-    #[cfg(any(
-        feature = "builtin-aws-config",
-        feature = "builtin-aws-s3",
-        feature = "builtin-aws-sqs"
-    ))]
-    impl std::fmt::Display for TestSourceError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "socket closed")
-        }
-    }
-
-    #[cfg(any(
-        feature = "builtin-aws-config",
-        feature = "builtin-aws-s3",
-        feature = "builtin-aws-sqs"
-    ))]
-    impl std::error::Error for TestSourceError {}
-
-    #[cfg(any(
-        feature = "builtin-aws-config",
-        feature = "builtin-aws-s3",
-        feature = "builtin-aws-sqs"
-    ))]
-    #[derive(Debug)]
     struct TestAwsError {
-        source: TestSourceError,
+        message: &'static str,
+        source: Option<Box<TestAwsError>>,
     }
 
     #[cfg(any(
@@ -719,7 +713,7 @@ mod tests {
     ))]
     impl std::fmt::Display for TestAwsError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "request failed")
+            write!(f, "{}", self.message)
         }
     }
 
@@ -730,7 +724,9 @@ mod tests {
     ))]
     impl std::error::Error for TestAwsError {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.source)
+            self.source
+                .as_deref()
+                .map(|source| source as &(dyn std::error::Error + 'static))
         }
     }
 
@@ -740,18 +736,32 @@ mod tests {
         feature = "builtin-aws-s3",
         feature = "builtin-aws-sqs"
     ))]
-    fn test_format_aws_error_preserves_context_and_source_chain() {
+    fn test_format_aws_error_preserves_context_and_deduplicated_source_chain() {
         let message = format_aws_error(
             "aws_s3_list_buckets",
             &TestAwsError {
-                source: TestSourceError,
+                message: "request failed",
+                source: Some(Box::new(TestAwsError {
+                    message: "other",
+                    source: Some(Box::new(TestAwsError {
+                        message: "other",
+                        source: Some(Box::new(TestAwsError {
+                            message: "socket closed",
+                            source: Some(Box::new(TestAwsError {
+                                message: "socket closed",
+                                source: None,
+                            })),
+                        })),
+                    })),
+                })),
             },
         );
 
-        assert!(message.contains("aws_s3_list_buckets"), "{message}");
-        assert!(message.contains("request failed"), "{message}");
-        assert!(message.contains("socket closed"), "{message}");
-        assert!(message.contains("source 1"), "{message}");
+        assert_eq!(
+            message,
+            "aws_s3_list_buckets: request failed; caused by: other; socket closed"
+        );
+        assert!(!message.contains("debug:"), "{message}");
     }
 
     #[test]
