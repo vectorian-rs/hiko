@@ -1032,6 +1032,17 @@ mod tests {
         assert!(err.contains("evil.example"));
     }
 
+    #[cfg(feature = "builtin-aws-config")]
+    #[test]
+    fn aws_sso_profile_policy_allows_only_configured_profiles() {
+        let mut heap = Heap::new();
+        heap.set_aws_sso_profiles(vec!["dev".to_string()]);
+
+        assert!(heap.check_aws_sso_profile("dev").is_ok());
+        let err = heap.check_aws_sso_profile("prod").unwrap_err();
+        assert!(err.contains("AWS SSO profile 'prod' is not allowed"), "{err}");
+    }
+
     #[cfg(feature = "builtin-aws-s3")]
     #[test]
     fn host_resource_table_validates_kind_and_drops_on_gc() {
