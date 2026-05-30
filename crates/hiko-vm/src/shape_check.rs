@@ -7,7 +7,10 @@
 //! the declared type and what the Rust code actually produces — the class of
 //! bug documented in GitHub issue #76.
 
+use crate::heap::Heap;
 use crate::sendable::SendableValue;
+use crate::value::{HeapObject, HostHandleKind, Value};
+use crate::vm::{TAG_CONS, TAG_NIL};
 
 /// Lightweight type shape used for runtime verification.
 /// Covers only the types that appear in builtin return signatures.
@@ -326,6 +329,246 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
     }
 }
 
+/// Check if a VM `Value` matches a `Shape` in the context of its heap.
+///
+/// Unlike `check_shape`, this can validate process-local runtime values such as
+/// RNG states and opaque host handles before they are serialized across process
+/// boundaries.
+pub fn check_value_shape(value: Value, heap: &Heap, shape: &Shape) -> Result<(), String> {
+    match shape {
+        Shape::Var => Ok(()),
+        Shape::Int => match value {
+            Value::Int(_) => Ok(()),
+            _ => Err(format!("expected int, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::Word => match value {
+            Value::Word(_) => Ok(()),
+            _ => Err(format!("expected word, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::Pid => match value {
+            Value::Pid(_) => Ok(()),
+            _ => Err(format!("expected pid, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::Float => match value {
+            Value::Float(_) => Ok(()),
+            _ => Err(format!(
+                "expected float, got {}",
+                vm_value_kind(value, heap)
+            )),
+        },
+        Shape::Bool => match value {
+            Value::Bool(_) => Ok(()),
+            _ => Err(format!("expected bool, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::Char => match value {
+            Value::Char(_) => Ok(()),
+            _ => Err(format!("expected char, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::Unit => match value {
+            Value::Unit => Ok(()),
+            _ => Err(format!("expected unit, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::String => match value {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::String(_) => Ok(()),
+                _ => Err(format!(
+                    "expected string, got {}",
+                    vm_value_kind(value, heap)
+                )),
+            },
+            _ => Err(format!(
+                "expected string, got {}",
+                vm_value_kind(value, heap)
+            )),
+        },
+        Shape::Bytes => match value {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Bytes(_) => Ok(()),
+                _ => Err(format!(
+                    "expected bytes, got {}",
+                    vm_value_kind(value, heap)
+                )),
+            },
+            _ => Err(format!(
+                "expected bytes, got {}",
+                vm_value_kind(value, heap)
+            )),
+        },
+        Shape::Rng => match value {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Rng { .. } => Ok(()),
+                _ => Err(format!("expected rng, got {}", vm_value_kind(value, heap))),
+            },
+            _ => Err(format!("expected rng, got {}", vm_value_kind(value, heap))),
+        },
+        Shape::AwsConfig => {
+            #[cfg(feature = "builtin-aws-config")]
+            {
+                check_host_handle(value, heap, HostHandleKind::AwsConfig, "aws_config")
+            }
+            #[cfg(not(feature = "builtin-aws-config"))]
+            {
+                let _ = (value, heap);
+                Err("aws_config not available in this build".into())
+            }
+        }
+        Shape::AwsS3Client => {
+            #[cfg(feature = "builtin-aws-s3")]
+            {
+                check_host_handle(value, heap, HostHandleKind::AwsS3Client, "aws_s3_client")
+            }
+            #[cfg(not(feature = "builtin-aws-s3"))]
+            {
+                let _ = (value, heap);
+                Err("aws_s3_client not available in this build".into())
+            }
+        }
+        Shape::AwsSqsClient => {
+            #[cfg(feature = "builtin-aws-sqs")]
+            {
+                check_host_handle(value, heap, HostHandleKind::AwsSqsClient, "aws_sqs_client")
+            }
+            #[cfg(not(feature = "builtin-aws-sqs"))]
+            {
+                let _ = (value, heap);
+                Err("aws_sqs_client not available in this build".into())
+            }
+        }
+        Shape::Tuple(expected_elems) => match value {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Tuple(fields) => {
+                    if fields.len() != expected_elems.len() {
+                        return Err(format!(
+                            "expected tuple with {} fields, got {}",
+                            expected_elems.len(),
+                            fields.len()
+                        ));
+                    }
+                    for (i, (field, elem_shape)) in fields
+                        .iter()
+                        .copied()
+                        .zip(expected_elems.iter())
+                        .enumerate()
+                    {
+                        check_value_shape(field, heap, elem_shape)
+                            .map_err(|e| format!("tuple field {}: {}", i, e))?;
+                    }
+                    Ok(())
+                }
+                _ => Err(format!(
+                    "expected tuple with {} fields, got {}",
+                    expected_elems.len(),
+                    vm_value_kind(value, heap)
+                )),
+            },
+            _ => Err(format!(
+                "expected tuple with {} fields, got {}",
+                expected_elems.len(),
+                vm_value_kind(value, heap)
+            )),
+        },
+        Shape::List(elem_shape) => check_value_list_shape(value, heap, elem_shape),
+        Shape::Option(inner_shape) => match value {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Data { tag: 0, fields } if fields.is_empty() => Ok(()),
+                HeapObject::Data { tag: 1, fields } if fields.len() == 1 => {
+                    check_value_shape(fields[0], heap, inner_shape)
+                        .map_err(|e| format!("Option.Some: {}", e))
+                }
+                HeapObject::Data { tag, .. } => {
+                    Err(format!("Option expected tag 0 or 1, got {tag}"))
+                }
+                _ => Err(format!(
+                    "expected Option, got {}",
+                    vm_value_kind(value, heap)
+                )),
+            },
+            _ => Err(format!(
+                "expected Option, got {}",
+                vm_value_kind(value, heap)
+            )),
+        },
+    }
+}
+
+fn check_value_list_shape(value: Value, heap: &Heap, elem_shape: &Shape) -> Result<(), String> {
+    let mut current = value;
+    let mut index = 0usize;
+    loop {
+        match current {
+            Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+                HeapObject::Data { tag, fields } if *tag == TAG_NIL && fields.is_empty() => {
+                    return Ok(());
+                }
+                HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
+                    check_value_shape(fields[0], heap, elem_shape)
+                        .map_err(|e| format!("list[{}]: {}", index, e))?;
+                    current = fields[1];
+                    index += 1;
+                }
+                _ => {
+                    return Err(format!(
+                        "expected list, got {}",
+                        vm_value_kind(current, heap)
+                    ));
+                }
+            },
+            _ => {
+                return Err(format!(
+                    "expected list, got {}",
+                    vm_value_kind(current, heap)
+                ));
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn check_host_handle(
+    value: Value,
+    heap: &Heap,
+    expected: HostHandleKind,
+    expected_name: &str,
+) -> Result<(), String> {
+    match value {
+        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
+            HeapObject::HostHandle { kind, .. } if *kind == expected => Ok(()),
+            _ => Err(format!(
+                "expected {expected_name}, got {}",
+                vm_value_kind(value, heap)
+            )),
+        },
+        _ => Err(format!(
+            "expected {expected_name}, got {}",
+            vm_value_kind(value, heap)
+        )),
+    }
+}
+
+fn vm_value_kind(value: Value, heap: &Heap) -> &'static str {
+    match value {
+        Value::Int(_) => "int",
+        Value::Word(_) => "word",
+        Value::Pid(_) => "pid",
+        Value::Float(_) => "float",
+        Value::Bool(_) => "bool",
+        Value::Char(_) => "char",
+        Value::Unit => "unit",
+        Value::Builtin(_) => "builtin",
+        Value::Heap(r) => match heap.get(r) {
+            Ok(HeapObject::String(_)) => "string",
+            Ok(HeapObject::Bytes(_)) => "bytes",
+            Ok(HeapObject::Tuple(_)) => "tuple",
+            Ok(HeapObject::Data { .. }) => "data",
+            Ok(HeapObject::Closure { .. }) => "closure",
+            Ok(HeapObject::Continuation(_)) => "continuation",
+            Ok(HeapObject::Rng { .. }) => "rng",
+            Ok(HeapObject::HostHandle { .. }) => "host-handle",
+            Err(_) => "dangling-heap-ref",
+        },
+    }
+}
+
 fn value_kind(value: &SendableValue) -> &'static str {
     match value {
         SendableValue::Int(_) => "int",
@@ -350,7 +593,12 @@ fn value_kind(value: &SendableValue) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::builtin_entries;
+    use hiko_builtin_meta::{builtin_type_signature, builtin_type_signatures};
+    use smallvec::smallvec;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     // --- Parser tests ---
 
@@ -649,82 +897,12 @@ mod tests {
         assert!(check_shape(&success, &old_shape).is_err());
     }
 
-    // --- Parse all real signatures ---
+    // --- Parse and sample all real signatures ---
 
     #[test]
-    fn parse_all_builtin_signatures() {
-        // Verify that every signature we know about can be parsed
-        let signatures: &[(&str, &str)] = &[
-            ("print", "string -> unit"),
-            ("println", "string -> unit"),
-            ("read_line", "unit -> string"),
-            ("int_to_string", "int -> string"),
-            ("float_to_string", "float -> string"),
-            ("string_to_int", "string -> int"),
-            ("string_length", "string -> int"),
-            ("substring", "string * int * int -> string"),
-            ("string_contains", "string * string -> bool"),
-            ("trim", "string -> string"),
-            ("split", "string * string -> string list"),
-            ("string_replace", "string * string * string -> string"),
-            ("string_join", "string list * string -> string"),
-            ("sqrt", "float -> float"),
-            ("abs_int", "int -> int"),
-            ("floor", "float -> int"),
-            ("read_file", "string -> string"),
-            ("write_file", "string * string -> unit"),
-            ("file_exists", "string -> bool"),
-            ("list_dir", "string -> string list"),
-            ("path_join", "string * string -> string"),
-            (
-                "http_get",
-                "string -> int * (string * string) list * string",
-            ),
-            (
-                "http",
-                "string * string * (string * string) list * string -> int * (string * string) list * string",
-            ),
-            ("exec", "string * string list -> int * string * string"),
-            ("exit", "int -> unit"),
-            ("json_get", "string * string -> string"),
-            ("json_keys", "string -> string list"),
-            ("json_length", "string -> int"),
-            ("json_parse", "string -> 'a"),
-            ("json_to_string", "'a -> string"),
-            ("blake3", "bytes -> string"),
-            ("random_bytes", "int -> bytes"),
-            ("rng_seed", "bytes -> rng"),
-            ("rng_bytes", "rng * int -> bytes * rng"),
-            ("rng_int", "rng * int -> int * rng"),
-            ("regex_match", "string * string -> bool"),
-            ("getenv", "string -> string"),
-            ("epoch", "unit -> int"),
-            ("sleep", "int -> unit"),
-            ("aws_config_sso_profile", "string -> aws_config"),
-            ("aws_config_instance_profile", "unit -> aws_config"),
-            ("aws_s3_client", "aws_config -> aws_s3_client"),
-            (
-                "aws_s3_list_buckets",
-                "aws_s3_client -> bool * (string * string * string) list * string",
-            ),
-            ("aws_sqs_client", "aws_config -> aws_sqs_client"),
-            (
-                "aws_sqs_list_queues",
-                "aws_sqs_client -> bool * string list * string",
-            ),
-            ("spawn", "(unit -> 'a) -> pid"),
-            ("await_process", "pid -> 'a"),
-            ("cancel", "pid -> unit"),
-            ("wait_any", "pid list -> pid"),
-            ("bytes_length", "bytes -> int"),
-            ("bytes_to_string", "bytes -> string"),
-            ("string_to_bytes", "string -> bytes"),
-            ("bytes_get", "bytes * int -> int"),
-            ("bytes_slice", "bytes * int * int -> bytes"),
-        ];
-
-        for (name, sig) in signatures {
-            let result = parse_return_type(sig);
+    fn parse_all_builtin_signatures_from_registry() {
+        for (name, sig) in builtin_type_signatures() {
+            let result = parse_return_type(sig.ty);
             assert!(
                 result.is_ok(),
                 "failed to parse signature for '{}': {:?}",
@@ -732,5 +910,887 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    type ArgsBuilder = fn(&mut Heap) -> Vec<Value>;
+
+    struct BuiltinShapeCase {
+        name: &'static str,
+        args: ArgsBuilder,
+    }
+
+    fn heap_string(heap: &mut Heap, text: &str) -> Value {
+        Value::Heap(heap.alloc(HeapObject::String(text.to_string())).unwrap())
+    }
+
+    fn heap_bytes(heap: &mut Heap, bytes: &[u8]) -> Value {
+        Value::Heap(heap.alloc(HeapObject::Bytes(bytes.to_vec())).unwrap())
+    }
+
+    fn heap_tuple(heap: &mut Heap, fields: Vec<Value>) -> Value {
+        Value::Heap(
+            heap.alloc(HeapObject::Tuple(fields.into_iter().collect()))
+                .unwrap(),
+        )
+    }
+
+    fn heap_list(heap: &mut Heap, values: Vec<Value>) -> Value {
+        let mut current = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: smallvec![],
+            })
+            .unwrap(),
+        );
+        for value in values.into_iter().rev() {
+            current = Value::Heap(
+                heap.alloc(HeapObject::Data {
+                    tag: TAG_CONS,
+                    fields: smallvec![value, current],
+                })
+                .unwrap(),
+            );
+        }
+        current
+    }
+
+    fn temp_path(name: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("hiko-shape-{name}-{}-{unique}", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn no_args(_: &mut Heap) -> Vec<Value> {
+        vec![]
+    }
+
+    fn one_int(_: &mut Heap) -> Vec<Value> {
+        vec![Value::Int(7)]
+    }
+
+    fn one_word(_: &mut Heap) -> Vec<Value> {
+        vec![Value::Word(7)]
+    }
+
+    fn one_float(_: &mut Heap) -> Vec<Value> {
+        vec![Value::Float(9.0)]
+    }
+
+    fn one_string(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_string(heap, "42")]
+    }
+
+    fn one_char(_: &mut Heap) -> Vec<Value> {
+        vec![Value::Char('A')]
+    }
+
+    fn one_bytes(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_bytes(heap, &[1, 2, 3, 4])]
+    }
+
+    fn int_pair(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_tuple(heap, vec![Value::Int(5), Value::Int(2)])]
+    }
+
+    fn word_pair(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_tuple(heap, vec![Value::Word(5), Value::Word(2)])]
+    }
+
+    fn float_pair(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_tuple(heap, vec![Value::Float(6.0), Value::Float(2.0)])]
+    }
+
+    fn string_pair(heap: &mut Heap) -> Vec<Value> {
+        let a = heap_string(heap, "hello world");
+        let b = heap_string(heap, "world");
+        vec![heap_tuple(heap, vec![a, b])]
+    }
+
+    fn substring_args(heap: &mut Heap) -> Vec<Value> {
+        let s = heap_string(heap, "hello");
+        vec![heap_tuple(heap, vec![s, Value::Int(1), Value::Int(3)])]
+    }
+
+    fn string_replace_args(heap: &mut Heap) -> Vec<Value> {
+        let s = heap_string(heap, "hello world");
+        let from = heap_string(heap, "world");
+        let to = heap_string(heap, "hiko");
+        vec![heap_tuple(heap, vec![s, from, to])]
+    }
+
+    fn split_args(heap: &mut Heap) -> Vec<Value> {
+        let s = heap_string(heap, "a,b");
+        let sep = heap_string(heap, ",");
+        vec![heap_tuple(heap, vec![s, sep])]
+    }
+
+    fn string_join_args(heap: &mut Heap) -> Vec<Value> {
+        let a = heap_string(heap, "a");
+        let b = heap_string(heap, "b");
+        let list = heap_list(heap, vec![a, b]);
+        let sep = heap_string(heap, ",");
+        vec![heap_tuple(heap, vec![list, sep])]
+    }
+
+    fn path_join_args(heap: &mut Heap) -> Vec<Value> {
+        let a = heap_string(heap, "/tmp");
+        let b = heap_string(heap, "file.txt");
+        vec![heap_tuple(heap, vec![a, b])]
+    }
+
+    fn read_file_arg(heap: &mut Heap) -> Vec<Value> {
+        let path = temp_path("read-file.txt");
+        std::fs::write(&path, "hello").unwrap();
+        vec![heap_string(heap, &path)]
+    }
+
+    fn read_file_bytes_arg(heap: &mut Heap) -> Vec<Value> {
+        let path = temp_path("read-file-bytes.bin");
+        std::fs::write(&path, [1u8, 2, 3]).unwrap();
+        vec![heap_string(heap, &path)]
+    }
+
+    fn write_file_args(heap: &mut Heap) -> Vec<Value> {
+        let path = heap_string(heap, &temp_path("write-file.txt"));
+        let content = heap_string(heap, "hello");
+        vec![heap_tuple(heap, vec![path, content])]
+    }
+
+    fn file_exists_arg(heap: &mut Heap) -> Vec<Value> {
+        let path = temp_path("exists.txt");
+        std::fs::write(&path, "hello").unwrap();
+        vec![heap_string(heap, &path)]
+    }
+
+    fn list_dir_arg(heap: &mut Heap) -> Vec<Value> {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = format!("target/hiko-shape-list-dir-{}-{unique}", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("a.txt"), "hello").unwrap();
+        vec![heap_string(heap, &dir)]
+    }
+
+    fn remove_file_arg(heap: &mut Heap) -> Vec<Value> {
+        let path = temp_path("remove-file.txt");
+        std::fs::write(&path, "hello").unwrap();
+        vec![heap_string(heap, &path)]
+    }
+
+    fn create_dir_arg(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_string(heap, &temp_path("create-dir"))]
+    }
+
+    fn glob_arg(heap: &mut Heap) -> Vec<Value> {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = format!("target/hiko-shape-glob-{}-{unique}", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("a.txt"), "hello").unwrap();
+        vec![heap_string(heap, &format!("{dir}/*.txt"))]
+    }
+
+    fn read_file_tagged_args(heap: &mut Heap) -> Vec<Value> {
+        let path = temp_path("tagged.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let path = heap_string(heap, &path);
+        vec![heap_tuple(heap, vec![path, Value::Int(0), Value::Int(0)])]
+    }
+
+    fn edit_file_tagged_args(heap: &mut Heap) -> Vec<Value> {
+        let path = temp_path("edit-tagged.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = heap_string(heap, &path);
+        let edits = heap_string(heap, "");
+        vec![heap_tuple(heap, vec![path, edits])]
+    }
+
+    fn bytes_get_args(heap: &mut Heap) -> Vec<Value> {
+        let bytes = heap_bytes(heap, &[10, 20, 30]);
+        vec![heap_tuple(heap, vec![bytes, Value::Int(1)])]
+    }
+
+    fn bytes_slice_args(heap: &mut Heap) -> Vec<Value> {
+        let bytes = heap_bytes(heap, &[10, 20, 30]);
+        vec![heap_tuple(heap, vec![bytes, Value::Int(0), Value::Int(2)])]
+    }
+
+    fn rng_pair_args(heap: &mut Heap) -> Vec<Value> {
+        let rng = Value::Heap(heap.alloc(HeapObject::Rng { state: 1, inc: 1 }).unwrap());
+        vec![heap_tuple(heap, vec![rng, Value::Int(4)])]
+    }
+
+    fn json_path_args(heap: &mut Heap) -> Vec<Value> {
+        let json = heap_string(heap, r#"{"name":"hiko","xs":[1,2]}"#);
+        let path = heap_string(heap, "name");
+        vec![heap_tuple(heap, vec![json, path])]
+    }
+
+    fn json_string_arg(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_string(heap, r#"{"name":"hiko","xs":[1,2]}"#)]
+    }
+
+    fn json_value_arg(heap: &mut Heap) -> Vec<Value> {
+        vec![Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: 2,
+                fields: smallvec![Value::Int(42)],
+            })
+            .unwrap(),
+        )]
+    }
+
+    fn regex_match_args(heap: &mut Heap) -> Vec<Value> {
+        let s = heap_string(heap, "hello");
+        let re = heap_string(heap, "^h");
+        vec![heap_tuple(heap, vec![s, re])]
+    }
+
+    fn regex_replace_args(heap: &mut Heap) -> Vec<Value> {
+        let s = heap_string(heap, "hello");
+        let re = heap_string(heap, "l+");
+        let repl = heap_string(heap, "L");
+        vec![heap_tuple(heap, vec![s, re, repl])]
+    }
+
+    fn set_stdin_and_no_args(heap: &mut Heap) -> Vec<Value> {
+        heap.set_stdin_override("stdin".to_string());
+        vec![]
+    }
+
+    fn assert_args(heap: &mut Heap) -> Vec<Value> {
+        let msg = heap_string(heap, "shape check");
+        vec![heap_tuple(heap, vec![Value::Bool(true), msg])]
+    }
+
+    fn assert_eq_args(heap: &mut Heap) -> Vec<Value> {
+        let msg = heap_string(heap, "shape check");
+        vec![heap_tuple(heap, vec![Value::Int(1), Value::Int(1), msg])]
+    }
+
+    fn timezone_arg(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_string(heap, "UTC")]
+    }
+
+    fn date_instant_tz_args(heap: &mut Heap) -> Vec<Value> {
+        let tz = heap_string(heap, "UTC");
+        vec![heap_tuple(heap, vec![Value::Int(0), tz])]
+    }
+
+    fn date_tz_pair_args(heap: &mut Heap) -> Vec<Value> {
+        let instant = heap_string(heap, "1970-01-01T00:00:00Z[UTC]");
+        let tz = heap_string(heap, "UTC");
+        vec![heap_tuple(heap, vec![instant, tz])]
+    }
+
+    fn date_format_args(heap: &mut Heap) -> Vec<Value> {
+        let fmt = heap_string(heap, "%Y");
+        let instant = heap_string(heap, "1970-01-01T00:00:00Z[UTC]");
+        vec![heap_tuple(heap, vec![fmt, instant])]
+    }
+
+    fn date_zoned_arg(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_string(heap, "1970-01-01T00:00:00Z[UTC]")]
+    }
+
+    fn date_rfc3339_arg(heap: &mut Heap) -> Vec<Value> {
+        vec![heap_string(heap, "1970-01-01T00:00:00Z")]
+    }
+
+    fn sample_cases() -> Vec<BuiltinShapeCase> {
+        vec![
+            BuiltinShapeCase {
+                name: "read_stdin",
+                args: set_stdin_and_no_args,
+            },
+            BuiltinShapeCase {
+                name: "int_to_string",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "float_to_string",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "string_to_int",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "char_to_int",
+                args: one_char,
+            },
+            BuiltinShapeCase {
+                name: "int_to_char",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "int_to_float",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "word_to_int",
+                args: one_word,
+            },
+            BuiltinShapeCase {
+                name: "int_to_word",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "word_to_string",
+                args: one_word,
+            },
+            BuiltinShapeCase {
+                name: "string_to_word",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_min_value",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_max_value",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_of_int",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_checked_of_int",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_to_int",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_add",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_checked_add",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_wrapping_add",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_saturating_add",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_sub",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_mul",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_div",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_rem",
+                args: int_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_int32_neg",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_min_value",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_max_value",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_of_word",
+                args: one_word,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_checked_of_word",
+                args: one_word,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_of_int",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_checked_of_int",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_to_word",
+                args: one_word,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_to_int",
+                args: one_word,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_add",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_checked_add",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_saturating_add",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_sub",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_mul",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_div",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_word32_rem",
+                args: word_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_of_float",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_to_float",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_neg",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_add",
+                args: float_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_sub",
+                args: float_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_mul",
+                args: float_pair,
+            },
+            BuiltinShapeCase {
+                name: "numeric_float32_div",
+                args: float_pair,
+            },
+            BuiltinShapeCase {
+                name: "string_length",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "substring",
+                args: substring_args,
+            },
+            BuiltinShapeCase {
+                name: "string_contains",
+                args: string_pair,
+            },
+            BuiltinShapeCase {
+                name: "starts_with",
+                args: string_pair,
+            },
+            BuiltinShapeCase {
+                name: "ends_with",
+                args: string_pair,
+            },
+            BuiltinShapeCase {
+                name: "trim",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "to_upper",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "to_lower",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "split",
+                args: split_args,
+            },
+            BuiltinShapeCase {
+                name: "string_replace",
+                args: string_replace_args,
+            },
+            BuiltinShapeCase {
+                name: "string_join",
+                args: string_join_args,
+            },
+            BuiltinShapeCase {
+                name: "sqrt",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "abs_float",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "abs_int",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "floor",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "ceil",
+                args: one_float,
+            },
+            BuiltinShapeCase {
+                name: "read_file",
+                args: read_file_arg,
+            },
+            BuiltinShapeCase {
+                name: "read_file_bytes",
+                args: read_file_bytes_arg,
+            },
+            BuiltinShapeCase {
+                name: "write_file",
+                args: write_file_args,
+            },
+            BuiltinShapeCase {
+                name: "file_exists",
+                args: file_exists_arg,
+            },
+            BuiltinShapeCase {
+                name: "list_dir",
+                args: list_dir_arg,
+            },
+            BuiltinShapeCase {
+                name: "remove_file",
+                args: remove_file_arg,
+            },
+            BuiltinShapeCase {
+                name: "create_dir",
+                args: create_dir_arg,
+            },
+            BuiltinShapeCase {
+                name: "is_dir",
+                args: list_dir_arg,
+            },
+            BuiltinShapeCase {
+                name: "is_file",
+                args: file_exists_arg,
+            },
+            BuiltinShapeCase {
+                name: "read_file_tagged",
+                args: read_file_tagged_args,
+            },
+            BuiltinShapeCase {
+                name: "edit_file_tagged",
+                args: edit_file_tagged_args,
+            },
+            BuiltinShapeCase {
+                name: "glob",
+                args: glob_arg,
+            },
+            BuiltinShapeCase {
+                name: "walk_dir",
+                args: list_dir_arg,
+            },
+            BuiltinShapeCase {
+                name: "path_join",
+                args: path_join_args,
+            },
+            BuiltinShapeCase {
+                name: "bytes_length",
+                args: one_bytes,
+            },
+            BuiltinShapeCase {
+                name: "bytes_to_string",
+                args: one_bytes,
+            },
+            BuiltinShapeCase {
+                name: "string_to_bytes",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "bytes_get",
+                args: bytes_get_args,
+            },
+            BuiltinShapeCase {
+                name: "bytes_slice",
+                args: bytes_slice_args,
+            },
+            BuiltinShapeCase {
+                name: "blake3",
+                args: one_bytes,
+            },
+            BuiltinShapeCase {
+                name: "random_bytes",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "rng_seed",
+                args: one_bytes,
+            },
+            BuiltinShapeCase {
+                name: "rng_bytes",
+                args: rng_pair_args,
+            },
+            BuiltinShapeCase {
+                name: "rng_int",
+                args: rng_pair_args,
+            },
+            BuiltinShapeCase {
+                name: "regex_match",
+                args: regex_match_args,
+            },
+            BuiltinShapeCase {
+                name: "regex_replace",
+                args: regex_replace_args,
+            },
+            BuiltinShapeCase {
+                name: "json_get",
+                args: json_path_args,
+            },
+            BuiltinShapeCase {
+                name: "json_keys",
+                args: json_string_arg,
+            },
+            BuiltinShapeCase {
+                name: "json_length",
+                args: json_string_arg,
+            },
+            BuiltinShapeCase {
+                name: "json_parse",
+                args: json_string_arg,
+            },
+            BuiltinShapeCase {
+                name: "json_to_string",
+                args: json_value_arg,
+            },
+            BuiltinShapeCase {
+                name: "getenv",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "epoch",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "epoch_ms",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "monotonic_ms",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "sleep",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "date_utc_tz",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "date_local_tz",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "date_timezone_of",
+                args: one_string,
+            },
+            BuiltinShapeCase {
+                name: "date_fixed_offset",
+                args: one_int,
+            },
+            BuiltinShapeCase {
+                name: "date_utc_now",
+                args: no_args,
+            },
+            BuiltinShapeCase {
+                name: "date_now_in",
+                args: timezone_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_from_instant",
+                args: date_instant_tz_args,
+            },
+            BuiltinShapeCase {
+                name: "date_to_epoch_ms",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_to_timezone",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_in_timezone",
+                args: date_tz_pair_args,
+            },
+            BuiltinShapeCase {
+                name: "date_year",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_month",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_day",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_hour",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_minute",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_second",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_millisecond",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_weekday",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_to_rfc3339",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_to_rfc2822",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_format",
+                args: date_format_args,
+            },
+            BuiltinShapeCase {
+                name: "date_parse_rfc3339",
+                args: date_rfc3339_arg,
+            },
+            BuiltinShapeCase {
+                name: "date_parse_rfc9557",
+                args: date_zoned_arg,
+            },
+            BuiltinShapeCase {
+                name: "assert",
+                args: assert_args,
+            },
+            BuiltinShapeCase {
+                name: "assert_eq",
+                args: assert_eq_args,
+            },
+        ]
+    }
+
+    fn unsampleable_builtin_reasons() -> HashMap<&'static str, &'static str> {
+        HashMap::from([
+            (
+                "print",
+                "VM intercept normalizes the raw helper result to unit; covered by VM output tests",
+            ),
+            (
+                "println",
+                "VM intercept normalizes the raw helper result to unit; covered by VM output tests",
+            ),
+            ("read_line", "would block on host stdin in unit tests"),
+            ("http_get", "network I/O is policy/runtime-dependent"),
+            ("http", "network I/O is policy/runtime-dependent"),
+            ("http_json", "network I/O is policy/runtime-dependent"),
+            ("http_msgpack", "network I/O is policy/runtime-dependent"),
+            ("http_bytes", "network I/O is policy/runtime-dependent"),
+            ("spawn", "runtime-only process request"),
+            ("await_process", "runtime-only process request"),
+            ("await_process_result", "runtime-only process request"),
+            ("cancel", "runtime-only process request"),
+            ("wait_any", "runtime-only process request"),
+            (
+                "exec",
+                "VM intercept plus host policy; covered by VM/host exec tests",
+            ),
+            ("exit", "non-returning process exit"),
+            ("panic", "polymorphic non-returning error path"),
+            (
+                "aws_config_sso_profile",
+                "async I/O runtime and credentials required",
+            ),
+            (
+                "aws_config_instance_profile",
+                "async I/O runtime and credentials required",
+            ),
+            ("aws_s3_client", "requires an aws_config host handle"),
+            (
+                "aws_s3_list_buckets",
+                "async I/O runtime and AWS credentials required; shape regression covered separately",
+            ),
+            ("aws_sqs_client", "requires an aws_config host handle"),
+            (
+                "aws_sqs_list_queues",
+                "async I/O runtime and AWS credentials required",
+            ),
+        ])
+    }
+
+    #[test]
+    fn sampled_builtin_runtime_shapes_match_signatures() {
+        let entries: HashMap<_, _> = builtin_entries().into_iter().collect();
+        for case in sample_cases() {
+            let Some(func) = entries.get(case.name).copied() else {
+                continue;
+            };
+            let sig = builtin_type_signature(case.name)
+                .unwrap_or_else(|| panic!("missing signature for {}", case.name));
+            let shape = parse_return_type(sig.ty)
+                .unwrap_or_else(|e| panic!("failed to parse {} signature: {e}", case.name))
+                .shape;
+            let mut heap = Heap::new();
+            let args = (case.args)(&mut heap);
+            let value = func(&args, &mut heap)
+                .unwrap_or_else(|e| panic!("sample invocation for {} failed: {e}", case.name));
+            check_value_shape(value, &heap, &shape).unwrap_or_else(|e| {
+                panic!(
+                    "{} returned value that does not match {}: {e}",
+                    case.name, sig.ty
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn runtime_shape_coverage_is_explicit_for_enabled_signatures() {
+        let sampled: HashSet<_> = sample_cases().into_iter().map(|case| case.name).collect();
+        let unsampleable = unsampleable_builtin_reasons();
+        let missing: Vec<_> = builtin_type_signatures()
+            .map(|(name, _)| name)
+            .filter(|name| !sampled.contains(name) && !unsampleable.contains_key(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "builtin signatures need a runtime shape sample or an explicit exemption: {missing:?}"
+        );
     }
 }

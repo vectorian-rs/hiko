@@ -771,7 +771,9 @@ mod tests {
 
         match value {
             SendableValue::Tuple(fields) => {
-                assert!(matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer"));
+                assert!(
+                    matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer")
+                );
             }
             other => panic!("unexpected S3 error value: {other:?}"),
         }
@@ -784,7 +786,9 @@ mod tests {
 
         match value {
             SendableValue::Tuple(fields) => {
-                assert!(matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer"));
+                assert!(
+                    matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer")
+                );
             }
             other => panic!("unexpected SQS error value: {other:?}"),
         }

@@ -1040,7 +1040,10 @@ mod tests {
 
         assert!(heap.check_aws_sso_profile("dev").is_ok());
         let err = heap.check_aws_sso_profile("prod").unwrap_err();
-        assert!(err.contains("AWS SSO profile 'prod' is not allowed"), "{err}");
+        assert!(
+            err.contains("AWS SSO profile 'prod' is not allowed"),
+            "{err}"
+        );
     }
 
     #[cfg(feature = "builtin-aws-s3")]

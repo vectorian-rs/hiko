@@ -6,6 +6,19 @@ Width-specific numeric APIs live in stdlib modules such as `Int32`, `Word32`,
 and `Float32`; see [numerics.md](../language/numerics.md). Their raw runtime builtins are
 internal aliases, not the public surface.
 
+## Type Signature Contract
+
+Builtin type signatures in `crates/hiko-builtin-meta/src/signatures.rs` are a
+soundness-critical contract. The type checker trusts these strings as the source
+of truth for builtin return types, so each signature must match the exact runtime
+shape produced by the Rust implementation: scalar kind, tuple arity, list element
+shape, option/data constructor layout, and opaque host-handle type.
+
+When adding or changing a builtin, update the signature and add or update the
+runtime shape sample in `crates/hiko-vm/src/shape_check.rs`. If a builtin cannot
+be sampled in a unit test because it is runtime-only, non-returning, or requires
+external I/O, it must have an explicit exemption there with a reason.
+
 ## I/O
 
 | Builtin      | Type             | Description                         |

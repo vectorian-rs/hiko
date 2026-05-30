@@ -148,7 +148,8 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "date_now_in" => "string -> string",
         "date_from_instant" => "int * string -> string",
         "date_to_epoch_ms" => "string -> int",
-        "date_to_timezone" | "date_in_timezone" => "string * string -> string",
+        "date_to_timezone" => "string -> string",
+        "date_in_timezone" => "string * string -> string",
         "date_year" | "date_month" | "date_day" | "date_hour" | "date_minute" | "date_second"
         | "date_millisecond" | "date_weekday" => "string -> int",
         "date_to_rfc3339" | "date_to_rfc2822" => "string -> string",

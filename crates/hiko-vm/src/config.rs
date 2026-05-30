@@ -1160,6 +1160,7 @@ folders = ["."]
     }
 
     #[test]
+    #[cfg(feature = "builtin-aws-config")]
     fn aws_config_policy_exposes_config_module_builtins_but_runtime_gates_use() {
         let config = RunConfig::from_toml(
             r#"
