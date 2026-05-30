@@ -1,7 +1,4 @@
 import Aws.Config
 import Aws.S3
 
-val _ =
-  Config.instance_profile ()
-  |> S3.client
-  |> S3.list_buckets
+val _ = Config.instance_profile () |> S3.client |> S3.list_buckets

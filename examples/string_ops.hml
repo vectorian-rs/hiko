@@ -1,5 +1,4 @@
 (* string operations *)
-
 val s = "  Hello, World!  "
 
 val trimmed = trim s
@@ -14,9 +13,11 @@ val csv = "alice,bob,charlie"
 
 val names = split (csv, ",")
 
-fun print_list xs = case xs of
+fun print_list xs =
+  case xs of
       [] => ()
-    | x :: rest => let
+    | x :: rest =>
+      let
         val _ = println ("  - " ^ x)
       in
         print_list rest

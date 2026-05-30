@@ -1,19 +1,21 @@
 (* benchmark.hml -- Walk .git recursively, hash every file. *)
-
 import Std.Filesystem
 
 val target_dir = ".git"
 
-fun hash_file path = let
+fun hash_file path =
+  let
     val bytes = Filesystem.read_bytes path
     val hash = blake3 bytes
   in
     hash ^ "  " ^ int_to_string (bytes_length bytes) ^ "  " ^ path
   end
 
-fun print_hashes_count files count = case files of
+fun print_hashes_count files count =
+  case files of
       [] => count
-    | path :: rest => let
+    | path :: rest =>
+      let
         val _ = println (hash_file path)
       in
         print_hashes_count rest (count + 1)

@@ -4,13 +4,13 @@ import __Builtin.Process
 structure FiberInternal = struct
   fun spawn_all fs =
     case fs of
-      []        => []
-    | f :: rest => BuiltinProcess.spawn_raw f :: spawn_all rest
+        [] => []
+      | f :: rest => BuiltinProcess.spawn_raw f :: spawn_all rest
 
   fun cancel_all fibers =
     case fibers of
-      []            => ()
-    | fiber :: rest =>
+        [] => ()
+      | fiber :: rest =>
         let
           val _ = BuiltinProcess.cancel_raw fiber
         in
@@ -19,15 +19,13 @@ structure FiberInternal = struct
 
   fun remove_first (target : pid) (fibers : pid list) =
     case fibers of
-      []            => []
-    | fiber :: rest =>
-        if fiber = target then rest
-        else fiber :: remove_first target rest
+        [] => []
+      | fiber :: rest => if fiber = target then rest else fiber :: remove_first target rest
 
   fun reap_all fibers =
     case fibers of
-      []            => ()
-    | fiber :: rest =>
+        [] => ()
+      | fiber :: rest =>
         let
           val _ = BuiltinProcess.await_result_raw fiber
         in
@@ -37,37 +35,31 @@ end
 
 structure Fiber = struct
   type 'a t = pid
+
   type error = BuiltinProcess.error
 
   fun render_error err =
     case err of
-      BuiltinProcess.RuntimeError msg => msg
-    | BuiltinProcess.Cancelled => "cancelled"
-    | BuiltinProcess.FuelExhausted => "fuel exhausted"
-    | BuiltinProcess.AlreadyJoined => "fiber already joined"
-    | BuiltinProcess.HeapObjectLimitExceeded (live, limit) =>
-        "heap limit exceeded: "
-        ^ int_to_string live
-        ^ " objects (max "
-        ^ int_to_string limit
-        ^ ")"
+        BuiltinProcess.RuntimeError msg => msg
+      | BuiltinProcess.Cancelled => "cancelled"
+      | BuiltinProcess.FuelExhausted => "fuel exhausted"
+      | BuiltinProcess.AlreadyJoined => "fiber already joined"
+      | BuiltinProcess.HeapObjectLimitExceeded (live, limit) => "heap limit exceeded: " ^ int_to_string live ^ " objects (max " ^ int_to_string limit ^ ")"
 
-  fun spawn f =
-    BuiltinProcess.spawn_raw f
+  fun spawn f = BuiltinProcess.spawn_raw f
 
   fun join fiber =
     case BuiltinProcess.await_result_raw fiber of
-      BuiltinProcess.Ok value => Ok value
-    | BuiltinProcess.Err err => Err err
+        BuiltinProcess.Ok value => Ok value
+      | BuiltinProcess.Err err => Err err
 
   fun join_or_fail fiber =
     case Fiber.join fiber of
-      Ok value => value
-    | Err err => panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
-    | _ => panic "Fiber.join_or_fail: unexpected result shape"
+        Ok value => value
+      | Err err => panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
+      | _ => panic "Fiber.join_or_fail: unexpected result shape"
 
-  fun cancel fiber =
-    BuiltinProcess.cancel_raw fiber
+  fun cancel fiber = BuiltinProcess.cancel_raw fiber
 
   fun both (f, g) =
     let
@@ -77,39 +69,35 @@ structure Fiber = struct
       val right_result = Fiber.join right
     in
       case (left_result, right_result) of
-        (Ok left_value, Ok right_value) =>
-          Ok (left_value, right_value)
-      | (Err err, _) => Err err
-      | (_, Err err) => Err err
-      | _ => Err (BuiltinProcess.RuntimeError "Fiber.both: unexpected result shape")
+          (Ok left_value, Ok right_value) => Ok (left_value, right_value)
+        | (Err err, _) => Err err
+        | (_, Err err) => Err err
+        | _ => Err (BuiltinProcess.RuntimeError "Fiber.both: unexpected result shape")
     end
 
   fun join_all fibers =
     case fibers of
-      [] => Ok []
-    | fiber :: rest =>
+        [] => Ok []
+      | fiber :: rest =>
         let
           val head = Fiber.join fiber
           val tail = Fiber.join_all rest
         in
           case (head, tail) of
-            (Ok value, Ok values) => Ok (value :: values)
-          | (Err err, _) => Err err
-          | (_, Err err) => Err err
-          | _ => Err (BuiltinProcess.RuntimeError "Fiber.join_all: unexpected result shape")
+              (Ok value, Ok values) => Ok (value :: values)
+            | (Err err, _) => Err err
+            | (_, Err err) => Err err
+            | _ => Err (BuiltinProcess.RuntimeError "Fiber.join_all: unexpected result shape")
         end
 
-  fun all fs =
-    Fiber.join_all (FiberInternal.spawn_all fs)
+  fun all fs = Fiber.join_all (FiberInternal.spawn_all fs)
 
   fun first (f, g) =
     let
       val left = BuiltinProcess.spawn_raw f
       val right = BuiltinProcess.spawn_raw g
       val winner = BuiltinProcess.wait_any_raw [left, right]
-      val loser =
-        if winner = left then right
-        else left
+      val loser = if winner = left then right else left
       val _ = BuiltinProcess.cancel_raw loser
       val _ = BuiltinProcess.await_result_raw loser
     in
@@ -121,8 +109,8 @@ structure Fiber = struct
       val fibers = FiberInternal.spawn_all fs
     in
       case fibers of
-        [] => Err (BuiltinProcess.RuntimeError "Fiber.any: empty list")
-      | _ =>
+          [] => Err (BuiltinProcess.RuntimeError "Fiber.any: empty list")
+        | _ =>
           let
             val winner = BuiltinProcess.wait_any_raw fibers
             val losers = FiberInternal.remove_first winner fibers

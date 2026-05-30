@@ -2,5 +2,7 @@ import Aws.Config
 import Aws.SQS
 
 val cfg = Config.instance_profile ()
+
 val sqs = SQS.client cfg
+
 val _ = SQS.list_queues sqs

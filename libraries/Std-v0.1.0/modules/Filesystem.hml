@@ -3,81 +3,69 @@ import __Builtin.Path
 
 structure Filesystem = struct
   effect ReadText of string
+
   effect ReadBytes of string
+
   effect WriteText of string * string
+
   effect Exists of string
+
   effect ListEntries of string
+
   effect Remove of string
+
   effect CreateDirectory of string
+
   effect IsDirectory of string
+
   effect IsRegularFile of string
+
   effect GlobMatches of string
+
   effect Walk of string
 
-  fun read_text path =
-    perform ReadText path
+  fun read_text path = perform ReadText path
 
-  fun read_bytes path =
-    perform ReadBytes path
+  fun read_bytes path = perform ReadBytes path
 
-  fun write_text path content =
-    perform WriteText (path, content)
+  fun write_text path content = perform WriteText (path, content)
 
-  fun exists path =
-    perform Exists path
+  fun exists path = perform Exists path
 
-  fun list_entries path =
-    perform ListEntries path
+  fun list_entries path = perform ListEntries path
 
-  fun remove path =
-    perform Remove path
+  fun remove path = perform Remove path
 
-  fun create_directory path =
-    perform CreateDirectory path
+  fun create_directory path = perform CreateDirectory path
 
-  fun is_directory path =
-    perform IsDirectory path
+  fun is_directory path = perform IsDirectory path
 
-  fun is_regular_file path =
-    perform IsRegularFile path
+  fun is_regular_file path = perform IsRegularFile path
 
-  fun glob_matches pattern =
-    perform GlobMatches pattern
+  fun glob_matches pattern = perform GlobMatches pattern
 
-  fun walk path =
-    perform Walk path
+  fun walk path = perform Walk path
 
-  fun join parts =
-    BuiltinPath.join_raw parts
+  fun join parts = BuiltinPath.join_raw parts
 
   fun run f =
-    handle f ()
+    handle
+      f ()
     with
       return x => x
-    | ReadText path k =>
-        resume k (BuiltinFilesystem.read_text_raw path)
-    | ReadBytes path k =>
-        resume k (BuiltinFilesystem.read_bytes_raw path)
-    | WriteText pair k =>
-        let
-          val (path, content) = pair
-        in
-          resume k (BuiltinFilesystem.write_text_raw (path, content))
-        end
-    | Exists path k =>
-        resume k (BuiltinFilesystem.exists_raw path)
-    | ListEntries path k =>
-        resume k (BuiltinFilesystem.list_entries_raw path)
-    | Remove path k =>
-        resume k (BuiltinFilesystem.remove_raw path)
-    | CreateDirectory path k =>
-        resume k (BuiltinFilesystem.create_directory_raw path)
-    | IsDirectory path k =>
-        resume k (BuiltinFilesystem.is_directory_raw path)
-    | IsRegularFile path k =>
-        resume k (BuiltinFilesystem.is_regular_file_raw path)
-    | GlobMatches pattern k =>
-        resume k (BuiltinFilesystem.glob_raw pattern)
-    | Walk path k =>
-        resume k (BuiltinFilesystem.walk_raw path)
+    | ReadText path k => resume k (BuiltinFilesystem.read_text_raw path)
+    | ReadBytes path k => resume k (BuiltinFilesystem.read_bytes_raw path)
+    | WriteText pair k => let
+        val (path, content) = pair
+      in
+        resume k (BuiltinFilesystem.write_text_raw (path, content))
+      end
+    | Exists path k => resume k (BuiltinFilesystem.exists_raw path)
+    | ListEntries path k => resume k (BuiltinFilesystem.list_entries_raw path)
+    | Remove path k => resume k (BuiltinFilesystem.remove_raw path)
+    | CreateDirectory path k => resume k (BuiltinFilesystem.create_directory_raw path)
+    | IsDirectory path k => resume k (BuiltinFilesystem.is_directory_raw path)
+    | IsRegularFile path k => resume k (BuiltinFilesystem.is_regular_file_raw path)
+    | GlobMatches pattern k => resume k (BuiltinFilesystem.glob_raw pattern)
+    | Walk path k => resume k (BuiltinFilesystem.walk_raw path)
 end

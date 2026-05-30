@@ -4,13 +4,12 @@ import __Builtin.AwsSqs
 
 structure SQS = struct
   type error = string
+
   type client = aws_sqs_client
 
-  val client : Config.config -> client = fn config =>
-    (BuiltinAwsSqs.client_raw config : aws_sqs_client)
+  val client : Config.config -> client = fn config => (BuiltinAwsSqs.client_raw config : aws_sqs_client)
 
-  val list_queues : client -> (string list, error) Result.result = fn client =>
-    case (BuiltinAwsSqs.list_queues_raw client : bool * string list * string) of
+  val list_queues : client -> (string list, error) Result.result = fn client => case (BuiltinAwsSqs.list_queues_raw client : bool * string list * string) of
       (true, output, _) => Result.Ok output
     | (false, _, message) => Result.Err message
 end

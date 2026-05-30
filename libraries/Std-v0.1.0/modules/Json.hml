@@ -1,12 +1,33 @@
+import __Builtin.Json
+
 structure Json = struct
   (* Constructor tags are fixed (0-6) and must match
    * the json_parse builtin in builtins.rs.
    *)
-  datatype json = JNull
-                | JBool of bool
-                | JInt of int
-                | JFloat of float
-                | JStr of string
-                | JArray of json list
-                | JObject of (string * json) list
+  datatype json =
+      JNull
+    | JBool of bool
+    | JInt of int
+    | JFloat of float
+    | JStr of string
+    | JArray of json list
+    | JObject of (string * json) list
+
+  fun parse text =
+    case BuiltinJson.parse_raw text of
+        JNull => JNull
+      | JBool value => JBool value
+      | JInt value => JInt value
+      | JFloat value => JFloat value
+      | JStr value => JStr value
+      | JArray value => JArray value
+      | JObject value => JObject value
+
+  fun to_string value = BuiltinJson.to_string_raw value
+
+  fun get path text = BuiltinJson.get_raw (text, path)
+
+  fun keys text = BuiltinJson.keys_raw text
+
+  fun length text = BuiltinJson.length_raw text
 end

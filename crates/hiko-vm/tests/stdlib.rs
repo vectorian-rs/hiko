@@ -55,6 +55,11 @@ fn test_stdlib_hashline() {
 }
 
 #[test]
+fn test_stdlib_wrappers() {
+    run_hiko_file("../../tests/run/test_std_wrappers.hml");
+}
+
+#[test]
 fn test_numeric_module_examples() {
     run_hiko_file("../../examples/numeric_modules.hml");
 }

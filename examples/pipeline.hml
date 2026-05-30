@@ -3,7 +3,6 @@
  * Replaces: find . -name "*.rs" | xargs grep "fn " | wc -l
  * With: glob + read + regex + fold — type-checked, no shell
  *)
-
 import Std.List
 
 fun lines s = split (s, "\n")
@@ -19,7 +18,8 @@ fun count_fns file = file |> read_file |> lines |> List.filter is_function_line 
 
 val counts = rs_files |> List.map (fn f => (f, count_fns f))
 
-fun sum_counts xs = case xs of
+fun sum_counts xs =
+  case xs of
       [] => 0
     | (_, n) :: rest => n + sum_counts rest
 

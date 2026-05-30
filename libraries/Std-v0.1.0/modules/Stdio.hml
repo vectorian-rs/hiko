@@ -1,0 +1,18 @@
+import __Builtin.Stdio
+
+signature STDIO = sig
+  val print : string -> unit
+  val println : string -> unit
+  val read_line : unit -> string
+  val read_stdin : unit -> string
+end
+
+structure Stdio :> STDIO = struct
+  fun print text = BuiltinStdio.print_raw text
+
+  fun println text = BuiltinStdio.println_raw text
+
+  fun read_line () = BuiltinStdio.read_line_raw ()
+
+  fun read_stdin () = BuiltinStdio.read_stdin_raw ()
+end

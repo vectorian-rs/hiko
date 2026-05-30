@@ -1,32 +1,34 @@
 structure Option = struct
-  datatype 'a option = None | Some of 'a
+  datatype 'a option =
+      None
+    | Some of 'a
 
   fun is_some opt =
     case opt of
-      Some _ => true
-    | None   => false
+        Some _ => true
+      | None => false
 
   fun is_none opt =
     case opt of
-      None   => true
-    | Some _ => false
+        None => true
+      | Some _ => false
 
   fun map f opt =
     case opt of
-      None   => None
-    | Some x => Some (f x)
+        None => None
+      | Some x => Some (f x)
 
   fun map_option f opt = map f opt
 
   fun with_default default opt =
     case opt of
-      None   => default
-    | Some x => x
+        None => default
+      | Some x => x
 
   fun get_or opt default = with_default default opt
 
   fun flat_map_option f opt =
     case opt of
-      None   => None
-    | Some x => f x
+        None => None
+      | Some x => f x
 end

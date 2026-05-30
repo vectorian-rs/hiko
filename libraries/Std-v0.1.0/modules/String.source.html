@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.String source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.String</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">String</span></code></pre><p class="meta">Raw source: <a href="./String.hml">String.hml</a><br>BLAKE3: <code title="blake3:345be0994d16bf2bb35de783608f0245ca486296d217ea87d2c63b552a33fc01">blake3:345be099...2a33fc01</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>fun</code> <strong>length</strong></li><li><code>fun</code> <strong>substring</strong></li><li><code>fun</code> <strong>contains</strong></li><li><code>fun</code> <strong>starts_with</strong></li><li><code>fun</code> <strong>ends_with</strong></li><li><code>fun</code> <strong>trim</strong></li><li><code>fun</code> <strong>split</strong></li><li><code>fun</code> <strong>replace</strong></li><li><code>fun</code> <strong>join</strong></li><li><code>fun</code> <strong>upper</strong></li><li><code>fun</code> <strong>lower</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">String</span>
+
+<span class="tok-keyword">signature</span> <span class="tok-module">STRING</span> = <span class="tok-keyword">sig</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">length</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">int</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">substring</span> : <span class="tok-type">int</span> -&gt; <span class="tok-type">int</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">contains</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">bool</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">starts_with</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">bool</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">ends_with</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">bool</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">trim</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">split</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> <span class="tok-type">list</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">replace</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">join</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> <span class="tok-type">list</span> -&gt; <span class="tok-type">string</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">upper</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span>
+  <span class="tok-keyword">val</span> <span class="tok-function">lower</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span>
+<span class="tok-keyword">end</span>
+
+<span class="tok-keyword">structure</span> <span class="tok-module">String</span> :&gt; STRING = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">length</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">length_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">substring</span> <span class="tok-variable">start</span> <span class="tok-variable">len</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">substring_raw</span> (<span class="tok-variable">text</span>, <span class="tok-variable">start</span>, <span class="tok-variable">len</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">contains</span> <span class="tok-variable">needle</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">contains_raw</span> (<span class="tok-variable">text</span>, <span class="tok-variable">needle</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">starts_with</span> <span class="tok-variable">prefix</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">starts_with_raw</span> (<span class="tok-variable">text</span>, <span class="tok-variable">prefix</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">ends_with</span> <span class="tok-variable">suffix</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">ends_with_raw</span> (<span class="tok-variable">text</span>, <span class="tok-variable">suffix</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">trim</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">trim_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">split</span> <span class="tok-variable">sep</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">split_raw</span> (<span class="tok-variable">text</span>, <span class="tok-variable">sep</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">replace</span> <span class="tok-variable">pattern</span> <span class="tok-variable">replacement</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">replace_raw</span> (<span class="tok-variable">text</span>, <span class="tok-variable">pattern</span>, <span class="tok-variable">replacement</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">join</span> <span class="tok-variable">sep</span> <span class="tok-variable">parts</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">join_raw</span> (<span class="tok-variable">parts</span>, <span class="tok-variable">sep</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">upper</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">upper_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">lower</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinString</span>.<span class="tok-variable-member">lower_raw</span> <span class="tok-variable">text</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

@@ -1,0 +1,74 @@
+import Std.Bytes
+import Std.Env
+import Std.Json
+import Std.List
+import Std.Random
+import Std.Regex
+import Std.Stdio
+import Std.String
+import Std.Testing
+import Std.Exec
+
+val _ = Testing.equal (String.length "café") 4 "String.length counts chars"
+
+val _ = Testing.equal (String.substring 1 3 "hello") "ell" "String.substring"
+
+val _ = Testing.check (String.contains "ell" "hello") "String.contains"
+
+val _ = Testing.check (String.starts_with "he" "hello") "String.starts_with"
+
+val _ = Testing.check (String.ends_with "lo" "hello") "String.ends_with"
+
+val _ = Testing.equal (String.trim "  hi  ") "hi" "String.trim"
+
+val _ = Testing.equal (String.join "," ["a", "b"]) "a,b" "String.join"
+
+val _ = Testing.equal (String.replace "l" "L" "hello") "heLLo" "String.replace uses literal replacement"
+
+val _ = Testing.equal (String.upper "hi") "HI" "String.upper"
+
+val _ = Testing.equal (String.lower "HI") "hi" "String.lower"
+
+val bytes = Bytes.of_string "abc"
+
+val _ = Testing.equal (Bytes.length bytes) 3 "Bytes.length"
+
+val _ = Testing.equal (Bytes.to_string bytes) "abc" "Bytes.to_string"
+
+val _ = Testing.equal (Bytes.get 1 bytes) 98 "Bytes.get"
+
+val _ = Testing.equal (Bytes.length (Bytes.slice 1 2 bytes)) 2 "Bytes.slice"
+
+val entropy = Random.entropy 4
+
+val _ = Testing.equal (Bytes.length entropy) 4 "Random.entropy"
+
+val rng0 = Random.seed (Bytes.of_string "seed")
+
+val (n1, rng1) = Random.int_between 100 rng0
+
+val _ = Testing.check (n1 >= 0) "Random.int lower bound"
+
+val _ = Testing.check (n1 < 100) "Random.int upper bound"
+
+val (random_bytes, _) = Random.bytes 5 rng1
+
+val _ = Testing.equal (Bytes.length random_bytes) 5 "Random.bytes"
+
+val _ = Testing.check (Regex.matches "^h" "hello") "Regex.matches"
+
+val _ = Testing.equal (Regex.replace "l+" "L" "hello") "heLo" "Regex.replace"
+
+val _ = Testing.check (String.length (Env.get "THIS_HIKO_TEST_ENV_VAR_SHOULD_NOT_EXIST") >= 0) "Env.get"
+
+val parsed = Json.parse "{\"name\":\"hiko\",\"xs\":[1,2]}"
+
+val _ = Testing.equal (Json.get "name" "{\"name\":\"hiko\"}") "hiko" "Json.get"
+
+val _ = Testing.equal (Json.length "[1,2,3]") 3 "Json.length"
+
+val _ = Testing.equal (List.length (Json.keys "{\"a\":1,\"b\":2}")) 2 "Json.keys"
+
+val _ = Testing.check (String.contains "hiko" (Json.to_string parsed)) "Json.to_string"
+
+val _ = Stdio.println "std wrapper tests passed"

@@ -1,6 +1,5 @@
 use "../../libraries/Aws-v0.1.0/modules/S3.hml"
 
-fun shape cfg =
-  cfg |> S3.client |> S3.list_buckets
+fun shape cfg = cfg |> S3.client |> S3.list_buckets
 
 val _ = println "aws api shape compiled"

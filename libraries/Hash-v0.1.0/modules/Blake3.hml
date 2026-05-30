@@ -1,6 +1,5 @@
 import __Builtin.Hash
 
 structure Blake3 = struct
-  fun hash bytes =
-    BuiltinHash.blake3_raw bytes
+  fun hash bytes = BuiltinHash.blake3_raw bytes
 end

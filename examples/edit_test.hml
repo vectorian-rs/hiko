@@ -22,13 +22,15 @@ val lines = split (tagged, "\n")
 
 (* Manually construct edits using hashes from the output *)
 (* We'll read the hash for line 2 from the tagged output *)
-fun get_hash line = case split (line, "\t") of
+fun get_hash line =
+  case split (line, "\t") of
       prefix :: _ => (case split (prefix, ":") of
           _ :: h :: _ => h
         | _ => "")
     | _ => ""
 
-fun get_line_hash (tagged_lines, n) = case tagged_lines of
+fun get_line_hash (tagged_lines, n) =
+  case tagged_lines of
       [] => ""
     | l :: rest => if starts_with (l, int_to_string n ^ ":") then get_hash l else get_line_hash (rest, n)
 

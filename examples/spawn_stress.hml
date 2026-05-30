@@ -8,14 +8,14 @@
  * Note: very large counts will hit the current VM MAX_STACK because the
  * root process builds and traverses one large pid list.
  *)
-
 import Std.List
 
 val count = 6000
 
 fun spawn_many n acc = if n = 0 then acc else spawn_many (n - 1) (spawn (fn () => n) :: acc)
 
-fun await_all pids acc = case pids of
+fun await_all pids acc =
+  case pids of
       [] => acc
     | pid :: rest => await_all rest (acc + await_process pid)
 

@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Bytes source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Bytes</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Bytes</span></code></pre><p class="meta">Raw source: <a href="./Bytes.hml">Bytes.hml</a><br>BLAKE3: <code title="blake3:e8d0612673137f1495847897193806705ef733ad2e4103a8a0ce7a37ddaeedbb">blake3:e8d06126...ddaeedbb</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>t</strong></li><li><code>fun</code> <strong>length</strong></li><li><code>fun</code> <strong>to_string</strong></li><li><code>fun</code> <strong>of_string</strong></li><li><code>fun</code> <strong>get</strong></li><li><code>fun</code> <strong>slice</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">Bytes</span>
+
+<span class="tok-keyword">structure</span> <span class="tok-module">Bytes</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">t</span> = <span class="tok-type">bytes</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">length</span> <span class="tok-variable">value</span> = <span class="tok-namespace">BuiltinBytes</span>.<span class="tok-variable-member">length_raw</span> <span class="tok-variable">value</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_string</span> <span class="tok-variable">value</span> = <span class="tok-namespace">BuiltinBytes</span>.<span class="tok-variable-member">to_string_raw</span> <span class="tok-variable">value</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">of_string</span> <span class="tok-variable">text</span> = <span class="tok-namespace">BuiltinBytes</span>.<span class="tok-variable-member">of_string_raw</span> <span class="tok-variable">text</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">get</span> <span class="tok-variable">index</span> <span class="tok-variable">value</span> = <span class="tok-namespace">BuiltinBytes</span>.<span class="tok-variable-member">get_raw</span> (<span class="tok-variable">value</span>, <span class="tok-variable">index</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">slice</span> <span class="tok-variable">start</span> <span class="tok-variable">len</span> <span class="tok-variable">value</span> = <span class="tok-namespace">BuiltinBytes</span>.<span class="tok-variable-member">slice_raw</span> (<span class="tok-variable">value</span>, <span class="tok-variable">start</span>, <span class="tok-variable">len</span>)
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

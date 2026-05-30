@@ -9,18 +9,18 @@
  *   - Handlers bridge the effect to builtins or test data
  *   - Business logic doesn't know which handler is installed
  *)
-
 effect HttpGet of string
 
 (* ── Business logic ────────────────────────────────────────── *)
-
-fun fetch url = let
+fun fetch url =
+  let
     val (status, _, body) = perform HttpGet url
   in
     (url, status, string_length body)
   end
 
-fun fetch_all () = let
+fun fetch_all () =
+  let
     val a = fetch "http://127.0.0.1:8000/index.html"
     val b = fetch "http://127.0.0.1:8000/Std-v0.1.0/package.toml"
     val c = fetch "http://127.0.0.1:8000/Std-v0.1.0/modules/Result.hml"
@@ -29,10 +29,11 @@ fun fetch_all () = let
   end
 
 (* ── Display ───────────────────────────────────────────────── *)
-
-fun show xs = case xs of
+fun show xs =
+  case xs of
       [] => ()
-    | (url, status, len) :: rest => let
+    | (url, status, len) :: rest =>
+      let
         val _ = println ("    " ^ url)
         val _ = println ("      status: " ^ int_to_string status ^ "  body: " ^ int_to_string len ^ " bytes")
       in
@@ -40,8 +41,8 @@ fun show xs = case xs of
       end
 
 (* ── 1. Mock handler ───────────────────────────────────────── *)
-
-fun with_mock_http f = handle
+fun with_mock_http f =
+  handle
     f ()
   with
     return x => x
@@ -60,8 +61,8 @@ val _ = show mock_results
 val _ = println ("    time: " ^ int_to_string mock_time ^ " ms\n")
 
 (* ── 2. Real handler ───────────────────────────────────────── *)
-
-fun with_real_http f = handle
+fun with_real_http f =
+  handle
     f ()
   with
     return x => x

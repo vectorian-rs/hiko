@@ -1,8 +1,10 @@
 (* Either type for error handling *)
+datatype ('a, 'b) either =
+    Left of 'a
+  | Right of 'b
 
-datatype ('a, 'b) either = Left of 'a | Right of 'b
-
-fun map_right f e = case e of
+fun map_right f e =
+  case e of
       Left x => Left x
     | Right y => Right (f y)
 
@@ -12,13 +14,15 @@ val ok = safe_div 10 3
 
 val err = safe_div 10 0
 
-val r1 = case ok of
-    Left _ => ~1
-  | Right n => n
+val r1 =
+  case ok of
+      Left _ => ~1
+    | Right n => n
 
-val r2 = case err of
-    Left _ => ~1
-  | Right n => n
+val r2 =
+  case err of
+      Left _ => ~1
+    | Right n => n
 
 val _ = println (int_to_string r1)
 

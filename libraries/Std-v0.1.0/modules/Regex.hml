@@ -1,0 +1,12 @@
+import __Builtin.Regex
+
+signature REGEX = sig
+  val matches : string -> string -> bool
+  val replace : string -> string -> string -> string
+end
+
+structure Regex :> REGEX = struct
+  fun matches pattern text = BuiltinRegex.match_raw (text, pattern)
+
+  fun replace pattern replacement text = BuiltinRegex.replace_raw (text, pattern, replacement)
+end

@@ -1,0 +1,21 @@
+import __Builtin.Random
+
+signature RANDOM = sig
+  type t
+  val entropy : int -> bytes
+  val seed : bytes -> t
+  val bytes : int -> t -> bytes * t
+  val int_between : int -> t -> int * t
+end
+
+structure Random :> RANDOM = struct
+  type t = rng
+
+  fun entropy count = BuiltinRandom.random_bytes_raw count
+
+  fun seed bytes = BuiltinRandom.seed_raw bytes
+
+  fun bytes count rng = BuiltinRandom.bytes_raw (rng, count)
+
+  fun int_between bound rng = BuiltinRandom.int_raw (rng, bound)
+end

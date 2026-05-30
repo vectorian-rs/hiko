@@ -1,12 +1,13 @@
 (* Fetch a URL and print status, headers, and body *)
-
 val (status, headers, body) = http_get "http://127.0.0.1:8000/index.html"
 
 val _ = println ("Status: " ^ int_to_string status)
 
-fun print_headers hs = case hs of
+fun print_headers hs =
+  case hs of
       [] => ()
-    | (k, v) :: rest => let
+    | (k, v) :: rest =>
+      let
         val _ = println ("  " ^ k ^ ": " ^ v)
       in
         print_headers rest
@@ -14,8 +15,7 @@ fun print_headers hs = case hs of
 
 val _ = println "Headers:"
 
-val _ = print_headers headers
-(* 
+val _ = print_headers headers  (* 
   val _ = println "Body:" 
   val _ = println body 
 *)

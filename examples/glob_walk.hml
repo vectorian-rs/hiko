@@ -1,5 +1,4 @@
 (* glob_walk.hml -- File discovery with glob patterns and recursive walk *)
-
 import Std.List
 
 (* Find all Rust source files *)
@@ -31,9 +30,10 @@ val toml_files = glob "crates/*/Cargo.toml"
 val _ = List.map (fn f => let
   val content = read_file f
   val lines = split (content, "\n")
-  val name_line = case List.filter (fn l => starts_with (l, "name")) lines of
-      l :: _ => l
-    | [] => "name = ?"
+  val name_line =
+    case List.filter (fn l => starts_with (l, "name")) lines of
+        l :: _ => l
+      | [] => "name = ?"
 in
   println (f ^ ": " ^ trim name_line)
 end) toml_files

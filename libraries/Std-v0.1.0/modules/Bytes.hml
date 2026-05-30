@@ -1,0 +1,15 @@
+import __Builtin.Bytes
+
+structure Bytes = struct
+  type t = bytes
+
+  fun length value = BuiltinBytes.length_raw value
+
+  fun to_string value = BuiltinBytes.to_string_raw value
+
+  fun of_string text = BuiltinBytes.of_string_raw text
+
+  fun get index value = BuiltinBytes.get_raw (value, index)
+
+  fun slice start len value = BuiltinBytes.slice_raw (value, start, len)
+end

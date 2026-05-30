@@ -2,4 +2,4 @@ name = "Hash"
 version = "0.1.0"
 
 [modules]
-Blake3 = "blake3:4ac08134cb227944583c7c84c8a503b17bee85fcb96ed7e6487d651be1b99114"
+Blake3 = "blake3:6b4c386549ec4990eb92285d3d3e91145cb0909f925e63cd7e3b5cdb9ceaa28a"

@@ -4,10 +4,10 @@ val child = Fiber.spawn (fn () => json_parse "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,
 
 val heap_status =
   case Fiber.join child of
-    Ok _ => 0
-  | Err err =>
-      if string_contains (Fiber.render_error err, "heap limit exceeded: ") then 1 else 0
-  | _ => 0
+      Ok _ => 0
+    | Err err => if string_contains (Fiber.render_error err, "heap limit exceeded: ") then 1 else 0
+    | _ => 0
 
 val _ = assert_eq (heap_status, 1, "heap limit exceeded")
+
 val _ = println "fiber heap tests passed"

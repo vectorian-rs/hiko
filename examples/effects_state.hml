@@ -3,13 +3,13 @@
  * Demonstrates the get/put pattern for managing state
  * without mutable variables — pure functional state machine.
  *)
-
 effect Get of unit
 
 effect Put of int
 
 (* Simple state runner — returns final result, discards state *)
-fun run_state init f = handle
+fun run_state init f =
+  handle
     f ()
   with
     return x => x
@@ -17,7 +17,8 @@ fun run_state init f = handle
   | Put n k => run_state n (fn _ => resume k ())
 
 (* A counter that increments and returns the old value *)
-fun increment () = let
+fun increment () =
+  let
     val current = perform Get ()
     val _ = perform Put (current + 1)
   in
@@ -25,7 +26,8 @@ fun increment () = let
   end
 
 (* Use the counter *)
-fun program () = let
+fun program () =
+  let
     val a = increment ()
     val b = increment ()
     val c = increment ()

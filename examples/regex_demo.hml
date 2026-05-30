@@ -1,5 +1,4 @@
 (* regex_demo.hml -- Regular expression matching and replacement *)
-
 import Std.List
 
 (* Simple matching *)

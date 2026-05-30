@@ -1,5 +1,4 @@
 (* search.hml -- Demonstrates glob, walk_dir, regex_match, regex_replace *)
-
 import Std.List
 
 (* Glob: find all .hml files in examples/ *)

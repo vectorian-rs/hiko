@@ -1,53 +1,54 @@
 structure Result = struct
-  datatype ('a, 'e) result = Ok of 'a | Err of 'e
+  datatype ('a, 'e) result =
+      Ok of 'a
+    | Err of 'e
 
-  fun is_ok result =
-    case result of
-      Ok _  => true
-    | Err _ => false
-
-  fun is_err result =
-    case result of
-      Ok _  => false
-    | Err _ => true
-
+  (* 1. Core functor operations *)
   fun map f result =
     case result of
-      Ok value => Ok (f value)
-    | Err err  => Err err
+        Ok value => Ok (f value)
+      | Err err => Err err
 
   fun map_err f result =
     case result of
-      Ok value => Ok value
-    | Err err  => Err (f err)
+        Ok value => Ok value
+      | Err err => Err (f err)
 
-  fun and_then f result =
+  (* 2. Core monadic operations *)
+  fun bind f result =
     case result of
-      Ok value => f value
-    | Err err  => Err err
+        Ok value => f value
+      | Err err => Err err
 
   fun flatten result =
     case result of
-      Ok inner => inner
-    | Err err  => Err err
+        Ok inner => inner
+      | Err err => Err err
 
+  (* 3. Catamorphism / elimination *)
   fun fold on_ok on_err result =
     case result of
-      Ok value => on_ok value
-    | Err err  => on_err err
+        Ok value => on_ok value
+      | Err err => on_err err
 
+  (* 4. Fallback routing *)
   fun or_else f result =
     case result of
-      Ok value => Ok value
-    | Err err  => f err
+        Ok value => Ok value
+      | Err err => f err
 
-  fun unwrap_or default result =
-    case result of
-      Ok value => value
-    | Err _    => default
+  (* 5. Convenience aliases / derived helpers *)
+  fun and_then f result = bind f result
 
-  fun unwrap_or_else f result =
-    case result of
-      Ok value => value
-    | Err err  => f err
+  fun is_ok result = fold (fn _ => true) (fn _ => false) result
+
+  fun is_err result = fold (fn _ => false) (fn _ => true) result
+
+  fun unwrap_or default result = fold (fn value => value) (fn _ => default) result
+
+  fun unwrap_or_else f result = fold (fn value => value) f result
+
+  fun either on_ok on_err result = fold on_ok on_err result
+
+  fun ignore _ = ()
 end

@@ -1,18 +1,21 @@
 (* Standard list operations *)
-
-fun map f xs = case xs of
+fun map f xs =
+  case xs of
       [] => []
     | x :: xs => f x :: map f xs
 
-fun filter p xs = case xs of
+fun filter p xs =
+  case xs of
       [] => []
     | x :: xs => if p x then x :: filter p xs else filter p xs
 
-fun foldl f init xs = case xs of
+fun foldl f init xs =
+  case xs of
       [] => init
     | x :: rest => foldl f (f (init, x)) rest
 
-fun length xs = case xs of
+fun length xs =
+  case xs of
       [] => 0
     | _ :: xs => 1 + length xs
 

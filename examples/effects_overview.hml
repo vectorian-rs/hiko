@@ -10,12 +10,14 @@
  *)
 
 (* ── 1. Error handling ─────────────────────────────────────── *)
-
-datatype 'a result = Ok of 'a | Err of string
+datatype 'a result =
+    Ok of 'a
+  | Err of string
 
 effect Fail of string
 
-fun run_safe f = handle
+fun run_safe f =
+  handle
     f ()
   with
     return x => Ok x
@@ -27,21 +29,23 @@ val _ = println "--- Error handling ---"
 
 val good = run_safe (fn () => divide 100 5 + divide 20 4)
 
-val _ = case good of
-    Ok n => println ("100/5 + 20/4 = " ^ int_to_string n)
-  | Err e => println ("Error: " ^ e)
+val _ =
+  case good of
+      Ok n => println ("100/5 + 20/4 = " ^ int_to_string n)
+    | Err e => println ("Error: " ^ e)
 
 val bad = run_safe (fn () => divide 10 0)
 
-val _ = case bad of
-    Ok n => println ("Unexpected: " ^ int_to_string n)
-  | Err e => println ("Caught: " ^ e)
+val _ =
+  case bad of
+      Ok n => println ("Unexpected: " ^ int_to_string n)
+    | Err e => println ("Caught: " ^ e)
 
 (* ── 2. Generators ─────────────────────────────────────────── *)
-
 effect Yield of int
 
-fun collect f = handle
+fun collect f =
+  handle
     f ()
   with
     return _ => []
@@ -61,10 +65,12 @@ val _ = println "\n--- Generators ---"
 
 val _ = println "First 10 Fibonacci numbers:"
 
-fun show_list xs = case xs of
+fun show_list xs =
+  case xs of
       [] => println ""
     | [x] => println (int_to_string x)
-    | x :: rest => let
+    | x :: rest =>
+      let
         val _ = print (int_to_string x ^ ", ")
       in
         show_list rest
@@ -73,19 +79,20 @@ fun show_list xs = case xs of
 val _ = show_list fibs
 
 (* ── 3. Mutable state ──────────────────────────────────────── *)
-
 effect Get of unit
 
 effect Put of int
 
-fun run_state init f = handle
+fun run_state init f =
+  handle
     f ()
   with
     return x => (init, x)
   | Get _ k => run_state init (fn _ => resume k init)
   | Put n k => run_state n (fn _ => resume k ())
 
-fun count_each ws = case ws of
+fun count_each ws =
+  case ws of
       [] => ()
     | w :: rest => if string_length w > 0 then let
         val n = perform Get ()
@@ -94,7 +101,8 @@ fun count_each ws = case ws of
         count_each rest
       end else count_each rest
 
-fun count_words text = let
+fun count_words text =
+  let
     val words = split (text, " ")
   in
     count_each words

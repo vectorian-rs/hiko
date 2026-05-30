@@ -1,5 +1,4 @@
 (* Read, write, and check files *)
-
 val path = "target/hiko_example.txt"
 
 val _ = write_file (path, "Hello from Hiko!\nLine 2\n")
@@ -10,7 +9,8 @@ val _ = println contents
 
 val lines = split (contents, "\n")
 
-fun print_lines xs = case xs of
+fun print_lines xs =
+  case xs of
       [] => ()
     | x :: rest => if string_length x > 0 then let
         val _ = println ("  > " ^ x)

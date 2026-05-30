@@ -1,5 +1,4 @@
 (* Closures and higher-order functions *)
-
 fun compose f g = fn x => f (g x)
 
 fun twice f x = f (f x)

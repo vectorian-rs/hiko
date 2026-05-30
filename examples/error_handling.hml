@@ -2,12 +2,14 @@
  * Hiko has no exceptions -- errors are values,
  * modeled with a Fail effect and a result type.
  *)
-
-datatype 'a result = Ok of 'a | Err of string
+datatype 'a result =
+    Ok of 'a
+  | Err of string
 
 effect Fail of string
 
-fun run_safe f = handle
+fun run_safe f =
+  handle
     f ()
   with
     return x => Ok x
@@ -15,7 +17,8 @@ fun run_safe f = handle
 
 fun divide a b = if b = 0 then perform Fail "division by zero" else a / b
 
-fun safe_compute () = let
+fun safe_compute () =
+  let
     val x = divide 100 5
     val y = divide x 4
   in
@@ -24,11 +27,13 @@ fun safe_compute () = let
 
 val good = run_safe safe_compute
 
-val _ = case good of
-    Ok n => println ("Success: " ^ int_to_string n)
-  | Err msg => println ("Error: " ^ msg)
+val _ =
+  case good of
+      Ok n => println ("Success: " ^ int_to_string n)
+    | Err msg => println ("Error: " ^ msg)
 
-fun bad_compute () = let
+fun bad_compute () =
+  let
     val x = divide 100 0
   in
     x + 1
@@ -36,6 +41,7 @@ fun bad_compute () = let
 
 val bad = run_safe bad_compute
 
-val _ = case bad of
-    Ok n => println ("Success: " ^ int_to_string n)
-  | Err msg => println ("Error: " ^ msg)
+val _ =
+  case bad of
+      Ok n => println ("Success: " ^ int_to_string n)
+    | Err msg => println ("Error: " ^ msg)

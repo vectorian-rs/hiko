@@ -1,10 +1,11 @@
 (* Count words in a string *)
-
-fun length xs = case xs of
+fun length xs =
+  case xs of
       [] => 0
     | _ :: rest => 1 + length rest
 
-fun filter p xs = case xs of
+fun filter p xs =
+  case xs of
       [] => []
     | x :: rest => if p x then x :: filter p rest else filter p rest
 

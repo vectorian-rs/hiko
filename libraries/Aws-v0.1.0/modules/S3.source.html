@@ -1,55 +1,18 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Aws.S3 source</title>
-    <link rel="stylesheet" href="../../_assets/docgen.css" />
-  </head>
-  <body>
-    <main>
-      <div class="eyebrow"><a href="./index.html">Aws modules</a></div>
-      <h1>Aws.S3</h1>
-      <p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p>
-      <section class="panel">
-        <h2>Use</h2>
-        <pre class="code-block"><code>import Aws.S3</code></pre>
-        <p class="meta">
-          Raw source: <a href="./S3.hml">S3.hml</a><br />BLAKE3:
-          <code title="blake3:5471e19745b2c822947947984fe679e98efdd4d90b79e05684382b29cf0d271b">blake3:5471e197...cf0d271b</code>
-        </p>
-      </section>
-      <section class="panel">
-        <h2>Detected exports</h2>
-        <ul class="siglist">
-          <li><code>type bucket</code></li>
-          <li><code>type error</code></li>
-          <li><code>type client</code></li>
-          <li><code>val client</code></li>
-          <li><code>val list_buckets</code></li>
-        </ul>
-      </section>
-      <section class="panel">
-        <h2>Source</h2>
-        <pre class="code-block"><code>import Std.Result
-import Aws.Config
-import __Builtin.AwsS3
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Aws.S3 source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Aws modules</a></div><h1>Aws.S3</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">S3</span></code></pre><p class="meta">Raw source: <a href="./S3.hml">S3.hml</a><br>BLAKE3: <code title="blake3:d3205f10e2dfa3772967570961563f47a0a406406d2cca21b41b881ddf383f36">blake3:d3205f10...df383f36</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>bucket</strong></li><li><code>type</code> <strong>error</strong></li><li><code>type</code> <strong>client</strong></li><li><code>val</code> <strong>client</strong></li><li><code>val</code> <strong>list_buckets</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Result</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">Config</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">AwsS3</span>
 
-structure S3 = struct
-  type bucket = string * string * string
-  type error = string
-  type client = aws_s3_client
+<span class="tok-keyword">structure</span> <span class="tok-module">S3</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">bucket</span> = <span class="tok-type">string</span> * <span class="tok-type">string</span> * <span class="tok-type">string</span>
 
-  val client : Config.config -&gt; client = fn config =&gt;
-    (BuiltinAwsS3.client_raw config : aws_s3_client)
+  <span class="tok-keyword">type</span> <span class="tok-type">error</span> = <span class="tok-type">string</span>
 
-  val list_buckets : client -&gt; (bucket list, error) Result.result = fn client =&gt;
-    case (BuiltinAwsS3.list_buckets_raw client : bool * (string * string * string) list * string) of
-      (true, output, _) =&gt; Result.Ok output
-    | (false, _, message) =&gt; Result.Err message
-end
-</code></pre>
-      </section>
-    </main>
-  </body>
-</html>
+  <span class="tok-keyword">type</span> <span class="tok-type">client</span> = <span class="tok-type">aws_s3_client</span>
+
+  <span class="tok-keyword">val</span> <span class="tok-variable">client</span> : <span class="tok-namespace">Config</span>.<span class="tok-variable-member">config</span> -&gt; <span class="tok-type">client</span> = <span class="tok-keyword">fn</span> <span class="tok-variable">config</span> =&gt; (<span class="tok-namespace">BuiltinAwsS3</span>.<span class="tok-variable-member">client_raw</span> <span class="tok-variable">config</span> : <span class="tok-type">aws_s3_client</span>)
+
+  <span class="tok-keyword">val</span> <span class="tok-variable">list_buckets</span> : <span class="tok-type">client</span> -&gt; (<span class="tok-type">bucket</span> <span class="tok-type">list</span>, <span class="tok-type">error</span>) <span class="tok-namespace">Result</span>.<span class="tok-variable-member">result</span> = <span class="tok-keyword">fn</span> <span class="tok-variable">client</span> =&gt; <span class="tok-keyword">case</span> (<span class="tok-namespace">BuiltinAwsS3</span>.<span class="tok-variable-member">list_buckets_raw</span> <span class="tok-variable">client</span> : <span class="tok-type">bool</span> * (<span class="tok-type">string</span> * <span class="tok-type">string</span> * <span class="tok-type">string</span>) <span class="tok-type">list</span> * <span class="tok-type">string</span>) <span class="tok-keyword">of</span>
+      (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">output</span>, _) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> <span class="tok-variable">output</span>
+    | (<span class="tok-constant-builtin-boolean">false</span>, _, <span class="tok-variable">message</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">message</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

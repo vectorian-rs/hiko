@@ -1,10 +1,10 @@
 (* Mutable state via algebraic effect handlers *)
-
 effect Get of unit
 
 effect Put of int
 
-fun run_state init f = handle
+fun run_state init f =
+  handle
     f ()
   with
     return x => x
@@ -24,9 +24,11 @@ val result = run_state 0 (fn _ => count_up 5)
 val _ = println ("Counter after 5 increments: " ^ int_to_string result)
 
 (* Accumulate a sum *)
-fun sum_list xs = case xs of
+fun sum_list xs =
+  case xs of
       [] => perform Get ()
-    | x :: rest => let
+    | x :: rest =>
+      let
         val current = perform Get ()
         val _ = perform Put (current + x)
       in

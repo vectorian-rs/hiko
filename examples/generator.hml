@@ -1,8 +1,8 @@
 (* Generator pattern using algebraic effect handlers *)
-
 effect Yield of int
 
-fun run_gen f = handle
+fun run_gen f =
+  handle
     f ()
   with
     return _ => []
@@ -14,7 +14,8 @@ fun range_gen lo hi () = if lo > hi then () else let
     range_gen (lo + 1) hi ()
   end
 
-fun sum xs = case xs of
+fun sum xs =
+  case xs of
       [] => 0
     | x :: rest => x + sum rest
 
@@ -24,9 +25,11 @@ val total = sum generated
 
 val _ = println "Generated 1..10 via yield:"
 
-fun print_list xs = case xs of
+fun print_list xs =
+  case xs of
       [] => ()
-    | x :: rest => let
+    | x :: rest =>
+      let
         val _ = println (int_to_string x)
       in
         print_list rest

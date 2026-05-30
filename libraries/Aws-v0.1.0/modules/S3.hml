@@ -4,14 +4,14 @@ import __Builtin.AwsS3
 
 structure S3 = struct
   type bucket = string * string * string
+
   type error = string
+
   type client = aws_s3_client
 
-  val client : Config.config -> client = fn config =>
-    (BuiltinAwsS3.client_raw config : aws_s3_client)
+  val client : Config.config -> client = fn config => (BuiltinAwsS3.client_raw config : aws_s3_client)
 
-  val list_buckets : client -> (bucket list, error) Result.result = fn client =>
-    case (BuiltinAwsS3.list_buckets_raw client : bool * (string * string * string) list * string) of
+  val list_buckets : client -> (bucket list, error) Result.result = fn client => case (BuiltinAwsS3.list_buckets_raw client : bool * (string * string * string) list * string) of
       (true, output, _) => Result.Ok output
     | (false, _, message) => Result.Err message
 end

@@ -1,12 +1,15 @@
 (* Option type and operations *)
+datatype 'a option =
+    None
+  | Some of 'a
 
-datatype 'a option = None | Some of 'a
-
-fun map_option f opt = case opt of
+fun map_option f opt =
+  case opt of
       None => None
     | Some x => Some (f x)
 
-fun get_or opt default = case opt of
+fun get_or opt default =
+  case opt of
       None => default
     | Some x => x
 

@@ -1,0 +1,39 @@
+import __Builtin.String
+
+signature STRING = sig
+  val length : string -> int
+  val substring : int -> int -> string -> string
+  val contains : string -> string -> bool
+  val starts_with : string -> string -> bool
+  val ends_with : string -> string -> bool
+  val trim : string -> string
+  val split : string -> string -> string list
+  val replace : string -> string -> string -> string
+  val join : string -> string list -> string
+  val upper : string -> string
+  val lower : string -> string
+end
+
+structure String :> STRING = struct
+  fun length text = BuiltinString.length_raw text
+
+  fun substring start len text = BuiltinString.substring_raw (text, start, len)
+
+  fun contains needle text = BuiltinString.contains_raw (text, needle)
+
+  fun starts_with prefix text = BuiltinString.starts_with_raw (text, prefix)
+
+  fun ends_with suffix text = BuiltinString.ends_with_raw (text, suffix)
+
+  fun trim text = BuiltinString.trim_raw text
+
+  fun split sep text = BuiltinString.split_raw (text, sep)
+
+  fun replace pattern replacement text = BuiltinString.replace_raw (text, pattern, replacement)
+
+  fun join sep parts = BuiltinString.join_raw (parts, sep)
+
+  fun upper text = BuiltinString.upper_raw text
+
+  fun lower text = BuiltinString.lower_raw text
+end

@@ -3,9 +3,7 @@ import __Builtin.AwsConfig
 structure Config = struct
   type config = aws_config
 
-  val sso_profile : string -> config = fn profile =>
-    (BuiltinAwsConfig.sso_profile_raw profile : aws_config)
+  val sso_profile : string -> config = fn profile => (BuiltinAwsConfig.sso_profile_raw profile : aws_config)
 
-  val instance_profile : unit -> config = fn () =>
-    (BuiltinAwsConfig.instance_profile_raw () : aws_config)
+  val instance_profile : unit -> config = fn () => (BuiltinAwsConfig.instance_profile_raw () : aws_config)
 end

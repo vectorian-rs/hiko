@@ -56,6 +56,56 @@ const JSON_SOURCE: &str = r#"structure BuiltinJson = struct
 end
 "#;
 
+const STRING_SOURCE: &str = r#"structure BuiltinString = struct
+  val length_raw = string_length
+  val substring_raw = substring
+  val contains_raw = string_contains
+  val starts_with_raw = starts_with
+  val ends_with_raw = ends_with
+  val trim_raw = trim
+  val split_raw = split
+  val replace_raw = string_replace
+  val join_raw = string_join
+  val upper_raw = to_upper
+  val lower_raw = to_lower
+end
+"#;
+
+const BYTES_SOURCE: &str = r#"structure BuiltinBytes = struct
+  val length_raw = bytes_length
+  val to_string_raw = bytes_to_string
+  val of_string_raw = string_to_bytes
+  val get_raw = bytes_get
+  val slice_raw = bytes_slice
+end
+"#;
+
+const RANDOM_SOURCE: &str = r#"structure BuiltinRandom = struct
+  val random_bytes_raw = random_bytes
+  val seed_raw = rng_seed
+  val bytes_raw = rng_bytes
+  val int_raw = rng_int
+end
+"#;
+
+const REGEX_SOURCE: &str = r#"structure BuiltinRegex = struct
+  val match_raw = regex_match
+  val replace_raw = regex_replace
+end
+"#;
+
+const ENV_SOURCE: &str = r#"structure BuiltinEnv = struct
+  val get_raw = getenv
+end
+"#;
+
+const TESTING_SOURCE: &str = r#"structure BuiltinTesting = struct
+  val assert_raw = assert
+  val assert_eq_raw = assert_eq
+  val panic_raw = panic
+end
+"#;
+
 const HASH_SOURCE: &str = r#"structure BuiltinHash = struct
   val blake3_raw = blake3
 end
@@ -235,6 +285,48 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-json",
         enabled: cfg!(feature = "builtin-json"),
         source: JSON_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "String",
+        import_name: "__Builtin.String",
+        feature_name: "builtin-string",
+        enabled: cfg!(feature = "builtin-string"),
+        source: STRING_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Bytes",
+        import_name: "__Builtin.Bytes",
+        feature_name: "builtin-bytes",
+        enabled: cfg!(feature = "builtin-bytes"),
+        source: BYTES_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Random",
+        import_name: "__Builtin.Random",
+        feature_name: "builtin-random",
+        enabled: cfg!(feature = "builtin-random"),
+        source: RANDOM_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Regex",
+        import_name: "__Builtin.Regex",
+        feature_name: "builtin-regex",
+        enabled: cfg!(feature = "builtin-regex"),
+        source: REGEX_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Env",
+        import_name: "__Builtin.Env",
+        feature_name: "builtin-env",
+        enabled: cfg!(feature = "builtin-env"),
+        source: ENV_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Testing",
+        import_name: "__Builtin.Testing",
+        feature_name: "builtin-testing",
+        enabled: cfg!(feature = "builtin-testing"),
+        source: TESTING_SOURCE,
     },
     InternalBuiltinModule {
         leaf_name: "Hash",
