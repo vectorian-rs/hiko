@@ -365,8 +365,18 @@ fn load_package(package_dir: &Path) -> Result<PackageInfo, DynError> {
             .into());
         }
 
-        let highlighted_html = highlight_source(&raw_source)?;
-        let exports = extract_exports(&raw_source)?;
+        let highlighted_html = highlight_source(&raw_source).map_err(|error| {
+            invalid_input(format!(
+                "failed to highlight {}.{}: {error}",
+                manifest.name, module_name
+            ))
+        })?;
+        let exports = extract_exports(&raw_source, module_name).map_err(|error| {
+            invalid_input(format!(
+                "failed to extract exports for {}.{}: {error}",
+                manifest.name, module_name
+            ))
+        })?;
         let docs_path = modules_dir.join(format!("{module_name}.html"));
         let source_page_path = modules_dir.join(format!("{module_name}.source.html"));
 
@@ -458,7 +468,7 @@ fn highlight_source(source: &str) -> Result<String, DynError> {
     Ok(html)
 }
 
-fn extract_exports(source: &str) -> Result<Vec<ExportItem>, DynError> {
+fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, DynError> {
     let language = tree_sitter::Language::from(LANGUAGE);
     let mut parser = Parser::new();
     parser.set_language(&language)?;
@@ -474,12 +484,36 @@ fn extract_exports(source: &str) -> Result<Vec<ExportItem>, DynError> {
     }
 
     let root = tree.root_node();
-    let structure = root
+    let structures = root
         .named_children(&mut root.walk())
-        .find(|node| node.kind() == "structure_declaration");
+        .filter(|node| node.kind() == "structure_declaration")
+        .collect::<Vec<_>>();
+
+    let structure = structures
+        .iter()
+        .copied()
+        .find(|node| field_text(*node, "name", source).as_deref() == Some(module_name))
+        .or_else(|| {
+            if structures.len() == 1 {
+                structures.first().copied()
+            } else {
+                None
+            }
+        });
 
     let Some(structure) = structure else {
-        return Ok(Vec::new());
+        if structures.is_empty() {
+            return Ok(Vec::new());
+        }
+        let names = structures
+            .iter()
+            .filter_map(|node| field_text(*node, "name", source))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(invalid_input(format!(
+            "expected structure named '{module_name}', found structures: {names}"
+        ))
+        .into());
     };
 
     let mut exports = Vec::new();
@@ -1026,7 +1060,7 @@ structure Option = struct
   val default = None
 end
 ";
-        let exports = extract_exports(source).unwrap();
+        let exports = extract_exports(source, "Option").unwrap();
         assert!(
             exports
                 .iter()
@@ -1042,6 +1076,32 @@ end
                 .iter()
                 .any(|item| item.kind == "val" && item.name == "default")
         );
+    }
+
+    #[test]
+    fn extract_exports_uses_structure_matching_module_name() {
+        let source = "\
+structure FiberInternal = struct
+  fun helper x = x
+end
+
+structure Fiber = struct
+  type 'a t = pid
+  fun spawn f = f ()
+end
+";
+        let exports = extract_exports(source, "Fiber").unwrap();
+        assert!(
+            exports
+                .iter()
+                .any(|item| item.kind == "type" && item.name == "t")
+        );
+        assert!(
+            exports
+                .iter()
+                .any(|item| item.kind == "fun" && item.name == "spawn")
+        );
+        assert!(!exports.iter().any(|item| item.name == "helper"));
     }
 
     #[test]

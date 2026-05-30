@@ -132,6 +132,19 @@ module.exports = grammar({
       field("package", $._import_package_name),
       ".",
       field("module", $.upper_identifier),
+      optional(field("exposures", $.import_exposure_list)),
+    ),
+
+    import_exposure_list: $ => seq(
+      "(",
+      field("name", $.exposed_import_name),
+      repeat(seq(",", field("name", $.exposed_import_name))),
+      ")",
+    ),
+
+    exposed_import_name: $ => choice(
+      $.identifier,
+      $.upper_identifier,
     ),
 
     signature_declaration: $ => seq(

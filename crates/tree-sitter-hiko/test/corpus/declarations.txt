@@ -5,6 +5,7 @@ Imports and values
 use "./local.hml"
 import Std.Option
 import __Builtin.Filesystem
+import Std.Result (Ok, Err, map)
 val answer = 42
 val rec inc = fn x => x + 1
 
@@ -19,6 +20,16 @@ val rec inc = fn x => x + 1
   (import_declaration
     (internal_package_identifier)
     (upper_identifier))
+  (import_declaration
+    (upper_identifier)
+    (upper_identifier)
+    (import_exposure_list
+      (exposed_import_name
+        (upper_identifier))
+      (exposed_import_name
+        (upper_identifier))
+      (exposed_import_name
+        (identifier))))
   (value_declaration
     (annotated_pattern
       (as_pattern

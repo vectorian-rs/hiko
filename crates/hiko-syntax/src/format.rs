@@ -1,13 +1,14 @@
+use crate::ast::{Decl, DeclKind, Program};
 use crate::lexer::{LexError, Lexer};
 use crate::parser::{ParseError, Parser};
-use crate::pretty::pretty_program;
-use tree_sitter::{Node, Parser as TsParser};
-use tree_sitter_hiko::LANGUAGE;
+use crate::pretty::{Comment, pretty_program_with_comments};
+use crate::span::Span;
 
 #[derive(Debug, Clone)]
 pub enum FormatError {
     Lex(LexError),
     Parse(ParseError),
+    UnsupportedComment { message: String, span: Span },
     TreeSitter(String),
 }
 
@@ -24,310 +25,226 @@ impl From<ParseError> for FormatError {
 }
 
 pub fn format_source(source: &str, file_id: u32) -> Result<String, FormatError> {
-    // Use the AST formatter for normal source files. It rebuilds the program from
-    // syntax and gives stable layout for nested expressions instead of preserving
-    // accidental one-line source layout. Keep the CST formatter for commented
-    // files because comments are not represented in the AST today.
-    if source.contains("(*") {
-        return cst_format_source(source);
-    }
-
+    let line_offsets = line_offsets(source);
+    let comments = collect_comments(source, &line_offsets);
     let tokens = Lexer::new(source, file_id).tokenize()?;
     let mut parser = Parser::new(tokens);
     let program = parser.parse_program()?;
-    let mut formatted = pretty_program(&program);
+    validate_comment_convention(&program, &comments, &line_offsets, file_id)?;
+    let mut formatted = pretty_program_with_comments(&program, &comments, &line_offsets);
     if !formatted.is_empty() && !formatted.ends_with('\n') {
         formatted.push('\n');
     }
     Ok(formatted)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CstToken<'a> {
-    kind: &'a str,
-    text: &'a str,
-    start: usize,
-    end: usize,
+fn line_offsets(source: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    for (idx, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            offsets.push(idx + 1);
+        }
+    }
+    offsets
 }
 
-fn cst_format_source(source: &str) -> Result<String, FormatError> {
-    let language = tree_sitter::Language::from(LANGUAGE);
-    let mut parser = TsParser::new();
-    parser.set_language(&language).map_err(|err| {
-        FormatError::TreeSitter(format!("failed to load tree-sitter-hiko: {err}"))
-    })?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| FormatError::TreeSitter("tree-sitter-hiko returned no parse tree".into()))?;
-    let root = tree.root_node();
-    if root.has_error() {
-        return Err(FormatError::TreeSitter(
-            "tree-sitter-hiko reported syntax errors".into(),
-        ));
+fn line_for_offsets(line_offsets: &[usize], byte: usize) -> usize {
+    match line_offsets.binary_search(&byte) {
+        Ok(line) => line,
+        Err(0) => 0,
+        Err(line) => line - 1,
+    }
+}
+
+fn collect_comments(source: &str, line_offsets: &[usize]) -> Vec<Comment> {
+    let bytes = source.as_bytes();
+    let mut comments = Vec::new();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'"' => skip_string(bytes, &mut pos),
+            b'#' if bytes.get(pos + 1) == Some(&b'"') => skip_char(bytes, &mut pos),
+            b'(' if bytes.get(pos + 1) == Some(&b'*') => {
+                let start = pos;
+                pos += 2;
+                let mut depth = 1usize;
+                while pos < bytes.len() && depth > 0 {
+                    if bytes[pos] == b'(' && bytes.get(pos + 1) == Some(&b'*') {
+                        depth += 1;
+                        pos += 2;
+                    } else if bytes[pos] == b'*' && bytes.get(pos + 1) == Some(&b')') {
+                        depth -= 1;
+                        pos += 2;
+                    } else {
+                        pos += 1;
+                    }
+                }
+                let end = pos.min(bytes.len());
+                comments.push(Comment {
+                    text: source[start..end].to_string(),
+                    start: start as u32,
+                    end: end as u32,
+                    start_line: line_for_offsets(line_offsets, start),
+                    end_line: line_for_offsets(line_offsets, end),
+                });
+            }
+            _ => pos += 1,
+        }
     }
 
-    let mut tokens = Vec::new();
-    collect_cst_tokens(root, source, &mut tokens);
-    Ok(print_cst_tokens(source, &tokens))
+    comments
 }
 
-fn collect_cst_tokens<'a>(node: Node<'a>, source: &'a str, tokens: &mut Vec<CstToken<'a>>) {
-    if node.child_count() == 0 {
-        let start = node.start_byte();
-        let end = node.end_byte();
-        if start < end {
-            tokens.push(CstToken {
-                kind: node.kind(),
-                text: &source[start..end],
-                start,
-                end,
-            });
+fn skip_string(bytes: &[u8], pos: &mut usize) {
+    *pos += 1;
+    while *pos < bytes.len() {
+        match bytes[*pos] {
+            b'\\' => *pos = (*pos + 2).min(bytes.len()),
+            b'"' => {
+                *pos += 1;
+                break;
+            }
+            _ => *pos += 1,
         }
+    }
+}
+
+fn skip_char(bytes: &[u8], pos: &mut usize) {
+    *pos += 2;
+    while *pos < bytes.len() {
+        match bytes[*pos] {
+            b'\\' => *pos = (*pos + 2).min(bytes.len()),
+            b'"' => {
+                *pos += 1;
+                break;
+            }
+            _ => *pos += 1,
+        }
+    }
+}
+
+fn validate_comment_convention(
+    program: &Program,
+    comments: &[Comment],
+    line_offsets: &[usize],
+    file_id: u32,
+) -> Result<(), FormatError> {
+    if comments.is_empty() || program.decls.is_empty() {
+        return Ok(());
+    }
+
+    let mut allowed = vec![false; comments.len()];
+    mark_allowed_decl_comments(
+        &program.decls,
+        0,
+        u32::MAX,
+        comments,
+        line_offsets,
+        &mut allowed,
+    );
+
+    if let Some((idx, comment)) = comments.iter().enumerate().find(|(idx, _)| !allowed[*idx]) {
+        let _ = idx;
+        return Err(FormatError::UnsupportedComment {
+            message: "formatter only supports declaration-leading comments and short trailing declaration comments; move this comment before the declaration it describes".into(),
+            span: Span::new(file_id, comment.start, comment.end),
+        });
+    }
+
+    Ok(())
+}
+
+fn mark_allowed_decl_comments(
+    decls: &[Decl],
+    container_start: u32,
+    container_end: u32,
+    comments: &[Comment],
+    line_offsets: &[usize],
+    allowed: &mut [bool],
+) {
+    if decls.is_empty() {
+        mark_comments_in_range(container_start, container_end, comments, allowed);
         return;
     }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_cst_tokens(child, source, tokens);
+    let mut cursor = container_start;
+    for (idx, decl) in decls.iter().enumerate() {
+        let next_start = decls
+            .get(idx + 1)
+            .map(|decl| decl.span.start)
+            .unwrap_or(container_end);
+
+        mark_comments_in_range(cursor, decl.span.start, comments, allowed);
+        mark_trailing_decl_comments(decl.span.end, next_start, comments, line_offsets, allowed);
+        mark_nested_decl_comments(decl, comments, line_offsets, allowed);
+
+        cursor = decl.span.end;
+    }
+
+    mark_comments_in_range(cursor, container_end, comments, allowed);
+}
+
+fn mark_nested_decl_comments(
+    decl: &Decl,
+    comments: &[Comment],
+    line_offsets: &[usize],
+    allowed: &mut [bool],
+) {
+    match &decl.kind {
+        DeclKind::Structure { decls, .. } => mark_allowed_decl_comments(
+            decls,
+            decl.span.start,
+            decl.span.end,
+            comments,
+            line_offsets,
+            allowed,
+        ),
+        DeclKind::Local(locals, body) => {
+            mark_allowed_decl_comments(
+                locals,
+                decl.span.start,
+                decl.span.end,
+                comments,
+                line_offsets,
+                allowed,
+            );
+            mark_allowed_decl_comments(
+                body,
+                decl.span.start,
+                decl.span.end,
+                comments,
+                line_offsets,
+                allowed,
+            );
+        }
+        _ => {}
     }
 }
 
-fn print_cst_tokens(source: &str, tokens: &[CstToken<'_>]) -> String {
-    let mut out = String::new();
-    let mut indent = 0usize;
-    let mut paren_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut last_end = 0usize;
-    let mut prev_text: Option<&str> = None;
-    let mut at_line_start = true;
-
-    for (idx, token) in tokens.iter().enumerate() {
-        let text = token.text;
-        let next = tokens.get(idx + 1).map(|token| token.text);
-        let top_level_decl =
-            is_decl_starter(text) && indent == 0 && paren_depth == 0 && bracket_depth == 0;
-
-        if matches!(text, "in" | "end") {
-            indent = indent.saturating_sub(2);
+fn mark_comments_in_range(start: u32, end: u32, comments: &[Comment], allowed: &mut [bool]) {
+    for (idx, comment) in comments.iter().enumerate() {
+        if comment.start >= start && comment.end <= end {
+            allowed[idx] = true;
         }
+    }
+}
 
-        if text == "|" && prev_text.is_some_and(|prev| prev != "of" && prev != "with") {
-            ensure_newline(&mut out, indent.saturating_sub(2));
-            at_line_start = false;
-        } else if top_level_decl && !out.trim().is_empty() && !out.ends_with("\n\n") {
-            if !is_comment_text(prev_text) {
-                ensure_blank_line(&mut out);
-                at_line_start = true;
-            }
-        } else if is_decl_starter(text)
-            && indent > 0
-            && has_line_break(source, last_end, token.start)
+fn mark_trailing_decl_comments(
+    decl_end: u32,
+    next_start: u32,
+    comments: &[Comment],
+    line_offsets: &[usize],
+    allowed: &mut [bool],
+) {
+    let decl_end_line = line_for_offsets(line_offsets, decl_end as usize);
+    for (idx, comment) in comments.iter().enumerate() {
+        if comment.start >= decl_end
+            && comment.start < next_start
+            && comment.start_line == decl_end_line
         {
-            ensure_newline(&mut out, indent);
-            at_line_start = true;
-        } else if gap_has_blank_line(source, last_end, token.start) && !out.trim().is_empty() {
-            ensure_blank_line(&mut out);
-            at_line_start = true;
-        } else if should_break_before(text, prev_text) {
-            ensure_newline(&mut out, indent);
-            at_line_start = true;
+            allowed[idx] = true;
         }
-
-        if token.kind == "comment" {
-            if has_line_break(source, last_end, token.start) && !at_line_start {
-                ensure_newline(&mut out, indent);
-                at_line_start = true;
-            }
-            if !at_line_start && !out.ends_with(' ') {
-                out.push_str("  ");
-            } else if at_line_start {
-                write_indent(&mut out, indent);
-            }
-            out.push_str(text.trim());
-            out.push('\n');
-            at_line_start = true;
-            last_end = token.end;
-            prev_text = Some(text);
-            continue;
-        }
-
-        if at_line_start {
-            write_indent(&mut out, indent);
-            at_line_start = false;
-        } else if needs_space_between(prev_text, text) {
-            trim_trailing_spaces(&mut out);
-            out.push(' ');
-        }
-
-        if matches!(text, ")" | "]" | "," | ";") {
-            trim_trailing_spaces(&mut out);
-        }
-        out.push_str(text);
-
-        match text {
-            "let" | "struct" | "sig" | "with" => indent += 2,
-            "in" => indent += 2,
-            "(" => paren_depth += 1,
-            ")" => paren_depth = paren_depth.saturating_sub(1),
-            "[" => bracket_depth += 1,
-            "]" => bracket_depth = bracket_depth.saturating_sub(1),
-            _ => {}
-        }
-
-        if should_break_after(text, next) {
-            out.push('\n');
-            at_line_start = true;
-        }
-
-        last_end = token.end;
-        prev_text = Some(text);
-    }
-
-    trim_trailing_blank_lines(&mut out);
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
-fn is_decl_starter(text: &str) -> bool {
-    matches!(
-        text,
-        "val"
-            | "fun"
-            | "datatype"
-            | "type"
-            | "import"
-            | "use"
-            | "signature"
-            | "structure"
-            | "effect"
-            | "local"
-            | "and"
-    )
-}
-
-fn is_word_like(text: &str) -> bool {
-    text.chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '\'' || ch == '"')
-}
-
-fn is_comment_text(text: Option<&str>) -> bool {
-    text.is_some_and(|text| text.starts_with("(*"))
-}
-
-fn has_line_break(source: &str, start: usize, end: usize) -> bool {
-    source[start..end].contains('\n')
-}
-
-fn is_operator(text: &str) -> bool {
-    matches!(
-        text,
-        "=" | "=>"
-            | ":"
-            | ":>"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "%"
-            | "=="
-            | "<>"
-            | "<"
-            | ">"
-            | "<="
-            | ">="
-            | "::"
-            | "|>"
-            | "andalso"
-            | "orelse"
-    )
-}
-
-fn needs_space_between(prev: Option<&str>, current: &str) -> bool {
-    let Some(prev) = prev else { return false };
-    if matches!(current, ")" | "]" | "," | ";") || matches!(prev, "(" | "[" | "#") {
-        return false;
-    }
-    if matches!(current, "(" | "[") {
-        return is_operator(prev) || is_word_like(prev) || matches!(prev, ")" | "]");
-    }
-    if is_operator(prev) || is_operator(current) {
-        return true;
-    }
-    if current == "|" || prev == "|" {
-        return true;
-    }
-    is_word_like(prev) && is_word_like(current)
-}
-
-fn should_break_before(text: &str, prev: Option<&str>) -> bool {
-    matches!(text, "in" | "end") || (text == "|" && prev != Some("of") && prev != Some("with"))
-}
-
-fn should_break_after(text: &str, next: Option<&str>) -> bool {
-    matches!(text, "let" | "in" | "struct" | "sig")
-        || (matches!(text, "of" | "with") && next != Some("|"))
-        || matches!(text, ";")
-}
-
-fn ensure_newline(out: &mut String, indent: usize) {
-    trim_trailing_spaces(out);
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    write_indent(out, indent);
-}
-
-fn ensure_blank_line(out: &mut String) {
-    trim_trailing_spaces(out);
-    while out.ends_with("\n\n\n") {
-        out.pop();
-    }
-    if !out.ends_with("\n\n") {
-        if !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-}
-
-fn trim_trailing_spaces(out: &mut String) {
-    while out.ends_with(' ') || out.ends_with('\t') {
-        out.pop();
-    }
-}
-
-fn trim_trailing_blank_lines(out: &mut String) {
-    trim_trailing_spaces(out);
-    while out.ends_with("\n\n") {
-        out.pop();
-    }
-}
-
-fn gap_has_blank_line(source: &str, start: usize, end: usize) -> bool {
-    let mut after_newline = false;
-    let mut current_line_has_content = false;
-
-    for byte in source.as_bytes()[start..end].iter().copied() {
-        if byte == b'\n' {
-            if after_newline && !current_line_has_content {
-                return true;
-            }
-            after_newline = true;
-            current_line_has_content = false;
-        } else if !matches!(byte, b' ' | b'\t' | b'\r') {
-            current_line_has_content = true;
-        }
-    }
-
-    false
-}
-
-fn write_indent(buf: &mut String, indent: usize) {
-    for _ in 0..indent {
-        buf.push(' ');
     }
 }
 
@@ -358,11 +275,10 @@ mod tests {
     }
 
     #[test]
-    fn is_idempotent_with_nested_comments() {
+    fn rejects_expression_level_comments() {
         let source = "fun f x =\n  case x of\n      [] => 0\n    | y :: ys => (* branch *) y\n";
-        let once = fmt(source);
-        let twice = fmt(&once);
-        assert_eq!(twice, once);
+        let err = format_source(source, 0).expect_err("expression comment should be rejected");
+        assert!(matches!(err, super::FormatError::UnsupportedComment { .. }));
     }
 
     #[test]
@@ -408,11 +324,29 @@ mod tests {
     }
 
     #[test]
+    fn formats_datatype_branches_with_comments_via_ast() {
+        let source = "structure Json = struct\n(* Constructor tags are fixed. *)\ndatatype json = JNull | JBool of bool | JArray of json list | JObject of (string * json) list\nend\n";
+        assert_eq!(
+            fmt(source),
+            "structure Json = struct\n  (* Constructor tags are fixed. *)\n  datatype json =\n      JNull\n    | JBool of bool\n    | JArray of json list\n    | JObject of (string * json) list\nend\n"
+        );
+    }
+
+    #[test]
+    fn formats_signature_types_with_spaces() {
+        let source = "signature EXEC = sig\nval run:string->string list->int*string*string\nend\n";
+        assert_eq!(
+            fmt(source),
+            "signature EXEC = sig\n  val run : string -> string list -> int * string * string\nend\n"
+        );
+    }
+
+    #[test]
     fn mutual_fun_after_let_body_keeps_and_on_new_line() {
         let source = "fun walk dir = let\n  val entries = list_dir dir\nin\n  walk_entries dir entries\nend\nand walk_entries dir entries = case entries of\n  [] => ()\n| name :: rest => walk_entries dir rest\n";
         assert_eq!(
             fmt(source),
-            "fun walk dir =\n  let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries =\n  case entries of\n    [] => ()\n    | name :: rest => walk_entries dir rest\n"
+            "fun walk dir =\n  let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries =\n  case entries of\n      [] => ()\n    | name :: rest => walk_entries dir rest\n"
         );
     }
 }

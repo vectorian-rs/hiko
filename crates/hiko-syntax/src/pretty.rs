@@ -2,23 +2,187 @@ use crate::ast::*;
 use crate::intern::StringInterner;
 use std::fmt::Write;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub start: u32,
+    pub end: u32,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+struct CommentCtx<'a> {
+    comments: &'a [Comment],
+    line_offsets: &'a [usize],
+}
+
 pub fn pretty_program(prog: &Program) -> String {
     let interner = &prog.interner;
     let mut buf = String::new();
-    for (i, decl) in prog.decls.iter().enumerate() {
-        if i > 0 {
-            if is_import_decl(&prog.decls[i - 1]) && is_import_decl(decl) {
-                buf.push('\n');
-            } else {
-                buf.push_str("\n\n");
-            }
-        }
-        pretty_decl(&mut buf, decl, 0, interner);
-    }
+    pretty_decl_list(&mut buf, &prog.decls, 0, interner, None, 0, u32::MAX);
+    buf
+}
+
+pub fn pretty_program_with_comments(
+    prog: &Program,
+    comments: &[Comment],
+    line_offsets: &[usize],
+) -> String {
+    let interner = &prog.interner;
+    let ctx = CommentCtx {
+        comments,
+        line_offsets,
+    };
+    let mut buf = String::new();
+    pretty_decl_list(&mut buf, &prog.decls, 0, interner, Some(&ctx), 0, u32::MAX);
     buf
 }
 
 // ── Declarations ─────────────────────────────────────────────────────
+
+fn pretty_decl_list(
+    buf: &mut String,
+    decls: &[Decl],
+    indent: usize,
+    interner: &StringInterner,
+    ctx: Option<&CommentCtx<'_>>,
+    container_start: u32,
+    container_end: u32,
+) {
+    let mut cursor = container_start;
+    for (i, decl) in decls.iter().enumerate() {
+        let leading = ctx
+            .map(|ctx| {
+                leading_comments(ctx, cursor, decl.span.start, container_end).collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if i > 0 {
+            if leading.is_empty() {
+                if is_import_decl(&decls[i - 1]) && is_import_decl(decl) {
+                    buf.push('\n');
+                } else {
+                    ensure_blank_line(buf);
+                }
+            } else if !buf.ends_with('\n') {
+                buf.push('\n');
+            }
+        }
+
+        if let Some(ctx) = ctx {
+            if let Some(first) = leading.first() {
+                if i > 0 && first.start_line > line_for(ctx, cursor) + 1 {
+                    ensure_blank_line(buf);
+                }
+            }
+        }
+        write_comment_sequence(buf, &leading, indent);
+
+        pretty_decl(buf, decl, indent, interner, ctx);
+
+        let mut trailing_end = decl.span.end;
+        if let Some(ctx) = ctx {
+            for comment in
+                trailing_comments(ctx, decl.span.end, next_decl_start(decls, i), container_end)
+            {
+                buf.push_str("  ");
+                buf.push_str(comment.text.trim());
+                trailing_end = trailing_end.max(comment.end);
+            }
+        }
+        cursor = trailing_end;
+    }
+
+    if let Some(ctx) = ctx {
+        let trailing =
+            leading_comments(ctx, cursor, container_end, container_end).collect::<Vec<_>>();
+        if let Some(first) = trailing.first() {
+            if !buf.is_empty() && first.start_line > line_for(ctx, cursor) + 1 {
+                ensure_blank_line(buf);
+            }
+        }
+        write_comment_sequence(buf, &trailing, indent);
+        trim_trailing_newlines(buf);
+    }
+}
+
+fn write_comment_sequence(buf: &mut String, comments: &[&Comment], indent: usize) {
+    let mut prev_end_line = None;
+    for comment in comments {
+        if let Some(prev_end_line) = prev_end_line {
+            if comment.start_line > prev_end_line + 1 {
+                ensure_blank_line(buf);
+            } else if !buf.is_empty() && !buf.ends_with('\n') {
+                buf.push('\n');
+            }
+        }
+        write_indent(buf, indent);
+        buf.push_str(comment.text.trim());
+        buf.push('\n');
+        prev_end_line = Some(comment.end_line);
+    }
+}
+
+fn next_decl_start(decls: &[Decl], idx: usize) -> u32 {
+    decls
+        .get(idx + 1)
+        .map(|decl| decl.span.start)
+        .unwrap_or(u32::MAX)
+}
+
+fn leading_comments<'a>(
+    ctx: &'a CommentCtx<'_>,
+    after: u32,
+    before: u32,
+    container_end: u32,
+) -> impl Iterator<Item = &'a Comment> {
+    ctx.comments.iter().filter(move |comment| {
+        comment.start >= after && comment.end <= before && comment.end <= container_end
+    })
+}
+
+fn trailing_comments<'a>(
+    ctx: &'a CommentCtx<'_>,
+    decl_end: u32,
+    before: u32,
+    container_end: u32,
+) -> impl Iterator<Item = &'a Comment> {
+    let decl_line = line_for(ctx, decl_end);
+    ctx.comments.iter().filter(move |comment| {
+        comment.start >= decl_end
+            && comment.start < before
+            && comment.end <= container_end
+            && comment.start_line == decl_line
+    })
+}
+
+fn line_for(ctx: &CommentCtx<'_>, byte: u32) -> usize {
+    let byte = byte as usize;
+    match ctx.line_offsets.binary_search(&byte) {
+        Ok(line) => line,
+        Err(0) => 0,
+        Err(line) => line - 1,
+    }
+}
+
+fn ensure_blank_line(buf: &mut String) {
+    while buf.ends_with(' ') || buf.ends_with('\t') {
+        buf.pop();
+    }
+    if buf.is_empty() || buf.ends_with("\n\n") {
+        return;
+    }
+    if !buf.ends_with('\n') {
+        buf.push('\n');
+    }
+    buf.push('\n');
+}
+
+fn trim_trailing_newlines(buf: &mut String) {
+    while buf.ends_with('\n') {
+        buf.pop();
+    }
+}
 
 fn is_import_decl(decl: &Decl) -> bool {
     matches!(
@@ -27,7 +191,13 @@ fn is_import_decl(decl: &Decl) -> bool {
     )
 }
 
-fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringInterner) {
+fn pretty_decl(
+    buf: &mut String,
+    decl: &Decl,
+    indent: usize,
+    interner: &StringInterner,
+    ctx: Option<&CommentCtx<'_>>,
+) {
     match &decl.kind {
         DeclKind::Val(pat, expr) => {
             write_indent(buf, indent);
@@ -66,15 +236,22 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             buf.push_str("datatype ");
             pretty_tyvars(buf, &dt.tyvars, interner);
             buf.push_str(interner.resolve(dt.name));
-            buf.push_str(" =");
-            for (i, con) in dt.constructors.iter().enumerate() {
-                if i > 0 {
-                    buf.push_str(" |");
-                }
-                write!(buf, " {}", interner.resolve(con.name)).unwrap();
-                if let Some(ref ty) = con.payload {
-                    buf.push_str(" of ");
-                    pretty_type(buf, ty, interner);
+            if dt.constructors.len() == 1 {
+                buf.push_str(" = ");
+                pretty_constructor(buf, &dt.constructors[0], interner);
+            } else {
+                buf.push_str(" =\n");
+                for (i, con) in dt.constructors.iter().enumerate() {
+                    if i == 0 {
+                        write_indent(buf, indent + 4);
+                    } else {
+                        write_indent(buf, indent + 2);
+                        buf.push_str("| ");
+                    }
+                    pretty_constructor(buf, con, interner);
+                    if i + 1 < dt.constructors.len() {
+                        buf.push('\n');
+                    }
                 }
             }
         }
@@ -88,14 +265,30 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
         DeclKind::Local(locals, body) => {
             write_indent(buf, indent);
             buf.push_str("local\n");
-            for d in locals {
-                pretty_decl(buf, d, indent + 2, interner);
+            pretty_decl_list(
+                buf,
+                locals,
+                indent + 2,
+                interner,
+                ctx,
+                decl.span.start,
+                decl.span.end,
+            );
+            if !locals.is_empty() {
                 buf.push('\n');
             }
             write_indent(buf, indent);
             buf.push_str("in\n");
-            for d in body {
-                pretty_decl(buf, d, indent + 2, interner);
+            pretty_decl_list(
+                buf,
+                body,
+                indent + 2,
+                interner,
+                ctx,
+                decl.span.start,
+                decl.span.end,
+            );
+            if !body.is_empty() {
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -158,8 +351,16 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
                 }
             }
             buf.push_str(" = struct\n");
-            for d in decls {
-                pretty_decl(buf, d, indent + 2, interner);
+            pretty_decl_list(
+                buf,
+                decls,
+                indent + 2,
+                interner,
+                ctx,
+                decl.span.start,
+                decl.span.end,
+            );
+            if !decls.is_empty() {
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -199,6 +400,14 @@ fn pretty_decl(buf: &mut String, decl: &Decl, indent: usize, interner: &StringIn
             pretty_type(buf, ty, interner);
             buf.push_str(" *)");
         }
+    }
+}
+
+fn pretty_constructor(buf: &mut String, con: &ConDecl, interner: &StringInterner) {
+    buf.push_str(interner.resolve(con.name));
+    if let Some(ref ty) = con.payload {
+        buf.push_str(" of ");
+        pretty_type(buf, ty, interner);
     }
 }
 
@@ -343,7 +552,7 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringIn
         ExprKind::Let(decls, body) => {
             buf.push_str("let\n");
             for d in decls {
-                pretty_decl(buf, d, indent + 2, interner);
+                pretty_decl(buf, d, indent + 2, interner, None);
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -359,8 +568,10 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringIn
             pretty_expr(buf, scrutinee, indent, interner);
             buf.push_str(" of\n");
             for (i, (pat, body)) in branches.iter().enumerate() {
-                write_indent(buf, indent + 2);
-                if i > 0 {
+                if i == 0 {
+                    write_indent(buf, indent + 4);
+                } else {
+                    write_indent(buf, indent + 2);
                     buf.push_str("| ");
                 }
                 pretty_pat(buf, pat, interner);
