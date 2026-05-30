@@ -371,6 +371,7 @@ struct UpvalueDesc {
 struct FuncCtx {
     chunk: Chunk,
     locals: Vec<Local>,
+    max_locals: u16,
     upvalues: Vec<UpvalueDesc>,
     scope_depth: u32,
     arity: u8,
@@ -635,6 +636,7 @@ impl Compiler {
             func_stack: vec![FuncCtx {
                 chunk: Chunk::default(),
                 locals: Vec::new(),
+                max_locals: 0,
                 upvalues: Vec::new(),
                 scope_depth: 0,
                 arity: 0,
@@ -676,6 +678,7 @@ impl Compiler {
         Ok((
             CompiledProgram {
                 main: Arc::new(main.chunk),
+                main_n_locals: main.max_locals,
                 functions: Arc::<[FunctionProto]>::from(c.functions),
                 effects: Arc::<[crate::chunk::EffectMeta]>::from(
                     c.effect_tags
@@ -736,6 +739,7 @@ impl Compiler {
         self.func_stack.push(FuncCtx {
             chunk: Chunk::default(),
             locals: Vec::new(),
+            max_locals: 0,
             upvalues: Vec::new(),
             scope_depth: 0,
             arity: 1,
@@ -816,6 +820,8 @@ impl Compiler {
     fn add_local(&mut self, name: String) {
         let depth = self.ctx().scope_depth;
         self.ctx_mut().locals.push(Local { name, depth });
+        let len = self.ctx().locals.len();
+        self.ctx_mut().max_locals = self.ctx().max_locals.max(len as u16);
     }
 
     fn begin_scope(&mut self) {
@@ -1580,6 +1586,7 @@ impl Compiler {
             name: func_ctx.name,
             arity: func_ctx.arity,
             n_captures,
+            n_locals: func_ctx.max_locals,
             chunk: func_ctx.chunk,
         };
         let proto_idx = self.functions.len() as u16;
@@ -2277,6 +2284,18 @@ mod tests {
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let source = std::fs::read_to_string(path).expect("read source");
         Compiler::compile_file(parse_program(&source), path)
+    }
+
+    #[test]
+    fn compile_records_max_locals_after_scope_cleanup() {
+        let program = parse_program("fun f x = let val y = x in y end\nval answer = f 1\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let proto = compiled
+            .functions
+            .iter()
+            .find(|proto| proto.name.as_deref() == Some("f"))
+            .expect("function proto");
+        assert_eq!(proto.n_locals, 2);
     }
 
     #[cfg(feature = "builtin-path")]

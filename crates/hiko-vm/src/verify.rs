@@ -49,20 +49,31 @@ pub fn verify_program(program: &CompiledProgram) -> Result<(), VerificationError
         .iter()
         .map(|effect| effect.tag)
         .collect::<BTreeSet<_>>();
-    verify_chunk(&program.main, None, &program.functions, &effect_tags)
-        .map_err(|err| VerificationError::new(format!("main chunk: {err}")))?;
+    verify_chunk(
+        &program.main,
+        program.main_n_locals as usize,
+        None,
+        &program.functions,
+        &effect_tags,
+    )
+    .map_err(|err| VerificationError::new(format!("main chunk: {err}")))?;
 
     for (proto_idx, proto) in program.functions.iter().enumerate() {
-        verify_chunk(&proto.chunk, Some(proto), &program.functions, &effect_tags).map_err(
-            |err| {
-                let name = proto
-                    .name
-                    .as_deref()
-                    .map(|name| format!("function {proto_idx} ('{name}')"))
-                    .unwrap_or_else(|| format!("function {proto_idx}"));
-                VerificationError::new(format!("{name}: {err}"))
-            },
-        )?;
+        verify_chunk(
+            &proto.chunk,
+            proto.n_locals as usize,
+            Some(proto),
+            &program.functions,
+            &effect_tags,
+        )
+        .map_err(|err| {
+            let name = proto
+                .name
+                .as_deref()
+                .map(|name| format!("function {proto_idx} ('{name}')"))
+                .unwrap_or_else(|| format!("function {proto_idx}"));
+            VerificationError::new(format!("{name}: {err}"))
+        })?;
     }
 
     Ok(())
@@ -70,11 +81,12 @@ pub fn verify_program(program: &CompiledProgram) -> Result<(), VerificationError
 
 fn verify_chunk(
     chunk: &Chunk,
+    n_locals: usize,
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
     effect_tags: &BTreeSet<u16>,
 ) -> Result<(), String> {
-    let decoded = decode_chunk(chunk, proto, functions, effect_tags)?;
+    let decoded = decode_chunk(chunk, n_locals, proto, functions, effect_tags)?;
     let initial_depth = proto.map_or(0usize, |p| p.arity as usize);
     verify_stack_effects(&decoded, initial_depth)?;
     Ok(())
@@ -82,6 +94,7 @@ fn verify_chunk(
 
 fn decode_chunk(
     chunk: &Chunk,
+    n_locals: usize,
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
     effect_tags: &BTreeSet<u16>,
@@ -97,7 +110,16 @@ fn decode_chunk(
         ip += 1;
         let op =
             Op::try_from(op_byte).map_err(|b| format!("invalid opcode {b} at offset {start}"))?;
-        let inst = decode_instruction(chunk, proto, functions, effect_tags, start, op, &mut ip)?;
+        let inst = decode_instruction(
+            chunk,
+            n_locals,
+            proto,
+            functions,
+            effect_tags,
+            start,
+            op,
+            &mut ip,
+        )?;
         decoded.push(inst);
     }
 
@@ -116,6 +138,7 @@ fn decode_chunk(
 
 fn decode_instruction(
     chunk: &Chunk,
+    n_locals: usize,
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
     effect_tags: &BTreeSet<u16>,
@@ -183,7 +206,12 @@ fn decode_instruction(
             }
         }
         Op::GetLocal => {
-            let _slot = read_u16(chunk, ip, "GetLocal")? as usize;
+            let slot = read_u16(chunk, ip, "GetLocal")? as usize;
+            if slot >= n_locals {
+                return Err(format!(
+                    "GetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: 0,
@@ -191,7 +219,12 @@ fn decode_instruction(
             }
         }
         Op::SetLocal => {
-            let _slot = read_u16(chunk, ip, "SetLocal")? as usize;
+            let slot = read_u16(chunk, ip, "SetLocal")? as usize;
+            if slot >= n_locals {
+                return Err(format!(
+                    "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: 1,
@@ -350,7 +383,13 @@ fn decode_instruction(
             for capture_idx in 0..n_captures {
                 let is_local = read_u8(chunk, ip, "MakeClosure capture")? != 0;
                 let index = read_u16(chunk, ip, "MakeClosure capture")? as usize;
-                if !is_local && index >= current_captures {
+                if is_local {
+                    if index >= n_locals {
+                        return Err(format!(
+                            "MakeClosure at offset {start} capture #{capture_idx} references local slot {index}, but current chunk only has {n_locals} local(s)"
+                        ));
+                    }
+                } else if index >= current_captures {
                     return Err(format!(
                         "MakeClosure at offset {start} capture #{capture_idx} references upvalue {index}, but current function only has {current_captures} capture(s)"
                     ));
@@ -542,23 +581,42 @@ fn apply_delta(inst: &DecodedInst, depth: usize, delta: isize) -> Result<usize, 
 #[cfg(test)]
 mod tests {
     use super::verify_program;
-    use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta};
+    use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
     use hiko_compile::op::Op;
     use std::sync::Arc;
 
     fn empty_program(code: Vec<u8>) -> CompiledProgram {
-        program_with_effects(code, Vec::new())
+        program_with_effects(code, 0, Vec::new())
     }
 
-    fn program_with_effects(code: Vec<u8>, effects: Vec<EffectMeta>) -> CompiledProgram {
+    fn program_with_effects(
+        code: Vec<u8>,
+        main_n_locals: u16,
+        effects: Vec<EffectMeta>,
+    ) -> CompiledProgram {
         CompiledProgram {
             main: Arc::new(Chunk {
                 code,
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals,
             functions: Arc::from([]),
             effects: Arc::from(effects),
+        }
+    }
+
+    fn proto(code: Vec<u8>, arity: u8, n_captures: u8, n_locals: u16) -> FunctionProto {
+        FunctionProto {
+            name: None,
+            arity,
+            n_captures,
+            n_locals,
+            chunk: Chunk {
+                code,
+                constants: Vec::new(),
+                spans: Vec::new(),
+            },
         }
     }
 
@@ -591,6 +649,7 @@ mod tests {
                 constants: vec![Constant::Int(1)],
                 spans: Vec::new(),
             }),
+            main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
@@ -599,9 +658,93 @@ mod tests {
     }
 
     #[test]
+    fn rejects_main_get_local_out_of_bounds() {
+        let program = empty_program(vec![Op::GetLocal as u8, 0, 0, Op::Halt as u8]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("GetLocal"));
+        assert!(err.message().contains("local slot 0"));
+    }
+
+    #[test]
+    fn accepts_main_get_local_with_declared_local_slot() {
+        let program = program_with_effects(
+            vec![Op::GetLocal as u8, 0, 0, Op::Pop as u8, Op::Halt as u8],
+            1,
+            Vec::new(),
+        );
+        verify_program(&program).expect("declared main local slot should verify");
+    }
+
+    #[test]
+    fn rejects_function_get_local_out_of_bounds() {
+        let function = proto(vec![Op::GetLocal as u8, 1, 0, Op::Return as u8], 0, 0, 1);
+        let program = CompiledProgram {
+            main: Arc::new(Chunk {
+                code: vec![Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([function]),
+            effects: Arc::from([]),
+        };
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("GetLocal"));
+        assert!(err.message().contains("local slot 1"));
+    }
+
+    #[test]
+    fn rejects_function_set_local_out_of_bounds() {
+        let function = proto(
+            vec![Op::Unit as u8, Op::SetLocal as u8, 1, 0, Op::Return as u8],
+            0,
+            0,
+            1,
+        );
+        let program = CompiledProgram {
+            main: Arc::new(Chunk {
+                code: vec![Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([function]),
+            effects: Arc::from([]),
+        };
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("SetLocal"));
+        assert!(err.message().contains("local slot 1"));
+    }
+
+    #[test]
+    fn rejects_make_closure_local_capture_out_of_bounds() {
+        let captured = proto(vec![Op::GetUpvalue as u8, 0, 0, Op::Return as u8], 0, 1, 0);
+        let maker = proto(
+            vec![Op::MakeClosure as u8, 0, 0, 1, 1, 1, 0, Op::Return as u8],
+            0,
+            0,
+            1,
+        );
+        let program = CompiledProgram {
+            main: Arc::new(Chunk {
+                code: vec![Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([captured, maker]),
+            effects: Arc::from([]),
+        };
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("MakeClosure"));
+        assert!(err.message().contains("local slot 1"));
+    }
+
+    #[test]
     fn rejects_perform_without_payload() {
         let program = program_with_effects(
             vec![Op::Perform as u8, 0, 0, Op::Halt as u8],
+            0,
             vec![effect_zero()],
         );
         let err = verify_program(&program).expect_err("program should fail verification");

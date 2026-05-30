@@ -25,6 +25,11 @@ pub struct FunctionProto {
     pub name: Option<String>,
     pub arity: u8,
     pub n_captures: u8,
+    /// Maximum local slot count used by this function, including parameters,
+    /// scoped locals, temporary pattern locals, and slots reused after scope
+    /// cleanup. The bytecode verifier uses this to reject out-of-bounds
+    /// `GetLocal`, `SetLocal`, and local `MakeClosure` captures.
+    pub n_locals: u16,
     pub chunk: Chunk,
 }
 
@@ -38,6 +43,9 @@ pub struct EffectMeta {
 #[derive(Debug, Clone)]
 pub struct CompiledProgram {
     pub main: Arc<Chunk>,
+    /// Maximum local slot count used by the main chunk. Function-local counts
+    /// live on each `FunctionProto`.
+    pub main_n_locals: u16,
     pub functions: Arc<[FunctionProto]>,
     /// Effect name → tag mapping for runtime-handled effect resolution.
     pub effects: Arc<[EffectMeta]>,

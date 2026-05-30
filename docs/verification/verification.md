@@ -26,7 +26,7 @@ claim; "partial" means important gaps remain.
 
 | Definition area | Claim or invariant | Verification evidence | Status | Remaining gap |
 |---|---|---|---|---|
-| Core bytecode execution | Malformed bytecode should be rejected before execution when structural errors are knowable. | Bytecode verifier in [`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs) plus verifier regression tests. | Partial | Does not prove value types, local-slot bounds, local capture bounds, indirect-call arity, data-tag validity, or resource safety. |
+| Core bytecode execution | Malformed bytecode should be rejected before execution when structural errors are knowable; semantic/value errors should fail as controlled runtime errors. | Bytecode verifier in [`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs) plus verifier and VM dispatch regression tests. | Tested / specified | Value types, indirect-call callable checks, field presence, data-tag ownership, and resource safety are runtime-guarded or out of verifier scope by design. |
 | Effects | `perform` and handler clauses refer to declared effect metadata; invalid `resume` paths fail deterministically. | Type-inference tests, VM effect/resume tests, and verifier checks for `Perform` / `InstallHandler` effect tags. | Partial | No complete static effect-row/type-and-effect discipline yet; arbitrary malformed bytecode can still violate source-level effect protocol invariants. |
 | Process lifecycle | Spawn, await, await-result, cancellation, I/O blocking/completion, parent-exit cleanup, and deadlock transitions follow the intended lifecycle model. | [`ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla), configs, runtime tests, and runtime docs. | Modeled / partial implementation evidence | TLA+ is a design model, not a refinement proof of Rust; Quint lifecycle port lags. |
 | Threaded scheduler | Workers should not duplicate process ownership, stale queue entries should not resurrect invalid work, and waiter/I/O registrations should remain consistent. | [`ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla), runtime tests, scheduler tests. | Partial | Model lags current tombstone, `child_parents`, `pending_cancels`, `AwaitKind::Result`, and stale-waiter cleanup behavior. |
@@ -66,7 +66,11 @@ The verifier is primarily a structural bytecode verifier. It currently checks:
 - `Perform` and `InstallHandler` effect tags refer to declared effect metadata,
   and
 - function chunks start with stack depth equal to function arity while the main
-  chunk starts at depth `0`.
+  chunk starts at depth `0`,
+- `GetLocal` and `SetLocal` slot operands are within the main chunk's or
+  function prototype's declared maximum local slot count, and
+- local `MakeClosure` captures reference an existing local slot while non-local
+  captures reference an existing upvalue in the current function.
 
 ### What it does not currently prove
 
@@ -92,14 +96,6 @@ guarantees, and several are explicitly runtime concerns:
   - The verifier does not prove builtin argument types, host capability
     permission, filesystem safety, HTTP policy, exec policy, AWS policy, or
     other provider-specific safety properties.
-- Local slot bounds.
-  - `GetLocal` and `SetLocal` currently read the slot operand but do not validate
-    the slot index against a known local count.
-  - This may be because the chunk metadata available to the verifier does not
-    currently expose enough local-slot information.
-- Local capture bounds for `MakeClosure`.
-  - `MakeClosure` checks non-local/upvalue captures, but local captures are read
-    without validating that the referenced local slot exists.
 - Reachability as a security guarantee.
   - Stack effects are propagated from the first instruction over control-flow
     successors. Structurally malformed but unreachable bytecode is still decoded,
@@ -227,8 +223,6 @@ Those tests check the real implementation paths and complement the formal specs.
 
 Useful next verification work includes:
 
-- add verifier docs/tests for any future local-slot metadata and validate
-  `GetLocal`, `SetLocal`, and local closure captures against it,
 - add fuzz targets for bytecode verification and interpreter dispatch,
 - add fuzz targets for lockfile parsing and filesystem capability path handling,
 - refresh `ProcessLifecycle.qnt` to match the current TLA+ lifecycle model,

@@ -243,6 +243,7 @@ impl VM {
     pub fn get_program(&self) -> CompiledProgram {
         CompiledProgram {
             main: self.main_chunk.clone(),
+            main_n_locals: self.main_n_locals,
             functions: self.protos.clone(),
             effects: self.effect_metadata.clone(),
         }

@@ -102,6 +102,7 @@ pub struct VM {
     global_names: HashMap<String, usize>,
     protos: Arc<[FunctionProto]>,
     main_chunk: Arc<Chunk>,
+    main_n_locals: u16,
     output: Option<Vec<String>>,
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
@@ -256,6 +257,7 @@ impl VM {
             global_names: HashMap::new(),
             effect_metadata: program.effects,
             protos: program.functions,
+            main_n_locals: program.main_n_locals,
             main_chunk: program.main,
             output: None,
             builtins: Vec::new(),
@@ -548,6 +550,7 @@ mod tests {
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
@@ -567,6 +570,7 @@ mod tests {
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
@@ -601,12 +605,13 @@ mod tests {
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals: 2,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
 
         let mut vm = VM::new(program);
-        let err = vm.run().expect_err("invalid local slot should fail");
+        let err = vm.run().expect_err("invalid local stack index should fail");
         assert_eq!(err.message, "GetLocal: stack index 1 out of bounds");
     }
 
@@ -624,6 +629,7 @@ mod tests {
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
@@ -1005,6 +1011,7 @@ mod tests {
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
@@ -1149,6 +1156,7 @@ mod tests {
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
+            main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
         };
