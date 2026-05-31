@@ -1,7 +1,7 @@
 # Builtin Resource Accounting Matrix
 
 This document audits builtin and builtin-adjacent resource accounting as of the
-first-pass #63 implementation and the #80 host-resource work in progress.
+first-pass #63 implementation and the #80 host-resource limits work.
 
 It is intentionally an accounting matrix, not a type reference. For signatures
 and user-facing descriptions, see [`builtins.md`](builtins.md). For execution
@@ -25,7 +25,7 @@ latency and non-preemptive sections, see
 | Host work | `max_host_work`; approximate CPU-bound native work units for builtins and process-boundary serialization/deserialization. |
 | I/O bytes | `max_io_bytes`; stdin/stdout, file, HTTP, exec, async completion, and similar byte payload accounting. |
 | Heap / memory | `max_memory_bytes`, `max_heap`, allocation preflight helpers, and normal heap allocation failures. |
-| Host resources | Opaque native Rust resources behind `HeapObject::HostHandle`, such as AWS SDK config/client handles. Full host-resource limits are tracked by #80. |
+| Host resources | Opaque native Rust resources behind `HeapObject::HostHandle`, such as AWS SDK config/client handles. `max_host_resources` caps total live handles; `limits.host_resources` / `VMBuilder::host_resource_limits` cap live handles per kind. Current and peak counts are tracked by the heap. |
 
 ## Domain matrix
 
@@ -51,9 +51,9 @@ latency and non-preemptive sections, see
 | System sleep | `sleep` | ✅ until suspension/request | N/A | N/A | N/A | N/A | In runtime-managed async mode sleep suspends via `IoRequest::Sleep`; direct blocking behavior is controlled by builtin implementation/runtime path. |
 | Exec | `exec` | ✅ | ◐ process spawn/wait not separately host-work charged | ✅ stdout/stderr bounded and charged by `max_io_bytes` | ✅ result tuple/strings allocated through heap | N/A | Revalidates executable identity before spawn; timeout configured by exec policy. Reader threads reject oversized output before returning it to the VM. |
 | Process/concurrency | `spawn`, `await_process`, `await_process_result`, `cancel`, `wait_any` | ✅ | ✅ spawn capture serialization and child result serialization/deserialization charge process-boundary host work | N/A | ✅ captures/results allocate into child/parent heap under heap limits | N/A | Await/wait operations suspend; sendable payload size drives host-work charge. |
-| AWS config | `aws_config_sso_profile`, `aws_config_instance_profile` | ✅ until async request/suspension | ◐ SDK provider-chain work not separately host-work charged | ◐ async completion estimates bytes | ✅ small heap handle allocated | ⚠️ native `SdkConfig` resource accounting tracked by #80 | Capability-gated by allowed SSO profiles / instance-profile policy. |
-| AWS S3 | `aws_s3_client`, `aws_s3_list_buckets` | ✅ | ◐ SDK client construction/listing not separately host-work charged | ◐ async completion estimates bytes | ✅ small heap handle / result values allocated | ⚠️ native S3 client resource accounting tracked by #80 | Host handle table stores native client; full per-kind limits are #80. |
-| AWS SQS | `aws_sqs_client`, `aws_sqs_list_queues` | ✅ | ◐ SDK client construction/listing not separately host-work charged | ◐ async completion estimates bytes | ✅ small heap handle / result values allocated | ⚠️ native SQS client resource accounting tracked by #80 | Host handle table stores native client; full per-kind limits are #80. |
+| AWS config | `aws_config_sso_profile`, `aws_config_instance_profile` | ✅ until async request/suspension | ◐ SDK provider-chain work not separately host-work charged | ◐ async completion estimates bytes | ✅ small heap handle allocated | ✅ total/per-kind current and peak handle counts; total/per-kind live limits | Capability-gated by allowed SSO profiles / instance-profile policy. Per-kind config key: `aws_config`. |
+| AWS S3 | `aws_s3_client`, `aws_s3_list_buckets` | ✅ | ◐ SDK client construction/listing not separately host-work charged | ◐ async completion estimates bytes | ✅ small heap handle / result values allocated | ✅ total/per-kind current and peak handle counts; total/per-kind live limits | Host handle table stores native client. Per-kind config key: `aws_s3_client`. |
+| AWS SQS | `aws_sqs_client`, `aws_sqs_list_queues` | ✅ | ◐ SDK client construction/listing not separately host-work charged | ◐ async completion estimates bytes | ✅ small heap handle / result values allocated | ✅ total/per-kind current and peak handle counts; total/per-kind live limits | Host handle table stores native client. Per-kind config key: `aws_sqs_client`. |
 | GitHub issue API | `github_issue_create`, `github_issue_view`, `github_issue_update` and stdlib `Gh.Issue` wrappers | ✅ | ◐ HTTP/JSON work mostly covered by byte/heap limits, not distinct host-work charge | ✅ request/response payloads use HTTP byte accounting where implemented by builtin path | ✅ JSON/string allocations controlled by heap/memory | N/A | Policy-gated by allowed repositories. Verify if new GitHub builtins bypass shared HTTP bounded-reader helpers when extending this domain. |
 | Testing | `panic`, `assert`, `assert_eq` | ✅ | ◐ `assert_eq` structural equality can walk large values; no separate host-work charge | N/A | ◐ error messages allocate ordinary strings | N/A | Equality implementation is iterative to avoid host stack overflow; large equality checks remain non-preemptive. |
 | Builtin display/output bridge | `print`/`println` display of arbitrary values | ✅ | ◐ display traversal/formatting not separately host-work charged | ✅ displayed bytes charged | ✅ formatted strings allocate outside/inside ordinary Rust before sink write | N/A | For latency-sensitive embedders, avoid printing extremely large structured values or set tight output/heap limits. |
@@ -61,16 +61,14 @@ latency and non-preemptive sections, see
 
 ## Known follow-ups
 
-1. **#80 host-resource limits.** AWS config/client handles need explicit native
-   resource count/peak/limit accounting in addition to heap handle accounting.
-2. **Calibration.** `max_host_work` constants are deliberately approximate.
+1. **Calibration.** `max_host_work` constants are deliberately approximate.
    Benchmark representative workloads before treating unit values as release
    guidance.
-3. **Per-operation byte knobs.** Global `max_io_bytes` currently bounds HTTP,
+2. **Per-operation byte knobs.** Global `max_io_bytes` currently bounds HTTP,
    file, exec, stdin, stdout, and async completions. If operators need different
    budgets per operation, add separate knobs such as `max_http_response_bytes`,
    `max_file_read_bytes`, or `max_exec_output_bytes`.
-4. **Traversal-only host work.** Some directory traversal, display formatting,
+3. **Traversal-only host work.** Some directory traversal, display formatting,
    structural equality, date/time formatting, conversion parsing, and provider
    SDK work is controlled by broader limits but not individually charged with
    fine-grained host-work units.
@@ -86,7 +84,7 @@ When adding a builtin, update this matrix and answer:
 - Can it allocate host-side intermediates? If yes, preflight heap/memory where
   practical.
 - Does it create or retain native Rust resources? If yes, use host-resource
-  accounting (#80).
+  accounting and document its per-kind limit key.
 - Is it synchronous and potentially slow? Document that it is non-preemptive or
   route it through runtime-managed async I/O.
 - Are failure modes controlled and deterministic when limits are exhausted?

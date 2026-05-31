@@ -18,7 +18,14 @@ max_work = 100_000_000
 max_memory_bytes = 268435456
 max_io_bytes = 67108864
 max_host_work = 10_000_000
+max_host_resources = 32
 max_heap = 1_000_000
+
+# Opaque native Rust resources, such as AWS SDK config/client handles.
+[limits.host_resources]
+aws_config = 8
+aws_s3_client = 8
+aws_sqs_client = 8
 
 # Standard input/output builtins.
 [capabilities.stdio.print]

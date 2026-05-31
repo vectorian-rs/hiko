@@ -3,7 +3,7 @@
 use smallvec::smallvec;
 
 use crate::process::{FiberJoinError, Pid, ProcessFailure};
-use crate::sendable::{SendableValue, deserialize};
+use crate::sendable::{deserialize, SendableValue};
 use crate::value::{Fields, HeapObject, Value};
 use crate::vm::VM;
 
@@ -151,7 +151,10 @@ fn alloc_heap_value(
         crate::heap::HeapLimitExceeded::Objects { limit, live } => {
             ProcessFailure::HeapObjectLimitExceeded { limit, live }
         }
-        crate::heap::HeapLimitExceeded::Bytes { .. } => ProcessFailure::runtime(e.to_string()),
+        crate::heap::HeapLimitExceeded::Bytes { .. }
+        | crate::heap::HeapLimitExceeded::HostResources { .. } => {
+            ProcessFailure::runtime(e.to_string())
+        }
     })
 }
 
@@ -168,7 +171,10 @@ fn deserialize_with_heap_limit(
         crate::heap::HeapLimitExceeded::Objects { limit, live } => {
             ProcessFailure::HeapObjectLimitExceeded { limit, live }
         }
-        crate::heap::HeapLimitExceeded::Bytes { .. } => ProcessFailure::runtime(e.to_string()),
+        crate::heap::HeapLimitExceeded::Bytes { .. }
+        | crate::heap::HeapLimitExceeded::HostResources { .. } => {
+            ProcessFailure::runtime(e.to_string())
+        }
     })
 }
 

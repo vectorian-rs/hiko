@@ -1214,6 +1214,23 @@ impl RunConfig {
         if let Some(max_host_work) = self.limits.max_host_work {
             s.push_str(&format!("            .max_host_work({max_host_work})\n"));
         }
+        if let Some(max_host_resources) = self.limits.max_host_resources {
+            s.push_str(&format!(
+                "            .max_host_resources({max_host_resources})\n"
+            ));
+        }
+        if !self.limits.host_resources.is_empty() {
+            let mut limits: Vec<_> = self.limits.host_resources.iter().collect();
+            limits.sort_by(|(left, _), (right, _)| left.cmp(right));
+            s.push_str("            .host_resource_limits(std::collections::HashMap::from([\n");
+            for (kind, limit) in limits {
+                let kind = kind.replace('\\', "\\\\").replace('"', "\\\"");
+                s.push_str(&format!(
+                    "                (\"{kind}\".to_string(), {limit}usize),\n"
+                ));
+            }
+            s.push_str("            ]))\n");
+        }
         s.push_str("            ;\n");
         s.push_str("        builder.build()\n");
         s.push_str("    };\n");
@@ -1322,6 +1339,27 @@ folders = ["."]
         assert!(rust_source.contains(".register_builtin_name(\"numeric_int32_min_value\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_word32_add\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_float32_add\")"));
+    }
+
+    #[test]
+    fn rust_source_includes_host_resource_limits() {
+        let config = RunConfig::from_toml(
+            r#"
+[limits]
+max_host_resources = 4
+
+[limits.host_resources]
+aws_config = 1
+aws_s3_client = 2
+"#,
+        )
+        .expect("host resource limits should parse");
+
+        let rust_source = config.to_rust_source();
+        assert!(rust_source.contains(".max_host_resources(4)"));
+        assert!(rust_source.contains(".host_resource_limits(std::collections::HashMap::from(["));
+        assert!(rust_source.contains("(\"aws_config\".to_string(), 1usize)"));
+        assert!(rust_source.contains("(\"aws_s3_client\".to_string(), 2usize)"));
     }
 
     #[test]

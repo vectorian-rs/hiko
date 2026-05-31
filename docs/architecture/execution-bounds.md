@@ -148,7 +148,8 @@ cooperative collection point, not a preemptive collector.
 | `run_slice(reductions)` | one scheduling slice's opcode dispatch budget | Native builtin, GC, or sync host-call duration once entered |
 | `max_host_work` | approximate CPU-bound builtin/host work units | Wall-clock time exactly |
 | `max_io_bytes` | stdin/stdout, HTTP/file/exec payload bytes, async completion bytes | Number of requests unless separate capability policy denies them |
-| `max_memory_bytes` | accounted heap bytes | Native resources held behind host handles; see #80 |
+| `max_memory_bytes` | accounted heap bytes | Native resources held behind host handles |
+| `max_host_resources` / `limits.host_resources` | total and per-kind live opaque native host handles | Size of the native object behind each handle |
 | `max_heap` | live heap object count | Object byte size |
 | Stack/frame constants | value stack and call-frame depth | Heap or host resource size |
 
@@ -161,9 +162,10 @@ For latency-sensitive use:
 3. Set `max_host_work` for JSON/regex/hash/string/bytes/random-heavy scripts.
 4. Set `max_io_bytes` for scripts that can read, write, fetch, print, or exec.
 5. Set `max_memory_bytes` and, where useful, `max_heap`.
-6. Use the runtime-managed async I/O path for operations that may block.
-7. Treat sync HTTP/file/exec builtins as bounded but non-preemptive host calls.
-8. Size process heaps so local GC pauses are acceptable for your application.
+6. Set `max_host_resources` and per-kind `limits.host_resources` caps when scripts can create native handles such as AWS clients.
+7. Use the runtime-managed async I/O path for operations that may block.
+8. Treat sync HTTP/file/exec builtins as bounded but non-preemptive host calls.
+9. Size process heaps so local GC pauses are acceptable for your application.
 
 A practical starting point for agent/tool workloads is:
 
@@ -173,12 +175,19 @@ max_work = 10_000_000
 max_host_work = 10_000_000
 max_io_bytes = 67_108_864
 max_memory_bytes = 268_435_456
+max_host_resources = 32
 max_heap = 500_000
+
+[limits.host_resources]
+aws_config = 8
+aws_s3_client = 8
+aws_sqs_client = 8
 ```
 
 Then tune using representative scripts. Increase `max_work` for pure Hiko loops,
-`max_host_work` for CPU-heavy builtins, `max_io_bytes` for large payloads, and
-memory/heap limits for large live data structures.
+`max_host_work` for CPU-heavy builtins, `max_io_bytes` for large payloads,
+memory/heap limits for large live data structures, and host-resource limits for
+scripts that intentionally retain many native handles.
 
 ## Current non-goals
 
@@ -189,9 +198,7 @@ Hiko does not currently provide:
 - preemption inside GC marking/sweeping;
 - exact wall-clock accounting for host work;
 - per-operation byte knobs such as `max_http_response_bytes` separate from the
-  global `max_io_bytes`;
-- accounting for native resources behind host handles beyond the handle object
-  itself (tracked separately by #80).
+  global `max_io_bytes`.
 
 These are explicit boundaries of the current runtime contract, not accidental
 omissions.

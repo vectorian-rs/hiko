@@ -9,6 +9,8 @@ The handle is only a typed key. The actual Rust object lives in the owning heap'
 
 Host handles are process-local. They are intentionally rejected by process-boundary serialization and must not be captured as child process results/messages unless a future API explicitly defines transfer semantics.
 
+The heap tracks current and peak host-handle counts globally and per kind. Operators can cap live handles with `limits.max_host_resources` and per-kind `limits.host_resources` entries such as `aws_config`, `aws_s3_client`, and `aws_sqs_client`.
+
 Current AWS API shape:
 
 ```sml

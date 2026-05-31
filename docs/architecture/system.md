@@ -260,7 +260,13 @@ max_work = 10_000_000
 max_memory_bytes = 268_435_456
 max_io_bytes = 67_108_864
 max_host_work = 10_000_000
+max_host_resources = 32
 max_heap = 500_000
+
+[limits.host_resources]
+aws_config = 8
+aws_s3_client = 8
+aws_sqs_client = 8
 
 [capabilities.stdio.println]
 enabled = true
@@ -304,13 +310,22 @@ VMBuilder::new(compiled)
     .max_memory_bytes(256 * 1024 * 1024)
     .max_io_bytes(64 * 1024 * 1024)
     .max_host_work(10_000_000)      // CPU-bound builtin/host work
+    .max_host_resources(32)         // opaque native host handles
+    .host_resource_limits(std::collections::HashMap::from([
+        ("aws_config".to_string(), 8),
+        ("aws_s3_client".to_string(), 8),
+        ("aws_sqs_client".to_string(), 8),
+    ]))
     .max_heap(500_000)              // optional object-count guard
     .build()
 ```
 
-`max_work`, `max_memory_bytes`, `max_io_bytes`, and `max_host_work` are the
-primary bytecode, memory, host-I/O, and CPU-bound host-work limits. `max_fuel`
-remains accepted as a compatibility alias for `max_work`, and `max_heap` remains
+`max_work`, `max_memory_bytes`, `max_io_bytes`, `max_host_work`, and
+`max_host_resources` are the primary bytecode, memory, host-I/O, CPU-bound
+host-work, and opaque native-resource limits. `limits.host_resources` /
+`VMBuilder::host_resource_limits` can further cap individual handle kinds such
+as `aws_config`, `aws_s3_client`, and `aws_sqs_client`. `max_fuel` remains
+accepted as a compatibility alias for `max_work`, and `max_heap` remains
 available as a separate object-count guard.
 
 Filesystem policies are implemented with preopened `cap-std` directory
