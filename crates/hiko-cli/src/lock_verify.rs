@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
+use crate::find_project_manifest_from;
 use hiko_common::{blake3_hex, http_get_text_limited};
 use serde::Deserialize;
 
@@ -339,16 +340,4 @@ fn normalize_blake3(hash: &str) -> String {
         .strip_prefix("blake3:")
         .unwrap_or(hash.trim())
         .to_ascii_lowercase()
-}
-
-fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = Some(start_dir);
-    while let Some(dir) = current {
-        let candidate = dir.join("hiko.toml");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        current = dir.parent();
-    }
-    None
 }

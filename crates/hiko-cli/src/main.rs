@@ -266,11 +266,27 @@ impl RuntimeSurface {
     }
 }
 
-fn compile_source(path: &str) -> Result<Compiled, ()> {
-    let source = fs::read_to_string(path).unwrap_or_else(|e| {
+pub(crate) fn read_source_or_exit(path: &str) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("error: cannot read {path}: {e}");
         process::exit(1);
-    });
+    })
+}
+
+pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        let candidate = dir.join("hiko.toml");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn compile_source(path: &str) -> Result<Compiled, ()> {
+    let source = read_source_or_exit(path);
 
     let ctx = DiagCtx::new(path, source.clone());
 
@@ -314,10 +330,7 @@ fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
 }
 
 fn load_run_config(config_path: &str, label: &str) -> RunConfig {
-    let toml = fs::read_to_string(config_path).unwrap_or_else(|e| {
-        eprintln!("Cannot read {label} file '{config_path}': {e}");
-        process::exit(1);
-    });
+    let toml = read_source_or_exit(config_path);
 
     RunConfig::from_toml(&toml).unwrap_or_else(|e| {
         eprintln!("Invalid {label} '{config_path}': {e}");
@@ -334,18 +347,6 @@ fn hash_files(paths: &[String]) {
         });
         println!("blake3:{}  {}", blake3_hex(&bytes), path);
     }
-}
-
-fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = Some(start_dir);
-    while let Some(dir) = current {
-        let candidate = dir.join("hiko.toml");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        current = dir.parent();
-    }
-    None
 }
 
 fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
@@ -424,14 +425,12 @@ fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
 
 fn parse_flag_value<'a>(args: &'a [String], flag: &str, index: usize, usage: &str) -> &'a str {
     let arg = &args[index];
-    let inline_prefix = format!("{flag}=");
     if arg == flag {
-        let Some(value) = args.get(index + 1) else {
+        args.get(index + 1).unwrap_or_else(|| {
             eprintln!("{usage}");
             process::exit(1);
-        };
-        value
-    } else if let Some(value) = arg.strip_prefix(&inline_prefix) {
+        })
+    } else if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
         if value.is_empty() {
             eprintln!("{usage}");
             process::exit(1);
@@ -443,10 +442,6 @@ fn parse_flag_value<'a>(args: &'a [String], flag: &str, index: usize, usage: &st
     }
 }
 
-fn next_index_for_flag(arg: &str, flag: &str, index: usize) -> usize {
-    if arg == flag { index + 2 } else { index + 1 }
-}
-
 fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> ScriptOptions {
     let mut config_path = None;
     let mut policy_name = None;
@@ -456,12 +451,26 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        if arg == "--config" || arg.starts_with("--config=") {
+        if arg == "--config" {
             config_path = Some(parse_flag_value(args, "--config", i, usage).to_string());
-            i = next_index_for_flag(arg, "--config", i);
-        } else if arg == "--policy" || arg.starts_with("--policy=") {
+            i += 2;
+        } else if let Some(value) = arg.strip_prefix("--config=") {
+            if value.is_empty() {
+                eprintln!("{usage}");
+                process::exit(1);
+            }
+            config_path = Some(value.to_string());
+            i += 1;
+        } else if arg == "--policy" {
             policy_name = Some(parse_flag_value(args, "--policy", i, usage).to_string());
-            i = next_index_for_flag(arg, "--policy", i);
+            i += 2;
+        } else if let Some(value) = arg.strip_prefix("--policy=") {
+            if value.is_empty() {
+                eprintln!("{usage}");
+                process::exit(1);
+            }
+            policy_name = Some(value.to_string());
+            i += 1;
         } else if arg == "--strict" {
             strict = true;
             i += 1;

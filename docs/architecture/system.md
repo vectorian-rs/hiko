@@ -259,6 +259,7 @@ Run configs define VM capabilities at compile time for generated binaries. A con
 max_work = 10_000_000
 max_memory_bytes = 268_435_456
 max_io_bytes = 67_108_864
+max_host_work = 10_000_000
 max_heap = 500_000
 
 [capabilities.stdio.println]
@@ -299,17 +300,18 @@ VMBuilder::new(compiled)
     .with_http(policy)              // all HTTP builtins
     .with_exec(policy)              // whitelisted commands + timeout
     .with_exit()                    // exit builtin
-    .max_work(10_000_000)           // currently counted as opcode executions
+    .max_work(10_000_000)           // opcode executions
     .max_memory_bytes(256 * 1024 * 1024)
     .max_io_bytes(64 * 1024 * 1024)
+    .max_host_work(10_000_000)      // CPU-bound builtin/host work
     .max_heap(500_000)              // optional object-count guard
     .build()
 ```
 
-`max_work`, `max_memory_bytes`, and `max_io_bytes` are the primary bytecode,
-memory, and host-I/O limits. `max_fuel` remains accepted as a compatibility
-alias for `max_work`, and `max_heap` remains available as a separate
-object-count guard.
+`max_work`, `max_memory_bytes`, `max_io_bytes`, and `max_host_work` are the
+primary bytecode, memory, host-I/O, and CPU-bound host-work limits. `max_fuel`
+remains accepted as a compatibility alias for `max_work`, and `max_heap` remains
+available as a separate object-count guard.
 
 Filesystem policies are implemented with preopened `cap-std` directory
 capabilities when `builtin-filesystem` is compiled. The VM opens each configured
@@ -327,6 +329,32 @@ hiko inspect-work examples/work_budget_demo.hml
 That reports the number of compiled opcodes in `main` and each function. It is
 useful for straight-line code and small call graphs, but actual runtime
 `max_work` use still depends on how many times code paths execute.
+
+### Host-work accounting
+
+`max_host_work` is separate from opcode fuel and I/O bytes. It covers work that
+happens inside native Rust builtins or process-boundary helpers where one VM
+opcode may trigger disproportionate host CPU work.
+
+First-pass charge schedule:
+
+| Area | Charge shape |
+| --- | --- |
+| JSON parse/serialize | fixed 100 units |
+| JSON access helpers | fixed 50 units |
+| Regex match/replace | fixed 50/100 units |
+| Random/RNG bytes | fixed 10 units + 1 unit per KiB |
+| String allocation/scans | fixed 5–20 units + 1 unit per KiB where output/input size is known |
+| Bytes conversion/slice | fixed 5–10 units + 1 unit per KiB where size is known |
+| BLAKE3 hashing | fixed 20 units + 1 unit per KiB |
+| Process boundary serialization/deserialization | fixed 10 units + 1 unit per KiB of sendable payload |
+
+The units are intentionally approximate. They are designed to make hostile
+programs spend a visible budget for expensive host operations, not to predict
+wall-clock time precisely. Tune `max_host_work` alongside `max_work` for the
+workload: CPU-heavy JSON/regex/hash scripts need more host work; pure bytecode
+loops mostly consume `max_work`; network/file-heavy scripts mostly consume
+`max_io_bytes`.
 
 The VM also enforces fixed hard guards of `hiko_vm::DEFAULT_MAX_STACK_SLOTS`
 (`65536` value-stack slots) and `hiko_vm::DEFAULT_MAX_CALL_FRAMES` (`65536`

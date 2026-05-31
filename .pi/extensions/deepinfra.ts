@@ -28,6 +28,17 @@ export default function (pi: ExtensionAPI) {
 		api: "openai-completions",
 		models: [
 			{
+				id: "XiaomiMiMo/MiMo-V2.5-Pro",
+				name: "MiMo V2.5 Pro",
+				reasoning: true,
+				thinkingLevelMap: DEEPINFRA_REASONING_LEVELS,
+				input: ["text", "image"],
+				cost: { input: 0.2, output: 1.0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 131072,
+				maxTokens: 16384,
+				compat: OPENAI_REASONING_COMPAT,
+			},
+			{
 				id: "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning",
 				name: "NVIDIA Nemotron 3 Nano Omni 30B A3B Reasoning",
 				reasoning: true,

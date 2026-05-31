@@ -361,7 +361,7 @@ fn execute_io_request(request: IoRequest) -> IoResult {
     }
 }
 
-fn read_to_bytes_limited<R: Read>(
+pub(crate) fn read_to_bytes_limited<R: Read>(
     mut reader: R,
     max_bytes: Option<u64>,
     context: &str,
@@ -386,7 +386,7 @@ fn read_to_bytes_limited<R: Read>(
     Ok((buf, io_bytes))
 }
 
-fn read_to_string_limited<R: Read>(
+pub(crate) fn read_to_string_limited<R: Read>(
     reader: R,
     max_bytes: Option<u64>,
     context: &str,

@@ -1,5 +1,17 @@
 use super::*;
 
+const BYTES_CHEAP_HOST_WORK: u64 = 5;
+const BYTES_ALLOC_HOST_WORK: u64 = 10;
+const BYTES_PER_KIB_HOST_WORK: u64 = 1;
+
+fn bytes_work(base: u64, bytes: usize) -> u64 {
+    base.saturating_add(
+        (bytes as u64)
+            .div_ceil(1024)
+            .saturating_mul(BYTES_PER_KIB_HOST_WORK),
+    )
+}
+
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
         ("bytes_length", bytes_length as BuiltinFn),
@@ -11,6 +23,8 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 }
 
 pub(super) fn bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(BYTES_CHEAP_HOST_WORK)
+        .map_err(|e| format!("bytes_length: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => Ok(Value::Int(b.len() as i64)),
@@ -21,6 +35,15 @@ pub(super) fn bytes_length(args: &[Value], heap: &mut Heap) -> Result<Value, Str
 }
 
 pub(super) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let byte_len = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Bytes(b) => b.len(),
+            _ => return Err("bytes_to_string: expected Bytes".into()),
+        },
+        _ => return Err("bytes_to_string: expected Bytes".into()),
+    };
+    heap.charge_host_work(bytes_work(BYTES_ALLOC_HOST_WORK, byte_len))
+        .map_err(|e| format!("bytes_to_string: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => heap_alloc(
@@ -34,6 +57,15 @@ pub(super) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, 
 }
 
 pub(super) fn string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let byte_len = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => s.len(),
+            _ => return Err("string_to_bytes: expected String".into()),
+        },
+        _ => return Err("string_to_bytes: expected String".into()),
+    };
+    heap.charge_host_work(bytes_work(BYTES_ALLOC_HOST_WORK, byte_len))
+        .map_err(|e| format!("string_to_bytes: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => heap_alloc(heap, HeapObject::Bytes(s.as_bytes().to_vec())),
@@ -44,6 +76,8 @@ pub(super) fn string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
 }
 
 pub(super) fn bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(BYTES_CHEAP_HOST_WORK)
+        .map_err(|e| format!("bytes_get: {e}"))?;
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -74,6 +108,8 @@ pub(super) fn bytes_get(args: &[Value], heap: &mut Heap) -> Result<Value, String
 }
 
 pub(super) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(BYTES_ALLOC_HOST_WORK)
+        .map_err(|e| format!("bytes_slice: {e}"))?;
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -100,7 +136,10 @@ pub(super) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let end = (start + len).min(bytes.len());
     let start = start.min(bytes.len());
-    heap_alloc(heap, HeapObject::Bytes(bytes[start..end].to_vec()))
+    let output = bytes[start..end].to_vec();
+    heap.charge_host_work(bytes_work(0, output.len()))
+        .map_err(|e| format!("bytes_slice: {e}"))?;
+    heap_alloc(heap, HeapObject::Bytes(output))
 }
 
 #[cfg(test)]
@@ -144,6 +183,16 @@ mod tests {
         let result = bytes_length(&[Value::Int(0)], &mut heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("expected Bytes"));
+    }
+
+    #[test]
+    fn bytes_length_respects_host_work_limit() {
+        let mut heap = Heap::new();
+        heap.set_max_host_work(BYTES_CHEAP_HOST_WORK - 1);
+        let arg = bytes_arg(&mut heap, &[1, 2, 3]);
+        let result = bytes_length(&[arg], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("host work budget exceeded"));
     }
 
     #[test]

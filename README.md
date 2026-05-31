@@ -309,6 +309,8 @@ cargo install hiko-cli
 cat > reader.toml << 'EOF'
 [limits]
 max_fuel = 10_000_000
+max_io_bytes = 67_108_864
+max_host_work = 10_000_000
 max_heap = 500_000
 
 [capabilities.stdio.println]
@@ -343,6 +345,8 @@ Path rules:
 # infra-prod-deploy.toml
 [limits]
 max_fuel = 50_000_000
+max_io_bytes = 67_108_864
+max_host_work = 10_000_000
 max_heap = 1_000_000
 
 [capabilities.stdio.println]

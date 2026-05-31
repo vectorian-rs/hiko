@@ -52,28 +52,68 @@ fn cap_io<T>(
     ))
 }
 
+fn cap_read_limited(
+    builtin: &str,
+    path: &str,
+    heap: &Heap,
+    max_bytes: Option<u64>,
+) -> Result<(Vec<u8>, u64), String> {
+    let candidates = heap
+        .cap_candidates_for(builtin, path)
+        .map_err(|e| format!("{builtin}: {e}"))?;
+    let mut last_err = None;
+    for candidate in candidates {
+        match candidate.dir.open(&candidate.relative_path) {
+            Ok(file) => match crate::io_backend::read_to_bytes_limited(file, max_bytes, builtin) {
+                Ok(value) => return Ok(value),
+                Err(err) => last_err = Some(std::io::Error::other(err)),
+            },
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(format!(
+        "{builtin}: {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "no allowed folder matched".into())
+    ))
+}
+
+fn cap_read_to_string_limited(
+    builtin: &str,
+    path: &str,
+    heap: &Heap,
+    max_bytes: Option<u64>,
+) -> Result<(String, u64), String> {
+    let (bytes, io_bytes) = cap_read_limited(builtin, path, heap, max_bytes)?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("{builtin}: {e}"))?;
+    Ok((text, io_bytes))
+}
+
 pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = string_arg(args, heap, "read_file")?;
-    let contents = if heap.has_cap_fs_policy() {
-        cap_io("read_file", &path, heap, |dir, path| {
-            dir.read_to_string(path)
-        })?
+    let max_bytes = heap.remaining_io_bytes();
+    let (contents, io_bytes) = if heap.has_cap_fs_policy() {
+        cap_read_to_string_limited("read_file", &path, heap, max_bytes)?
     } else {
-        std::fs::read_to_string(&path).map_err(|e| format!("read_file: {e}"))?
+        let file = std::fs::File::open(&path).map_err(|e| format!("read_file: {e}"))?;
+        crate::io_backend::read_to_string_limited(file, max_bytes, "read_file")?
     };
-    heap.charge_io_bytes(contents.len() as u64)
+    heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("read_file: {e}"))?;
     heap_alloc(heap, HeapObject::String(contents))
 }
 
 pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = string_arg(args, heap, "read_file_bytes")?;
-    let contents = if heap.has_cap_fs_policy() {
-        cap_io("read_file_bytes", &path, heap, |dir, path| dir.read(path))?
+    let max_bytes = heap.remaining_io_bytes();
+    let (contents, io_bytes) = if heap.has_cap_fs_policy() {
+        cap_read_limited("read_file_bytes", &path, heap, max_bytes)?
     } else {
-        std::fs::read(&path).map_err(|e| format!("read_file_bytes: {e}"))?
+        let file = std::fs::File::open(&path).map_err(|e| format!("read_file_bytes: {e}"))?;
+        crate::io_backend::read_to_bytes_limited(file, max_bytes, "read_file_bytes")?
     };
-    heap.charge_io_bytes(contents.len() as u64)
+    heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("read_file_bytes: {e}"))?;
     heap_alloc(heap, HeapObject::Bytes(contents))
 }
@@ -285,17 +325,18 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
-    let content = if heap.has_cap_fs_policy() {
-        cap_io("read_file_tagged", path, heap, |dir, path| {
-            dir.read_to_string(path)
-        })?
+    let max_bytes = heap.remaining_io_bytes();
+    let (content, io_bytes) = if heap.has_cap_fs_policy() {
+        cap_read_to_string_limited("read_file_tagged", path, heap, max_bytes)?
     } else {
         let checked_path = heap
             .check_fs_path_for("read_file_tagged", path)
             .map_err(|e| format!("read_file_tagged: {e}"))?;
-        std::fs::read_to_string(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?
+        let file =
+            std::fs::File::open(&checked_path).map_err(|e| format!("read_file_tagged: {e}"))?;
+        crate::io_backend::read_to_string_limited(file, max_bytes, "read_file_tagged")?
     };
-    heap.charge_io_bytes(content.len() as u64)
+    heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("read_file_tagged: {e}"))?;
 
     let lines = split_file_lines(&content);
@@ -342,17 +383,18 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("edit_file_tagged: expected String for edits".into()),
     };
 
-    let content = if heap.has_cap_fs_policy() {
-        cap_io("edit_file_tagged", &path, heap, |dir, path| {
-            dir.read_to_string(path)
-        })?
+    let max_bytes = heap.remaining_io_bytes();
+    let (content, io_bytes) = if heap.has_cap_fs_policy() {
+        cap_read_to_string_limited("edit_file_tagged", &path, heap, max_bytes)?
     } else {
         let checked_path = heap
             .check_fs_path_for("edit_file_tagged", &path)
             .map_err(|e| format!("edit_file_tagged: {e}"))?;
-        std::fs::read_to_string(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?
+        let file =
+            std::fs::File::open(&checked_path).map_err(|e| format!("edit_file_tagged: {e}"))?;
+        crate::io_backend::read_to_string_limited(file, max_bytes, "edit_file_tagged")?
     };
-    heap.charge_io_bytes(content.len() as u64)
+    heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("edit_file_tagged: {e}"))?;
     let lines = split_file_lines(&content);
     let hashes: Vec<String> = lines.iter().map(TaggedFileLine::tag).collect();
@@ -756,4 +798,59 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         values.push(heap_alloc(heap, HeapObject::String(f))?);
     }
     alloc_list(heap, values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_file(prefix: &str, contents: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hiko-{prefix}-{nanos}.txt"));
+        std::fs::write(&path, contents).expect("write temp file");
+        path.to_string_lossy().to_string()
+    }
+
+    fn string_value(heap: &mut Heap, text: &str) -> Value {
+        Value::Heap(
+            heap.alloc(HeapObject::String(text.to_string()))
+                .expect("allocate string"),
+        )
+    }
+
+    #[test]
+    fn read_file_respects_io_byte_limit_before_allocating_result() {
+        let path = temp_file("read-file-limit", "abcd");
+        let mut heap = Heap::new();
+        heap.set_max_io_bytes(3);
+        let path_value = string_value(&mut heap, &path);
+        let result = read_file(&[path_value], &mut heap);
+        let _ = std::fs::remove_file(path);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("result exceeds I/O byte limit")
+        );
+    }
+
+    #[test]
+    fn read_file_bytes_respects_io_byte_limit_before_allocating_result() {
+        let path = temp_file("read-file-bytes-limit", "abcd");
+        let mut heap = Heap::new();
+        heap.set_max_io_bytes(3);
+        let path_value = string_value(&mut heap, &path);
+        let result = read_file_bytes(&[path_value], &mut heap);
+        let _ = std::fs::remove_file(path);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("result exceeds I/O byte limit")
+        );
+    }
 }
