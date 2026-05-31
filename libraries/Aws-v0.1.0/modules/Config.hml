@@ -1,9 +1,27 @@
+(*!
+ * AWS configuration module.
+ *
+ * Provides functions to create AWS configuration objects using different
+ * credential sources such as SSO profiles or instance profiles.
+ *)
 import __Builtin.AwsConfig
 
 structure Config = struct
+  (*! The AWS configuration type. *)
   type config = aws_config
 
+  (*!
+   * Create an AWS configuration using an SSO profile.
+   *
+   * @param profile The name of the SSO profile to use
+   * @return An AWS configuration object
+   *)
   val sso_profile : string -> config = fn profile => (BuiltinAwsConfig.sso_profile_raw profile : aws_config)
 
+  (*!
+   * Create an AWS configuration using instance profile credentials.
+   *
+   * @return An AWS configuration object
+   *)
   val instance_profile : unit -> config = fn () => (BuiltinAwsConfig.instance_profile_raw () : aws_config)
 end

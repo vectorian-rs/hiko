@@ -1,14 +1,33 @@
+(*!
+ * AWS SQS service module.
+ *
+ * Provides functions to interact with Amazon Simple Queue Service.
+ *)
 import Std.Result
 import Aws.Config
 import __Builtin.AwsSqs
 
 structure SQS = struct
-  type error = string
-
+  (*! SQS client type. *)
   type client = aws_sqs_client
 
+  (*! Error type for SQS operations. *)
+  type error = string
+
+  (*!
+   * Create an SQS client from an AWS configuration.
+   *
+   * @param config The AWS configuration to use
+   * @return An SQS client
+   *)
   val client : Config.config -> client = fn config => (BuiltinAwsSqs.client_raw config : aws_sqs_client)
 
+  (*!
+   * List all SQS queues in the account.
+   *
+   * @param client The SQS client to use
+   * @return A result containing either a list of queue names or an error message
+   *)
   val list_queues : client -> (string list, error) Result.result = fn client => case (BuiltinAwsSqs.list_queues_raw client : bool * string list * string) of
       (true, output, _) => Result.Ok output
     | (false, _, message) => Result.Err message

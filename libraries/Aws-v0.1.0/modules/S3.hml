@@ -1,16 +1,36 @@
+(*!
+ * AWS S3 service module.
+ *
+ * Provides functions to interact with Amazon S3 storage service.
+ *)
 import Std.Result
 import Aws.Config
 import __Builtin.AwsS3
 
 structure S3 = struct
-  type bucket = string * string * string
-
-  type error = string
-
+  (*! S3 client type. *)
   type client = aws_s3_client
 
+  (*! Error type for S3 operations. *)
+  type error = string
+
+  (*! Bucket information: name, creation date, and ARN. *)
+  type bucket = string * string * string
+
+  (*!
+   * Create an S3 client from an AWS configuration.
+   *
+   * @param config The AWS configuration to use
+   * @return An S3 client
+   *)
   val client : Config.config -> client = fn config => (BuiltinAwsS3.client_raw config : aws_s3_client)
 
+  (*!
+   * List all S3 buckets in the account.
+   *
+   * @param client The S3 client to use
+   * @return A result containing either a list of buckets or an error message
+   *)
   val list_buckets : client -> (bucket list, error) Result.result = fn client => case (BuiltinAwsS3.list_buckets_raw client : bool * (string * string * string) list * string) of
       (true, output, _) => Result.Ok output
     | (false, _, message) => Result.Err message

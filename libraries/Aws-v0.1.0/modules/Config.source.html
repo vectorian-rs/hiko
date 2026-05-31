@@ -1,10 +1,28 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Aws.Config source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Aws modules</a></div><h1>Aws.Config</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">Config</span></code></pre><p class="meta">Raw source: <a href="./Config.hml">Config.hml</a><br>BLAKE3: <code title="blake3:bebd3d47f1916298e7a0fb23e9f2288a1670bcf0e8004eb532cab298978f3e95">blake3:bebd3d47...978f3e95</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>config</strong></li><li><code>val</code> <strong>sso_profile</strong></li><li><code>val</code> <strong>instance_profile</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">AwsConfig</span>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Aws.Config source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Aws modules</a></div><h1>Aws.Config</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">Config</span></code></pre><p class="meta">Raw source: <a href="./Config.hml">Config.hml</a><br>BLAKE3: <code title="blake3:c21cb05619ccfc9def3c8ab775af5eb5c066970cb643d0892d15edbb7f74c61f">blake3:c21cb056...7f74c61f</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>config</strong></li><li><code>val</code> <strong>sso_profile</strong></li><li><code>val</code> <strong>instance_profile</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-comment">(*!
+ * AWS configuration module.
+ *
+ * Provides functions to create AWS configuration objects using different
+ * credential sources such as SSO profiles or instance profiles.
+ *)</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">AwsConfig</span>
 
 <span class="tok-keyword">structure</span> <span class="tok-module">Config</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-comment">(*! The AWS configuration type. *)</span>
   <span class="tok-keyword">type</span> <span class="tok-type">config</span> = <span class="tok-type">aws_config</span>
 
+  <span class="tok-comment">(*!
+   * Create an AWS configuration using an SSO profile.
+   *
+   * @param profile The name of the SSO profile to use
+   * @return An AWS configuration object
+   *)</span>
   <span class="tok-keyword">val</span> <span class="tok-variable">sso_profile</span> : <span class="tok-type">string</span> -&gt; <span class="tok-type">config</span> = <span class="tok-keyword">fn</span> <span class="tok-variable">profile</span> =&gt; (<span class="tok-namespace">BuiltinAwsConfig</span>.<span class="tok-variable-member">sso_profile_raw</span> <span class="tok-variable">profile</span> : <span class="tok-type">aws_config</span>)
 
+  <span class="tok-comment">(*!
+   * Create an AWS configuration using instance profile credentials.
+   *
+   * @return An AWS configuration object
+   *)</span>
   <span class="tok-keyword">val</span> <span class="tok-variable">instance_profile</span> : <span class="tok-type">unit</span> -&gt; <span class="tok-type">config</span> = <span class="tok-keyword">fn</span> () =&gt; (<span class="tok-namespace">BuiltinAwsConfig</span>.<span class="tok-variable-member">instance_profile_raw</span> () : <span class="tok-type">aws_config</span>)
 <span class="tok-keyword">end</span>
 </code></pre></section></main></body></html>

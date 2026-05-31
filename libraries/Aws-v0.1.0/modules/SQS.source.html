@@ -1,14 +1,33 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Aws.SQS source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Aws modules</a></div><h1>Aws.SQS</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">SQS</span></code></pre><p class="meta">Raw source: <a href="./SQS.hml">SQS.hml</a><br>BLAKE3: <code title="blake3:9cdfdfb9701edcdfde206b5803283e3891537f8c6c93470e33ce755dc1e08ee8">blake3:9cdfdfb9...c1e08ee8</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>error</strong></li><li><code>type</code> <strong>client</strong></li><li><code>val</code> <strong>client</strong></li><li><code>val</code> <strong>list_queues</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Result</span>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Aws.SQS source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Aws modules</a></div><h1>Aws.SQS</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">SQS</span></code></pre><p class="meta">Raw source: <a href="./SQS.hml">SQS.hml</a><br>BLAKE3: <code title="blake3:9616f4dbeb117419f34b827bad2450ae2aa6a1c30a5cd129a6c957a702274f66">blake3:9616f4db...02274f66</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>client</strong></li><li><code>type</code> <strong>error</strong></li><li><code>val</code> <strong>client</strong></li><li><code>val</code> <strong>list_queues</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-comment">(*!
+ * AWS SQS service module.
+ *
+ * Provides functions to interact with Amazon Simple Queue Service.
+ *)</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Result</span>
 <span class="tok-keyword">import</span> <span class="tok-namespace">Aws</span>.<span class="tok-module">Config</span>
 <span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">AwsSqs</span>
 
 <span class="tok-keyword">structure</span> <span class="tok-module">SQS</span> = <span class="tok-keyword">struct</span>
-  <span class="tok-keyword">type</span> <span class="tok-type">error</span> = <span class="tok-type">string</span>
-
+  <span class="tok-comment">(*! SQS client type. *)</span>
   <span class="tok-keyword">type</span> <span class="tok-type">client</span> = <span class="tok-type">aws_sqs_client</span>
 
+  <span class="tok-comment">(*! Error type for SQS operations. *)</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">error</span> = <span class="tok-type">string</span>
+
+  <span class="tok-comment">(*!
+   * Create an SQS client from an AWS configuration.
+   *
+   * @param config The AWS configuration to use
+   * @return An SQS client
+   *)</span>
   <span class="tok-keyword">val</span> <span class="tok-variable">client</span> : <span class="tok-namespace">Config</span>.<span class="tok-variable-member">config</span> -&gt; <span class="tok-type">client</span> = <span class="tok-keyword">fn</span> <span class="tok-variable">config</span> =&gt; (<span class="tok-namespace">BuiltinAwsSqs</span>.<span class="tok-variable-member">client_raw</span> <span class="tok-variable">config</span> : <span class="tok-type">aws_sqs_client</span>)
 
+  <span class="tok-comment">(*!
+   * List all SQS queues in the account.
+   *
+   * @param client The SQS client to use
+   * @return A result containing either a list of queue names or an error message
+   *)</span>
   <span class="tok-keyword">val</span> <span class="tok-variable">list_queues</span> : <span class="tok-type">client</span> -&gt; (<span class="tok-type">string</span> <span class="tok-type">list</span>, <span class="tok-type">error</span>) <span class="tok-namespace">Result</span>.<span class="tok-variable-member">result</span> = <span class="tok-keyword">fn</span> <span class="tok-variable">client</span> =&gt; <span class="tok-keyword">case</span> (<span class="tok-namespace">BuiltinAwsSqs</span>.<span class="tok-variable-member">list_queues_raw</span> <span class="tok-variable">client</span> : <span class="tok-type">bool</span> * <span class="tok-type">string</span> <span class="tok-type">list</span> * <span class="tok-type">string</span>) <span class="tok-keyword">of</span>
       (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">output</span>, _) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> <span class="tok-variable">output</span>
     | (<span class="tok-constant-builtin-boolean">false</span>, _, <span class="tok-variable">message</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">message</span>
