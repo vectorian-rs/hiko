@@ -79,6 +79,18 @@ pub enum Op {
     Perform = 54,
     Resume = 55,
     RemoveHandler = 56,
+
+    GetLocal0 = 60,
+    GetLocal1 = 61,
+    GetLocal2 = 62,
+    GetLocal3 = 63,
+    SetLocal0 = 64,
+    SetLocal1 = 65,
+    SetLocal2 = 66,
+    SetLocal3 = 67,
+    GetField0 = 68,
+    GetField1 = 69,
+    MakeCons = 70,
 }
 
 impl TryFrom<u8> for Op {
@@ -146,6 +158,17 @@ impl TryFrom<u8> for Op {
             57 => Ok(Op::CallDirect),
             58 => Ok(Op::TailCallDirect),
             59 => Ok(Op::GeWord),
+            60 => Ok(Op::GetLocal0),
+            61 => Ok(Op::GetLocal1),
+            62 => Ok(Op::GetLocal2),
+            63 => Ok(Op::GetLocal3),
+            64 => Ok(Op::SetLocal0),
+            65 => Ok(Op::SetLocal1),
+            66 => Ok(Op::SetLocal2),
+            67 => Ok(Op::SetLocal3),
+            68 => Ok(Op::GetField0),
+            69 => Ok(Op::GetField1),
+            70 => Ok(Op::MakeCons),
             _ => Err(b),
         }
     }

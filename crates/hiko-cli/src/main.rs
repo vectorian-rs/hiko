@@ -661,6 +661,17 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         | Op::ConcatString
         | Op::Not
         | Op::GetTag
+        | Op::GetLocal0
+        | Op::GetLocal1
+        | Op::GetLocal2
+        | Op::GetLocal3
+        | Op::SetLocal0
+        | Op::SetLocal1
+        | Op::SetLocal2
+        | Op::SetLocal3
+        | Op::GetField0
+        | Op::GetField1
+        | Op::MakeCons
         | Op::Return
         | Op::Halt
         | Op::RemoveHandler

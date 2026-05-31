@@ -74,8 +74,32 @@ impl VM {
                     let val = self.stack[idx];
                     self.push(val)?;
                 }
+                Op::GetLocal0 | Op::GetLocal1 | Op::GetLocal2 | Op::GetLocal3 => {
+                    let slot = match op {
+                        Op::GetLocal0 => 0,
+                        Op::GetLocal1 => 1,
+                        Op::GetLocal2 => 2,
+                        Op::GetLocal3 => 3,
+                        _ => unreachable!(),
+                    };
+                    let idx = self.local_stack_index(fi, slot, "GetLocal")?;
+                    let val = self.stack[idx];
+                    self.push(val)?;
+                }
                 Op::SetLocal => {
                     let slot = self.read_u16()? as usize;
+                    let idx = self.local_stack_index(fi, slot, "SetLocal")?;
+                    let val = self.pop()?;
+                    self.stack[idx] = val;
+                }
+                Op::SetLocal0 | Op::SetLocal1 | Op::SetLocal2 | Op::SetLocal3 => {
+                    let slot = match op {
+                        Op::SetLocal0 => 0,
+                        Op::SetLocal1 => 1,
+                        Op::SetLocal2 => 2,
+                        Op::SetLocal3 => 3,
+                        _ => unreachable!(),
+                    };
                     let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     let val = self.pop()?;
                     self.stack[idx] = val;
@@ -217,43 +241,22 @@ impl VM {
                 }
                 Op::GetField => {
                     let idx = self.read_u8()? as usize;
-                    let val = self.pop()?;
-                    match val {
-                        Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Tuple(t) => {
-                                let field = t.get(idx).copied().ok_or_else(|| RuntimeError {
-                                    message: format!("GetField: field index {idx} out of bounds"),
-                                })?;
-                                self.push(field)?
-                            }
-                            HeapObject::Data { fields, .. } => {
-                                let field =
-                                    fields.get(idx).copied().ok_or_else(|| RuntimeError {
-                                        message: format!(
-                                            "GetField: field index {idx} out of bounds"
-                                        ),
-                                    })?;
-                                self.push(field)?
-                            }
-                            _ => {
-                                return Err(RuntimeError {
-                                    message: "GetField: expected tuple or data".into(),
-                                });
-                            }
-                        },
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "GetField: expected tuple or data".into(),
-                            });
-                        }
-                    }
+                    self.push_field(idx)?;
                 }
+                Op::GetField0 => self.push_field(0)?,
+                Op::GetField1 => self.push_field(1)?,
                 Op::MakeData => {
                     let tag = self.read_u16()?;
                     let arity = self.read_u8()? as usize;
                     let start = self.stack_start_for_arity(arity, "MakeData")?;
                     let fields: Fields = self.stack.drain(start..).collect();
                     let val = self.alloc(HeapObject::Data { tag, fields })?;
+                    self.push(val)?;
+                }
+                Op::MakeCons => {
+                    let start = self.stack_start_for_arity(2, "MakeCons")?;
+                    let fields: Fields = self.stack.drain(start..).collect();
+                    let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
                     self.push(val)?;
                 }
                 Op::GetTag => {
@@ -682,6 +685,32 @@ impl VM {
         self.stack.pop().ok_or_else(|| RuntimeError {
             message: "stack underflow".into(),
         })
+    }
+
+    fn push_field(&mut self, idx: usize) -> Result<(), RuntimeError> {
+        let val = self.pop()?;
+        match val {
+            Value::Heap(r) => match self.heap_get(r)? {
+                HeapObject::Tuple(t) => {
+                    let field = t.get(idx).copied().ok_or_else(|| RuntimeError {
+                        message: format!("GetField: field index {idx} out of bounds"),
+                    })?;
+                    self.push(field)
+                }
+                HeapObject::Data { fields, .. } => {
+                    let field = fields.get(idx).copied().ok_or_else(|| RuntimeError {
+                        message: format!("GetField: field index {idx} out of bounds"),
+                    })?;
+                    self.push(field)
+                }
+                _ => Err(RuntimeError {
+                    message: "GetField: expected tuple or data".into(),
+                }),
+            },
+            _ => Err(RuntimeError {
+                message: "GetField: expected tuple or data".into(),
+            }),
+        }
     }
 
     fn pop_int(&mut self) -> Result<i64, RuntimeError> {

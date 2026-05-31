@@ -218,8 +218,46 @@ fn decode_instruction(
                 delta: 1,
             }
         }
+        Op::GetLocal0 | Op::GetLocal1 | Op::GetLocal2 | Op::GetLocal3 => {
+            let slot = match op {
+                Op::GetLocal0 => 0,
+                Op::GetLocal1 => 1,
+                Op::GetLocal2 => 2,
+                Op::GetLocal3 => 3,
+                _ => unreachable!(),
+            };
+            if slot >= n_locals {
+                return Err(format!(
+                    "GetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 0,
+                delta: 1,
+            }
+        }
         Op::SetLocal => {
             let slot = read_u16(chunk, ip, "SetLocal")? as usize;
+            if slot >= n_locals {
+                return Err(format!(
+                    "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 1,
+                delta: -1,
+            }
+        }
+        Op::SetLocal0 | Op::SetLocal1 | Op::SetLocal2 | Op::SetLocal3 => {
+            let slot = match op {
+                Op::SetLocal0 => 0,
+                Op::SetLocal1 => 1,
+                Op::SetLocal2 => 2,
+                Op::SetLocal3 => 3,
+                _ => unreachable!(),
+            };
             if slot >= n_locals {
                 return Err(format!(
                     "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
@@ -317,7 +355,13 @@ fn decode_instruction(
                 delta: -1,
             }
         }
-        Op::Neg | Op::NegFloat | Op::Not | Op::GetField | Op::GetTag => {
+        Op::Neg
+        | Op::NegFloat
+        | Op::Not
+        | Op::GetField
+        | Op::GetField0
+        | Op::GetField1
+        | Op::GetTag => {
             if matches!(op, Op::GetField) {
                 let idx = read_u8(chunk, ip, "GetField")? as usize;
                 let _ = idx;
@@ -343,6 +387,13 @@ fn decode_instruction(
             StackRule::Exact {
                 min_depth: arity,
                 delta: 1 - arity as isize,
+            }
+        }
+        Op::MakeCons => {
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 2,
+                delta: -1,
             }
         }
         Op::Jump => {
@@ -673,6 +724,31 @@ mod tests {
             Vec::new(),
         );
         verify_program(&program).expect("declared main local slot should verify");
+    }
+
+    #[test]
+    fn accepts_quick_local_and_make_cons_stack_rules() {
+        let program = program_with_effects(
+            vec![
+                Op::GetLocal0 as u8,
+                Op::GetLocal1 as u8,
+                Op::MakeCons as u8,
+                Op::Pop as u8,
+                Op::Halt as u8,
+            ],
+            2,
+            Vec::new(),
+        );
+        verify_program(&program).expect("quick local and MakeCons should verify");
+    }
+
+    #[test]
+    fn rejects_quick_local_out_of_bounds() {
+        let program =
+            program_with_effects(vec![Op::GetLocal3 as u8, Op::Halt as u8], 3, Vec::new());
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(err.message().contains("GetLocal"));
+        assert!(err.message().contains("local slot 3"));
     }
 
     #[test]

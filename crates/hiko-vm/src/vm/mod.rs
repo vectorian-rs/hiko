@@ -1641,9 +1641,7 @@ mod tests {
     fn test_github_issue_rejects_denied_repo() {
         use crate::builder::GitHubIssuePolicy;
 
-        let program = compile_program(
-            r#"val _ = github_issue_create ("evil-org/nope", "x", "y")"#,
-        );
+        let program = compile_program(r#"val _ = github_issue_create ("evil-org/nope", "x", "y")"#);
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_github_issue(GitHubIssuePolicy {
@@ -1654,7 +1652,11 @@ mod tests {
             .build();
 
         let err = vm.run().expect_err("denied repo should fail");
-        assert!(err.message.contains("not in allowed repos"), "got: {}", err.message);
+        assert!(
+            err.message.contains("not in allowed repos"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[cfg(feature = "builtin-github")]
@@ -1663,7 +1665,7 @@ mod tests {
         use crate::builder::GitHubIssuePolicy;
 
         let program = compile_program("val _ = ()");
-        let mut vm = VMBuilder::new(program)
+        let vm = VMBuilder::new(program)
             .with_core()
             .with_github_issue(GitHubIssuePolicy {
                 create_repos: vec!["vectorian-rs/hiko".to_string()],

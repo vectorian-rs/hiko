@@ -795,10 +795,46 @@ impl Compiler {
         idx
     }
 
+    fn emit_get_local(&mut self, slot: u16) {
+        match slot {
+            0 => self.emit(Op::GetLocal0),
+            1 => self.emit(Op::GetLocal1),
+            2 => self.emit(Op::GetLocal2),
+            3 => self.emit(Op::GetLocal3),
+            _ => {
+                self.emit(Op::GetLocal);
+                self.emit_u16(slot);
+            }
+        }
+    }
+
+    fn emit_set_local(&mut self, slot: u16) {
+        match slot {
+            0 => self.emit(Op::SetLocal0),
+            1 => self.emit(Op::SetLocal1),
+            2 => self.emit(Op::SetLocal2),
+            3 => self.emit(Op::SetLocal3),
+            _ => {
+                self.emit(Op::SetLocal);
+                self.emit_u16(slot);
+            }
+        }
+    }
+
+    fn emit_get_field(&mut self, idx: u8) {
+        match idx {
+            0 => self.emit(Op::GetField0),
+            1 => self.emit(Op::GetField1),
+            _ => {
+                self.emit(Op::GetField);
+                self.emit_u8(idx);
+            }
+        }
+    }
+
     fn emit_get_var(&mut self, name: &str) -> Result<(), CompileError> {
         if let Some(slot) = self.resolve_local(name) {
-            self.emit(Op::GetLocal);
-            self.emit_u16(slot);
+            self.emit_get_local(slot);
         } else if let Some(idx) = self.resolve_upvalue(name) {
             self.emit(Op::GetUpvalue);
             self.emit_u16(idx);
@@ -838,8 +874,7 @@ impl Compiler {
         self.ctx_mut().scope_depth -= 1;
         if n > 0 {
             let base = self.ctx().locals.len();
-            self.emit(Op::SetLocal);
-            self.emit_u16(base as u16);
+            self.emit_set_local(base as u16);
             for _ in 0..n - 1 {
                 self.emit(Op::Pop);
             }
@@ -857,10 +892,8 @@ impl Compiler {
 
     /// Emit GetLocal slot + GetField idx, add as temp local, return new slot.
     fn emit_field_extract(&mut self, slot: u16, idx: u8) -> u16 {
-        self.emit(Op::GetLocal);
-        self.emit_u16(slot);
-        self.emit(Op::GetField);
-        self.emit_u8(idx);
+        self.emit_get_local(slot);
+        self.emit_get_field(idx);
         self.add_local("_tmp".to_string());
         (self.ctx().locals.len() - 1) as u16
     }
@@ -872,8 +905,7 @@ impl Compiler {
         tag: i64,
         fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
-        self.emit(Op::GetLocal);
-        self.emit_u16(slot);
+        self.emit_get_local(slot);
         self.emit(Op::GetTag);
         self.emit_constant(Constant::Int(tag))?;
         self.emit(Op::Eq);
@@ -890,8 +922,7 @@ impl Compiler {
         eq_op: Op,
         fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
-        self.emit(Op::GetLocal);
-        self.emit_u16(slot);
+        self.emit_get_local(slot);
         self.emit_constant(value)?;
         self.emit(eq_op);
         let jmp = self.emit_jump(Op::JumpIfFalse);
@@ -1418,10 +1449,8 @@ impl Compiler {
                 self.add_local("_tup".to_string());
                 let tup_slot = (self.ctx().locals.len() - 1) as u16;
                 for (i, p) in pats.iter().enumerate() {
-                    self.emit(Op::GetLocal);
-                    self.emit_u16(tup_slot);
-                    self.emit(Op::GetField);
-                    self.emit_u8(i as u8);
+                    self.emit_get_local(tup_slot);
+                    self.emit_get_field(i as u8);
                     self.compile_binding_pattern(p)?;
                 }
                 Ok(())
@@ -1446,8 +1475,7 @@ impl Compiler {
             if has_payload {
                 self.push_new_function(Some(con_name.clone()));
                 self.add_local("_arg".to_string());
-                self.emit(Op::GetLocal);
-                self.emit_u16(0);
+                self.emit_get_local(0);
                 self.emit(Op::MakeData);
                 self.emit_u16(tag);
                 self.emit_u8(1);
@@ -1567,8 +1595,7 @@ impl Compiler {
         } else {
             self.add_local("_arg".to_string());
             self.begin_scope();
-            self.emit(Op::GetLocal);
-            self.emit_u16(0);
+            self.emit_get_local(0);
             self.add_local("_scrut".to_string());
             let scrut_slot = (self.ctx().locals.len() - 1) as u16;
             self.compile_case_branches_inner(scrut_slot, &[(pat, body)], true)?;
@@ -1694,8 +1721,7 @@ impl Compiler {
                 self.emit_scalar_check(slot, Constant::Word(*w), Op::Eq, fail_jumps)?;
             }
             PatKind::BoolLit(b) => {
-                self.emit(Op::GetLocal);
-                self.emit_u16(slot);
+                self.emit_get_local(slot);
                 if *b {
                     self.emit(Op::True);
                 } else {
@@ -1782,8 +1808,7 @@ impl Compiler {
             PatKind::Wildcard | PatKind::Unit => {}
             PatKind::Var(sym) => {
                 let name = self.interner.resolve(*sym).to_string();
-                self.emit(Op::GetLocal);
-                self.emit_u16(slot);
+                self.emit_get_local(slot);
                 self.add_local(name);
             }
             PatKind::IntLit(_)
@@ -1817,8 +1842,7 @@ impl Compiler {
 
             PatKind::As(sym, sub_pat) => {
                 let name = self.interner.resolve(*sym).to_string();
-                self.emit(Op::GetLocal);
-                self.emit_u16(slot);
+                self.emit_get_local(slot);
                 self.add_local(name);
                 self.compile_pattern_bind(slot, sub_pat)?;
             }
@@ -1915,9 +1939,7 @@ impl Compiler {
             ExprKind::Cons(head, tail) => {
                 self.compile_expr(head)?;
                 self.compile_expr(tail)?;
-                self.emit(Op::MakeData);
-                self.emit_u16(1);
-                self.emit_u8(2);
+                self.emit(Op::MakeCons);
             }
 
             ExprKind::BinOp(BinOp::Andalso | BinOp::Orelse, _, _) => {
@@ -2284,6 +2306,22 @@ mod tests {
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let source = std::fs::read_to_string(path).expect("read source");
         Compiler::compile_file(parse_program(&source), path)
+    }
+
+    #[test]
+    fn compile_emits_quick_local_and_field_opcodes() {
+        let program = parse_program("val (a, b) = (1, 2)\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        assert!(compiled.main.code.contains(&(Op::GetLocal0 as u8)));
+        assert!(compiled.main.code.contains(&(Op::GetField0 as u8)));
+        assert!(compiled.main.code.contains(&(Op::GetField1 as u8)));
+    }
+
+    #[test]
+    fn compile_emits_make_cons_for_cons_expression() {
+        let program = parse_program("val xs = 1 :: []\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
     }
 
     #[test]
