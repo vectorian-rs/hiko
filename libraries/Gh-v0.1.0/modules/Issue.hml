@@ -5,26 +5,22 @@
  * Each operation is gated by `[capabilities.github.issue.*]` in the policy.
  *)
 import Std.Result
+import __Builtin.Github
 
 structure Issue = struct
   type repo = string
   type issue_number = int
   type url = string
 
-  (* error constructors matching the Rust-side failure modes *)
-  datatype error =
-      NotAuthenticated
-    | RepoNotAllowed of repo
-    | NotFound
-    | InvalidResponse of string
-    | CommandFailed of int * string * string
+  (*! Error message returned by the underlying `gh` invocation. *)
+  type error = string
 
   (* Internal: lift raw (bool * string * string) into Result *)
   fun from_raw result =
     case result of
         (true, payload, "") => Result.Ok payload
-      | (false, _, errmsg) => Result.Err (CommandFailed (0, errmsg, ""))
-      | (_, _, _) => Result.Err (InvalidResponse "unexpected builtin return shape")
+      | (false, _, errmsg) => Result.Err errmsg
+      | (_, _, _) => Result.Err "unexpected builtin return shape"
 
   (*!
    * Create a new issue.
@@ -35,7 +31,7 @@ structure Issue = struct
    * @return Result.Ok url on success
    *)
   val issue_create : repo -> string -> string -> (url, error) Result.result =
-    fn repo title body => from_raw (github_issue_create (repo, title, body))
+    fn repo => fn title => fn body => from_raw (BuiltinGithub.issue_create_raw (repo, title, body))
 
   (*!
    * View an existing issue.
@@ -45,7 +41,7 @@ structure Issue = struct
    * @return Result.Ok JSON string from gh on success
    *)
   val issue_view : repo -> issue_number -> (string, error) Result.result =
-    fn repo number => from_raw (github_issue_view (repo, number))
+    fn repo => fn number => from_raw (BuiltinGithub.issue_view_raw (repo, number))
 
   (*!
    * Update an existing issue.
@@ -61,7 +57,7 @@ structure Issue = struct
    * @return Result.Ok JSON string of updated issue on success
    *)
   val issue_update : repo -> issue_number -> string -> (string, error) Result.result =
-    fn repo number spec => from_raw (github_issue_update (repo, number, spec))
+    fn repo => fn number => fn spec => from_raw (BuiltinGithub.issue_update_raw (repo, number, spec))
 
   (*
    * Convenience: build an update JSON string from a list of actions.
@@ -75,26 +71,20 @@ structure Issue = struct
     | Close
     | Reopen
 
-  fun build_update_json actions =
-    let
-      fun step xs =
-        case xs of
-            [] => ""
-          | SetTitle t :: rest =>
-              "\"SetTitle\":\"" ^ t ^ "\"," ^ step rest
-          | SetBody b :: rest =>
-              "\"SetBody\":\"" ^ b ^ "\"," ^ step rest
-          | AddLabel l :: rest =>
-              "\"AddLabel\":\"" ^ l ^ "\"," ^ step rest
-          | RemoveLabel l :: rest =>
-              "\"RemoveLabel\":\"" ^ l ^ "\"," ^ step rest
-          | Close :: rest =>
-              "\"Close\":true," ^ step rest
-          | Reopen :: rest =>
-              "\"Reopen\":true," ^ step rest
-      val inner = step actions
-      val trimmed = if string_length inner > 0 then substring (inner, 0, string_length inner - 1) else inner
-    in
-      "{" ^ trimmed ^ "}"
-    end
+  fun action_json action =
+    case action of
+        SetTitle t => "\"SetTitle\":\"" ^ t ^ "\""
+      | SetBody b => "\"SetBody\":\"" ^ b ^ "\""
+      | AddLabel l => "\"AddLabel\":\"" ^ l ^ "\""
+      | RemoveLabel l => "\"RemoveLabel\":\"" ^ l ^ "\""
+      | Close => "\"Close\":true"
+      | Reopen => "\"Reopen\":true"
+
+  fun join_actions actions =
+    case actions of
+        [] => ""
+      | action :: [] => action_json action
+      | action :: rest => action_json action ^ "," ^ join_actions rest
+
+  fun build_update_json actions = "{" ^ join_actions actions ^ "}"
 end

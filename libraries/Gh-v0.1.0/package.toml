@@ -2,4 +2,4 @@ name = "Gh"
 version = "0.1.0"
 
 [modules]
-Issue = "modules/Issue.hml"
+Issue = "blake3:422b4fcdaaca5c7ea86248add1b41ffb1cc04c79065fd5724db8b597d8d3aeb2"

@@ -27,6 +27,13 @@ const AWS_SQS_SOURCE: &str = r#"structure BuiltinAwsSqs = struct
 end
 "#;
 
+const GITHUB_SOURCE: &str = r#"structure BuiltinGithub = struct
+  val issue_create_raw = github_issue_create
+  val issue_view_raw = github_issue_view
+  val issue_update_raw = github_issue_update
+end
+"#;
+
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
   val read_text_raw = read_file
   val read_bytes_raw = read_file_bytes
@@ -264,6 +271,13 @@ const MODULES: &[InternalBuiltinModule] = &[
         feature_name: "builtin-aws-sqs",
         enabled: cfg!(feature = "builtin-aws-sqs"),
         source: AWS_SQS_SOURCE,
+    },
+    InternalBuiltinModule {
+        leaf_name: "Github",
+        import_name: "__Builtin.Github",
+        feature_name: "builtin-github",
+        enabled: cfg!(feature = "builtin-github"),
+        source: GITHUB_SOURCE,
     },
     InternalBuiltinModule {
         leaf_name: "Filesystem",

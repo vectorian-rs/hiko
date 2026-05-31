@@ -1,0 +1,91 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Gh.Issue source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Gh modules</a></div><h1>Gh.Issue</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Gh</span>.<span class="tok-module">Issue</span></code></pre><p class="meta">Raw source: <a href="./Issue.hml">Issue.hml</a><br>BLAKE3: <code title="blake3:422b4fcdaaca5c7ea86248add1b41ffb1cc04c79065fd5724db8b597d8d3aeb2">blake3:422b4fcd...d8d3aeb2</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>type</code> <strong>repo</strong></li><li><code>type</code> <strong>issue_number</strong></li><li><code>type</code> <strong>url</strong></li><li><code>type</code> <strong>error</strong></li><li><code>fun</code> <strong>from_raw</strong></li><li><code>val</code> <strong>issue_create</strong></li><li><code>val</code> <strong>issue_view</strong></li><li><code>val</code> <strong>issue_update</strong></li><li><code>datatype</code> <strong>action</strong> <span class="meta">SetTitle | SetBody | AddLabel | RemoveLabel | Close | Reopen</span></li><li><code>fun</code> <strong>action_json</strong></li><li><code>fun</code> <strong>join_actions</strong></li><li><code>fun</code> <strong>build_update_json</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-comment">(*!
+ * GitHub Issue operations.
+ *
+ * Policy-gated builtins that shell out to the `gh` CLI.
+ * Each operation is gated by `[capabilities.github.issue.*]` in the policy.
+ *)</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Result</span>
+<span class="tok-keyword">import</span> <span class="tok-namespace">__Builtin</span>.<span class="tok-module">Github</span>
+
+<span class="tok-keyword">structure</span> <span class="tok-module">Issue</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">repo</span> = <span class="tok-type">string</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">issue_number</span> = <span class="tok-type">int</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">url</span> = <span class="tok-type">string</span>
+
+  <span class="tok-comment">(*! Error message returned by the underlying `gh` invocation. *)</span>
+  <span class="tok-keyword">type</span> <span class="tok-type">error</span> = <span class="tok-type">string</span>
+
+  <span class="tok-comment">(* Internal: lift raw (bool * string * string) into Result *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">from_raw</span> <span class="tok-variable">result</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">result</span> <span class="tok-keyword">of</span>
+        (<span class="tok-constant-builtin-boolean">true</span>, <span class="tok-variable">payload</span>, <span class="tok-string">&quot;&quot;</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Ok</span> <span class="tok-variable">payload</span>
+      | (<span class="tok-constant-builtin-boolean">false</span>, _, <span class="tok-variable">errmsg</span>) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-variable">errmsg</span>
+      | (_, _, _) =&gt; <span class="tok-namespace">Result</span>.<span class="tok-module">Err</span> <span class="tok-string">&quot;unexpected builtin return shape&quot;</span>
+
+  <span class="tok-comment">(*!
+   * Create a new issue.
+   *
+   * @param repo &quot;owner/name&quot;
+   * @param title Issue title
+   * @param body Issue body
+   * @return Result.Ok url on success
+   *)</span>
+  <span class="tok-keyword">val</span> <span class="tok-variable">issue_create</span> : <span class="tok-type">repo</span> -&gt; <span class="tok-type">string</span> -&gt; <span class="tok-type">string</span> -&gt; (<span class="tok-type">url</span>, <span class="tok-type">error</span>) <span class="tok-namespace">Result</span>.<span class="tok-variable-member">result</span> =
+    <span class="tok-keyword">fn</span> <span class="tok-variable">repo</span> =&gt; <span class="tok-keyword">fn</span> <span class="tok-variable">title</span> =&gt; <span class="tok-keyword">fn</span> <span class="tok-variable">body</span> =&gt; <span class="tok-variable">from_raw</span> (<span class="tok-namespace">BuiltinGithub</span>.<span class="tok-variable-member">issue_create_raw</span> (<span class="tok-variable">repo</span>, <span class="tok-variable">title</span>, <span class="tok-variable">body</span>))
+
+  <span class="tok-comment">(*!
+   * View an existing issue.
+   *
+   * @param repo &quot;owner/name&quot;
+   * @param number Issue number
+   * @return Result.Ok JSON string from gh on success
+   *)</span>
+  <span class="tok-keyword">val</span> <span class="tok-variable">issue_view</span> : <span class="tok-type">repo</span> -&gt; <span class="tok-type">issue_number</span> -&gt; (<span class="tok-type">string</span>, <span class="tok-type">error</span>) <span class="tok-namespace">Result</span>.<span class="tok-variable-member">result</span> =
+    <span class="tok-keyword">fn</span> <span class="tok-variable">repo</span> =&gt; <span class="tok-keyword">fn</span> <span class="tok-variable">number</span> =&gt; <span class="tok-variable">from_raw</span> (<span class="tok-namespace">BuiltinGithub</span>.<span class="tok-variable-member">issue_view_raw</span> (<span class="tok-variable">repo</span>, <span class="tok-variable">number</span>))
+
+  <span class="tok-comment">(*!
+   * Update an existing issue.
+   *
+   * The update spec is a JSON string describing changes.
+   * Supported keys: SetTitle, SetBody, AddLabel, RemoveLabel, Close, Reopen.
+   *
+   * Example: `{&quot;SetTitle&quot;:&quot;New title&quot;,&quot;Close&quot;:true}`
+   *
+   * @param repo &quot;owner/name&quot;
+   * @param number Issue number
+   * @param spec JSON update specification
+   * @return Result.Ok JSON string of updated issue on success
+   *)</span>
+  <span class="tok-keyword">val</span> <span class="tok-variable">issue_update</span> : <span class="tok-type">repo</span> -&gt; <span class="tok-type">issue_number</span> -&gt; <span class="tok-type">string</span> -&gt; (<span class="tok-type">string</span>, <span class="tok-type">error</span>) <span class="tok-namespace">Result</span>.<span class="tok-variable-member">result</span> =
+    <span class="tok-keyword">fn</span> <span class="tok-variable">repo</span> =&gt; <span class="tok-keyword">fn</span> <span class="tok-variable">number</span> =&gt; <span class="tok-keyword">fn</span> <span class="tok-variable">spec</span> =&gt; <span class="tok-variable">from_raw</span> (<span class="tok-namespace">BuiltinGithub</span>.<span class="tok-variable-member">issue_update_raw</span> (<span class="tok-variable">repo</span>, <span class="tok-variable">number</span>, <span class="tok-variable">spec</span>))
+
+  <span class="tok-comment">(*
+   * Convenience: build an update JSON string from a list of actions.
+   * Actions are applied in order.
+   *)</span>
+  <span class="tok-keyword">datatype</span> <span class="tok-type">action</span> =
+      <span class="tok-constructor">SetTitle</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+    | <span class="tok-constructor">SetBody</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+    | <span class="tok-constructor">AddLabel</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+    | <span class="tok-constructor">RemoveLabel</span> <span class="tok-keyword">of</span> <span class="tok-type">string</span>
+    | <span class="tok-constructor">Close</span>
+    | <span class="tok-constructor">Reopen</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">action_json</span> <span class="tok-variable">action</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">action</span> <span class="tok-keyword">of</span>
+        <span class="tok-constructor">SetTitle</span> <span class="tok-variable">t</span> =&gt; <span class="tok-string">&quot;\&quot;SetTitle\&quot;:\&quot;&quot;</span> ^ <span class="tok-variable">t</span> ^ <span class="tok-string">&quot;\&quot;&quot;</span>
+      | <span class="tok-constructor">SetBody</span> <span class="tok-variable">b</span> =&gt; <span class="tok-string">&quot;\&quot;SetBody\&quot;:\&quot;&quot;</span> ^ <span class="tok-variable">b</span> ^ <span class="tok-string">&quot;\&quot;&quot;</span>
+      | <span class="tok-constructor">AddLabel</span> <span class="tok-variable">l</span> =&gt; <span class="tok-string">&quot;\&quot;AddLabel\&quot;:\&quot;&quot;</span> ^ <span class="tok-variable">l</span> ^ <span class="tok-string">&quot;\&quot;&quot;</span>
+      | <span class="tok-constructor">RemoveLabel</span> <span class="tok-variable">l</span> =&gt; <span class="tok-string">&quot;\&quot;RemoveLabel\&quot;:\&quot;&quot;</span> ^ <span class="tok-variable">l</span> ^ <span class="tok-string">&quot;\&quot;&quot;</span>
+      | <span class="tok-constructor">Close</span> =&gt; <span class="tok-string">&quot;\&quot;Close\&quot;:true&quot;</span>
+      | <span class="tok-constructor">Reopen</span> =&gt; <span class="tok-string">&quot;\&quot;Reopen\&quot;:true&quot;</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">join_actions</span> <span class="tok-variable">actions</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">actions</span> <span class="tok-keyword">of</span>
+        [] =&gt; <span class="tok-string">&quot;&quot;</span>
+      | <span class="tok-variable">action</span> :: [] =&gt; <span class="tok-variable">action_json</span> <span class="tok-variable">action</span>
+      | <span class="tok-variable">action</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">action_json</span> <span class="tok-variable">action</span> ^ <span class="tok-string">&quot;,&quot;</span> ^ <span class="tok-variable">join_actions</span> <span class="tok-variable">rest</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">build_update_json</span> <span class="tok-variable">actions</span> = <span class="tok-string">&quot;{&quot;</span> ^ <span class="tok-variable">join_actions</span> <span class="tok-variable">actions</span> ^ <span class="tok-string">&quot;}&quot;</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

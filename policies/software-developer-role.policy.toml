@@ -352,6 +352,18 @@ allowed_commands = [
 ]
 timeout = 60
 
+[capabilities.github.issue.create]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
+[capabilities.github.issue.view]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
+[capabilities.github.issue.update]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
 [capabilities.system.exit]
 enabled = true
 

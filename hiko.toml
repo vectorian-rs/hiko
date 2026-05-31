@@ -13,6 +13,7 @@ url = "http://127.0.0.1:8000"
 
 [dependencies]
 Aws = { version = "0.1.0", registry = "local" }
+Gh = { version = "0.1.0", registry = "local" }
 Harness = { version = "0.1.0", registry = "local" }
 Hash = { version = "0.1.0", registry = "local" }
 Http = { version = "0.1.0", registry = "local" }
@@ -35,6 +36,9 @@ path = "policies/aws-s3-list-buckets.policy.toml"
 
 [policies.github-api]
 path = "policies/github-api.policy.toml"
+
+[policies.github-issue-demo]
+path = "policies/github-issue-demo.policy.toml"
 
 [policies.sre-aws-read-role]
 path = "policies/sre-aws-read-role.policy.toml"
