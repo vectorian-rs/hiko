@@ -12,4 +12,8 @@ fun print_buckets buckets =
         print_buckets rest
       end
 
-val _ = Config.sso_profile "datadeft-dev" |> S3.client |> S3.list_buckets |> Result.fold print_buckets (fn err => println err)
+val _ =
+  Config.sso_profile "datadeft-dev"
+    |> S3.client
+    |> S3.list_buckets
+    |> Result.fold print_buckets (fn err => println err)
