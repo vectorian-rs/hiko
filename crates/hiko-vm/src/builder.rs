@@ -45,6 +45,7 @@ pub struct GitHubIssuePolicy {
     pub create_repos: Vec<String>,
     pub view_repos: Vec<String>,
     pub update_repos: Vec<String>,
+    pub list_repos: Vec<String>,
 }
 
 /// Policy for direct command execution.
@@ -258,13 +259,17 @@ impl VMBuilder {
             ("github_issue_create", policy.create_repos),
             ("github_issue_view", policy.view_repos),
             ("github_issue_update", policy.update_repos),
+            ("github_issue_list", policy.list_repos),
         ];
         for (name, repos) in entries {
             if !repos.is_empty() {
-                if !self.has_builtin(name) && let Some(func) = find_builtin(name) {
+                if !self.has_builtin(name)
+                    && let Some(func) = find_builtin(name)
+                {
                     self.builtins.push((name, func));
                 }
-                self.github_issue_allowed_repos.insert(name.to_string(), repos);
+                self.github_issue_allowed_repos
+                    .insert(name.to_string(), repos);
             }
         }
         self

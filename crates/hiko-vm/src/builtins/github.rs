@@ -15,6 +15,7 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
             ("github_issue_create", github_issue_create as BuiltinFn),
             ("github_issue_view", github_issue_view as BuiltinFn),
             ("github_issue_update", github_issue_update as BuiltinFn),
+            ("github_issue_list", github_issue_list as BuiltinFn),
         ]
     }
 }
@@ -133,6 +134,40 @@ pub(super) fn github_issue_view(args: &[Value], heap: &mut Heap) -> Result<Value
         &num_str,
         "--repo",
         &repo,
+        "--json",
+        "number,title,state,url",
+    ])?;
+
+    if code != 0 {
+        return repo_to_tuple(heap, false, String::new(), stderr.trim().to_string());
+    }
+
+    repo_to_tuple(heap, true, stdout.trim().to_string(), String::new())
+}
+
+#[cfg(feature = "builtin-github")]
+pub(super) fn github_issue_list(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    let repo = field_string(
+        heap,
+        *args
+            .first()
+            .ok_or("github_issue_list: expected repo argument")?,
+        "github_issue_list",
+        "repo",
+    )?;
+
+    heap.check_github_repo_for("github_issue_list", &repo)
+        .map_err(|e| format!("github_issue_list: {e}"))?;
+
+    let (stdout, stderr, code) = run_gh(&[
+        "issue",
+        "list",
+        "--repo",
+        &repo,
+        "--state",
+        "open",
+        "--limit",
+        "100",
         "--json",
         "number,title,state,url",
     ])?;

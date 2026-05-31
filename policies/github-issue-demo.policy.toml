@@ -21,6 +21,10 @@ allowed_repos = ["vectorian-rs/hiko"]
 enabled = true
 allowed_repos = ["vectorian-rs/hiko"]
 
+[capabilities.github.issue.list]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
 [capabilities.github.issue.update]
 enabled = true
 allowed_repos = ["vectorian-rs/hiko"]

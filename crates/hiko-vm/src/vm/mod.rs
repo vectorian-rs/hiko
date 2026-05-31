@@ -1648,6 +1648,7 @@ mod tests {
                 create_repos: vec!["vectorian-rs/hiko".to_string()],
                 view_repos: vec![],
                 update_repos: vec![],
+                list_repos: vec![],
             })
             .build();
 
@@ -1671,6 +1672,7 @@ mod tests {
                 create_repos: vec!["vectorian-rs/hiko".to_string()],
                 view_repos: vec![],
                 update_repos: vec![],
+                list_repos: vec![],
             })
             .build();
 

@@ -21,4 +21,10 @@ pub const BUILTINS: &[BuiltinMeta] = &[
         in_core_default: false,
         surface: PUBLIC,
     },
+    BuiltinMeta {
+        name: "github_issue_list",
+        capability_path: Some("capabilities.github.issue.list"),
+        in_core_default: false,
+        surface: PUBLIC,
+    },
 ];

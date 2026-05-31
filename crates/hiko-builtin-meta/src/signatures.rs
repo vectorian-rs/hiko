@@ -12,6 +12,7 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "github_issue_create" => "string * string * string -> bool * string * string",
         "github_issue_view" => "string * int -> bool * string * string",
         "github_issue_update" => "string * int * string -> bool * string * string",
+        "github_issue_list" => "string -> bool * string * string",
 
         // AWS
         "aws_config_sso_profile" => "string -> aws_config",

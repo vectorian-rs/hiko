@@ -1764,6 +1764,10 @@ mod tests {
                 "github_issue_update",
                 "requires gh CLI and authenticated GitHub credentials",
             ),
+            (
+                "github_issue_list",
+                "requires gh CLI and authenticated GitHub credentials",
+            ),
         ])
     }
 

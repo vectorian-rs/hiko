@@ -59,6 +59,15 @@ structure Issue = struct
   val issue_update : repo -> issue_number -> string -> (string, error) Result.result =
     fn repo => fn number => fn spec => from_raw (BuiltinGithub.issue_update_raw (repo, number, spec))
 
+  (*!
+   * List open issues.
+   *
+   * @param repo "owner/name"
+   * @return Result.Ok JSON array from gh on success
+   *)
+  val issue_list_open : repo -> (string, error) Result.result =
+    fn repo => from_raw (BuiltinGithub.issue_list_raw repo)
+
   (*
    * Convenience: build an update JSON string from a list of actions.
    * Actions are applied in order.

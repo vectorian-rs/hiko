@@ -1,28 +1,13 @@
-(* Example: print open GitHub issues through the policy-gated Gh.Issue API.
- *
- * The current Gh surface provides create/view/update operations. Until a
- * first-class list operation is added, this read-only demo probes a bounded
- * issue-number range and prints the issues that are currently open.
- *)
+(* Example: print open GitHub issues through the policy-gated Gh.Issue API. *)
 
 import Gh.Issue
 import Std.Result
 
 val repo = "vectorian-rs/hiko"
 
-fun print_if_open number =
-  case Issue.issue_view repo number of
-      Result.Ok json =>
-        if string_contains (json, "\"state\":\"OPEN\"") then println json else ()
-    | Result.Err _ => ()
+val _ = println ("Open issues in " ^ repo ^ ":")
 
-fun loop number last =
-  if number > last then () else let
-    val _ = print_if_open number
-  in
-    loop (number + 1) last
-  end
-
-val _ = println ("Open issues in " ^ repo ^ " for issue numbers 1..120:")
-
-val _ = loop 1 120
+val _ =
+  case Issue.issue_list_open repo of
+      Result.Ok json => println json
+    | Result.Err err => println ("List failed: " ^ err)

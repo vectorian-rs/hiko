@@ -31,6 +31,7 @@ const GITHUB_SOURCE: &str = r#"structure BuiltinGithub = struct
   val issue_create_raw = github_issue_create
   val issue_view_raw = github_issue_view
   val issue_update_raw = github_issue_update
+  val issue_list_raw = github_issue_list
 end
 "#;
 

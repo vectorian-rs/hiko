@@ -14,7 +14,7 @@ version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Gh-v0.1.0"
 
 [packages.Gh.modules]
-Issue = "blake3:422b4fcdaaca5c7ea86248add1b41ffb1cc04c79065fd5724db8b597d8d3aeb2"
+Issue = "blake3:85d2c6bc002806c189327488d85f10fe90f0aac1fbec03d5818589d7ddc3a87c"
 
 [packages.Harness]
 version = "0.1.0"

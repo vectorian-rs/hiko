@@ -724,6 +724,7 @@ pub struct GitHubIssueCapabilities {
     pub create: Option<GitHubIssueLeaf>,
     pub view: Option<GitHubIssueLeaf>,
     pub update: Option<GitHubIssueLeaf>,
+    pub list: Option<GitHubIssueLeaf>,
 }
 
 #[cfg(feature = "builtin-github")]
@@ -759,12 +760,24 @@ impl GitHubCapabilities {
             .filter(|l| l.enabled)
             .map(|l| l.allowed_repos.clone())
             .unwrap_or_default();
+        let list_repos = self
+            .issue
+            .list
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
 
-        if !create_repos.is_empty() || !view_repos.is_empty() || !update_repos.is_empty() {
+        if !create_repos.is_empty()
+            || !view_repos.is_empty()
+            || !update_repos.is_empty()
+            || !list_repos.is_empty()
+        {
             return builder.with_github_issue(crate::builder::GitHubIssuePolicy {
                 create_repos,
                 view_repos,
                 update_repos,
+                list_repos,
             });
         }
         builder
@@ -792,17 +805,30 @@ impl GitHubCapabilities {
             .filter(|l| l.enabled)
             .map(|l| l.allowed_repos.clone())
             .unwrap_or_default();
+        let list_repos = self
+            .issue
+            .list
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
 
-        if !create_repos.is_empty() || !view_repos.is_empty() || !update_repos.is_empty() {
+        if !create_repos.is_empty()
+            || !view_repos.is_empty()
+            || !update_repos.is_empty()
+            || !list_repos.is_empty()
+        {
             out.push_str(&format!(
                 "            .with_github_issue(hiko_vm::builder::GitHubIssuePolicy {{\n\
                  \x20               create_repos: vec![{}],\n\
                  \x20               view_repos: vec![{}],\n\
                  \x20               update_repos: vec![{}],\n\
+                 \x20               list_repos: vec![{}],\n\
                  \x20           }})\n",
                 rust_string_vec(&create_repos),
                 rust_string_vec(&view_repos),
                 rust_string_vec(&update_repos),
+                rust_string_vec(&list_repos),
             ));
         }
     }
@@ -816,6 +842,9 @@ impl GitHubCapabilities {
         }
         if self.issue.update.as_ref().is_some_and(|l| l.enabled) {
             out.insert("github_issue_update");
+        }
+        if self.issue.list.as_ref().is_some_and(|l| l.enabled) {
+            out.insert("github_issue_list");
         }
     }
 }
