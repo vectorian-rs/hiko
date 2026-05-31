@@ -1,0 +1,43 @@
+(* benchmark_read_relative.hml -- Same as benchmark_read_only but uses relative paths to verify canonicalize() hypothesis. *)
+import Std.Filesystem
+
+val target_dir = ".git"
+
+fun make_relative path =
+  let
+    val prefix = "/Users/l1x/code/home/vectorian-rs/hiko/"
+    val plen = string_length prefix
+  in
+    if string_length path > plen then substring (path, plen, string_length path - plen)
+    else path
+  end
+
+fun relativize_all files =
+  case files of
+      [] => []
+    | path :: rest => make_relative path :: relativize_all rest
+
+fun hash_files files count =
+  case files of
+      [] => count
+    | path :: rest =>
+      let
+        val bytes = Filesystem.read_bytes path
+        val _hash = blake3 bytes
+        val _size = bytes_length bytes
+      in
+        hash_files rest (count + 1)
+      end
+
+val t0 = monotonic_ms ()
+
+val count = Filesystem.run (fn () => let
+  val files = Filesystem.walk target_dir
+  val relative = relativize_all files
+in
+  hash_files relative 0
+end)
+
+val elapsed = monotonic_ms () - t0
+
+val _ = println ("read+hash (relative paths): " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")

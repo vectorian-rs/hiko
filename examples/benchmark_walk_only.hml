@@ -1,0 +1,15 @@
+(* benchmark_walk_only.hml -- Isolate the cost of Filesystem.walk alone. *)
+import Std.Filesystem
+import Std.List
+
+val target_dir = ".git"
+
+val t0 = monotonic_ms ()
+
+val files = Filesystem.run (fn () => Filesystem.walk target_dir)
+
+val count = List.length files
+
+val elapsed = monotonic_ms () - t0
+
+val _ = println ("walk: " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")

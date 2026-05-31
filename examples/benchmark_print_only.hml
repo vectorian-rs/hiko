@@ -1,0 +1,43 @@
+(* benchmark_print_only.hml -- Isolate the cost of println (pre-built lines, no file I/O during timing). *)
+import Std.Filesystem
+
+val target_dir = ".git"
+
+fun hash_file path =
+  let
+    val bytes = Filesystem.read_bytes path
+    val hash = blake3 bytes
+  in
+    hash ^ "  " ^ int_to_string (bytes_length bytes) ^ "  " ^ path
+  end
+
+fun build_all files =
+  case files of
+      [] => []
+    | path :: rest => hash_file path :: build_all rest
+
+fun print_lines lines count =
+  case lines of
+      [] => count
+    | line :: rest =>
+      let
+        val _ = println line
+      in
+        print_lines rest (count + 1)
+      end
+
+(* Build phase — all file I/O and hashing. Un-timed; output is a list of strings. *)
+val all_lines = Filesystem.run (fn () =>
+  let
+    val files = Filesystem.walk target_dir
+  in
+    build_all files
+  end
+)
+
+(* Timing section: pure println loop over an already-built list. *)
+val t0 = monotonic_ms ()
+val count = print_lines all_lines 0
+val elapsed = monotonic_ms () - t0
+
+val _ = println ("print: " ^ int_to_string count ^ " lines, " ^ int_to_string elapsed ^ " ms")

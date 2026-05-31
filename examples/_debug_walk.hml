@@ -1,0 +1,11 @@
+import Std.Filesystem
+import Std.List
+val files = Filesystem.run (fn () => Filesystem.walk ".git")
+val _ = case files of
+    [] => ()
+  | p1 :: p2 :: _ =>
+      let
+        val _ = println ("path1: " ^ p1)
+        val _ = println ("path2: " ^ p2)
+        val _ = println ("len1: " ^ int_to_string (string_length p1))
+      in () end

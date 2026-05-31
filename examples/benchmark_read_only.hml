@@ -1,0 +1,28 @@
+(* benchmark_read_only.hml -- Isolate the cost of read_bytes + blake3 (no printing). *)
+import Std.Filesystem
+
+val target_dir = ".git"
+
+fun hash_files files count =
+  case files of
+      [] => count
+    | path :: rest =>
+      let
+        val bytes = Filesystem.read_bytes path
+        val _hash = blake3 bytes
+        val _size = bytes_length bytes
+      in
+        hash_files rest (count + 1)
+      end
+
+val t0 = monotonic_ms ()
+
+val count = Filesystem.run (fn () => let
+  val files = Filesystem.walk target_dir
+in
+  hash_files files 0
+end)
+
+val elapsed = monotonic_ms () - t0
+
+val _ = println ("read+hash: " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")
