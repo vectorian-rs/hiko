@@ -333,6 +333,15 @@ mod tests {
     }
 
     #[test]
+    fn formats_pipeline_chains_on_separate_lines() {
+        let source = "import Aws.Config\nimport Aws.S3\nimport Std.Result\n(* Using pipe operators *)\nval _=Config.sso_profile \"datadeft-dev\" |> S3.client |> S3.list_buckets |> Result.either print_buckets (fn err => println err) |> Result.ignore\n";
+        assert_eq!(
+            fmt(source),
+            "import Aws.Config\nimport Aws.S3\nimport Std.Result\n\n(* Using pipe operators *)\nval _ =\n  Config.sso_profile \"datadeft-dev\"\n    |> S3.client\n    |> S3.list_buckets\n    |> Result.either print_buckets (fn err => println err)\n    |> Result.ignore\n"
+        );
+    }
+
+    #[test]
     fn formats_signature_types_with_spaces() {
         let source = "signature EXEC = sig\nval run:string->string list->int*string*string\nend\n";
         assert_eq!(

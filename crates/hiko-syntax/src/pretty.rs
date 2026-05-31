@@ -64,6 +64,8 @@ fn pretty_decl_list(
                 } else {
                     ensure_blank_line(buf);
                 }
+            } else if is_import_decl(&decls[i - 1]) && !is_import_decl(decl) {
+                ensure_blank_line(buf);
             } else if !buf.ends_with('\n') {
                 buf.push('\n');
             }
@@ -442,7 +444,10 @@ fn pretty_fun_binding(
 fn is_multiline_expr(expr: &Expr) -> bool {
     matches!(
         expr.kind,
-        ExprKind::Case(_, _) | ExprKind::Let(_, _) | ExprKind::Handle { .. }
+        ExprKind::Case(_, _)
+            | ExprKind::Let(_, _)
+            | ExprKind::Handle { .. }
+            | ExprKind::BinOp(BinOp::Pipe, _, _)
     )
 }
 
@@ -502,6 +507,9 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringIn
             pretty_cons_operand(buf, hd, indent, interner);
             buf.push_str(" :: ");
             pretty_expr(buf, tl, indent, interner);
+        }
+        ExprKind::BinOp(BinOp::Pipe, _, _) => {
+            pretty_pipe_expr(buf, expr, indent, interner);
         }
         ExprKind::BinOp(op, lhs, rhs) => {
             let needs_parens_lhs = binop_needs_parens_lhs(op, lhs);
@@ -647,6 +655,31 @@ fn pretty_atom_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &Str
         buf.push(')');
     } else {
         pretty_expr(buf, expr, indent, interner);
+    }
+}
+
+fn pretty_pipe_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
+    let mut parts = Vec::new();
+    collect_pipe_parts(expr, &mut parts);
+    let Some((first, rest)) = parts.split_first() else {
+        return;
+    };
+
+    pretty_expr(buf, first, indent, interner);
+    for part in rest {
+        buf.push('\n');
+        write_indent(buf, indent + 2);
+        buf.push_str("|> ");
+        pretty_expr(buf, part, indent + 2, interner);
+    }
+}
+
+fn collect_pipe_parts<'a>(expr: &'a Expr, parts: &mut Vec<&'a Expr>) {
+    if let ExprKind::BinOp(BinOp::Pipe, lhs, rhs) = &expr.kind {
+        collect_pipe_parts(lhs, parts);
+        parts.push(rhs);
+    } else {
+        parts.push(expr);
     }
 }
 
