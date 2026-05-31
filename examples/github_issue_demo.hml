@@ -6,32 +6,43 @@
  *)
 
 import Gh.Issue
+import Std.List
 import Std.Result
 
 val repo = "vectorian-rs/hiko"
 val title = "Demo issue from Hiko"
 val body = "This issue was created by a Hiko script using policy-gated `gh` builtins."
 
-(* Create an issue — returns Result<string, error> where Ok contains the URL. *)
-val create_result = Issue.issue_create repo title body
+fun issue_number_from_url url = string_to_int (List.last (split (url, "/")))
 
-val _ = case create_result of
-    Result.Ok url => println ("Created: " ^ url)
-  | Result.Err err => println "Create failed"
+fun view_issue number =
+  case Issue.issue_view repo number of
+      Result.Ok json => println ("Issue JSON: " ^ json)
+    | Result.Err err => println ("View failed: " ^ err)
 
-(* View an existing issue by number *)
-val view_result = Issue.issue_view repo 1
+fun update_issue number =
+  let
+    val actions = [Issue.SetTitle "Demo issue from Hiko (updated)", Issue.Close]
+    val update_spec = Issue.build_update_json actions
+  in
+    case Issue.issue_update repo number update_spec of
+        Result.Ok json => println ("Updated issue: " ^ json)
+      | Result.Err err => println ("Update failed: " ^ err)
+  end
 
-val _ = case view_result of
-    Result.Ok json => println ("Issue JSON: " ^ json)
-  | Result.Err _ => println "View failed"
-
-(* Update an issue: add a label and close it.
-   The update spec is built from Issue.action constructors. *)
-val actions = [Issue.SetTitle "Updated title", Issue.Close]
-val update_spec = Issue.build_update_json actions
-val update_result = Issue.issue_update repo 1 update_spec
-
-val _ = case update_result of
-    Result.Ok json => println ("Updated issue: " ^ json)
-  | Result.Err _ => println "Update failed"
+(*
+ * Create an issue, then only view/update the issue we just created.
+ * This avoids touching existing repository issues during the demo.
+ *)
+val _ =
+  case Issue.issue_create repo title body of
+      Result.Ok url =>
+        let
+          val number = issue_number_from_url url
+          val _ = println ("Created: " ^ url)
+          val _ = view_issue number
+          val _ = update_issue number
+        in
+          ()
+        end
+    | Result.Err err => println ("Create failed: " ^ err)

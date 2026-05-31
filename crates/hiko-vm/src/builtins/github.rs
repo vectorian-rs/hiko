@@ -31,9 +31,7 @@ fn extract_tuple_fields(
             Ok(HeapObject::Tuple(t)) if t.len() == expected_arity => {
                 Ok(t.iter().copied().collect())
             }
-            _ => Err(format!(
-                "{name}: expected tuple of arity {expected_arity}"
-            )),
+            _ => Err(format!("{name}: expected tuple of arity {expected_arity}")),
         },
         _ => Err(format!("{name}: expected tuple argument")),
     }
@@ -99,40 +97,24 @@ pub(super) fn github_issue_create(args: &[Value], heap: &mut Heap) -> Result<Val
         .map_err(|e| format!("github_issue_create: {e}"))?;
 
     let (stdout, stderr, code) = run_gh(&[
-        "issue",
-        "create",
-        "--repo",
-        &repo,
-        "--title",
-        &title,
-        "--body",
-        &body,
-        "--json",
-        "url",
+        "issue", "create", "--repo", &repo, "--title", &title, "--body", &body,
     ])?;
 
     if code != 0 {
         return repo_to_tuple(heap, false, String::new(), stderr.trim().to_string());
     }
 
-    #[derive(Deserialize)]
-    struct Out {
-        url: String,
+    let url = stdout.trim().to_string();
+    if url.is_empty() {
+        return repo_to_tuple(
+            heap,
+            false,
+            String::new(),
+            "gh issue create returned an empty URL".to_string(),
+        );
     }
 
-    let parsed: Out = match serde_json::from_str(&stdout) {
-        Ok(v) => v,
-        Err(e) => {
-            return repo_to_tuple(
-                heap,
-                false,
-                String::new(),
-                format!("invalid gh response: {e}"),
-            );
-        }
-    };
-
-    repo_to_tuple(heap, true, parsed.url, String::new())
+    repo_to_tuple(heap, true, url, String::new())
 }
 
 #[cfg(feature = "builtin-github")]
@@ -219,17 +201,25 @@ pub(super) fn github_issue_update(args: &[Value], heap: &mut Heap) -> Result<Val
         gh_args.push("--remove-label");
         gh_args.push(l);
     }
+    if gh_args.len() > 5 {
+        let (_stdout, stderr, code) = run_gh(&gh_args)?;
+        if code != 0 {
+            return repo_to_tuple(heap, false, String::new(), stderr.trim().to_string());
+        }
+    }
+
     if update.close == Some(true) {
-        gh_args.push("--close");
+        let (_stdout, stderr, code) = run_gh(&["issue", "close", &num_str, "--repo", &repo])?;
+        if code != 0 {
+            return repo_to_tuple(heap, false, String::new(), stderr.trim().to_string());
+        }
     }
+
     if update.reopen == Some(true) {
-        gh_args.push("--reopen");
-    }
-
-    let (_stdout, stderr, code) = run_gh(&gh_args)?;
-
-    if code != 0 {
-        return repo_to_tuple(heap, false, String::new(), stderr.trim().to_string());
+        let (_stdout, stderr, code) = run_gh(&["issue", "reopen", &num_str, "--repo", &repo])?;
+        if code != 0 {
+            return repo_to_tuple(heap, false, String::new(), stderr.trim().to_string());
+        }
     }
 
     // Re-fetch the issue to return current state

@@ -1,6 +1,15 @@
 [capabilities.stdio.println]
 enabled = true
 
+[capabilities.convert.string_to_int]
+enabled = true
+
+[capabilities.string.split]
+enabled = true
+
+[capabilities.testing.panic]
+enabled = true
+
 [capabilities.github.issue.create]
 enabled = true
 allowed_repos = ["vectorian-rs/hiko"]
