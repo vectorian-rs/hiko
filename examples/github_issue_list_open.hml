@@ -1,13 +1,54 @@
 (* Example: print open GitHub issues through the policy-gated Gh.Issue API. *)
 
 import Gh.Issue
+import Std.Format
+import Std.Json
+import Std.List
 import Std.Result
 
 val repo = "vectorian-rs/hiko"
 
-val _ = println ("Open issues in " ^ repo ^ ":")
+fun lookup (key : string) (fields : (string * Json.json) list) =
+  case fields of
+      [] => Json.JNull
+    | (k, v) :: rest => if k = key then v else lookup key rest
+
+fun json_string value =
+  case value of
+      Json.JStr text => text
+    | _ => "?"
+
+fun issue_number fields =
+  case lookup "number" fields of
+      Json.JInt n => "#" ^ int_to_string n
+    | _ => "#?"
+
+fun issue_row value =
+  case value of
+      Json.JObject fields => [
+          issue_number fields,
+          json_string (lookup "state" fields),
+          json_string (lookup "title" fields)
+        ]
+    | _ => ["?", "?", "?"]
+
+fun render_table rows =
+  case rows of
+      [] => []
+    | cells :: rest => Format.row (Format.row_with_widths [5, 5, 88] cells) :: render_table rest
+
+fun render_issues items =
+  let
+    val rows = ["ID", "STATE", "TITLE"] :: List.map issue_row items
+    val heading = "Open issues in " ^ repo ^ " (" ^ int_to_string (List.length items) ^ ")"
+  in
+    heading ^ "\n\n" ^ Format.lines (render_table rows)
+  end
 
 val _ =
   case Issue.issue_list_open repo of
-      Result.Ok json => println json
+      Result.Ok json =>
+      (case Json.parse json of
+          Json.JArray items => println (render_issues items)
+        | _ => println "List failed: expected a JSON array")
     | Result.Err err => println ("List failed: " ^ err)

@@ -1,16 +1,46 @@
 [capabilities.stdio.println]
 enabled = true
 
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.convert.float_to_string]
+enabled = true
+
 [capabilities.convert.string_to_int]
 enabled = true
 
 [capabilities.string.split]
 enabled = true
 
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.string.string_join]
+enabled = true
+
 [capabilities.string.string_contains]
 enabled = true
 
 [capabilities.testing.panic]
+enabled = true
+
+[capabilities.json.json_parse]
+enabled = true
+
+[capabilities.json.json_to_string]
+enabled = true
+
+[capabilities.json.json_get]
+enabled = true
+
+[capabilities.json.json_keys]
+enabled = true
+
+[capabilities.json.json_length]
 enabled = true
 
 [capabilities.github.issue.create]

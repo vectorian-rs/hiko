@@ -33,4 +33,43 @@ structure Format = struct
     end
 
   fun format fmt items = format_loop fmt (string_length fmt) 0 items ""
+
+  fun spaces n = if n <= 0 then "" else " " ^ spaces (n - 1)
+
+  fun pad_right width text =
+    if string_length text >= width then text else pad_right width (text ^ " ")
+
+  fun pad_left width text =
+    if string_length text >= width then text else pad_left width (" " ^ text)
+
+  fun clip width text =
+    if width <= 0 then "" else
+    if string_length text <= width then text else
+    if width <= 3 then substring (text, 0, width) else substring (text, 0, width - 3) ^ "..."
+
+  fun column width text =
+    if width <= 0 then "" else
+    if string_length text > width then
+      if width <= 3 then substring (text, 0, width) else substring (text, 0, width - 3) ^ "..."
+    else if string_length text >= width then text
+    else column width (text ^ " ")
+
+  fun row cells = string_join (cells, "  ")
+
+  fun lines rows = string_join (rows, "\n")
+
+  fun row_with_widths widths cells =
+    case (widths, cells) of
+        (w :: ws, cell :: rest) =>
+          if w <= 0 then "" :: row_with_widths ws rest else
+          if string_length cell > w then
+            let
+              val clipped = if w <= 3 then substring (cell, 0, w) else substring (cell, 0, w - 3) ^ "..."
+            in
+              clipped :: row_with_widths ws rest
+            end
+          else if string_length cell >= w then cell :: row_with_widths ws rest
+          else row_with_widths widths ((cell ^ " ") :: rest)
+      | ([], cell :: rest) => cell :: row_with_widths [] rest
+      | (_, []) => []
 end
