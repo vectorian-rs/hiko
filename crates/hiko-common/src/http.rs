@@ -1,24 +1,30 @@
 use std::time::Duration;
 
+fn apply_headers<State>(
+    mut request: ureq::RequestBuilder<State>,
+    headers: &[(&str, &str)],
+) -> ureq::RequestBuilder<State> {
+    for (key, value) in headers {
+        request = request.header(*key, *value);
+    }
+    request
+}
+
 pub fn dispatch_ureq(
     method: &str,
     url: &str,
     headers: &[(&str, &str)],
     body: &str,
 ) -> Result<ureq::http::Response<ureq::Body>, String> {
-    let send_no_body = |r: ureq::RequestBuilder<ureq::typestate::WithoutBody>| {
-        let mut r = r;
-        for (k, v) in headers {
-            r = r.header(*k, *v);
-        }
-        r.call().map_err(|e| format!("http: {e}"))
+    let send_no_body = |request: ureq::RequestBuilder<ureq::typestate::WithoutBody>| {
+        apply_headers(request, headers)
+            .call()
+            .map_err(|e| format!("http: {e}"))
     };
-    let send_with_body = |r: ureq::RequestBuilder<ureq::typestate::WithBody>| {
-        let mut r = r;
-        for (k, v) in headers {
-            r = r.header(*k, *v);
-        }
-        r.send(body.as_bytes()).map_err(|e| format!("http: {e}"))
+    let send_with_body = |request: ureq::RequestBuilder<ureq::typestate::WithBody>| {
+        apply_headers(request, headers)
+            .send(body.as_bytes())
+            .map_err(|e| format!("http: {e}"))
     };
 
     if method.eq_ignore_ascii_case("GET") {
