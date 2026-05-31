@@ -76,6 +76,8 @@ pub struct VMBuilder {
     max_memory_bytes: Option<usize>,
     max_io_bytes: Option<u64>,
     max_host_work: Option<u64>,
+    max_host_resources: Option<usize>,
+    host_resource_limits: HashMap<String, usize>,
     max_work: Option<u64>,
 }
 
@@ -107,6 +109,8 @@ impl VMBuilder {
             max_memory_bytes: None,
             max_io_bytes: None,
             max_host_work: None,
+            max_host_resources: None,
+            host_resource_limits: HashMap::new(),
             max_work: None,
         }
     }
@@ -336,6 +340,18 @@ impl VMBuilder {
         self
     }
 
+    /// Set maximum total host resources.
+    pub fn max_host_resources(mut self, count: usize) -> Self {
+        self.max_host_resources = Some(count);
+        self
+    }
+
+    /// Set per-kind host resource limits.
+    pub fn host_resource_limits(mut self, limits: HashMap<String, usize>) -> Self {
+        self.host_resource_limits = limits;
+        self
+    }
+
     /// Build the VM.
     pub fn build(self) -> VM {
         let mut vm = VM::from_program(self.program);
@@ -371,6 +387,12 @@ impl VMBuilder {
         }
         if let Some(max_host_work) = self.max_host_work {
             vm.set_max_host_work(max_host_work);
+        }
+        if let Some(max_host_resources) = self.max_host_resources {
+            vm.set_max_host_resources(max_host_resources);
+        }
+        if !self.host_resource_limits.is_empty() {
+            vm.set_host_resource_limits(self.host_resource_limits);
         }
         if let Some(work) = self.max_work {
             vm.set_max_work(work);

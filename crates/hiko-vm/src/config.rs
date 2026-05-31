@@ -14,7 +14,7 @@ use hiko_builtin_meta::{
 };
 use hiko_compile::chunk::CompiledProgram;
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path};
 
 /// Runtime/loadable run configuration.
@@ -39,6 +39,9 @@ pub struct Limits {
     pub max_memory_bytes: Option<usize>,
     pub max_io_bytes: Option<u64>,
     pub max_host_work: Option<u64>,
+    pub max_host_resources: Option<usize>,
+    #[serde(default)]
+    pub host_resources: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1131,6 +1134,12 @@ impl RunConfig {
         }
         if let Some(max_host_work) = self.limits.max_host_work {
             builder = builder.max_host_work(max_host_work);
+        }
+        if let Some(max_host_resources) = self.limits.max_host_resources {
+            builder = builder.max_host_resources(max_host_resources);
+        }
+        if !self.limits.host_resources.is_empty() {
+            builder = builder.host_resource_limits(self.limits.host_resources.clone());
         }
 
         builder

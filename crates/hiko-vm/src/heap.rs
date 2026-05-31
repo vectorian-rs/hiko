@@ -88,6 +88,12 @@ pub struct Heap {
     max_io_bytes: Option<u64>,
     host_work_used: u64,
     max_host_work: Option<u64>,
+    /// Count of host resources by kind.
+    host_resources_by_kind: HashMap<HostHandleKind, usize>,
+    /// Maximum total host resources allowed.
+    max_host_resources: Option<usize>,
+    /// Per-kind host resource limits.
+    host_resource_limits: HashMap<String, usize>,
     /// Filesystem root for path enforcement (empty = unrestricted).
     fs_root: String,
     /// Per-builtin filesystem folder allowlists.
@@ -137,6 +143,9 @@ impl Heap {
             max_io_bytes: None,
             host_work_used: 0,
             max_host_work: None,
+            host_resources_by_kind: HashMap::new(),
+            max_host_resources: None,
+            host_resource_limits: HashMap::new(),
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
             #[cfg(feature = "builtin-filesystem")]
@@ -499,6 +508,14 @@ impl Heap {
         self.max_host_work = Some(max);
     }
 
+    pub fn set_max_host_resources(&mut self, max: usize) {
+        self.max_host_resources = Some(max);
+    }
+
+    pub fn set_host_resource_limits(&mut self, limits: HashMap<String, usize>) {
+        self.host_resource_limits = limits;
+    }
+
     pub fn max_host_work(&self) -> Option<u64> {
         self.max_host_work
     }
@@ -559,13 +576,46 @@ impl Heap {
         resource: HostResource,
     ) -> Result<Value, HeapLimitExceeded> {
         let kind = resource.kind();
+        
+        // Check total host resources limit
+        if let Some(max) = self.max_host_resources {
+            if self.host_resources.len() >= max {
+                return Err(HeapLimitExceeded::Objects {
+                    live: self.host_resources.len(),
+                    limit: max,
+                });
+            }
+        }
+        
+        // Check per-kind host resource limits
+        let kind_name = self.host_handle_kind_name(kind);
+        if let Some(&max) = self.host_resource_limits.get(&kind_name) {
+            let current_count = *self.host_resources_by_kind.get(&kind).unwrap_or(&0);
+            if current_count >= max {
+                return Err(HeapLimitExceeded::Objects {
+                    live: current_count,
+                    limit: max,
+                });
+            }
+        }
+        
         let id = HostHandleId(self.next_host_handle_id);
         self.next_host_handle_id = self.next_host_handle_id.saturating_add(1);
         self.host_resources.insert(id, resource);
+        
+        // Update per-kind count
+        *self.host_resources_by_kind.entry(kind).or_insert(0) += 1;
+        
         match self.alloc(HeapObject::HostHandle { kind, id }) {
             Ok(r) => Ok(Value::Heap(r)),
             Err(err) => {
                 self.host_resources.remove(&id);
+                // Decrement the count since we failed to allocate
+                let count = self.host_resources_by_kind.entry(kind).or_insert(0);
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.host_resources_by_kind.remove(&kind);
+                }
                 Err(err)
             }
         }
@@ -573,6 +623,22 @@ impl Heap {
 
     pub fn host_resource_count(&self) -> usize {
         self.host_resources.len()
+    }
+
+    pub fn host_resource_count_by_kind(&self, kind: HostHandleKind) -> usize {
+        *self.host_resources_by_kind.get(&kind).unwrap_or(&0)
+    }
+
+    fn host_handle_kind_name(&self, kind: HostHandleKind) -> String {
+        match kind {
+            #[cfg(feature = "builtin-aws-config")]
+            HostHandleKind::AwsConfig => "aws_config".to_string(),
+            #[cfg(feature = "builtin-aws-s3")]
+            HostHandleKind::AwsS3Client => "aws_s3_client".to_string(),
+            #[cfg(feature = "builtin-aws-sqs")]
+            HostHandleKind::AwsSqsClient => "aws_sqs_client".to_string(),
+            HostHandleKind::Unsupported => "unsupported".to_string(),
+        }
     }
 
     pub fn host_handle_from_value(
@@ -769,8 +835,14 @@ impl Heap {
         self.free_list.clear();
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
-                if let Some(HeapObject::HostHandle { id, .. }) = self.objects[i].as_ref() {
+                if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref() {
                     self.host_resources.remove(id);
+                    // Decrement the per-kind count
+                    let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.host_resources_by_kind.remove(kind);
+                    }
                 }
                 self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);
                 self.objects[i] = None;
@@ -1199,6 +1271,72 @@ mod tests {
                 .unwrap_err()
                 .contains("dangling")
         );
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    #[test]
+    fn host_resource_limits_enforced() {
+        use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
+        use std::sync::Arc;
+
+        let mut heap = Heap::new();
+        
+        // Set limit of 1 AWS config
+        let mut limits = HashMap::new();
+        limits.insert("aws_config".to_string(), 1);
+        heap.set_host_resource_limits(limits);
+        
+        // First allocation should succeed
+        let config1 = heap
+            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+            }));
+        assert!(config1.is_ok());
+        assert_eq!(heap.host_resource_count_by_kind(HostHandleKind::AwsConfig), 1);
+        
+        // Second allocation should fail
+        let config2 = heap
+            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+            }));
+        assert!(config2.is_err());
+        
+        // Check that the count is still 1
+        assert_eq!(heap.host_resource_count_by_kind(HostHandleKind::AwsConfig), 1);
+    }
+
+    #[cfg(feature = "builtin-aws-config")]
+    #[test]
+    fn total_host_resource_limit_enforced() {
+        use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
+        use std::sync::Arc;
+
+        let mut heap = Heap::new();
+        
+        // Set total limit of 1 host resource
+        heap.set_max_host_resources(1);
+        
+        // First allocation should succeed
+        let config = heap
+            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+            }));
+        assert!(config.is_ok());
+        assert_eq!(heap.host_resource_count(), 1);
+        
+        // Second allocation should fail
+        let config2 = heap
+            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
+                auth: AwsConfigAuthMethod::InstanceProfile,
+                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
+            }));
+        assert!(config2.is_err());
+        
+        // Check that the count is still 1
+        assert_eq!(heap.host_resource_count(), 1);
     }
 
     #[test]

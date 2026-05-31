@@ -407,6 +407,16 @@ impl VM {
         self.heap.set_max_host_work(max);
     }
 
+    /// Set the maximum total host resources.
+    pub fn set_max_host_resources(&mut self, max: usize) {
+        self.heap.set_max_host_resources(max);
+    }
+
+    /// Set per-kind host resource limits.
+    pub fn set_host_resource_limits(&mut self, limits: HashMap<String, usize>) {
+        self.heap.set_host_resource_limits(limits);
+    }
+
     pub fn get_global(&self, name: &str) -> Option<&Value> {
         self.global_names.get(name).map(|&slot| &self.globals[slot])
     }
