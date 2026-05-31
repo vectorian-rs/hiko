@@ -356,6 +356,7 @@ fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
 
 fn resolve_policy_from_manifest(
     manifest_path: &Path,
+    manifest_source: ManifestSource,
     policy_name: Option<&str>,
 ) -> Result<ResolvedPolicy, String> {
     let manifest = load_project_manifest(manifest_path)?;
@@ -384,7 +385,7 @@ fn resolve_policy_from_manifest(
     let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     Ok(ResolvedPolicy {
         manifest_path: manifest_path.to_path_buf(),
-        manifest_source: ManifestSource::AutoDiscovered,
+        manifest_source,
         policy_name: selected,
         policy_path: root.join(&policy.path),
     })
@@ -408,16 +409,42 @@ fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
         return RuntimeSurface::CoreOnly;
     };
 
-    match resolve_policy_from_manifest(&manifest_path, options.policy_name.as_deref()) {
-        Ok(mut policy) => {
-            policy.manifest_source = manifest_source;
-            RuntimeSurface::Policy(policy)
-        }
+    match resolve_policy_from_manifest(
+        &manifest_path,
+        manifest_source,
+        options.policy_name.as_deref(),
+    ) {
+        Ok(policy) => RuntimeSurface::Policy(policy),
         Err(err) => {
             eprintln!("{err}");
             process::exit(1);
         }
     }
+}
+
+fn parse_flag_value<'a>(args: &'a [String], flag: &str, index: usize, usage: &str) -> &'a str {
+    let arg = &args[index];
+    let inline_prefix = format!("{flag}=");
+    if arg == flag {
+        let Some(value) = args.get(index + 1) else {
+            eprintln!("{usage}");
+            process::exit(1);
+        };
+        value
+    } else if let Some(value) = arg.strip_prefix(&inline_prefix) {
+        if value.is_empty() {
+            eprintln!("{usage}");
+            process::exit(1);
+        }
+        value
+    } else {
+        eprintln!("{usage}");
+        process::exit(1);
+    }
+}
+
+fn next_index_for_flag(arg: &str, flag: &str, index: usize) -> usize {
+    if arg == flag { index + 2 } else { index + 1 }
 }
 
 fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> ScriptOptions {
@@ -428,59 +455,28 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
 
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "--config" => {
-                let Some(path) = args.get(i + 1) else {
-                    eprintln!("{usage}");
-                    process::exit(1);
-                };
-                config_path = Some(path.clone());
-                i += 2;
-            }
-            arg if arg.starts_with("--config=") => {
-                let path = arg.trim_start_matches("--config=");
-                if path.is_empty() {
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
-                config_path = Some(path.to_string());
-                i += 1;
-            }
-            "--policy" => {
-                let Some(name) = args.get(i + 1) else {
-                    eprintln!("{usage}");
-                    process::exit(1);
-                };
-                policy_name = Some(name.clone());
-                i += 2;
-            }
-            arg if arg.starts_with("--policy=") => {
-                let name = arg.trim_start_matches("--policy=");
-                if name.is_empty() {
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
-                policy_name = Some(name.to_string());
-                i += 1;
-            }
-            "--strict" => {
-                strict = true;
-                i += 1;
-            }
-            other if other.starts_with('-') => {
-                eprintln!("Unknown option: {other}");
+        let arg = &args[i];
+        if arg == "--config" || arg.starts_with("--config=") {
+            config_path = Some(parse_flag_value(args, "--config", i, usage).to_string());
+            i = next_index_for_flag(arg, "--config", i);
+        } else if arg == "--policy" || arg.starts_with("--policy=") {
+            policy_name = Some(parse_flag_value(args, "--policy", i, usage).to_string());
+            i = next_index_for_flag(arg, "--policy", i);
+        } else if arg == "--strict" {
+            strict = true;
+            i += 1;
+        } else if arg.starts_with('-') {
+            eprintln!("Unknown option: {arg}");
+            eprintln!("{usage}");
+            process::exit(1);
+        } else {
+            if script_path.is_some() {
+                eprintln!("Unexpected extra argument: {arg}");
                 eprintln!("{usage}");
                 process::exit(1);
             }
-            path => {
-                if script_path.is_some() {
-                    eprintln!("Unexpected extra argument: {path}");
-                    eprintln!("{usage}");
-                    process::exit(1);
-                }
-                script_path = Some(path.to_string());
-                i += 1;
-            }
+            script_path = Some(arg.clone());
+            i += 1;
         }
     }
 
@@ -597,6 +593,82 @@ fn read_const_string(chunk: &Chunk, idx: usize) -> Result<&str, String> {
     }
 }
 
+fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
+    match op {
+        Op::Const
+        | Op::GetLocal
+        | Op::SetLocal
+        | Op::GetUpvalue
+        | Op::GetGlobal
+        | Op::SetGlobal
+        | Op::Jump
+        | Op::JumpIfFalse
+        | Op::CallDirect
+        | Op::TailCallDirect
+        | Op::Panic
+        | Op::Perform => {
+            skip_bytes(code, ip, 2)?;
+        }
+        Op::GetField | Op::Call | Op::TailCall | Op::MakeTuple => {
+            skip_bytes(code, ip, 1)?;
+        }
+        Op::MakeData => {
+            skip_bytes(code, ip, 3)?;
+        }
+        Op::MakeClosure => {
+            let _proto_idx = read_u16(code, ip)?;
+            let n_captures = read_u8(code, ip)? as usize;
+            skip_bytes(code, ip, n_captures * 3)?;
+        }
+        Op::InstallHandler => {
+            let n_clauses = read_u16(code, ip)? as usize;
+            skip_bytes(code, ip, n_clauses * 4)?;
+        }
+        Op::Unit
+        | Op::True
+        | Op::False
+        | Op::Pop
+        | Op::AddInt
+        | Op::SubInt
+        | Op::MulInt
+        | Op::DivInt
+        | Op::ModInt
+        | Op::Neg
+        | Op::AddFloat
+        | Op::SubFloat
+        | Op::MulFloat
+        | Op::DivFloat
+        | Op::NegFloat
+        | Op::Eq
+        | Op::Ne
+        | Op::LtInt
+        | Op::GtInt
+        | Op::LeInt
+        | Op::GeInt
+        | Op::LtFloat
+        | Op::GtFloat
+        | Op::LeFloat
+        | Op::GeFloat
+        | Op::AddWord
+        | Op::SubWord
+        | Op::MulWord
+        | Op::DivWord
+        | Op::ModWord
+        | Op::LtWord
+        | Op::GtWord
+        | Op::LeWord
+        | Op::GeWord
+        | Op::ConcatString
+        | Op::Not
+        | Op::GetTag
+        | Op::Return
+        | Op::Halt
+        | Op::RemoveHandler
+        | Op::Resume => {}
+    }
+    Ok(())
+}
+
 fn scan_chunk_globals(
     chunk: &Chunk,
     defs: &mut HashSet<String>,
@@ -632,62 +704,9 @@ fn scan_chunk_globals(
                 let name = read_const_string(chunk, idx)?.to_string();
                 defs.insert(name);
             }
-            Op::GetField | Op::Call | Op::TailCall | Op::MakeTuple => {
-                skip_bytes(code, &mut ip, 1)?;
+            _ => {
+                advance_operands(code, &mut ip, op)?;
             }
-            Op::MakeData => {
-                skip_bytes(code, &mut ip, 3)?;
-            }
-            Op::MakeClosure => {
-                let _proto_idx = read_u16(code, &mut ip)?;
-                let n_captures = read_u8(code, &mut ip)? as usize;
-                skip_bytes(code, &mut ip, n_captures * 3)?;
-            }
-            Op::InstallHandler => {
-                let n_clauses = read_u16(code, &mut ip)? as usize;
-                skip_bytes(code, &mut ip, n_clauses * 4)?;
-            }
-            Op::Unit
-            | Op::True
-            | Op::False
-            | Op::Pop
-            | Op::AddInt
-            | Op::SubInt
-            | Op::MulInt
-            | Op::DivInt
-            | Op::ModInt
-            | Op::Neg
-            | Op::AddFloat
-            | Op::SubFloat
-            | Op::MulFloat
-            | Op::DivFloat
-            | Op::NegFloat
-            | Op::Eq
-            | Op::Ne
-            | Op::LtInt
-            | Op::GtInt
-            | Op::LeInt
-            | Op::GeInt
-            | Op::LtFloat
-            | Op::GtFloat
-            | Op::LeFloat
-            | Op::GeFloat
-            | Op::AddWord
-            | Op::SubWord
-            | Op::MulWord
-            | Op::DivWord
-            | Op::ModWord
-            | Op::LtWord
-            | Op::GtWord
-            | Op::LeWord
-            | Op::GeWord
-            | Op::ConcatString
-            | Op::Not
-            | Op::GetTag
-            | Op::Return
-            | Op::Halt
-            | Op::RemoveHandler
-            | Op::Resume => {}
         }
     }
 
@@ -860,78 +879,7 @@ fn count_chunk_opcodes(chunk: &Chunk) -> Result<usize, String> {
         count += 1;
         let op = Op::try_from(read_u8(code, &mut ip)?)
             .map_err(|byte| format!("invalid opcode while counting bytecode: {byte}"))?;
-        match op {
-            Op::Const
-            | Op::GetLocal
-            | Op::SetLocal
-            | Op::GetUpvalue
-            | Op::GetGlobal
-            | Op::SetGlobal
-            | Op::Jump
-            | Op::JumpIfFalse
-            | Op::CallDirect
-            | Op::TailCallDirect
-            | Op::Panic
-            | Op::Perform => {
-                skip_bytes(code, &mut ip, 2)?;
-            }
-            Op::GetField | Op::Call | Op::TailCall | Op::MakeTuple => {
-                skip_bytes(code, &mut ip, 1)?;
-            }
-            Op::MakeData => {
-                skip_bytes(code, &mut ip, 3)?;
-            }
-            Op::MakeClosure => {
-                let _proto_idx = read_u16(code, &mut ip)?;
-                let n_captures = read_u8(code, &mut ip)? as usize;
-                skip_bytes(code, &mut ip, n_captures * 3)?;
-            }
-            Op::InstallHandler => {
-                let n_clauses = read_u16(code, &mut ip)? as usize;
-                skip_bytes(code, &mut ip, n_clauses * 4)?;
-            }
-            Op::Unit
-            | Op::True
-            | Op::False
-            | Op::Pop
-            | Op::AddInt
-            | Op::SubInt
-            | Op::MulInt
-            | Op::DivInt
-            | Op::ModInt
-            | Op::Neg
-            | Op::AddFloat
-            | Op::SubFloat
-            | Op::MulFloat
-            | Op::DivFloat
-            | Op::NegFloat
-            | Op::Eq
-            | Op::Ne
-            | Op::LtInt
-            | Op::GtInt
-            | Op::LeInt
-            | Op::GeInt
-            | Op::LtFloat
-            | Op::GtFloat
-            | Op::LeFloat
-            | Op::GeFloat
-            | Op::AddWord
-            | Op::SubWord
-            | Op::MulWord
-            | Op::DivWord
-            | Op::ModWord
-            | Op::LtWord
-            | Op::GtWord
-            | Op::LeWord
-            | Op::GeWord
-            | Op::ConcatString
-            | Op::Not
-            | Op::GetTag
-            | Op::Return
-            | Op::Halt
-            | Op::RemoveHandler
-            | Op::Resume => {}
-        }
+        advance_operands(code, &mut ip, op)?;
     }
 
     Ok(count)
@@ -1240,9 +1188,15 @@ fn build_vm(config_path: &str) {
         .replace('.', "-");
     let out_dir = format!("hiko-vm-{stem}");
 
-    fs::create_dir_all(format!("{out_dir}/src")).expect("cannot create output directory");
+    fs::create_dir_all(format!("{out_dir}/src")).unwrap_or_else(|e| {
+        eprintln!("error: cannot create output directory '{out_dir}/src': {e}");
+        process::exit(1);
+    });
 
-    fs::write(format!("{out_dir}/src/main.rs"), &rust_src).expect("cannot write main.rs");
+    fs::write(format!("{out_dir}/src/main.rs"), &rust_src).unwrap_or_else(|e| {
+        eprintln!("error: cannot write {out_dir}/src/main.rs: {e}");
+        process::exit(1);
+    });
 
     let version = env!("CARGO_PKG_VERSION");
     let cargo_toml = format!(
@@ -1260,7 +1214,10 @@ hiko-vm = "{version}"
 "#
     );
 
-    fs::write(format!("{out_dir}/Cargo.toml"), &cargo_toml).expect("cannot write Cargo.toml");
+    fs::write(format!("{out_dir}/Cargo.toml"), &cargo_toml).unwrap_or_else(|e| {
+        eprintln!("error: cannot write {out_dir}/Cargo.toml: {e}");
+        process::exit(1);
+    });
 
     println!("Generated custom VM project: {out_dir}/");
     println!("Config: {config:?}");
@@ -1648,8 +1605,9 @@ path = "policies/user.toml"
         .unwrap();
         fs::write(root.join("policies/user.toml"), "").unwrap();
 
-        let resolved = resolve_policy_from_manifest(&manifest, None)
-            .expect("manifest resolution should succeed");
+        let resolved =
+            resolve_policy_from_manifest(&manifest, ManifestSource::AutoDiscovered, None)
+                .expect("manifest resolution should succeed");
         assert_eq!(resolved.policy_name, "software-developer-role");
         assert_eq!(resolved.policy_path, root.join("policies/user.toml"));
 
@@ -1681,8 +1639,12 @@ path = "policies/agent.toml"
         fs::write(root.join("policies/user.toml"), "").unwrap();
         fs::write(root.join("policies/agent.toml"), "").unwrap();
 
-        let resolved = resolve_policy_from_manifest(&manifest, Some("docs-writer"))
-            .expect("manifest resolution should succeed");
+        let resolved = resolve_policy_from_manifest(
+            &manifest,
+            ManifestSource::AutoDiscovered,
+            Some("docs-writer"),
+        )
+        .expect("manifest resolution should succeed");
         assert_eq!(resolved.policy_name, "docs-writer");
         assert_eq!(resolved.policy_path, root.join("policies/agent.toml"));
 
@@ -1702,7 +1664,7 @@ name = "demo"
         )
         .unwrap();
 
-        let err = resolve_policy_from_manifest(&manifest, None)
+        let err = resolve_policy_from_manifest(&manifest, ManifestSource::AutoDiscovered, None)
             .expect_err("manifest without default should require explicit --policy");
         assert!(err.contains("defaults.policy"));
 
