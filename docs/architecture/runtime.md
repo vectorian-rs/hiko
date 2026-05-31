@@ -188,6 +188,10 @@ The scheduler only observes:
 
 ## Garbage collection
 
+For GC trigger points, root-set details, latency implications, and the relation
+between `run_slice` reductions and non-preemptive GC sections, see
+[`execution-bounds.md`](execution-bounds.md).
+
 ### Per-process
 
 - Each process has its own heap

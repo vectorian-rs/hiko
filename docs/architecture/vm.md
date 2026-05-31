@@ -44,6 +44,9 @@ internals directly.
 
 ## Execution Boundaries
 
+For the full embedder-facing contract around `VM::run`, `VM::run_slice`, GC,
+and non-preemptive sections, see [`execution-bounds.md`](execution-bounds.md).
+
 `VM::run()` is an unbounded convenience entry point. It runs until the
 program halts, fails, exhausts configured fuel, or emits a runtime request. If
 no fuel limit is configured, `run()` is non-preemptive: the dispatch loop has no
@@ -52,7 +55,9 @@ reduction boundary and a non-terminating program can keep control indefinitely.
 Embedders that need bounded execution, scheduler fairness, or regular
 cancellation observation should use `VM::run_slice(reductions)`. The slice API
 installs a per-call reduction budget and returns a `RunResult` boundary that the
-runtime can map back into process state.
+runtime can map back into process state. Slice reductions bound opcode dispatch;
+they do not preempt native builtins, synchronous host calls, or GC in the middle
+of their Rust implementations.
 
 ## Runtime/VM Transition Contract
 
