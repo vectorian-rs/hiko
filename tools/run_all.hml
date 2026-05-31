@@ -24,7 +24,7 @@ val cwd = getenv "PWD"
 val cwd_prefix = cwd ^ "/"
 
 (* Skip examples that are intentionally failing or externally flaky. *)
-val skip = ["examples/_debug_walk.hml", "examples/aws_s3_list_buckets.hml", "examples/http_fetch.hml", "examples/github_api.hml", "examples/github_issue_demo.hml", "examples/cycle_a.hml", "examples/cycle_b.hml", "examples/should_fail_io_stdout.hml", "examples/should_fail_io_stdin.hml", "examples/should_fail_io_read_file.hml", "examples/should_fail_io_read_file_bytes.hml", "examples/should_fail_io_write_file.hml", "examples/should_fail_io_list_dir.hml", "examples/should_fail_io_read_file_tagged.hml", "examples/should_fail_io_glob.hml", "examples/should_fail_io_walk_dir.hml"]
+val skip = ["examples/_debug_walk.hml", "examples/aws_s3_list_buckets.hml", "examples/http_fetch.hml", "examples/github_api.hml", "examples/github_issue_demo.hml", "examples/github_issue_list_open.hml", "examples/cycle_a.hml", "examples/cycle_b.hml", "examples/should_fail_io_stdout.hml", "examples/should_fail_io_stdin.hml", "examples/should_fail_io_read_file.hml", "examples/should_fail_io_read_file_bytes.hml", "examples/should_fail_io_write_file.hml", "examples/should_fail_io_list_dir.hml", "examples/should_fail_io_read_file_tagged.hml", "examples/should_fail_io_glob.hml", "examples/should_fail_io_walk_dir.hml"]
 
 fun should_skip file = List.any (fn s => ends_with (file, s)) skip
 

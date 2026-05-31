@@ -7,6 +7,9 @@ enabled = true
 [capabilities.string.split]
 enabled = true
 
+[capabilities.string.string_contains]
+enabled = true
+
 [capabilities.testing.panic]
 enabled = true
 
