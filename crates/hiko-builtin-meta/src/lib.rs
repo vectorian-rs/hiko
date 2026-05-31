@@ -4,6 +4,8 @@ mod aws_config;
 mod aws_s3;
 #[cfg(feature = "builtin-aws-sqs")]
 mod aws_sqs;
+#[cfg(feature = "builtin-github")]
+mod github;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -76,6 +78,8 @@ pub const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     aws_s3::BUILTINS,
     #[cfg(feature = "builtin-aws-sqs")]
     aws_sqs::BUILTINS,
+    #[cfg(feature = "builtin-github")]
+    github::BUILTINS,
     #[cfg(feature = "builtin-stdio")]
     stdio::BUILTINS,
     #[cfg(feature = "builtin-convert")]

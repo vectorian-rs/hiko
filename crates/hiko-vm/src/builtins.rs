@@ -19,7 +19,8 @@
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-github"
 ))]
 use crate::heap::Heap;
 use crate::value::BuiltinFn;
@@ -41,7 +42,8 @@ use crate::value::BuiltinFn;
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-github"
 ))]
 use crate::value::HeapObject;
 #[cfg(any(
@@ -65,7 +67,8 @@ use crate::value::HeapObject;
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-github"
 ))]
 use crate::value::Value;
 
@@ -161,6 +164,8 @@ mod system;
 mod testing;
 #[cfg(feature = "builtin-time")]
 mod time;
+#[cfg(feature = "builtin-github")]
+mod github;
 
 pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
     let mut entries = Vec::new();
@@ -235,6 +240,9 @@ fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
 
     #[cfg(feature = "builtin-testing")]
     _entries.extend(testing::entries());
+
+    #[cfg(feature = "builtin-github")]
+    _entries.extend(github::entries());
 }
 
 #[cfg(test)]

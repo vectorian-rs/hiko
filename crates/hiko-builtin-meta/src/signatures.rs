@@ -8,6 +8,11 @@ pub struct BuiltinTypeSignature {
 
 pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
     let ty = match name {
+        // GitHub
+        "github_issue_create" => "string * string * string -> bool * string * string",
+        "github_issue_view" => "string * int -> bool * string * string",
+        "github_issue_update" => "string * int * string -> bool * string * string",
+
         // AWS
         "aws_config_sso_profile" => "string -> aws_config",
         "aws_config_instance_profile" => "unit -> aws_config",

@@ -39,6 +39,14 @@ pub struct HttpPolicy {
     pub allowed_hosts: Vec<String>,
 }
 
+/// Policy for GitHub issue operations.
+#[cfg(feature = "builtin-github")]
+pub struct GitHubIssuePolicy {
+    pub create_repos: Vec<String>,
+    pub view_repos: Vec<String>,
+    pub update_repos: Vec<String>,
+}
+
 /// Policy for direct command execution.
 #[cfg(feature = "builtin-exec")]
 pub struct ExecPolicy {
@@ -57,6 +65,8 @@ pub struct VMBuilder {
     fs_builtin_folders: HashMap<String, Vec<String>>,
     http_allowed_hosts: Vec<String>,
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    #[cfg(feature = "builtin-github")]
+    github_issue_allowed_repos: HashMap<String, Vec<String>>,
     #[cfg(feature = "builtin-aws-config")]
     aws_sso_profiles: Vec<String>,
     #[cfg(feature = "builtin-aws-config")]
@@ -85,6 +95,8 @@ impl VMBuilder {
             fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
+            #[cfg(feature = "builtin-github")]
+            github_issue_allowed_repos: HashMap::new(),
             #[cfg(feature = "builtin-aws-config")]
             aws_sso_profiles: Vec::new(),
             #[cfg(feature = "builtin-aws-config")]
@@ -239,6 +251,25 @@ impl VMBuilder {
         self.register_builtin_name("exit")
     }
 
+    /// Include GitHub issue builtins with per-operation repo allowlists.
+    #[cfg(feature = "builtin-github")]
+    pub fn with_github_issue(mut self, policy: GitHubIssuePolicy) -> Self {
+        let entries = [
+            ("github_issue_create", policy.create_repos),
+            ("github_issue_view", policy.view_repos),
+            ("github_issue_update", policy.update_repos),
+        ];
+        for (name, repos) in entries {
+            if !repos.is_empty() {
+                if !self.has_builtin(name) && let Some(func) = find_builtin(name) {
+                    self.builtins.push((name, func));
+                }
+                self.github_issue_allowed_repos.insert(name.to_string(), repos);
+            }
+        }
+        self
+    }
+
     /// Include exec builtin with whitelisted commands and timeout.
     #[cfg(feature = "builtin-exec")]
     pub fn with_exec(mut self, policy: ExecPolicy) -> Self {
@@ -310,6 +341,10 @@ impl VMBuilder {
         {
             vm.set_aws_sso_profiles(self.aws_sso_profiles);
             vm.set_aws_allow_instance_profile(self.aws_allow_instance_profile);
+        }
+        #[cfg(feature = "builtin-github")]
+        {
+            vm.set_github_issue_allowed_repos(self.github_issue_allowed_repos);
         }
 
         if let Some(max) = self.max_heap {

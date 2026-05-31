@@ -1752,6 +1752,18 @@ mod tests {
                 "aws_sqs_list_queues",
                 "async I/O runtime and AWS credentials required",
             ),
+            (
+                "github_issue_create",
+                "requires gh CLI and authenticated GitHub credentials",
+            ),
+            (
+                "github_issue_view",
+                "requires gh CLI and authenticated GitHub credentials",
+            ),
+            (
+                "github_issue_update",
+                "requires gh CLI and authenticated GitHub credentials",
+            ),
         ])
     }
 

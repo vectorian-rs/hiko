@@ -57,6 +57,12 @@ impl VM {
             "aws_s3_list_buckets" => self.aws_s3_list_buckets_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-sqs")]
             "aws_sqs_list_queues" => self.aws_sqs_list_queues_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-github")]
+            "github_issue_create" => self.github_issue_create_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-github")]
+            "github_issue_view" => self.github_issue_view_builtin_id = Some(idx),
+            #[cfg(feature = "builtin-github")]
+            "github_issue_update" => self.github_issue_update_builtin_id = Some(idx),
             _ => {}
         }
     }

@@ -1,0 +1,17 @@
+name = "github-issue-demo"
+description = "Allow GitHub issue create/view/update for the hiko repo only."
+
+[capabilities.github.issue.create]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
+[capabilities.github.issue.view]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
+[capabilities.github.issue.update]
+enabled = true
+allowed_repos = ["vectorian-rs/hiko"]
+
+[run]
+surface = "strict"

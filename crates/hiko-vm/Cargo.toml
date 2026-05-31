@@ -27,6 +27,7 @@ builtin-all = [
     "builtin-exec",
     "builtin-system",
     "builtin-testing",
+    "builtin-github",
 ]
 builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-compile/builtin-stdio"]
 builtin-convert = ["hiko-builtin-meta/builtin-convert", "hiko-compile/builtin-convert"]
@@ -95,6 +96,11 @@ builtin-aws-sqs = [
     "hiko-builtin-meta/builtin-aws-sqs",
     "hiko-compile/builtin-aws-sqs",
     "dep:aws-sdk-sqs",
+]
+builtin-github = [
+    "hiko-builtin-meta/builtin-github",
+    "hiko-compile/builtin-github",
+    "dep:serde_json",
 ]
 
 [dependencies]

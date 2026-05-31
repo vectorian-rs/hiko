@@ -49,5 +49,6 @@ builtin-testing = []
 builtin-aws-config = []
 builtin-aws-s3 = ["builtin-aws-config"]
 builtin-aws-sqs = ["builtin-aws-config"]
+builtin-github = []
 
 [dependencies]

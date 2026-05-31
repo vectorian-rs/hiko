@@ -97,6 +97,8 @@ pub struct Heap {
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    /// Per-builtin GitHub issue repo allowlists.
+    github_issue_allowed_repos: HashMap<String, Vec<String>>,
     /// Allowed AWS SSO profile names for Aws.Config creation.
     #[cfg(feature = "builtin-aws-config")]
     aws_sso_profiles: Vec<String>,
@@ -137,6 +139,7 @@ impl Heap {
             fs_builtin_dirs: HashMap::new(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
+            github_issue_allowed_repos: HashMap::new(),
             #[cfg(feature = "builtin-aws-config")]
             aws_sso_profiles: Vec::new(),
             #[cfg(feature = "builtin-aws-config")]
@@ -404,6 +407,30 @@ impl Heap {
             Err(format!(
                 "host '{}' not in allowed hosts for '{}': {:?}",
                 host, builtin, allowed_hosts
+            ))
+        }
+    }
+
+    pub fn set_github_issue_allowed_repos(&mut self, repos: HashMap<String, Vec<String>>) {
+        self.github_issue_allowed_repos = repos;
+    }
+
+    pub fn github_issue_allowed_repos(&self) -> &HashMap<String, Vec<String>> {
+        &self.github_issue_allowed_repos
+    }
+
+    pub fn check_github_repo_for(&self, builtin: &str, repo: &str) -> Result<(), String> {
+        let allowed_repos = self
+            .github_issue_allowed_repos
+            .get(builtin)
+            .ok_or_else(|| format!("builtin '{builtin}' has no GitHub permission"))?;
+
+        if allowed_repos.iter().any(|r| r == repo) {
+            Ok(())
+        } else {
+            Err(format!(
+                "repo '{}' not in allowed repos for '{}': {:?}",
+                repo, builtin, allowed_repos
             ))
         }
     }
@@ -755,6 +782,10 @@ fn open_cap_dir(path: &str) -> std::io::Result<(PathBuf, cap_std::fs::Dir)> {
 fn cap_relative_path_for(root: &Path, path: &str) -> Result<Option<PathBuf>, String> {
     let path = Path::new(path);
     if path.is_absolute() {
+        if let Some(relative) = cap_relative_path_for_absolute_fast(root, path) {
+            return Ok(Some(relative));
+        }
+
         let resolved = canonicalize_with_missing_tail(path)
             .map_err(|e| format!("cannot resolve path '{}': {e}", path.display()))?;
         return match resolved.strip_prefix(root) {
@@ -767,6 +798,13 @@ fn cap_relative_path_for(root: &Path, path: &str) -> Result<Option<PathBuf>, Str
     }
     validate_cap_relative_path(path)?;
     Ok(Some(normalize_cap_relative_path(path)))
+}
+
+#[cfg(feature = "builtin-filesystem")]
+fn cap_relative_path_for_absolute_fast(root: &Path, path: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(root).ok()?;
+    validate_cap_relative_path(relative).ok()?;
+    Some(normalize_cap_relative_path(relative))
 }
 
 #[cfg(feature = "builtin-filesystem")]
@@ -932,6 +970,56 @@ mod tests {
         let dir = std::env::temp_dir().join(unique);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[cfg(feature = "builtin-filesystem")]
+    #[test]
+    fn test_cap_relative_path_for_absolute_under_root() {
+        let root = temp_dir("cap-fast-root");
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let path = canonical_root.join("nested").join("file.txt");
+
+        let relative = cap_relative_path_for(&canonical_root, path.to_str().unwrap())
+            .unwrap()
+            .expect("path under root should match");
+        assert_eq!(relative, PathBuf::from("nested").join("file.txt"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "builtin-filesystem")]
+    #[test]
+    fn test_cap_relative_path_for_absolute_parent_component_falls_back() {
+        let root = temp_dir("cap-fast-parent-root");
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        fs::create_dir_all(canonical_root.join("nested")).unwrap();
+        fs::write(canonical_root.join("file.txt"), "ok").unwrap();
+        let path = canonical_root.join("nested").join("..").join("file.txt");
+
+        let relative = cap_relative_path_for(&canonical_root, path.to_str().unwrap())
+            .unwrap()
+            .expect("canonical fallback should keep valid path under root");
+        assert_eq!(relative, PathBuf::from("file.txt"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "builtin-filesystem")]
+    #[test]
+    fn test_cap_relative_path_for_absolute_outside_root_returns_none() {
+        let base = temp_dir("cap-fast-outside-base");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let path = outside.join("file.txt");
+        fs::write(&path, "nope").unwrap();
+
+        let relative = cap_relative_path_for(&canonical_root, path.to_str().unwrap()).unwrap();
+        assert!(relative.is_none());
+
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

@@ -208,6 +208,10 @@ impl VM {
         child.set_fs_builtin_folders(self.heap.fs_builtin_folders().clone());
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
         child.set_http_allowed_hosts_by_builtin(self.heap.http_allowed_hosts_by_builtin().clone());
+        #[cfg(feature = "builtin-github")]
+        {
+            child.set_github_issue_allowed_repos(self.heap.github_issue_allowed_repos().clone());
+        }
         #[cfg(feature = "builtin-aws-config")]
         {
             child.set_aws_sso_profiles(self.heap.aws_sso_profiles().to_vec());

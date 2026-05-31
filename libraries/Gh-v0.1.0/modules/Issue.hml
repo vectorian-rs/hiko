@@ -1,0 +1,100 @@
+(*!
+ * GitHub Issue operations.
+ *
+ * Policy-gated builtins that shell out to the `gh` CLI.
+ * Each operation is gated by `[capabilities.github.issue.*]` in the policy.
+ *)
+import Std.Result
+
+structure Issue = struct
+  type repo = string
+  type issue_number = int
+  type url = string
+
+  (* error constructors matching the Rust-side failure modes *)
+  datatype error =
+      NotAuthenticated
+    | RepoNotAllowed of repo
+    | NotFound
+    | InvalidResponse of string
+    | CommandFailed of int * string * string
+
+  (* Internal: lift raw (bool * string * string) into Result *)
+  fun from_raw result =
+    case result of
+        (true, payload, "") => Result.Ok payload
+      | (false, _, errmsg) => Result.Err (CommandFailed (0, errmsg, ""))
+      | (_, _, _) => Result.Err (InvalidResponse "unexpected builtin return shape")
+
+  (*!
+   * Create a new issue.
+   *
+   * @param repo "owner/name"
+   * @param title Issue title
+   * @param body Issue body
+   * @return Result.Ok url on success
+   *)
+  val issue_create : repo -> string -> string -> (url, error) Result.result =
+    fn repo title body => from_raw (github_issue_create (repo, title, body))
+
+  (*!
+   * View an existing issue.
+   *
+   * @param repo "owner/name"
+   * @param number Issue number
+   * @return Result.Ok JSON string from gh on success
+   *)
+  val issue_view : repo -> issue_number -> (string, error) Result.result =
+    fn repo number => from_raw (github_issue_view (repo, number))
+
+  (*!
+   * Update an existing issue.
+   *
+   * The update spec is a JSON string describing changes.
+   * Supported keys: SetTitle, SetBody, AddLabel, RemoveLabel, Close, Reopen.
+   *
+   * Example: `{"SetTitle":"New title","Close":true}`
+   *
+   * @param repo "owner/name"
+   * @param number Issue number
+   * @param spec JSON update specification
+   * @return Result.Ok JSON string of updated issue on success
+   *)
+  val issue_update : repo -> issue_number -> string -> (string, error) Result.result =
+    fn repo number spec => from_raw (github_issue_update (repo, number, spec))
+
+  (*
+   * Convenience: build an update JSON string from a list of actions.
+   * Actions are applied in order.
+   *)
+  datatype action =
+      SetTitle of string
+    | SetBody of string
+    | AddLabel of string
+    | RemoveLabel of string
+    | Close
+    | Reopen
+
+  fun build_update_json actions =
+    let
+      fun step xs =
+        case xs of
+            [] => ""
+          | SetTitle t :: rest =>
+              "\"SetTitle\":\"" ^ t ^ "\"," ^ step rest
+          | SetBody b :: rest =>
+              "\"SetBody\":\"" ^ b ^ "\"," ^ step rest
+          | AddLabel l :: rest =>
+              "\"AddLabel\":\"" ^ l ^ "\"," ^ step rest
+          | RemoveLabel l :: rest =>
+              "\"RemoveLabel\":\"" ^ l ^ "\"," ^ step rest
+          | Close :: rest =>
+              "\"Close\":true," ^ step rest
+          | Reopen :: rest =>
+              "\"Reopen\":true," ^ step rest
+      val inner = step actions
+      val trimmed = if string_length inner > 0 then substring (inner, 0, string_length inner - 1) else inner
+    in
+      "{" ^ trimmed ^ "}"
+    end
+end

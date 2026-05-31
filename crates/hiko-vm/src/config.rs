@@ -709,6 +709,117 @@ impl ProcessCapabilities {
     }
 }
 
+#[cfg(feature = "builtin-github")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubCapabilities {
+    #[serde(default)]
+    pub issue: GitHubIssueCapabilities,
+}
+
+#[cfg(feature = "builtin-github")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubIssueCapabilities {
+    pub create: Option<GitHubIssueLeaf>,
+    pub view: Option<GitHubIssueLeaf>,
+    pub update: Option<GitHubIssueLeaf>,
+}
+
+#[cfg(feature = "builtin-github")]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubIssueLeaf {
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_repos: Vec<String>,
+}
+
+#[cfg(feature = "builtin-github")]
+impl GitHubCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        let create_repos = self
+            .issue
+            .create
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
+        let view_repos = self
+            .issue
+            .view
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
+        let update_repos = self
+            .issue
+            .update
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
+
+        if !create_repos.is_empty() || !view_repos.is_empty() || !update_repos.is_empty() {
+            return builder.with_github_issue(crate::builder::GitHubIssuePolicy {
+                create_repos,
+                view_repos,
+                update_repos,
+            });
+        }
+        builder
+    }
+
+    fn emit(&self, out: &mut String) {
+        let create_repos = self
+            .issue
+            .create
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
+        let view_repos = self
+            .issue
+            .view
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
+        let update_repos = self
+            .issue
+            .update
+            .as_ref()
+            .filter(|l| l.enabled)
+            .map(|l| l.allowed_repos.clone())
+            .unwrap_or_default();
+
+        if !create_repos.is_empty() || !view_repos.is_empty() || !update_repos.is_empty() {
+            out.push_str(&format!(
+                "            .with_github_issue(hiko_vm::builder::GitHubIssuePolicy {{\n\
+                 \x20               create_repos: vec![{}],\n\
+                 \x20               view_repos: vec![{}],\n\
+                 \x20               update_repos: vec![{}],\n\
+                 \x20           }})\n",
+                rust_string_vec(&create_repos),
+                rust_string_vec(&view_repos),
+                rust_string_vec(&update_repos),
+            ));
+        }
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        if self.issue.create.as_ref().is_some_and(|l| l.enabled) {
+            out.insert("github_issue_create");
+        }
+        if self.issue.view.as_ref().is_some_and(|l| l.enabled) {
+            out.insert("github_issue_view");
+        }
+        if self.issue.update.as_ref().is_some_and(|l| l.enabled) {
+            out.insert("github_issue_update");
+        }
+    }
+}
+
 #[cfg(feature = "builtin-aws-config")]
 impl AwsCapabilities {
     fn requires_runtime(&self) -> bool {
@@ -756,6 +867,9 @@ pub struct Capabilities {
     #[cfg(feature = "builtin-aws-config")]
     #[serde(default)]
     pub aws: AwsCapabilities,
+    #[cfg(feature = "builtin-github")]
+    #[serde(default)]
+    pub github: GitHubCapabilities,
     #[serde(default)]
     pub stdio: StdioCapabilities,
     #[serde(default)]
@@ -804,6 +918,8 @@ impl Capabilities {
         }
         #[cfg(feature = "builtin-aws-config")]
         let builder = self.aws.apply(builder);
+        #[cfg(feature = "builtin-github")]
+        let builder = self.github.apply(builder);
         let builder = self.stdio.apply(builder);
         let builder = self.convert.apply(builder);
         let builder = self.string.apply(builder);
@@ -831,6 +947,8 @@ impl Capabilities {
         }
         #[cfg(feature = "builtin-aws-config")]
         self.aws.emit(out);
+        #[cfg(feature = "builtin-github")]
+        self.github.emit(out);
         self.stdio.emit(out);
         self.convert.emit(out);
         self.string.emit(out);
@@ -856,6 +974,8 @@ impl Capabilities {
         let mut out: BTreeSet<_> = unrestricted_runtime_builtin_names().collect();
         #[cfg(feature = "builtin-aws-config")]
         self.aws.extend_enabled(&mut out);
+        #[cfg(feature = "builtin-github")]
+        self.github.extend_enabled(&mut out);
         self.stdio.extend_enabled(&mut out);
         self.convert.extend_enabled(&mut out);
         self.string.extend_enabled(&mut out);

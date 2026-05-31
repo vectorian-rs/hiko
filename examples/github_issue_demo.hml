@@ -1,0 +1,37 @@
+(* Example: GitHub issue automation with policy-gated builtins.
+ *
+ * This script demonstrates the `Gh.Issue` API for creating, viewing,
+ * and updating issues when `gh` is authenticated and the policy
+ * allows the target repository.
+ *)
+
+import Gh.Issue
+import Std.Result
+
+val repo = "vectorian-rs/hiko"
+val title = "Demo issue from Hiko"
+val body = "This issue was created by a Hiko script using policy-gated `gh` builtins."
+
+(* Create an issue — returns Result<string, error> where Ok contains the URL. *)
+val create_result = Issue.issue_create repo title body
+
+val _ = case create_result of
+    Result.Ok url => println ("Created: " ^ url)
+  | Result.Err err => println "Create failed"
+
+(* View an existing issue by number *)
+val view_result = Issue.issue_view repo 1
+
+val _ = case view_result of
+    Result.Ok json => println ("Issue JSON: " ^ json)
+  | Result.Err _ => println "View failed"
+
+(* Update an issue: add a label and close it.
+   The update spec is built from Issue.action constructors. *)
+val actions = [Issue.SetTitle "Updated title", Issue.Close]
+val update_spec = Issue.build_update_json actions
+val update_result = Issue.issue_update repo 1 update_spec
+
+val _ = case update_result of
+    Result.Ok json => println ("Updated issue: " ^ json)
+  | Result.Err _ => println "Update failed"

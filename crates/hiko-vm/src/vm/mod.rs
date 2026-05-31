@@ -145,6 +145,12 @@ pub struct VM {
     aws_s3_list_buckets_builtin_id: Option<u16>,
     #[cfg(feature = "builtin-aws-sqs")]
     aws_sqs_list_queues_builtin_id: Option<u16>,
+    #[cfg(feature = "builtin-github")]
+    github_issue_create_builtin_id: Option<u16>,
+    #[cfg(feature = "builtin-github")]
+    github_issue_view_builtin_id: Option<u16>,
+    #[cfg(feature = "builtin-github")]
+    github_issue_update_builtin_id: Option<u16>,
     /// When true, I/O builtins suspend via `RuntimeRequest::Io` instead of blocking.
     async_io: bool,
     /// Pending runtime request from a process/runtime builtin.
@@ -292,6 +298,12 @@ impl VM {
             aws_s3_list_buckets_builtin_id: None,
             #[cfg(feature = "builtin-aws-sqs")]
             aws_sqs_list_queues_builtin_id: None,
+            #[cfg(feature = "builtin-github")]
+            github_issue_create_builtin_id: None,
+            #[cfg(feature = "builtin-github")]
+            github_issue_view_builtin_id: None,
+            #[cfg(feature = "builtin-github")]
+            github_issue_update_builtin_id: None,
             async_io: false,
             pending_runtime_request: None,
             blocked_continuation: None,
@@ -332,6 +344,12 @@ impl VM {
     /// Set per-builtin HTTP host allowlists.
     pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
         self.heap.set_http_allowed_hosts_by_builtin(hosts);
+    }
+
+    /// Set per-builtin GitHub issue repo allowlists.
+    #[cfg(feature = "builtin-github")]
+    pub fn set_github_issue_allowed_repos(&mut self, repos: HashMap<String, Vec<String>>) {
+        self.heap.set_github_issue_allowed_repos(repos);
     }
 
     /// Set allowed AWS SSO profile names.
@@ -1616,5 +1634,56 @@ mod tests {
         assert!(files[0].ends_with("file.txt"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "builtin-github")]
+    #[test]
+    fn test_github_issue_rejects_denied_repo() {
+        use crate::builder::GitHubIssuePolicy;
+
+        let program = compile_program(
+            r#"val _ = github_issue_create ("evil-org/nope", "x", "y")"#,
+        );
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_github_issue(GitHubIssuePolicy {
+                create_repos: vec!["vectorian-rs/hiko".to_string()],
+                view_repos: vec![],
+                update_repos: vec![],
+            })
+            .build();
+
+        let err = vm.run().expect_err("denied repo should fail");
+        assert!(err.message.contains("not in allowed repos"), "got: {}", err.message);
+    }
+
+    #[cfg(feature = "builtin-github")]
+    #[test]
+    fn test_github_issue_policy_child_inheritance() {
+        use crate::builder::GitHubIssuePolicy;
+
+        let program = compile_program("val _ = ()");
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_github_issue(GitHubIssuePolicy {
+                create_repos: vec!["vectorian-rs/hiko".to_string()],
+                view_repos: vec![],
+                update_repos: vec![],
+            })
+            .build();
+
+        let child = vm.create_child();
+        assert!(
+            child
+                .heap()
+                .check_github_repo_for("github_issue_create", "vectorian-rs/hiko")
+                .is_ok()
+        );
+        assert!(
+            child
+                .heap()
+                .check_github_repo_for("github_issue_create", "other/repo")
+                .is_err()
+        );
     }
 }
