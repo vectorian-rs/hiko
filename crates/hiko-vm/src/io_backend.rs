@@ -4,7 +4,6 @@
 //! request with the backend, and resumes the process when the backend
 //! reports completion. No worker thread is blocked during I/O.
 
-#[cfg(feature = "builtin-http")]
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,7 +30,10 @@ pub enum IoRequest {
     /// Delay for a duration (async sleep).
     Sleep(Duration),
     /// HTTP GET request. Returns (status, headers, body).
-    HttpGet { url: String },
+    HttpGet {
+        url: String,
+        max_response_bytes: Option<u64>,
+    },
     /// Full HTTP request. Returns (status, headers, body).
     Http {
         method: String,
@@ -39,14 +41,19 @@ pub enum IoRequest {
         headers: Vec<(String, String)>,
         body: String,
         format: HttpResponseFormat,
+        max_response_bytes: Option<u64>,
     },
     /// Read a file by ambient path. Returns file contents as a string.
-    ReadFile { path: String },
+    ReadFile {
+        path: String,
+        max_bytes: Option<u64>,
+    },
     /// Read a file through preopened directory capabilities.
     #[cfg(feature = "builtin-filesystem")]
     CapReadFile {
         candidates: Vec<CapFsCandidate>,
         path: String,
+        max_bytes: Option<u64>,
     },
     /// Load an AWS SDK config using an allowed SSO profile.
     #[cfg(feature = "builtin-aws-config")]
@@ -110,7 +117,7 @@ impl IoBackend for MockIoBackend {
                 value: SendableValue::Unit,
                 io_bytes: 0,
             },
-            IoRequest::HttpGet { url } => {
+            IoRequest::HttpGet { url, .. } => {
                 let value = SendableValue::Tuple(vec![
                     SendableValue::Int(200),
                     SendableValue::List(vec![]),
@@ -128,7 +135,7 @@ impl IoBackend for MockIoBackend {
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
             }
-            IoRequest::ReadFile { path } => {
+            IoRequest::ReadFile { path, .. } => {
                 let value = SendableValue::String(format!("mock contents of {path}").into());
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
@@ -274,7 +281,10 @@ fn execute_io_request(request: IoRequest) -> IoResult {
                 io_bytes: 0,
             }
         }
-        IoRequest::HttpGet { url } => match aio_http_get(&url) {
+        IoRequest::HttpGet {
+            url,
+            max_response_bytes,
+        } => match aio_http_get(&url, max_response_bytes) {
             Ok((value, io_bytes)) => IoResult::Ok { value, io_bytes },
             Err(e) => IoResult::Err(e),
         },
@@ -284,22 +294,28 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             headers,
             body,
             format,
-        } => match aio_http(&method, &url, &headers, &body, format) {
+            max_response_bytes,
+        } => match aio_http(&method, &url, &headers, &body, format, max_response_bytes) {
             Ok((value, io_bytes)) => IoResult::Ok { value, io_bytes },
             Err(e) => IoResult::Err(e),
         },
-        IoRequest::ReadFile { path } => match std::fs::read_to_string(&path) {
-            Ok(contents) => IoResult::Ok {
-                io_bytes: contents.len() as u64,
-                value: SendableValue::String(contents.into()),
-            },
-            Err(e) => IoResult::Err(format!("read_file: {e}")),
-        },
+        IoRequest::ReadFile { path, max_bytes } => {
+            match read_file_to_string_limited(&path, max_bytes) {
+                Ok((contents, io_bytes)) => IoResult::Ok {
+                    io_bytes,
+                    value: SendableValue::String(contents.into()),
+                },
+                Err(e) => IoResult::Err(format!("read_file: {e}")),
+            }
+        }
         #[cfg(feature = "builtin-filesystem")]
-        IoRequest::CapReadFile { candidates, path } => match cap_read_to_string(&candidates, &path)
-        {
-            Ok(contents) => IoResult::Ok {
-                io_bytes: contents.len() as u64,
+        IoRequest::CapReadFile {
+            candidates,
+            path,
+            max_bytes,
+        } => match cap_read_to_string(&candidates, &path, max_bytes) {
+            Ok((contents, io_bytes)) => IoResult::Ok {
+                io_bytes,
                 value: SendableValue::String(contents.into()),
             },
             Err(e) => IoResult::Err(format!("read_file: {e}")),
@@ -345,12 +361,62 @@ fn execute_io_request(request: IoRequest) -> IoResult {
     }
 }
 
+fn read_to_bytes_limited<R: Read>(
+    mut reader: R,
+    max_bytes: Option<u64>,
+    context: &str,
+) -> Result<(Vec<u8>, u64), String> {
+    let mut buf = Vec::new();
+    if let Some(max_bytes) = max_bytes {
+        let read_limit = max_bytes.saturating_add(1);
+        reader
+            .by_ref()
+            .take(read_limit)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("{context}: {e}"))?;
+        if buf.len() as u64 > max_bytes {
+            return Err(format!("{context}: result exceeds I/O byte limit"));
+        }
+    } else {
+        reader
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("{context}: {e}"))?;
+    }
+    let io_bytes = buf.len() as u64;
+    Ok((buf, io_bytes))
+}
+
+fn read_to_string_limited<R: Read>(
+    reader: R,
+    max_bytes: Option<u64>,
+    context: &str,
+) -> Result<(String, u64), String> {
+    let (buf, io_bytes) = read_to_bytes_limited(reader, max_bytes, context)?;
+    let text = String::from_utf8(buf).map_err(|e| format!("{context}: {e}"))?;
+    Ok((text, io_bytes))
+}
+
+fn read_file_to_string_limited(
+    path: &str,
+    max_bytes: Option<u64>,
+) -> Result<(String, u64), String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    read_to_string_limited(file, max_bytes, "file read")
+}
+
 #[cfg(feature = "builtin-filesystem")]
-fn cap_read_to_string(candidates: &[CapFsCandidate], _path: &str) -> Result<String, String> {
+fn cap_read_to_string(
+    candidates: &[CapFsCandidate],
+    _path: &str,
+    max_bytes: Option<u64>,
+) -> Result<(String, u64), String> {
     let mut last_err = None;
     for candidate in candidates {
-        match candidate.dir.read_to_string(&candidate.relative_path) {
-            Ok(contents) => return Ok(contents),
+        match candidate.dir.open(&candidate.relative_path) {
+            Ok(file) => match read_to_string_limited(file, max_bytes, "file read") {
+                Ok(contents) => return Ok(contents),
+                Err(err) => last_err = Some(std::io::Error::other(err)),
+            },
             Err(err) => last_err = Some(err),
         }
     }
@@ -544,8 +610,18 @@ fn aio_aws_sqs_list_queues(client: Arc<aws_sdk_sqs::Client>) -> Result<SendableV
 
 /// Async HTTP GET — runs on I/O pool thread.
 #[cfg(feature = "builtin-http")]
-fn aio_http_get(url: &str) -> Result<(SendableValue, u64), String> {
-    aio_http("GET", url, &[], "", HttpResponseFormat::Text)
+fn aio_http_get(
+    url: &str,
+    max_response_bytes: Option<u64>,
+) -> Result<(SendableValue, u64), String> {
+    aio_http(
+        "GET",
+        url,
+        &[],
+        "",
+        HttpResponseFormat::Text,
+        max_response_bytes,
+    )
 }
 
 /// Async full HTTP — runs on I/O pool thread.
@@ -556,6 +632,7 @@ fn aio_http(
     req_headers: &[(String, String)],
     body: &str,
     format: HttpResponseFormat,
+    max_response_bytes: Option<u64>,
 ) -> Result<(SendableValue, u64), String> {
     let headers = req_headers
         .iter()
@@ -577,23 +654,24 @@ fn aio_http(
 
     let (resp_body, io_bytes) = match format {
         HttpResponseFormat::Text => {
-            let s = response
-                .into_body()
-                .read_to_string()
-                .map_err(|e| format!("http: {e}"))?;
-            let io_bytes = s.len() as u64;
+            let (s, io_bytes) = read_to_string_limited(
+                response.into_body().into_reader(),
+                max_response_bytes,
+                "http",
+            )?;
             (SendableValue::String(s.into()), io_bytes)
         }
         HttpResponseFormat::Json => {
             #[cfg(feature = "builtin-http")]
             {
-                let s = response
-                    .into_body()
-                    .read_to_string()
-                    .map_err(|e| format!("http_json: {e}"))?;
+                let (s, io_bytes) = read_to_string_limited(
+                    response.into_body().into_reader(),
+                    max_response_bytes,
+                    "http_json",
+                )?;
                 let parsed: serde_json::Value =
                     serde_json::from_str(&s).map_err(|e| format!("http_json: {e}"))?;
-                (json_value_to_sendable(&parsed)?, s.len() as u64)
+                (json_value_to_sendable(&parsed)?, io_bytes)
             }
             #[cfg(not(feature = "builtin-http"))]
             {
@@ -604,14 +682,14 @@ fn aio_http(
         HttpResponseFormat::Msgpack => {
             #[cfg(feature = "builtin-http")]
             {
-                let mut reader = response.into_body().into_reader();
-                let mut buf = Vec::new();
-                reader
-                    .read_to_end(&mut buf)
-                    .map_err(|e| format!("http_msgpack: {e}"))?;
+                let (buf, io_bytes) = read_to_bytes_limited(
+                    response.into_body().into_reader(),
+                    max_response_bytes,
+                    "http_msgpack",
+                )?;
                 let parsed: serde_json::Value =
                     rmp_serde::from_slice(&buf).map_err(|e| format!("http_msgpack: {e}"))?;
-                (json_value_to_sendable(&parsed)?, buf.len() as u64)
+                (json_value_to_sendable(&parsed)?, io_bytes)
             }
             #[cfg(not(feature = "builtin-http"))]
             {
@@ -620,13 +698,11 @@ fn aio_http(
             }
         }
         HttpResponseFormat::Bytes => {
-            let mut buf = Vec::new();
-            response
-                .into_body()
-                .into_reader()
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("http_bytes: {e}"))?;
-            let io_bytes = buf.len() as u64;
+            let (buf, io_bytes) = read_to_bytes_limited(
+                response.into_body().into_reader(),
+                max_response_bytes,
+                "http_bytes",
+            )?;
             (SendableValue::Bytes(buf.into()), io_bytes)
         }
     };
@@ -674,8 +750,11 @@ fn json_value_to_sendable(v: &serde_json::Value) -> Result<SendableValue, String
 }
 
 #[cfg(not(feature = "builtin-http"))]
-fn aio_http_get(url: &str) -> Result<(SendableValue, u64), String> {
-    let _ = url;
+fn aio_http_get(
+    url: &str,
+    max_response_bytes: Option<u64>,
+) -> Result<(SendableValue, u64), String> {
+    let _ = (url, max_response_bytes);
     Err("http_get is not available in this build".into())
 }
 
@@ -686,8 +765,9 @@ fn aio_http(
     req_headers: &[(String, String)],
     body: &str,
     format: HttpResponseFormat,
+    max_response_bytes: Option<u64>,
 ) -> Result<(SendableValue, u64), String> {
-    let _ = (method, url, req_headers, body, format);
+    let _ = (method, url, req_headers, body, format, max_response_bytes);
     Err("HTTP builtins are not available in this build".into())
 }
 
@@ -822,6 +902,21 @@ mod tests {
             Ok(SendableValue::Int(_)) => { /* also acceptable */ }
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_to_bytes_limited_rejects_over_limit() {
+        let err =
+            read_to_bytes_limited(std::io::Cursor::new(b"abcd"), Some(3), "test").unwrap_err();
+        assert!(err.contains("result exceeds I/O byte limit"));
+    }
+
+    #[test]
+    fn read_to_string_limited_allows_exact_limit() {
+        let (text, io_bytes) =
+            read_to_string_limited(std::io::Cursor::new("abc"), Some(3), "test").unwrap();
+        assert_eq!(text, "abc");
+        assert_eq!(io_bytes, 3);
     }
 
     #[test]

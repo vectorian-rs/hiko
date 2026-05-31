@@ -1,6 +1,19 @@
 use super::*;
 use smallvec::smallvec;
 
+const RANDOM_BYTES_BASE_HOST_WORK: u64 = 10;
+const RANDOM_BYTES_PER_KIB_HOST_WORK: u64 = 1;
+const RNG_SEED_HOST_WORK: u64 = 10;
+const RNG_INT_HOST_WORK: u64 = 5;
+
+fn byte_work(bytes: usize) -> u64 {
+    RANDOM_BYTES_BASE_HOST_WORK.saturating_add(
+        (bytes as u64)
+            .div_ceil(1024)
+            .saturating_mul(RANDOM_BYTES_PER_KIB_HOST_WORK),
+    )
+}
+
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
         ("random_bytes", random_bytes as BuiltinFn),
@@ -13,7 +26,10 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Int(n) if *n >= 0 => {
-            let buf = dryoc::rng::randombytes_buf(*n as usize);
+            let n = *n as usize;
+            heap.charge_host_work(byte_work(n))
+                .map_err(|e| format!("random_bytes: {e}"))?;
+            let buf = dryoc::rng::randombytes_buf(n);
             heap_alloc(heap, HeapObject::Bytes(buf))
         }
         Value::Int(_) => Err("random_bytes: length must be non-negative".into()),
@@ -39,6 +55,8 @@ pub(super) fn rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         },
         _ => return Err("rng_seed: expected Bytes".into()),
     };
+    heap.charge_host_work(RNG_SEED_HOST_WORK.saturating_add(byte_work(seed_bytes.len())))
+        .map_err(|e| format!("rng_seed: {e}"))?;
     let mut state: u64 = 0;
     let mut inc: u64 = 1;
     for (i, &b) in seed_bytes.iter().enumerate() {
@@ -73,6 +91,8 @@ pub(super) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String
         Value::Int(n) if n >= 0 => n as usize,
         _ => return Err("rng_bytes: expected non-negative Int".into()),
     };
+    heap.charge_host_work(byte_work(n))
+        .map_err(|e| format!("rng_bytes: {e}"))?;
     let mut output = Vec::with_capacity(n);
     while output.len() < n {
         let (word, new_state) = pcg_next(state, inc);
@@ -108,6 +128,8 @@ pub(super) fn rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
         Value::Int(n) if n > 0 => n,
         _ => return Err("rng_int: bound must be positive".into()),
     };
+    heap.charge_host_work(RNG_INT_HOST_WORK)
+        .map_err(|e| format!("rng_int: {e}"))?;
     let (word, new_state) = pcg_next(state, inc);
     let value = (word as i64).abs() % bound;
     let rng_val = heap_alloc(
@@ -121,4 +143,25 @@ pub(super) fn rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
         heap,
         HeapObject::Tuple(smallvec![Value::Int(value), rng_val]),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_bytes_respects_host_work_limit() {
+        let mut heap = Heap::new();
+        heap.set_max_host_work(RANDOM_BYTES_BASE_HOST_WORK - 1);
+        let result = random_bytes(&[Value::Int(1)], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("host work budget exceeded"));
+    }
+
+    #[test]
+    fn random_bytes_charges_host_work() {
+        let mut heap = Heap::new();
+        random_bytes(&[Value::Int(1)], &mut heap).unwrap();
+        assert!(heap.host_work_used() >= RANDOM_BYTES_BASE_HOST_WORK);
+    }
 }

@@ -117,16 +117,35 @@ impl Runtime {
             match result {
                 RunResult::Done => {
                     let outcome = {
-                        let Some(process) = self.processes.get(&pid) else {
+                        let Some(process) = self.processes.get_mut(&pid) else {
                             return Err(Self::missing_process_message("finish", pid));
                         };
                         if process.parent.is_some() {
                             let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                            match serialize(val, &process.vm.heap) {
+                            match process
+                                .vm
+                                .heap
+                                .charge_host_work(crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK)
+                                .map_err(ProcessFailure::runtime)
+                                .and_then(|()| {
+                                    serialize(val, &process.vm.heap).map_err(|e| {
+                                        ProcessFailure::runtime(format!(
+                                            "child result not sendable: {e}"
+                                        ))
+                                    })
+                                })
+                                .and_then(|sv| {
+                                    process
+                                        .vm
+                                        .heap
+                                        .charge_host_work(crate::sendable::host_work_for_sendable(
+                                            &sv,
+                                        ))
+                                        .map_err(ProcessFailure::runtime)?;
+                                    Ok(sv)
+                                }) {
                                 Ok(sv) => ChildOutcome::Ok(sv),
-                                Err(e) => ChildOutcome::Err(ProcessFailure::runtime(format!(
-                                    "child result not sendable: {e}"
-                                ))),
+                                Err(failure) => ChildOutcome::Err(failure),
                             }
                         } else {
                             ChildOutcome::Ok(SendableValue::Unit)

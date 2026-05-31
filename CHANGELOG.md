@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.0
+
+### Cloud Provider Integration
+
+- **AWS host handles**: added opaque `Aws.Config`, `Aws.S3.Client`, and `Aws.SQS.Client` host resource handles with capability-gated construction and automatic cleanup on garbage collection.
+- **GitHub integration**: added a policy-gated GitHub client library (`Gh`) for creating, reading, updating, and closing issues directly from Hiko scripts.
+
+### Module System
+
+- **Selective named imports**: added syntax for importing specific values from modules: `use "module" { foo, bar }` for cleaner namespaces and reduced namespace pollution.
+- **Lockfile verification**: added `hiko-cli lock verify` command to verify integrity hashes of locked dependencies against the lockfile.
+- **Remote module policy hardening**: remote module fetching now validates policy constraints before download and compiles verified modules directly from memory.
+
+### Performance
+
+- **Compact bytecode opcodes**: added `GetLocal0`–`GetLocal3`, `SetLocal0`–`SetLocal3`, and `GetField0`–`GetField1` opcodes for 1-byte encoding of common local and field accesses, reducing bytecode size by 30–50% for ML patterns.
+- **Filesystem capability hardening**: filesystem operations now use `cap_std` for capability-bounded directory access, ensuring paths stay within declared sandbox boundaries.
+- **Builtin accounting**: string, JSON, regex, and split operations now properly account for intermediate allocations to prevent unbounded memory growth.
+
+### Verification and Documentation
+
+- **Verification status snapshot**: added comprehensive verification documentation covering bytecode, type safety, effect handler, and TLA model checking guarantees.
+- **Documentation reorganization**: split architecture docs into runtime, VM, host handles, and structured concurrency; created language deltas reference; added TLA specification scripts.
+- **Rust memory layout docs**: documented VM value representation tradeoffs between 16-byte copy values vs tagged references.
+
+### Runtime Hardening
+
+- **Threaded runtime invariant checks**: added runtime invariant checks in threaded execution mode to catch scheduler corruption.
+- **Race condition fixes**: fixed lost-wakeup races in threaded await and wait_any paths; added deduplication of pids in wake operations.
+- **Process tombstone cleanup**: child processes now leave tombstones for immediate heap freeing without waiting for join.
+- **Runtime cancellation**: added structured cancellation primitives with cooperative fiber termination.
+
+### Tooling
+
+- **CLI formatting**: added `hiko fmt` with recursive support and tree-sitter CST backend.
+- **Harness tooling**: added Hashline support for agentic coding workflows and programmatic harness configuration.
+
+
 ## 0.7.0
 
 ### Language and Surface Syntax

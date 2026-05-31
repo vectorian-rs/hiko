@@ -103,17 +103,33 @@ impl VM {
                         proto_idx,
                         captures,
                     }) => {
+                        let proto_idx = *proto_idx;
+                        let captures = captures.clone();
                         let mut serialized = Vec::new();
                         for &v in captures.iter() {
-                            serialized.push(crate::sendable::serialize(v, &self.heap).map_err(
-                                |e| RuntimeError {
+                            self.heap
+                                .charge_host_work(crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK)
+                                .map_err(|e| RuntimeError {
                                     message: format!("spawn: {e}"),
-                                },
-                            )?);
+                                })?;
+                            let sendable =
+                                crate::sendable::serialize(v, &self.heap).map_err(|e| {
+                                    RuntimeError {
+                                        message: format!("spawn: {e}"),
+                                    }
+                                })?;
+                            self.heap
+                                .charge_host_work(crate::sendable::host_work_for_sendable(
+                                    &sendable,
+                                ))
+                                .map_err(|e| RuntimeError {
+                                    message: format!("spawn: {e}"),
+                                })?;
+                            serialized.push(sendable);
                         }
                         return self.suspend_for_runtime_request(
                             RuntimeRequest::Spawn {
-                                proto_idx: *proto_idx,
+                                proto_idx,
                                 captures: serialized,
                             },
                             callee_pos,
@@ -213,7 +229,10 @@ impl VM {
                     .map_err(|e| RuntimeError {
                         message: format!("http_get: {e}"),
                     })?;
-                Some(crate::io_backend::IoRequest::HttpGet { url })
+                Some(crate::io_backend::IoRequest::HttpGet {
+                    url,
+                    max_response_bytes: self.heap.remaining_io_bytes(),
+                })
             } else if let Some(format) = self.match_http_builtin(builtin_id) {
                 let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
                 let (method, url, headers, body) =
@@ -236,6 +255,7 @@ impl VM {
                     headers,
                     body,
                     format,
+                    max_response_bytes: self.heap.remaining_io_bytes(),
                 })
             } else if self.read_file_builtin_id == Some(builtin_id) {
                 let path = crate::builtins::extract_string_arg(
@@ -253,9 +273,16 @@ impl VM {
                                 .map_err(|e| RuntimeError {
                                     message: format!("read_file: {e}"),
                                 })?;
-                        Some(crate::io_backend::IoRequest::CapReadFile { candidates, path })
+                        Some(crate::io_backend::IoRequest::CapReadFile {
+                            candidates,
+                            path,
+                            max_bytes: self.heap.remaining_io_bytes(),
+                        })
                     } else {
-                        Some(crate::io_backend::IoRequest::ReadFile { path })
+                        Some(crate::io_backend::IoRequest::ReadFile {
+                            path,
+                            max_bytes: self.heap.remaining_io_bytes(),
+                        })
                     }
                 }
                 #[cfg(not(feature = "builtin-filesystem"))]

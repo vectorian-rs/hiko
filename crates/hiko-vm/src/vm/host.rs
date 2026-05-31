@@ -1,6 +1,7 @@
 //! Host-facing helpers for output, stdin, and `exec`.
 
 use smallvec::smallvec;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -77,6 +78,30 @@ fn extract_exec_command_and_args(heap: &Heap, arg: Value) -> Result<(String, Vec
 fn command_has_explicit_path(command: &str) -> bool {
     let path = Path::new(command);
     path.is_absolute() || path.components().count() > 1
+}
+
+fn read_exec_pipe<R: std::io::Read>(
+    mut reader: R,
+    limit: Option<usize>,
+    stream: &str,
+) -> Result<String, String> {
+    let mut buf = Vec::new();
+    if let Some(limit) = limit {
+        let read_limit = limit.saturating_add(1) as u64;
+        reader
+            .by_ref()
+            .take(read_limit)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("exec: {stream}: {e}"))?;
+        if buf.len() > limit {
+            return Err(format!("exec: {stream} output exceeds I/O byte limit"));
+        }
+    } else {
+        reader
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("exec: {stream}: {e}"))?;
+    }
+    String::from_utf8(buf).map_err(|e| format!("exec: {stream}: {e}"))
 }
 
 fn canonicalize_exec_candidate(path: &Path) -> Option<PathBuf> {
@@ -292,7 +317,6 @@ impl VM {
 
     /// Execute a previously authorized command with timeout.
     pub(super) fn run_exec(&mut self, exec: ResolvedExec) -> Result<Value, String> {
-        use std::io::Read as _;
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
 
@@ -311,19 +335,17 @@ impl VM {
             .spawn()
             .map_err(|e| format!("exec: {e}"))?;
 
-        let mut child_stdout = child.stdout.take().unwrap();
-        let mut child_stderr = child.stderr.take().unwrap();
+        let child_stdout = child.stdout.take().unwrap();
+        let child_stderr = child.stderr.take().unwrap();
+        let output_limit = self.heap.max_io_bytes().map(|max| {
+            max.saturating_sub(self.heap.io_bytes_used())
+                .min(usize::MAX as u64) as usize
+        });
 
-        let stdout_handle = std::thread::spawn(move || {
-            let mut buf = String::new();
-            child_stdout.read_to_string(&mut buf).ok();
-            buf
-        });
-        let stderr_handle = std::thread::spawn(move || {
-            let mut buf = String::new();
-            child_stderr.read_to_string(&mut buf).ok();
-            buf
-        });
+        let stdout_handle =
+            std::thread::spawn(move || read_exec_pipe(child_stdout, output_limit, "stdout"));
+        let stderr_handle =
+            std::thread::spawn(move || read_exec_pipe(child_stderr, output_limit, "stderr"));
 
         let deadline = Instant::now() + Duration::from_secs(self.exec_timeout);
         let status = loop {
@@ -343,10 +365,10 @@ impl VM {
 
         let stdout_str = stdout_handle
             .join()
-            .map_err(|_| "exec: stdout reader thread panicked".to_string())?;
+            .map_err(|_| "exec: stdout reader thread panicked".to_string())??;
         let stderr_str = stderr_handle
             .join()
-            .map_err(|_| "exec: stderr reader thread panicked".to_string())?;
+            .map_err(|_| "exec: stderr reader thread panicked".to_string())??;
         self.heap
             .charge_io_bytes((stdout_str.len() + stderr_str.len()) as u64)
             .map_err(|e| format!("exec: {e}"))?;
@@ -391,6 +413,18 @@ mod tests {
         let mut perms = std::fs::metadata(path).expect("metadata").permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(path, perms).expect("chmod executable");
+    }
+
+    #[test]
+    fn read_exec_pipe_rejects_output_over_limit() {
+        let err = read_exec_pipe(std::io::Cursor::new("abcd"), Some(3), "stdout").unwrap_err();
+        assert!(err.contains("output exceeds I/O byte limit"));
+    }
+
+    #[test]
+    fn read_exec_pipe_allows_output_at_limit() {
+        let text = read_exec_pipe(std::io::Cursor::new("abc"), Some(3), "stdout").unwrap();
+        assert_eq!(text, "abc");
     }
 
     #[test]

@@ -75,6 +75,7 @@ pub struct VMBuilder {
     max_heap: Option<usize>,
     max_memory_bytes: Option<usize>,
     max_io_bytes: Option<u64>,
+    max_host_work: Option<u64>,
     max_work: Option<u64>,
 }
 
@@ -105,6 +106,7 @@ impl VMBuilder {
             max_heap: None,
             max_memory_bytes: None,
             max_io_bytes: None,
+            max_host_work: None,
             max_work: None,
         }
     }
@@ -328,6 +330,12 @@ impl VMBuilder {
         self
     }
 
+    /// Set maximum host-work budget for CPU-bound builtin operations.
+    pub fn max_host_work(mut self, work: u64) -> Self {
+        self.max_host_work = Some(work);
+        self
+    }
+
     /// Build the VM.
     pub fn build(self) -> VM {
         let mut vm = VM::from_program(self.program);
@@ -360,6 +368,9 @@ impl VMBuilder {
         }
         if let Some(max_io_bytes) = self.max_io_bytes {
             vm.set_max_io_bytes(max_io_bytes);
+        }
+        if let Some(max_host_work) = self.max_host_work {
+            vm.set_max_host_work(max_host_work);
         }
         if let Some(work) = self.max_work {
             vm.set_max_work(work);

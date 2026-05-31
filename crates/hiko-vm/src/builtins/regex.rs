@@ -3,6 +3,9 @@ use ::regex::Regex;
 use std::borrow::Cow;
 use std::mem::size_of;
 
+const REGEX_MATCH_HOST_WORK: u64 = 50;
+const REGEX_REPLACE_HOST_WORK: u64 = 100;
+
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
         ("regex_match", regex_match as BuiltinFn),
@@ -11,6 +14,8 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 }
 
 pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(REGEX_MATCH_HOST_WORK)
+        .map_err(|e| format!("regex_match: {e}"))?;
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -37,6 +42,8 @@ pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
 }
 
 pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(REGEX_REPLACE_HOST_WORK)
+        .map_err(|e| format!("regex_replace: {e}"))?;
     let (v0, v1, v2) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
@@ -99,6 +106,28 @@ mod tests {
         let arg = tuple2(&mut heap, s, pat);
         let result = regex_match(&[arg], &mut heap).unwrap();
         assert_bool(result, false);
+    }
+
+    #[test]
+    fn regex_match_respects_host_work_limit() {
+        let mut heap = Heap::new();
+        heap.set_max_host_work(REGEX_MATCH_HOST_WORK - 1);
+        let s = string_arg(&mut heap, "hello world");
+        let pat = string_arg(&mut heap, r"hello \w+");
+        let arg = tuple2(&mut heap, s, pat);
+        let result = regex_match(&[arg], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("host work budget exceeded"));
+    }
+
+    #[test]
+    fn regex_match_charges_host_work() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "hello world");
+        let pat = string_arg(&mut heap, r"hello \w+");
+        let arg = tuple2(&mut heap, s, pat);
+        regex_match(&[arg], &mut heap).unwrap();
+        assert!(heap.host_work_used() >= REGEX_MATCH_HOST_WORK);
     }
 
     #[test]

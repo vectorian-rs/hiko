@@ -86,6 +86,8 @@ pub struct Heap {
     next_host_handle_id: u64,
     io_bytes_used: u64,
     max_io_bytes: Option<u64>,
+    host_work_used: u64,
+    max_host_work: Option<u64>,
     /// Filesystem root for path enforcement (empty = unrestricted).
     fs_root: String,
     /// Per-builtin filesystem folder allowlists.
@@ -133,6 +135,8 @@ impl Heap {
             next_host_handle_id: 1,
             io_bytes_used: 0,
             max_io_bytes: None,
+            host_work_used: 0,
+            max_host_work: None,
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
             #[cfg(feature = "builtin-filesystem")]
@@ -471,6 +475,11 @@ impl Heap {
         self.max_io_bytes
     }
 
+    pub fn remaining_io_bytes(&self) -> Option<u64> {
+        self.max_io_bytes
+            .map(|max| max.saturating_sub(self.io_bytes_used))
+    }
+
     pub fn charge_io_bytes(&mut self, bytes: u64) -> Result<(), IoLimitExceeded> {
         let next = self.io_bytes_used.saturating_add(bytes);
         if let Some(limit_bytes) = self.max_io_bytes
@@ -483,6 +492,32 @@ impl Heap {
             });
         }
         self.io_bytes_used = next;
+        Ok(())
+    }
+
+    pub fn set_max_host_work(&mut self, max: u64) {
+        self.max_host_work = Some(max);
+    }
+
+    pub fn max_host_work(&self) -> Option<u64> {
+        self.max_host_work
+    }
+
+    pub fn host_work_used(&self) -> u64 {
+        self.host_work_used
+    }
+
+    pub fn charge_host_work(&mut self, work: u64) -> Result<(), String> {
+        let next = self.host_work_used.saturating_add(work);
+        if let Some(limit) = self.max_host_work
+            && next > limit
+        {
+            return Err(format!(
+                "host work budget exceeded: used {} limit {}",
+                self.host_work_used, limit
+            ));
+        }
+        self.host_work_used = next;
         Ok(())
     }
 

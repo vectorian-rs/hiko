@@ -38,6 +38,7 @@ pub struct Limits {
     pub max_heap: Option<usize>,
     pub max_memory_bytes: Option<usize>,
     pub max_io_bytes: Option<u64>,
+    pub max_host_work: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1128,6 +1129,9 @@ impl RunConfig {
         if let Some(max_io_bytes) = self.limits.max_io_bytes {
             builder = builder.max_io_bytes(max_io_bytes);
         }
+        if let Some(max_host_work) = self.limits.max_host_work {
+            builder = builder.max_host_work(max_host_work);
+        }
 
         builder
     }
@@ -1197,6 +1201,9 @@ impl RunConfig {
         }
         if let Some(max_io_bytes) = self.limits.max_io_bytes {
             s.push_str(&format!("            .max_io_bytes({max_io_bytes})\n"));
+        }
+        if let Some(max_host_work) = self.limits.max_host_work {
+            s.push_str(&format!("            .max_host_work({max_host_work})\n"));
         }
         s.push_str("            ;\n");
         s.push_str("        builder.build()\n");

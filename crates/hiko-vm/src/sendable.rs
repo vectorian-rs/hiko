@@ -11,6 +11,15 @@ use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
 use crate::value::{GcRef, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 
+pub const SENDABLE_BOUNDARY_BASE_HOST_WORK: u64 = 10;
+const SENDABLE_HOST_WORK_PER_KIB: u64 = 1;
+
+pub fn host_work_for_sendable(value: &SendableValue) -> u64 {
+    (value.estimated_bytes() as u64)
+        .div_ceil(1024)
+        .saturating_mul(SENDABLE_HOST_WORK_PER_KIB)
+}
+
 /// A value that can safely cross process boundaries via message passing.
 /// Contains no process-local heap references.
 #[derive(Debug, Clone)]
@@ -220,6 +229,13 @@ mod tests {
         let sendable = serialize(value, heap).expect("serialize failed");
         let mut new_heap = Heap::new();
         deserialize(sendable, &mut new_heap).unwrap()
+    }
+
+    #[test]
+    fn sendable_host_work_scales_with_payload_bytes() {
+        let small = SendableValue::Bytes(Arc::from([0_u8; 1]));
+        let large = SendableValue::Bytes(Arc::from([0_u8; 2048]));
+        assert!(host_work_for_sendable(&large) > host_work_for_sendable(&small));
     }
 
     #[test]

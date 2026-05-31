@@ -159,6 +159,11 @@ fn deserialize_with_heap_limit(
     sendable: SendableValue,
     heap: &mut crate::heap::Heap,
 ) -> Result<Value, ProcessFailure> {
+    heap.charge_host_work(
+        crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK
+            .saturating_add(crate::sendable::host_work_for_sendable(&sendable)),
+    )
+    .map_err(ProcessFailure::runtime)?;
     deserialize(sendable, heap).map_err(|e| match e {
         crate::heap::HeapLimitExceeded::Objects { limit, live } => {
             ProcessFailure::HeapObjectLimitExceeded { limit, live }

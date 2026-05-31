@@ -1,6 +1,10 @@
 use super::*;
 use std::mem::size_of;
 
+const JSON_PARSE_HOST_WORK: u64 = 100;
+const JSON_SERIALIZE_HOST_WORK: u64 = 100;
+const JSON_ACCESS_HOST_WORK: u64 = 50;
+
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
         ("json_parse", json_parse as BuiltinFn),
@@ -12,6 +16,8 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 }
 
 pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(JSON_PARSE_HOST_WORK)
+        .map_err(|e| format!("json_parse: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_str(),
@@ -25,11 +31,15 @@ pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
 }
 
 pub(super) fn json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(JSON_SERIALIZE_HOST_WORK)
+        .map_err(|e| format!("json_to_string: {e}"))?;
     let result = hiko_to_json_string(args[0], heap)?;
     heap_alloc(heap, HeapObject::String(result))
 }
 
 pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(JSON_ACCESS_HOST_WORK)
+        .map_err(|e| format!("json_get: {e}"))?;
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -74,6 +84,8 @@ pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
 }
 
 pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(JSON_ACCESS_HOST_WORK)
+        .map_err(|e| format!("json_keys: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_str(),
@@ -106,6 +118,8 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
 }
 
 pub(super) fn json_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    heap.charge_host_work(JSON_ACCESS_HOST_WORK)
+        .map_err(|e| format!("json_length: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_str(),
@@ -195,6 +209,24 @@ mod tests {
         let result = json_parse(&[Value::Int(1)], &mut heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("expected String"));
+    }
+
+    #[test]
+    fn json_parse_respects_host_work_limit() {
+        let mut heap = Heap::new();
+        heap.set_max_host_work(JSON_PARSE_HOST_WORK - 1);
+        let arg = string_arg(&mut heap, "42");
+        let result = json_parse(&[arg], &mut heap);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("host work budget exceeded"));
+    }
+
+    #[test]
+    fn json_parse_charges_host_work() {
+        let mut heap = Heap::new();
+        let arg = string_arg(&mut heap, "42");
+        json_parse(&[arg], &mut heap).unwrap();
+        assert!(heap.host_work_used() >= JSON_PARSE_HOST_WORK);
     }
 
     #[test]

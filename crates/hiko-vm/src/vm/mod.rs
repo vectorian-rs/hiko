@@ -402,6 +402,11 @@ impl VM {
         self.heap.set_max_io_bytes(max);
     }
 
+    /// Set the maximum host-work budget for CPU-bound builtin operations.
+    pub fn set_max_host_work(&mut self, max: u64) {
+        self.heap.set_max_host_work(max);
+    }
+
     pub fn get_global(&self, name: &str) -> Option<&Value> {
         self.global_names.get(name).map(|&slot| &self.globals[slot])
     }
