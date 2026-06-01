@@ -4,51 +4,176 @@ structure Result = struct
     | Err of 'e
 
   (* 1. Core functor operations *)
+
+  (* Apply a pure function to the Ok value, leaving Err unchanged. *)
   fun map f result =
     case result of
         Ok value => Ok (f value)
       | Err err => Err err
 
+  (* Apply a pure function to the Err value, leaving Ok unchanged. *)
   fun map_err f result =
     case result of
         Ok value => Ok value
       | Err err => Err (f err)
 
   (* 2. Core monadic operations *)
+
+  (* Chain a Result-producing function after a Result. Stops at the first Err. *)
   fun bind f result =
     case result of
         Ok value => f value
       | Err err => Err err
 
+  (* Compose two Result-producing functions left-to-right. *)
+  fun compose f g value = bind g (f value)
+
+  (* Collapse a nested Result into one layer. *)
   fun flatten result =
     case result of
         Ok inner => inner
       | Err err => Err err
 
   (* 3. Catamorphism / elimination *)
+
+  (* Eliminate a Result by handling both Ok and Err cases. *)
   fun fold on_ok on_err result =
     case result of
         Ok value => on_ok value
       | Err err => on_err err
 
   (* 4. Fallback routing *)
+
+  (* Recover from an Err with another Result-producing function. *)
   fun or_else f result =
     case result of
         Ok value => Ok value
       | Err err => f err
 
-  (* 5. Convenience aliases / derived helpers *)
+  (* 5. Side-effect taps. These keep the original Result shape. *)
+
+  (* Run a unit-returning function for Ok, then keep the original Ok value. *)
+  fun tee f result =
+    case result of
+        Ok value =>
+        let
+          val _ = f value
+        in
+          Ok value
+        end
+      | Err err => Err err
+
+  (* Run a unit-returning function for Err, then keep the original Err value. *)
+  fun tee_err f result =
+    case result of
+        Ok value => Ok value
+      | Err err =>
+        let
+          val _ = f err
+        in
+          Err err
+        end
+
+  (* 6. Combining and sequencing. These are fail-fast and return the first error. *)
+
+  (* Combine two Results with a pure two-argument function. Stops at the first Err. *)
+  fun map2 f left right =
+    case (left, right) of
+        (Ok left_value, Ok right_value) => Ok (f left_value right_value)
+      | (Err err, _) => Err err
+      | (_, Err err) => Err err
+
+  (* Pair two Ok values, or return the first Err. *)
+  fun both left right = map2 (fn left_value => fn right_value => (left_value, right_value)) left right
+
+  (* Run two Result-producing functions on the same input and pair their Ok values. *)
+  fun fanout f g value = both (f value) (g value)
+
+  (* Convert a list of Results into a Result of a list. Stops at the first Err. *)
+  fun all results =
+    case results of
+        [] => Ok []
+      | result :: rest =>
+        case result of
+            Err err => Err err
+          | Ok value =>
+            case all rest of
+                Ok values => Ok (value :: values)
+              | Err err => Err err
+
+  (* Alias for all, matching common sequence/traverse terminology. *)
+  fun sequence results = all results
+
+  (* Map a Result-producing function over a list. Stops at the first Err. *)
+  fun traverse f xs =
+    case xs of
+        [] => Ok []
+      | x :: rest =>
+        case f x of
+            Err err => Err err
+          | Ok value =>
+            case traverse f rest of
+                Ok values => Ok (value :: values)
+              | Err err => Err err
+
+  (* 7. Validation helpers. These accumulate all errors in input order. *)
+
+  (* Combine two Results, accumulating one or two errors into an error list. *)
+  fun validate2 f left right =
+    case (left, right) of
+        (Ok left_value, Ok right_value) => Ok (f left_value right_value)
+      | (Err left_err, Err right_err) => Err [left_err, right_err]
+      | (Err err, _) => Err [err]
+      | (_, Err err) => Err [err]
+
+  (* Pair two Ok values, accumulating errors from both sides. *)
+  fun validate_both left right = validate2 (fn left_value => fn right_value => (left_value, right_value)) left right
+
+  (* Run two Result-producing functions on one input, accumulating errors from both. *)
+  fun validate_fanout f g value = validate_both (f value) (g value)
+
+  (* Convert a list of Results into a Result of a list, accumulating all errors. *)
+  fun validate_all results =
+    case results of
+        [] => Ok []
+      | result :: rest =>
+        case (result, validate_all rest) of
+            (Ok value, Ok values) => Ok (value :: values)
+          | (Ok _, Err errs) => Err errs
+          | (Err err, Ok _) => Err [err]
+          | (Err err, Err errs) => Err (err :: errs)
+
+  (* Map a Result-producing function over a list, accumulating all errors. *)
+  fun validate_traverse f xs =
+    case xs of
+        [] => Ok []
+      | x :: rest =>
+        case (f x, validate_traverse f rest) of
+            (Ok value, Ok values) => Ok (value :: values)
+          | (Ok _, Err errs) => Err errs
+          | (Err err, Ok _) => Err [err]
+          | (Err err, Err errs) => Err (err :: errs)
+
+  (* 8. Convenience aliases / derived helpers *)
+
+  (* Alias for bind, named for pipeline readability. *)
   fun and_then f result = bind f result
 
+  (* Return true when the Result is Ok. *)
   fun is_ok result = fold (fn _ => true) (fn _ => false) result
 
+  (* Return true when the Result is Err. *)
   fun is_err result = fold (fn _ => false) (fn _ => true) result
 
+  (* Extract an Ok value or return a default for Err. *)
   fun unwrap_or default result = fold (fn value => value) (fn _ => default) result
 
+  (* Extract an Ok value or compute a fallback from Err. *)
   fun unwrap_or_else f result = fold (fn value => value) f result
 
+  (* Alias for fold for call sites that prefer Either-style naming. *)
   fun either on_ok on_err result = fold on_ok on_err result
 
+  (* Discard any value and return unit; useful at the end of pipelines. *)
   fun ignore _ = ()
 end

@@ -67,7 +67,21 @@
         <li><code>is_err : ('a, 'e) result -&gt; bool</code></li>
         <li><code>map : ('a -&gt; 'b) -&gt; ('a, 'e) result -&gt; ('b, 'e) result</code></li>
         <li><code>map_err : ('e1 -&gt; 'e2) -&gt; ('a, 'e1) result -&gt; ('a, 'e2) result</code></li>
+        <li><code>bind : ('a -&gt; ('b, 'e) result) -&gt; ('a, 'e) result -&gt; ('b, 'e) result</code></li>
         <li><code>and_then : ('a -&gt; ('b, 'e) result) -&gt; ('a, 'e) result -&gt; ('b, 'e) result</code></li>
+        <li><code>compose : ('a -&gt; ('b, 'e) result) -&gt; ('b -&gt; ('c, 'e) result) -&gt; 'a -&gt; ('c, 'e) result</code></li>
+        <li><code>tee : ('a -&gt; unit) -&gt; ('a, 'e) result -&gt; ('a, 'e) result</code></li>
+        <li><code>tee_err : ('e -&gt; unit) -&gt; ('a, 'e) result -&gt; ('a, 'e) result</code></li>
+        <li><code>map2 : ('a -&gt; 'b -&gt; 'c) -&gt; ('a, 'e) result -&gt; ('b, 'e) result -&gt; ('c, 'e) result</code></li>
+        <li><code>both : ('a, 'e) result -&gt; ('b, 'e) result -&gt; ('a * 'b, 'e) result</code></li>
+        <li><code>fanout : ('a -&gt; ('b, 'e) result) -&gt; ('a -&gt; ('c, 'e) result) -&gt; 'a -&gt; ('b * 'c, 'e) result</code></li>
+        <li><code>all / sequence : ('a, 'e) result list -&gt; ('a list, 'e) result</code></li>
+        <li><code>traverse : ('a -&gt; ('b, 'e) result) -&gt; 'a list -&gt; ('b list, 'e) result</code></li>
+        <li><code>validate2 : ('a -&gt; 'b -&gt; 'c) -&gt; ('a, 'e) result -&gt; ('b, 'e) result -&gt; ('c, 'e list) result</code></li>
+        <li><code>validate_both : ('a, 'e) result -&gt; ('b, 'e) result -&gt; ('a * 'b, 'e list) result</code></li>
+        <li><code>validate_fanout : ('a -&gt; ('b, 'e) result) -&gt; ('a -&gt; ('c, 'e) result) -&gt; 'a -&gt; ('b * 'c, 'e list) result</code></li>
+        <li><code>validate_all : ('a, 'e) result list -&gt; ('a list, 'e list) result</code></li>
+        <li><code>validate_traverse : ('a -&gt; ('b, 'e) result) -&gt; 'a list -&gt; ('b list, 'e list) result</code></li>
         <li><code>flatten : (('a, 'e) result, 'e) result -&gt; ('a, 'e) result</code></li>
         <li><code>fold : ('a -&gt; 'b) -&gt; ('e -&gt; 'b) -&gt; ('a, 'e) result -&gt; 'b</code></li>
         <li><code>or_else : ('e1 -&gt; ('a, 'e2) result) -&gt; ('a, 'e1) result -&gt; ('a, 'e2) result</code></li>

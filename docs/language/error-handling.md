@@ -138,7 +138,13 @@ The most important helpers are:
 
 - `Result.map`
 - `Result.map_err`
-- `Result.and_then`
+- `Result.bind` / `Result.and_then`
+- `Result.compose`
+- `Result.tee` / `Result.tee_err`
+- `Result.map2` / `Result.both` / `Result.fanout`
+- `Result.all` / `Result.sequence` / `Result.traverse`
+- `Result.validate2` / `Result.validate_both` / `Result.validate_fanout`
+- `Result.validate_all` / `Result.validate_traverse`
 - `Result.flatten`
 - `Result.fold`
 - `Result.or_else`
