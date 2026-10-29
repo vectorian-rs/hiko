@@ -1026,23 +1026,14 @@ fn fmt_files(options: &FmtOptions) {
         let ctx = DiagCtx::new(&display_path, source.clone());
         let formatted = match format_source(&source, 0) {
             Ok(formatted) => formatted,
-            Err(FormatError::Lex(error)) => {
-                ctx.error(&error.message, Some(error.span));
-                had_error = true;
-                continue;
-            }
-            Err(FormatError::Parse(error)) => {
-                ctx.error(&error.message, Some(error.span));
-                had_error = true;
-                continue;
-            }
-            Err(FormatError::UnsupportedComment { message, span }) => {
-                ctx.error(&message, Some(span));
-                had_error = true;
-                continue;
-            }
-            Err(FormatError::TreeSitter(message)) => {
-                ctx.error(&message, None);
+            Err(error) => {
+                let (message, span) = match error {
+                    FormatError::Lex(error) => (error.message, Some(error.span)),
+                    FormatError::Parse(error) => (error.message, Some(error.span)),
+                    FormatError::UnsupportedComment { message, span } => (message, Some(span)),
+                    FormatError::TreeSitter(message) => (message, None),
+                };
+                ctx.error(&message, span);
                 had_error = true;
                 continue;
             }
@@ -1096,10 +1087,7 @@ fn collect_fmt_path(
         fs::metadata(path).map_err(|error| format!("cannot access {}: {error}", path.display()))?;
 
     if metadata.is_file() {
-        let canonical = path.to_path_buf();
-        if seen.insert(canonical.clone()) {
-            resolved.push(canonical);
-        }
+        push_unique_path(path, seen, resolved);
         return Ok(());
     }
 
@@ -1123,6 +1111,8 @@ fn collect_fmt_path(
         .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?;
     entries.sort_by_key(|entry| entry.path());
 
+    // `DirEntry::metadata` does not follow symlinks, so symlinked files and
+    // directories below an explicit argument are skipped rather than followed.
     for entry in entries {
         let entry_path = entry.path();
         let entry_metadata = entry
@@ -1130,20 +1120,19 @@ fn collect_fmt_path(
             .map_err(|error| format!("cannot access {}: {error}", entry_path.display()))?;
         if entry_metadata.is_dir() {
             collect_fmt_path(&entry_path, true, seen, resolved)?;
-        } else if entry_metadata.is_file()
-            && entry_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "hml")
+        } else if entry_metadata.is_file() && entry_path.extension().is_some_and(|ext| ext == "hml")
         {
-            let canonical = entry_path.to_path_buf();
-            if seen.insert(canonical.clone()) {
-                resolved.push(canonical);
-            }
+            push_unique_path(&entry_path, seen, resolved);
         }
     }
 
     Ok(())
+}
+
+fn push_unique_path(path: &Path, seen: &mut BTreeSet<PathBuf>, resolved: &mut Vec<PathBuf>) {
+    if seen.insert(path.to_path_buf()) {
+        resolved.push(path.to_path_buf());
+    }
 }
 
 fn build_vm(config_path: &str) {
@@ -1407,6 +1396,32 @@ mod tests {
             })
             .collect();
         assert_eq!(resolved, vec!["one.hml", "sub/two.hml"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_fmt_paths_recurse_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let outside = temp_dir("fmt-symlink-outside");
+        fs::write(outside.join("outside.hml"), "val z=3\n").unwrap();
+        let root = temp_dir("fmt-symlink-root");
+        fs::write(root.join("inside.hml"), "val x=1\n").unwrap();
+        symlink(outside.join("outside.hml"), root.join("linked.hml")).unwrap();
+        symlink(&outside, root.join("linked-dir")).unwrap();
+        symlink(&root, root.join("loop")).unwrap();
+
+        let paths = super::resolve_fmt_paths(&FmtOptions {
+            check: false,
+            recurse: true,
+            paths: vec![root.to_string_lossy().into_owned()],
+        })
+        .expect("directory resolution should succeed");
+
+        assert_eq!(paths, vec![root.join("inside.hml")]);
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[test]
