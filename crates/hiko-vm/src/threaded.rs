@@ -179,6 +179,9 @@ pub struct ThreadedRuntime {
     next_pid: Arc<AtomicU64>,
     next_io_token: Arc<AtomicU64>,
     active_workers: Arc<std::sync::atomic::AtomicUsize>,
+    /// Number of slices ever started. Lets the monitor detect a slice that
+    /// started while it was scanning the process table.
+    slices_started: Arc<AtomicU64>,
     table: Arc<ProcessTable>,
     scheduler: Arc<dyn Scheduler>,
     io_backend: Arc<dyn IoBackend>,
@@ -192,6 +195,7 @@ impl ThreadedRuntime {
             next_pid: Arc::new(AtomicU64::new(1)),
             next_io_token: Arc::new(AtomicU64::new(1)),
             active_workers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            slices_started: Arc::new(AtomicU64::new(0)),
             table: Arc::new(ProcessTable::new()),
             scheduler: Arc::new(FifoScheduler::new(1000)),
             io_backend: Arc::new(ThreadPoolIoBackend::new(num_workers.max(2))),
@@ -246,6 +250,7 @@ impl ThreadedRuntime {
                 let next_pid = Arc::clone(&self.next_pid);
                 let next_io_token = Arc::clone(&self.next_io_token);
                 let active_workers = Arc::clone(&self.active_workers);
+                let slices_started = Arc::clone(&self.slices_started);
                 let io_backend = Arc::clone(&self.io_backend);
 
                 std::thread::spawn(move || {
@@ -255,6 +260,7 @@ impl ThreadedRuntime {
                         &next_pid,
                         &next_io_token,
                         &active_workers,
+                        &slices_started,
                         &*io_backend,
                     );
                 })
@@ -271,11 +277,17 @@ impl ThreadedRuntime {
                 handle_io_completion(&self.table, &*self.scheduler, token, result);
             }
 
-            // `active_workers` is part of the shutdown/deadlock decision, so
-            // observe worker activity with acquire semantics before reading the
-            // process table state used to classify termination.
-            if self.table.is_all_done_or_blocked()
-                && self.active_workers.load(Ordering::Acquire) == 0
+            // A running process is out of the table, so the table scan alone
+            // cannot tell "all done" from "a slice is in flight". Only trust
+            // the scan if no slice was active when it began and none started
+            // while it ran. Workers bump `active_workers` before
+            // `slices_started`, so seeing a slice's start here implies seeing
+            // it as active.
+            let slices_before = self.slices_started.load(Ordering::SeqCst);
+            let idle_before = self.active_workers.load(Ordering::SeqCst) == 0;
+            if idle_before
+                && self.table.is_all_done_or_blocked()
+                && self.slices_started.load(Ordering::SeqCst) == slices_before
             {
                 let has_io_waiters = !self.table.io_waiters.is_empty();
                 if !has_io_waiters {
@@ -477,6 +489,7 @@ fn worker_loop(
     next_pid: &AtomicU64,
     next_io_token: &AtomicU64,
     active_workers: &std::sync::atomic::AtomicUsize,
+    slices_started: &AtomicU64,
     io_backend: &dyn IoBackend,
 ) {
     // Ownership model:
@@ -488,7 +501,7 @@ fn worker_loop(
 
     impl Drop for ActiveSlice<'_> {
         fn drop(&mut self) {
-            self.0.fetch_sub(1, Ordering::AcqRel);
+            self.0.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
@@ -498,7 +511,8 @@ fn worker_loop(
             None => return,
         };
 
-        active_workers.fetch_add(1, Ordering::AcqRel);
+        active_workers.fetch_add(1, Ordering::SeqCst);
+        slices_started.fetch_add(1, Ordering::SeqCst);
         let _active_slice = ActiveSlice(active_workers);
 
         let reductions = scheduler.reductions(pid);
@@ -1298,6 +1312,23 @@ mod tests {
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["hello threaded\n"]);
         runtime.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_threaded_monitor_does_not_stop_while_root_is_between_slices() {
+        // While a slice runs, its process is out of the table. The monitor
+        // must not mistake the moment it is put back for "all done".
+        let program = compile(
+            "fun loop n = if n = 0 then 0 else loop (n - 1)\n\
+             val _ = loop 300000\n\
+             val _ = println \"finished\"",
+        );
+        for _ in 0..20 {
+            let runtime = ThreadedRuntime::new(1);
+            let pid = runtime.spawn_root(program.clone());
+            runtime.run_to_completion().unwrap();
+            assert_eq!(runtime.table.get_output(pid), vec!["finished\n"]);
+        }
     }
 
     #[test]
