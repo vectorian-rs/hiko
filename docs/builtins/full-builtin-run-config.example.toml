@@ -9,7 +9,8 @@
 # - Filesystem leaves use `folders = [...]`.
 #   Each listed folder grants recursive access to everything below it.
 # - HTTP leaves use `allowed_hosts = [...]`.
-# - Exec leaves use `allowed_commands = [...]` and `timeout = <seconds>`.
+# - Exec leaves use `allowed_commands = [...]`; the exec timeout is
+#   `[limits] exec_timeout_ms`.
 
 entry = "scripts/example.hml"
 
@@ -20,6 +21,16 @@ max_io_bytes = 67108864
 max_host_work = 10_000_000
 max_host_resources = 32
 max_heap = 1_000_000
+
+# Per-operation I/O limits. Each bounds one builtin call; values shown are the
+# defaults used when a key is omitted. Byte limits also stay within the
+# remaining `max_io_bytes` budget, whichever is smaller.
+http_timeout_ms = 30_000                # whole request, including the body
+http_connect_timeout_ms = 10_000
+exec_timeout_ms = 30_000                # wall clock; kills the process group
+max_http_response_bytes = 67_108_864    # one response body
+max_file_read_bytes = 67_108_864        # one file read
+max_exec_output_bytes = 16_777_216      # each of stdout and stderr
 
 # Opaque native Rust resources, such as AWS SDK config/client handles.
 [limits.host_resources]
@@ -273,12 +284,11 @@ allowed_hosts = ["api.example.com"]
 
 # Command execution builtin.
 # `allowed_commands` are the only commands that may be launched.
-# `timeout` is in seconds.
+# The timeout is `[limits] exec_timeout_ms`.
 
 [capabilities.exec.exec]
 enabled = true
 allowed_commands = ["git", "cargo", "terraform"]
-timeout = 30
 
 # System/testing builtins.
 [capabilities.system.exit]

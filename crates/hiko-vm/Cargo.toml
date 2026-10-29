@@ -125,6 +125,10 @@ aws-sdk-sqs = { version = "1.90.0", default-features = false, features = ["defau
 tokio = { version = "1", features = ["rt", "time"], optional = true }
 cap-std = { version = "4", optional = true }
 
+[target.'cfg(unix)'.dependencies]
+# Kill the process group of a timed-out `exec` child.
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
+
 [dev-dependencies]
 hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"] }
 hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }

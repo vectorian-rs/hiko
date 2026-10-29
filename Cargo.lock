@@ -1440,6 +1440,7 @@ dependencies = [
  "proptest",
  "regex",
  "rmp-serde",
+ "rustix",
  "serde",
  "serde_json",
  "smallvec",

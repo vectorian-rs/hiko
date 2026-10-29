@@ -122,7 +122,6 @@ pub struct VM {
     exec_allowed: Vec<String>,
     exec_allowed_paths: Vec<ExecAllowedPath>,
     exec_allowed_resolution_errors: Vec<String>,
-    exec_timeout: u64,
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
@@ -275,7 +274,6 @@ impl VM {
             exec_allowed: Vec::new(),
             exec_allowed_paths: Vec::new(),
             exec_allowed_resolution_errors: Vec::new(),
-            exec_timeout: 30,
             exec_builtin_id: None,
             print_builtin_id: None,
             println_builtin_id: None,
@@ -401,6 +399,15 @@ impl VM {
     /// Set the maximum cumulative I/O bytes charged to this VM.
     pub fn set_max_io_bytes(&mut self, max: u64) {
         self.heap.set_max_io_bytes(max);
+    }
+
+    /// Set per-operation I/O timeouts and size limits.
+    pub fn set_io_limits(&mut self, limits: crate::io_limits::IoLimits) {
+        self.heap.set_io_limits(limits);
+    }
+
+    pub fn io_limits(&self) -> crate::io_limits::IoLimits {
+        self.heap.io_limits()
     }
 
     /// Set the maximum host-work budget for CPU-bound builtin operations.
@@ -1831,7 +1838,6 @@ mod tests {
             .with_core()
             .with_exec(ExecPolicy {
                 allowed: vec![script.to_string_lossy().to_string()],
-                timeout: 1,
             })
             .build();
 
@@ -1868,7 +1874,6 @@ mod tests {
             .with_core()
             .with_exec(ExecPolicy {
                 allowed: vec![allowed.to_string_lossy().to_string()],
-                timeout: 1,
             })
             .build();
 

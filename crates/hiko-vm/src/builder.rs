@@ -1,9 +1,11 @@
 use crate::builtins;
+use crate::io_limits::IoLimits;
 use crate::value::BuiltinFn;
 use crate::vm::VM;
 use hiko_builtin_meta::core_builtin_names;
 use hiko_compile::chunk::CompiledProgram;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Policy for AWS SDK configuration access.
 #[cfg(feature = "builtin-aws-config")]
@@ -52,8 +54,6 @@ pub struct GitHubIssuePolicy {
 #[cfg(feature = "builtin-exec")]
 pub struct ExecPolicy {
     pub allowed: Vec<String>,
-    /// Timeout in seconds for each exec call (default 30).
-    pub timeout: u64,
 }
 
 /// Builder for creating VMs with specific capabilities.
@@ -61,7 +61,6 @@ pub struct VMBuilder {
     program: CompiledProgram,
     builtins: Vec<(&'static str, BuiltinFn)>,
     exec_allowed: Vec<String>,
-    exec_timeout: u64,
     fs_root: String,
     fs_builtin_folders: HashMap<String, Vec<String>>,
     http_allowed_hosts: Vec<String>,
@@ -75,6 +74,7 @@ pub struct VMBuilder {
     max_heap: Option<usize>,
     max_memory_bytes: Option<usize>,
     max_io_bytes: Option<u64>,
+    io_limits: IoLimits,
     max_host_work: Option<u64>,
     max_host_resources: Option<usize>,
     host_resource_limits: HashMap<String, usize>,
@@ -94,7 +94,6 @@ impl VMBuilder {
             program,
             builtins: Vec::new(),
             exec_allowed: Vec::new(),
-            exec_timeout: 30,
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
@@ -108,6 +107,7 @@ impl VMBuilder {
             max_heap: None,
             max_memory_bytes: None,
             max_io_bytes: None,
+            io_limits: IoLimits::default(),
             max_host_work: None,
             max_host_resources: None,
             host_resource_limits: HashMap::new(),
@@ -281,11 +281,11 @@ impl VMBuilder {
         self
     }
 
-    /// Include exec builtin with whitelisted commands and timeout.
+    /// Include exec builtin with whitelisted commands. The timeout is
+    /// [`VMBuilder::exec_timeout_ms`].
     #[cfg(feature = "builtin-exec")]
     pub fn with_exec(mut self, policy: ExecPolicy) -> Self {
         self.exec_allowed = policy.allowed;
-        self.exec_timeout = policy.timeout;
         self.register_builtin_name("exec")
     }
 
@@ -334,6 +334,42 @@ impl VMBuilder {
         self
     }
 
+    /// Set the whole-request HTTP timeout in milliseconds.
+    pub fn http_timeout_ms(mut self, ms: u64) -> Self {
+        self.io_limits.http_timeout = Duration::from_millis(ms);
+        self
+    }
+
+    /// Set the HTTP connect timeout in milliseconds.
+    pub fn http_connect_timeout_ms(mut self, ms: u64) -> Self {
+        self.io_limits.http_connect_timeout = Duration::from_millis(ms);
+        self
+    }
+
+    /// Set the wall-clock timeout for one `exec` call in milliseconds.
+    pub fn exec_timeout_ms(mut self, ms: u64) -> Self {
+        self.io_limits.exec_timeout = Duration::from_millis(ms);
+        self
+    }
+
+    /// Set the maximum bytes read from one HTTP response body.
+    pub fn max_http_response_bytes(mut self, bytes: u64) -> Self {
+        self.io_limits.max_http_response_bytes = bytes;
+        self
+    }
+
+    /// Set the maximum bytes read from one file.
+    pub fn max_file_read_bytes(mut self, bytes: u64) -> Self {
+        self.io_limits.max_file_read_bytes = bytes;
+        self
+    }
+
+    /// Set the maximum bytes read from each of `exec`'s stdout and stderr.
+    pub fn max_exec_output_bytes(mut self, bytes: u64) -> Self {
+        self.io_limits.max_exec_output_bytes = bytes;
+        self
+    }
+
     /// Set maximum host-work budget for CPU-bound builtin operations.
     pub fn max_host_work(mut self, work: u64) -> Self {
         self.max_host_work = Some(work);
@@ -361,7 +397,7 @@ impl VMBuilder {
         }
 
         vm.set_exec_allowed(self.exec_allowed);
-        vm.set_exec_timeout(self.exec_timeout);
+        vm.set_io_limits(self.io_limits);
         vm.set_fs_root(self.fs_root);
         vm.set_fs_builtin_folders(self.fs_builtin_folders);
         vm.set_http_allowed_hosts(self.http_allowed_hosts);

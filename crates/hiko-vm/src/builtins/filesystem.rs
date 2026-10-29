@@ -56,7 +56,7 @@ fn cap_read_limited(
     builtin: &str,
     path: &str,
     heap: &Heap,
-    max_bytes: Option<u64>,
+    max_bytes: crate::io_limits::ReadLimit,
 ) -> Result<(Vec<u8>, u64), String> {
     let candidates = heap
         .cap_candidates_for(builtin, path)
@@ -83,7 +83,7 @@ fn cap_read_to_string_limited(
     builtin: &str,
     path: &str,
     heap: &Heap,
-    max_bytes: Option<u64>,
+    max_bytes: crate::io_limits::ReadLimit,
 ) -> Result<(String, u64), String> {
     let (bytes, io_bytes) = cap_read_limited(builtin, path, heap, max_bytes)?;
     let text = String::from_utf8(bytes).map_err(|e| format!("{builtin}: {e}"))?;
@@ -92,7 +92,7 @@ fn cap_read_to_string_limited(
 
 pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = string_arg(args, heap, "read_file")?;
-    let max_bytes = heap.remaining_io_bytes();
+    let max_bytes = heap.file_read_limit();
     let (contents, io_bytes) = if heap.has_cap_fs_policy() {
         cap_read_to_string_limited("read_file", &path, heap, max_bytes)?
     } else {
@@ -106,7 +106,7 @@ pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String
 
 pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let path = string_arg(args, heap, "read_file_bytes")?;
-    let max_bytes = heap.remaining_io_bytes();
+    let max_bytes = heap.file_read_limit();
     let (contents, io_bytes) = if heap.has_cap_fs_policy() {
         cap_read_limited("read_file_bytes", &path, heap, max_bytes)?
     } else {
@@ -325,7 +325,7 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("read_file_tagged: expected Int for limit".into()),
     };
 
-    let max_bytes = heap.remaining_io_bytes();
+    let max_bytes = heap.file_read_limit();
     let (content, io_bytes) = if heap.has_cap_fs_policy() {
         cap_read_to_string_limited("read_file_tagged", path, heap, max_bytes)?
     } else {
@@ -383,7 +383,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         _ => return Err("edit_file_tagged: expected String for edits".into()),
     };
 
-    let max_bytes = heap.remaining_io_bytes();
+    let max_bytes = heap.file_read_limit();
     let (content, io_bytes) = if heap.has_cap_fs_policy() {
         cap_read_to_string_limited("edit_file_tagged", &path, heap, max_bytes)?
     } else {
@@ -800,7 +800,7 @@ mod tests {
         assert!(
             result
                 .unwrap_err()
-                .contains("result exceeds I/O byte limit")
+                .contains("result exceeds max_io_bytes (3 bytes)")
         );
     }
 
@@ -816,7 +816,7 @@ mod tests {
         assert!(
             result
                 .unwrap_err()
-                .contains("result exceeds I/O byte limit")
+                .contains("result exceeds max_io_bytes (3 bytes)")
         );
     }
 }
