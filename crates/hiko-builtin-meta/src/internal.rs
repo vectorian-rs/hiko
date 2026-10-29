@@ -251,178 +251,87 @@ const HASHLINE_SOURCE: &str = r#"structure BuiltinHashline = struct
 end
 "#;
 
+/// Declares an internal module whose import path and enabled flag are derived
+/// from its leaf name and Cargo feature, so they cannot drift apart.
+macro_rules! module {
+    ($leaf:literal, $feature:literal, $source:ident) => {
+        InternalBuiltinModule {
+            leaf_name: $leaf,
+            import_name: concat!("__Builtin.", $leaf),
+            feature_name: $feature,
+            enabled: cfg!(feature = $feature),
+            source: $source,
+        }
+    };
+}
+
 const MODULES: &[InternalBuiltinModule] = &[
-    InternalBuiltinModule {
-        leaf_name: "AwsConfig",
-        import_name: "__Builtin.AwsConfig",
-        feature_name: "builtin-aws-config",
-        enabled: cfg!(feature = "builtin-aws-config"),
-        source: AWS_CONFIG_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "AwsS3",
-        import_name: "__Builtin.AwsS3",
-        feature_name: "builtin-aws-s3",
-        enabled: cfg!(feature = "builtin-aws-s3"),
-        source: AWS_S3_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "AwsSqs",
-        import_name: "__Builtin.AwsSqs",
-        feature_name: "builtin-aws-sqs",
-        enabled: cfg!(feature = "builtin-aws-sqs"),
-        source: AWS_SQS_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Github",
-        import_name: "__Builtin.Github",
-        feature_name: "builtin-github",
-        enabled: cfg!(feature = "builtin-github"),
-        source: GITHUB_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Filesystem",
-        import_name: "__Builtin.Filesystem",
-        feature_name: "builtin-filesystem",
-        enabled: cfg!(feature = "builtin-filesystem"),
-        source: FILESYSTEM_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Path",
-        import_name: "__Builtin.Path",
-        feature_name: "builtin-path",
-        enabled: cfg!(feature = "builtin-path"),
-        source: PATH_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Json",
-        import_name: "__Builtin.Json",
-        feature_name: "builtin-json",
-        enabled: cfg!(feature = "builtin-json"),
-        source: JSON_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "String",
-        import_name: "__Builtin.String",
-        feature_name: "builtin-string",
-        enabled: cfg!(feature = "builtin-string"),
-        source: STRING_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Bytes",
-        import_name: "__Builtin.Bytes",
-        feature_name: "builtin-bytes",
-        enabled: cfg!(feature = "builtin-bytes"),
-        source: BYTES_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Random",
-        import_name: "__Builtin.Random",
-        feature_name: "builtin-random",
-        enabled: cfg!(feature = "builtin-random"),
-        source: RANDOM_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Regex",
-        import_name: "__Builtin.Regex",
-        feature_name: "builtin-regex",
-        enabled: cfg!(feature = "builtin-regex"),
-        source: REGEX_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Env",
-        import_name: "__Builtin.Env",
-        feature_name: "builtin-env",
-        enabled: cfg!(feature = "builtin-env"),
-        source: ENV_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Testing",
-        import_name: "__Builtin.Testing",
-        feature_name: "builtin-testing",
-        enabled: cfg!(feature = "builtin-testing"),
-        source: TESTING_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Hash",
-        import_name: "__Builtin.Hash",
-        feature_name: "builtin-hash",
-        enabled: cfg!(feature = "builtin-hash"),
-        source: HASH_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Stdio",
-        import_name: "__Builtin.Stdio",
-        feature_name: "builtin-stdio",
-        enabled: cfg!(feature = "builtin-stdio"),
-        source: STDIO_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Http",
-        import_name: "__Builtin.Http",
-        feature_name: "builtin-http",
-        enabled: cfg!(feature = "builtin-http"),
-        source: HTTP_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Process",
-        import_name: "__Builtin.Process",
-        feature_name: "builtin-process",
-        enabled: cfg!(feature = "builtin-process"),
-        source: PROCESS_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Exec",
-        import_name: "__Builtin.Exec",
-        feature_name: "builtin-exec",
-        enabled: cfg!(feature = "builtin-exec"),
-        source: EXEC_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "System",
-        import_name: "__Builtin.System",
-        feature_name: "builtin-system",
-        enabled: cfg!(feature = "builtin-system"),
-        source: SYSTEM_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Time",
-        import_name: "__Builtin.Time",
-        feature_name: "builtin-time",
-        enabled: cfg!(feature = "builtin-time"),
-        source: TIME_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Numeric",
-        import_name: "__Builtin.Numeric",
-        feature_name: "builtin-convert",
-        enabled: cfg!(feature = "builtin-convert"),
-        source: NUMERIC_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Date",
-        import_name: "__Builtin.Date",
-        feature_name: "builtin-time",
-        enabled: cfg!(feature = "builtin-time"),
-        source: DATE_SOURCE,
-    },
-    InternalBuiltinModule {
-        leaf_name: "Hashline",
-        import_name: "__Builtin.Hashline",
-        feature_name: "builtin-filesystem",
-        enabled: cfg!(feature = "builtin-filesystem"),
-        source: HASHLINE_SOURCE,
-    },
+    module!("AwsConfig", "builtin-aws-config", AWS_CONFIG_SOURCE),
+    module!("AwsS3", "builtin-aws-s3", AWS_S3_SOURCE),
+    module!("AwsSqs", "builtin-aws-sqs", AWS_SQS_SOURCE),
+    module!("Github", "builtin-github", GITHUB_SOURCE),
+    module!("Filesystem", "builtin-filesystem", FILESYSTEM_SOURCE),
+    module!("Path", "builtin-path", PATH_SOURCE),
+    module!("Json", "builtin-json", JSON_SOURCE),
+    module!("String", "builtin-string", STRING_SOURCE),
+    module!("Bytes", "builtin-bytes", BYTES_SOURCE),
+    module!("Random", "builtin-random", RANDOM_SOURCE),
+    module!("Regex", "builtin-regex", REGEX_SOURCE),
+    module!("Env", "builtin-env", ENV_SOURCE),
+    module!("Testing", "builtin-testing", TESTING_SOURCE),
+    module!("Hash", "builtin-hash", HASH_SOURCE),
+    module!("Stdio", "builtin-stdio", STDIO_SOURCE),
+    module!("Http", "builtin-http", HTTP_SOURCE),
+    module!("Process", "builtin-process", PROCESS_SOURCE),
+    module!("Exec", "builtin-exec", EXEC_SOURCE),
+    module!("System", "builtin-system", SYSTEM_SOURCE),
+    module!("Time", "builtin-time", TIME_SOURCE),
+    module!("Numeric", "builtin-convert", NUMERIC_SOURCE),
+    module!("Date", "builtin-time", DATE_SOURCE),
+    module!("Hashline", "builtin-filesystem", HASHLINE_SOURCE),
 ];
 
 pub fn is_internal_builtin_package(package_name: &str) -> bool {
     package_name == INTERNAL_BUILTIN_PACKAGE
 }
 
-pub fn internal_builtin_modules() -> impl Iterator<Item = &'static InternalBuiltinModule> {
-    MODULES.iter()
-}
-
 pub fn internal_builtin_module(leaf_name: &str) -> Option<&'static InternalBuiltinModule> {
     MODULES.iter().find(|module| module.leaf_name == leaf_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_names_live_in_the_internal_package() {
+        for module in MODULES {
+            assert_eq!(
+                module.import_name,
+                format!("{INTERNAL_BUILTIN_PACKAGE}.{}", module.leaf_name)
+            );
+        }
+    }
+
+    /// Every `val x_raw = builtin` alias in an enabled module must name a
+    /// builtin that is declared under the same feature set.
+    #[test]
+    fn enabled_module_sources_alias_declared_builtins() {
+        for module in MODULES.iter().filter(|module| module.enabled) {
+            for line in module.source.lines() {
+                let Some((_, rhs)) = line
+                    .trim()
+                    .strip_prefix("val ")
+                    .and_then(|rest| rest.split_once(" = "))
+                else {
+                    continue;
+                };
+                assert!(
+                    crate::builtin_meta(rhs).is_some(),
+                    "{} aliases undeclared builtin {rhs}",
+                    module.import_name
+                );
+            }
+        }
+    }
 }

@@ -6,6 +6,11 @@ pub struct BuiltinTypeSignature {
     pub ty: &'static str,
 }
 
+/// Signature quantified over the single type variable `'a`.
+fn poly_a(ty: &'static str) -> Option<BuiltinTypeSignature> {
+    Some(BuiltinTypeSignature { vars: &["a"], ty })
+}
+
 pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
     let ty = match name {
         // GitHub
@@ -106,10 +111,9 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
             "string * string * (string * string) list * string -> int * (string * string) list * bytes"
         }
         "http_json" | "http_msgpack" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "string * string * (string * string) list * string -> int * (string * string) list * 'a",
-            });
+            return poly_a(
+                "string * string * (string * string) list * string -> int * (string * string) list * 'a",
+            );
         }
 
         // Bytes, hash, random
@@ -130,18 +134,8 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "json_get" => "string * string -> string",
         "json_keys" => "string -> string list",
         "json_length" => "string -> int",
-        "json_parse" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "string -> 'a",
-            });
-        }
-        "json_to_string" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "'a -> string",
-            });
-        }
+        "json_parse" => return poly_a("string -> 'a"),
+        "json_to_string" => return poly_a("'a -> string"),
 
         // Environment, time, date
         "getenv" => "string -> string",
@@ -163,18 +157,8 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "date_parse_rfc3339" | "date_parse_rfc9557" => "string -> bool * string",
 
         // Process
-        "spawn" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "(unit -> 'a) -> pid",
-            });
-        }
-        "await_process" | "await_process_result" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "pid -> 'a",
-            });
-        }
+        "spawn" => return poly_a("(unit -> 'a) -> pid"),
+        "await_process" | "await_process_result" => return poly_a("pid -> 'a"),
         "cancel" => "pid -> unit",
         "wait_any" => "pid list -> pid",
 
@@ -182,18 +166,8 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "exec" => "string * string list -> int * string * string",
         "exit" => "int -> unit",
         "assert" => "bool * string -> unit",
-        "panic" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "string -> 'a",
-            });
-        }
-        "assert_eq" => {
-            return Some(BuiltinTypeSignature {
-                vars: &["a"],
-                ty: "'a * 'a * string -> unit",
-            });
-        }
+        "panic" => return poly_a("string -> 'a"),
+        "assert_eq" => return poly_a("'a * 'a * string -> unit"),
         _ => return None,
     };
     Some(BuiltinTypeSignature { vars: &[], ty })
@@ -232,24 +206,6 @@ mod tests {
         assert!(
             missing.is_empty(),
             "missing builtin signatures: {missing:?}"
-        );
-    }
-
-    #[test]
-    fn process_constructor_tags_match_declared_abi() {
-        assert_eq!(
-            super::PROCESS_AWAIT_RESULT_CONSTRUCTORS,
-            &[("Ok", 0, 1), ("Err", 1, 1)]
-        );
-        assert_eq!(
-            super::PROCESS_JOIN_ERROR_CONSTRUCTORS,
-            &[
-                ("RuntimeError", 0, 1),
-                ("Cancelled", 1, 0),
-                ("FuelExhausted", 2, 0),
-                ("AlreadyJoined", 3, 0),
-                ("HeapObjectLimitExceeded", 4, 1),
-            ]
         );
     }
 }

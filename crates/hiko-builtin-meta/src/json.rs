@@ -1,36 +1,9 @@
-use crate::{BuiltinMeta, BuiltinSurface};
-
-const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
+use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta {
-        name: "json_parse",
-        capability_path: Some("capabilities.json.json_parse"),
-        in_core_default: true,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "json_to_string",
-        capability_path: Some("capabilities.json.json_to_string"),
-        in_core_default: true,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "json_get",
-        capability_path: Some("capabilities.json.json_get"),
-        in_core_default: true,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "json_keys",
-        capability_path: Some("capabilities.json.json_keys"),
-        in_core_default: true,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "json_length",
-        capability_path: Some("capabilities.json.json_length"),
-        in_core_default: true,
-        surface: PUBLIC,
-    },
+    BuiltinMeta::core("json_parse", "capabilities.json.json_parse"),
+    BuiltinMeta::core("json_to_string", "capabilities.json.json_to_string"),
+    BuiltinMeta::core("json_get", "capabilities.json.json_get"),
+    BuiltinMeta::core("json_keys", "capabilities.json.json_keys"),
+    BuiltinMeta::core("json_length", "capabilities.json.json_length"),
 ];

@@ -136,6 +136,8 @@ mod env;
 mod exec;
 #[cfg(feature = "builtin-filesystem")]
 mod filesystem;
+#[cfg(feature = "builtin-github")]
+mod github;
 #[cfg(feature = "builtin-hash")]
 mod hash;
 #[cfg(feature = "builtin-http")]
@@ -164,8 +166,6 @@ mod system;
 mod testing;
 #[cfg(feature = "builtin-time")]
 mod time;
-#[cfg(feature = "builtin-github")]
-mod github;
 
 pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
     let mut entries = Vec::new();
@@ -332,5 +332,20 @@ mod tests {
             duplicates
         );
         assert_eq!(seen.len(), entries.len());
+    }
+
+    /// The type checker binds every name in `hiko_builtin_meta::builtins()`,
+    /// so the VM must register exactly the same set under the same features.
+    #[test]
+    fn registered_builtins_match_builtin_metadata() {
+        use std::collections::BTreeSet;
+        let registered: BTreeSet<&str> = builtin_entries().into_iter().map(|(n, _)| n).collect();
+        let declared: BTreeSet<&str> = hiko_builtin_meta::builtins().map(|m| m.name).collect();
+        let missing_metadata: Vec<_> = registered.difference(&declared).collect();
+        let missing_registration: Vec<_> = declared.difference(&registered).collect();
+        assert!(
+            missing_metadata.is_empty() && missing_registration.is_empty(),
+            "registered but not declared: {missing_metadata:?}; declared but not registered: {missing_registration:?}"
+        );
     }
 }

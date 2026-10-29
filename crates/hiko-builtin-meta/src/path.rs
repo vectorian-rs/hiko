@@ -1,10 +1,6 @@
-use crate::{BuiltinMeta, BuiltinSurface};
+use crate::BuiltinMeta;
 
-const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
-
-pub const BUILTINS: &[BuiltinMeta] = &[BuiltinMeta {
-    name: "path_join",
-    capability_path: Some("capabilities.path.path_join"),
-    in_core_default: true,
-    surface: PUBLIC,
-}];
+pub const BUILTINS: &[BuiltinMeta] = &[BuiltinMeta::core(
+    "path_join",
+    "capabilities.path.path_join",
+)];

@@ -1,10 +1,3 @@
-use crate::{BuiltinMeta, BuiltinSurface};
+use crate::BuiltinMeta;
 
-const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
-
-pub const BUILTINS: &[BuiltinMeta] = &[BuiltinMeta {
-    name: "exec",
-    capability_path: Some("capabilities.exec.exec"),
-    in_core_default: false,
-    surface: PUBLIC,
-}];
+pub const BUILTINS: &[BuiltinMeta] = &[BuiltinMeta::opt_in("exec", "capabilities.exec.exec")];

@@ -4,8 +4,6 @@ mod aws_config;
 mod aws_s3;
 #[cfg(feature = "builtin-aws-sqs")]
 mod aws_sqs;
-#[cfg(feature = "builtin-github")]
-mod github;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -16,6 +14,8 @@ mod env;
 mod exec;
 #[cfg(feature = "builtin-filesystem")]
 mod filesystem;
+#[cfg(feature = "builtin-github")]
+mod github;
 #[cfg(feature = "builtin-hash")]
 mod hash;
 #[cfg(feature = "builtin-http")]
@@ -59,9 +59,44 @@ pub struct BuiltinMeta {
     pub surface: BuiltinSurface,
 }
 
+// Each constructor is unused in builds that disable every family using it.
+#[allow(dead_code)]
+impl BuiltinMeta {
+    /// Public builtin that the core-only VM registers by default.
+    const fn core(name: &'static str, capability_path: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: true,
+            surface: BuiltinSurface::Public,
+        }
+    }
+
+    /// Public builtin that is only registered when a policy enables it.
+    const fn opt_in(name: &'static str, capability_path: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: false,
+            surface: BuiltinSurface::Public,
+        }
+    }
+
+    /// Internal alias used by `__Builtin` modules. It has no policy leaf and
+    /// is always registered.
+    const fn runtime_alias(name: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: None,
+            in_core_default: true,
+            surface: BuiltinSurface::RuntimeOnly,
+        }
+    }
+}
+
 pub use internal::{
     INTERNAL_BUILTIN_PACKAGE, InternalBuiltinModule, internal_builtin_module,
-    internal_builtin_modules, is_internal_builtin_package,
+    is_internal_builtin_package,
 };
 pub use signatures::{
     BuiltinTypeSignature, PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_AWAIT_RESULT_ERR_TAG,
@@ -71,7 +106,7 @@ pub use signatures::{
     PROCESS_JOIN_ERROR_RUNTIME_ERROR_TAG, builtin_type_signature, builtin_type_signatures,
 };
 
-pub const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
+const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     #[cfg(feature = "builtin-aws-config")]
     aws_config::BUILTINS,
     #[cfg(feature = "builtin-aws-s3")]
@@ -144,16 +179,4 @@ pub fn unrestricted_runtime_builtin_names() -> impl Iterator<Item = &'static str
                 && meta.capability_path.is_none()
         })
         .map(|meta| meta.name)
-}
-
-pub fn public_builtin_names() -> impl Iterator<Item = &'static str> {
-    builtins()
-        .filter(|meta| meta.surface == BuiltinSurface::Public)
-        .map(|meta| meta.name)
-}
-
-pub fn is_public_builtin(name: &str) -> bool {
-    builtin_meta(name)
-        .map(|meta| meta.surface == BuiltinSurface::Public)
-        .unwrap_or(false)
 }
