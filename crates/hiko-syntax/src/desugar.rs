@@ -238,16 +238,16 @@ fn signature_assertions(
     interner: &mut StringInterner,
 ) -> Vec<Decl> {
     let mut out = Vec::new();
-    let type_specs: HashMap<_, _> = signature
-        .specs
-        .iter()
-        .filter_map(|spec| match spec {
-            SignatureSpec::Type { tyvars, name, span } => Some((*name, (tyvars.clone(), *span))),
-            SignatureSpec::Val { .. } => None,
-        })
-        .collect();
-
-    for (name, (tyvars, span)) in &type_specs {
+    // Walk the specs in source order (not a hash map) so the generated
+    // declarations, and everything compiled from them, are deterministic.
+    let mut type_specs = HashSet::new();
+    for spec in &signature.specs {
+        let SignatureSpec::Type { tyvars, name, span } = spec else {
+            continue;
+        };
+        if !type_specs.insert(*name) {
+            continue;
+        }
         let public_sym = mangle_symbol(module_path, *name, interner, false);
         let hidden_sym = mangle_symbol(module_path, *name, interner, true);
         out.push(Decl {
@@ -806,7 +806,7 @@ fn remap_signature_type_expr(
     module_path: &[String],
     interner: &mut StringInterner,
     mode: RemapMode,
-    type_specs: &HashMap<Symbol, (Vec<Symbol>, Span)>,
+    type_specs: &HashSet<Symbol>,
 ) -> TypeExpr {
     let span = ty.span;
     let kind = match ty.kind {
@@ -864,9 +864,9 @@ fn remap_signature_type_name(
     module_path: &[String],
     interner: &mut StringInterner,
     mode: RemapMode,
-    type_specs: &HashMap<Symbol, (Vec<Symbol>, Span)>,
+    type_specs: &HashSet<Symbol>,
 ) -> Symbol {
-    if type_specs.contains_key(&sym) {
+    if type_specs.contains(&sym) {
         match mode {
             RemapMode::Public => mangle_symbol(module_path, sym, interner, false),
             RemapMode::Hidden => mangle_symbol(module_path, sym, interner, true),
@@ -1167,6 +1167,23 @@ mod tests {
         );
         let y = val_expr(&program, "S.y");
         assert_eq!(var_name(&program, y), "S.x");
+    }
+
+    #[test]
+    fn signature_abstract_types_follow_spec_order() {
+        let program = desugar(
+            "signature S = sig type d type a type c type b end \
+             structure M :> S = struct type a = int type b = int type c = int type d = int end",
+        );
+        let names: Vec<_> = program
+            .decls
+            .iter()
+            .filter_map(|decl| match &decl.kind {
+                DeclKind::AbstractType(dt) => Some(program.interner.resolve(dt.name)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["M.d", "M.a", "M.c", "M.b"]);
     }
 
     #[test]
