@@ -1041,8 +1041,10 @@ fn desugar_fun_binding(mut binding: FunBinding, interner: &mut StringInterner) -
 
     let span = binding.span;
     let arity = binding.clauses[0].pats.len();
+    // `$` cannot appear in a source identifier, so these parameters can
+    // never capture a user variable referenced from a clause body.
     let arg_names: Vec<_> = (0..arity)
-        .map(|i| interner.intern(&format!("_arg{i}")))
+        .map(|i| interner.intern(&format!("$arg{i}")))
         .collect();
 
     let arms: Vec<(Pat, Expr)> = binding
@@ -1165,5 +1167,26 @@ mod tests {
         );
         let y = val_expr(&program, "S.y");
         assert_eq!(var_name(&program, y), "S.x");
+    }
+
+    #[test]
+    fn clausal_fun_parameters_do_not_capture_user_names() {
+        let program = desugar("val _arg0 = 100 fun f 0 = _arg0 | f n = n");
+        let DeclKind::Fun(bindings) = &program.decls[1].kind else {
+            panic!("expected fun");
+        };
+        let clause = &bindings[0].clauses[0];
+        let PatKind::Var(param) = clause.pats[0].kind else {
+            panic!("expected synthesized parameter");
+        };
+        assert_ne!(program.interner.resolve(param), "_arg0");
+        let ExprKind::Case(scrutinee, arms) = &clause.body.kind else {
+            panic!("expected case");
+        };
+        assert_eq!(
+            var_name(&program, scrutinee),
+            program.interner.resolve(param)
+        );
+        assert_eq!(var_name(&program, &arms[0].1), "_arg0");
     }
 }
