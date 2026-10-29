@@ -160,7 +160,7 @@ stable domains.
 Recommended ownership:
 
 | Public Hiko domain | Category | Notes |
-| | - | - |
+|---|---|---|
 | `Std.String` | pure core | String processing and formatting helpers. |
 | `Std.Bytes` | pure core | Byte buffers and UTF-8 conversion. |
 | `Std.Json` | pure core | JSON ADT helpers, parse, serialize, object/array helpers. |

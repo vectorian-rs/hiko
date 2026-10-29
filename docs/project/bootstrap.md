@@ -20,7 +20,7 @@ Hiko is SML-derived, but not bug-for-bug compatible with SML'97. Known SML defec
 ### 2.1 Included in v0 (matches Core SML closely)
 
 | Feature | SML core reference |
-| -- | |
+|---|---|
 | Call-by-value evaluation, strict left-to-right | §6 |
 | Hindley–Milner type inference (Algorithm W implementation strategy) | §4.5–4.7 |
 | Value restriction (only syntactic values generalized) | §4.7 |
@@ -49,7 +49,7 @@ These are part of Core SML but excluded from v0. Each is a deliberate staging de
 ### 2.2.1 Core SML features permanently excluded
 
 | Feature | SML core behavior | Why excluded |
-| | -- | - |
+|---|---|---|
 | **Overloaded operators** | `+` works on int, word, real | Replaced by monomorphic operator names (see §2.3) |
 | **`abstype`** | Abstract types in the core language | Effectively dead in SML practice; subsumed by opaque module ascription |
 | **Exceptions** | `exception`, `raise`, `handle` | Hiko prefers `Result`-style values and effect-based control flow instead of a separate exception subsystem |
@@ -60,7 +60,7 @@ These are part of Core SML but excluded from v0. Each is a deliberate staging de
 These are deliberate deviations from Core SML.
 
 | Divergence | SML behavior | Hiko v0 behavior | Justification |
-| - | - | | -- |
+|---|---|---|---|
 | **Operator names** | `+`, `*`, etc. are overloaded across int/real/word | Monomorphic: `+` (int), `+.` (float), `^` (string concat) | Avoids ad-hoc overloading machinery |
 | **Exhaustiveness policy** | Non-exhaustive match is a warning in most SML compilers | Non-exhaustive match is a **compile-time error** | Stronger guarantee; avoids runtime `Match` failures |
 | **Import mechanism** | No import in Core SML (modules handle composition) | `use "file.hml"` loads a file and imports its top-level bindings | Practical replacement for deferred modules |
@@ -237,7 +237,7 @@ Hiko follows the Standard ML split between **type-level names** and **value-leve
 ### 3.7 Operator precedence (highest to lowest)
 
 | Precedence | Operators | Associativity |
-| - | | - |
+|---|---|---|
 | 7 | function application | left |
 | 6 | `~`, `not` | prefix |
 | 5 | `*`, `/`, `*.`, `/.`, `mod` | left |
