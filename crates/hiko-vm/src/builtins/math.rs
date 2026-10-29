@@ -19,7 +19,10 @@ pub(super) fn sqrt(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
 
 pub(super) fn abs_int(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Int(n) => Ok(Value::Int(n.abs())),
+        Value::Int(n) => n
+            .checked_abs()
+            .map(Value::Int)
+            .ok_or_else(|| "abs_int: integer overflow".into()),
         _ => Err("abs_int: expected Int".into()),
     }
 }
@@ -49,6 +52,16 @@ pub(super) fn ceil(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
 mod tests {
     use super::super::test_helpers::*;
     use super::*;
+
+    #[test]
+    fn abs_int_min_value_is_an_error() {
+        let mut heap = Heap::new();
+        assert!(abs_int(&[Value::Int(i64::MIN)], &mut heap).is_err());
+        assert!(matches!(
+            abs_int(&[Value::Int(-5)], &mut heap),
+            Ok(Value::Int(5))
+        ));
+    }
 
     #[test]
     fn sqrt_positive() {
