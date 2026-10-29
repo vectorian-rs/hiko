@@ -2352,8 +2352,7 @@ impl Compiler {
             }
 
             ExprKind::Resume(cont, arg) => {
-                self.compile_expr_inner(cont, false)?;
-                self.compile_expr_inner(arg, false)?;
+                self.compile_operands(&[cont, arg])?;
                 self.emit(Op::Resume);
             }
         }

@@ -859,6 +859,26 @@ mod tests {
     }
 
     #[test]
+    fn test_case_and_let_as_resume_argument() {
+        // The continuation occupies a stack slot while the argument is
+        // compiled, so the argument's scrutinee or `let` binding must not
+        // reuse that slot.
+        let vm = run("effect Ask of unit
+             datatype ab = A | B
+             fun h x = handle (perform Ask ()) + 10
+               with return v => v
+                  | Ask _ k => resume k (case x of A => 1 | B => 2)
+             val a = h A
+             val b = h B
+             val c = handle (perform Ask ()) + 100
+               with return v => v
+                  | Ask _ k => resume k (let val y = 5 in y * 2 end)");
+        assert_eq!(global_int(&vm, "a"), 11);
+        assert_eq!(global_int(&vm, "b"), 12);
+        assert_eq!(global_int(&vm, "c"), 110);
+    }
+
+    #[test]
     fn test_case_fail_paths_with_and_without_temporaries() {
         // `Link 5` fails at the tag check (no temporaries) or at the nested
         // literal check (one temporary); both must reach the next clause.
