@@ -105,22 +105,14 @@ impl Chunk {
     }
 
     /// Patch a previously emitted jump to point to the current position.
+    ///
+    /// Only the relative offset has to fit in `i16`; the absolute positions
+    /// may exceed it in large chunks.
     pub fn patch_jump(&mut self, pos: usize) -> Result<(), String> {
-        let target = i16::try_from(self.code.len()).map_err(|_| {
-            format!(
-                "jump target overflow: bytecode offset {} exceeds i16::MAX",
-                self.code.len()
-            )
-        })?;
-        let origin = i16::try_from(pos + 2).map_err(|_| {
-            format!(
-                "jump origin overflow: bytecode offset {} exceeds i16::MAX",
-                pos + 2
-            )
-        })?;
-        let offset = target.checked_sub(origin).ok_or_else(|| {
-            format!("jump offset overflow: {target} - {origin} exceeds i16 range")
-        })?;
+        let target = self.code.len();
+        let origin = pos + 2;
+        let offset = i16::try_from(target as i64 - origin as i64)
+            .map_err(|_| format!("jump offset overflow: {target} - {origin} exceeds i16 range"))?;
         let bytes = offset.to_le_bytes();
         self.code[pos] = bytes[0];
         self.code[pos + 1] = bytes[1];

@@ -2943,4 +2943,17 @@ Filesystem = "blake3:deadbeef"
 
         std::fs::remove_dir_all(&project_dir).ok();
     }
+
+    #[test]
+    fn short_jump_beyond_i16_offset_compiles() {
+        // A short forward jump whose absolute position exceeds i16::MAX must
+        // still be encodable: only the relative offset has to fit in i16.
+        let mut source = String::from("val b = true\n");
+        for i in 0..6000 {
+            source.push_str(&format!("val v{i} = {i}\n"));
+        }
+        source.push_str("val y = if b then 1 else 2\n");
+        let (compiled, _) = Compiler::compile(parse_program(&source)).expect("compile");
+        assert!(compiled.main.code.len() > i16::MAX as usize);
+    }
 }
