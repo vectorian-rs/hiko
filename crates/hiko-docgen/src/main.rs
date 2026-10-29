@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use hiko_common::blake3_hex;
 use serde::Deserialize;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, Query, QueryCursor};
+use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 use tree_sitter_hiko::{HIGHLIGHTS_QUERY, LANGUAGE};
 
 type DynError = Box<dyn Error>;
@@ -176,7 +176,7 @@ a:hover {
 .tok-type { color: var(--tok-type); }
 .tok-constructor { color: var(--tok-constructor); }
 .tok-function-special { color: var(--tok-function-special); font-weight: 700; }
-.tok-function { color: var(--tok-function-special); }
+.tok-function { color: var(--tok-function); }
 .tok-module { color: var(--tok-module); font-weight: 700; }
 .tok-namespace { color: var(--tok-namespace); }
 .tok-variable { color: var(--tok-variable); }
@@ -400,21 +400,26 @@ fn load_package(package_dir: &Path) -> Result<PackageInfo, DynError> {
     })
 }
 
-fn highlight_source(source: &str) -> Result<String, DynError> {
-    let language = tree_sitter::Language::from(LANGUAGE);
+fn parse_source(source: &str, action: &str) -> Result<Tree, DynError> {
     let mut parser = Parser::new();
-    parser.set_language(&language)?;
+    parser.set_language(&LANGUAGE.into())?;
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| invalid_input("tree-sitter-hiko returned no parse tree"))?;
 
     if tree.root_node().has_error() {
-        return Err(invalid_input(
-            "tree-sitter-hiko reported syntax errors while parsing module source",
-        )
+        return Err(invalid_input(format!(
+            "tree-sitter-hiko reported syntax errors while {action}"
+        ))
         .into());
     }
 
+    Ok(tree)
+}
+
+fn highlight_source(source: &str) -> Result<String, DynError> {
+    let tree = parse_source(source, "parsing module source")?;
+    let language = tree.language();
     let query = Query::new(&language, HIGHLIGHTS_QUERY)?;
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -469,20 +474,7 @@ fn highlight_source(source: &str) -> Result<String, DynError> {
 }
 
 fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, DynError> {
-    let language = tree_sitter::Language::from(LANGUAGE);
-    let mut parser = Parser::new();
-    parser.set_language(&language)?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| invalid_input("tree-sitter-hiko returned no parse tree"))?;
-
-    if tree.root_node().has_error() {
-        return Err(invalid_input(
-            "tree-sitter-hiko reported syntax errors while extracting exports",
-        )
-        .into());
-    }
-
+    let tree = parse_source(source, "extracting exports")?;
     let root = tree.root_node();
     let structures = root
         .named_children(&mut root.walk())
@@ -534,15 +526,6 @@ fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, D
                     }
                 }
             }
-            "value_rec_declaration" => {
-                if let Some(name) = field_text(child, "name", source) {
-                    exports.push(ExportItem {
-                        kind: "val rec",
-                        name,
-                        detail: None,
-                    });
-                }
-            }
             "value_declaration" => {
                 if let Some(pattern) = child.child_by_field_name("pattern")
                     && let Some(name) = export_name_from_pattern(pattern, source)
@@ -566,33 +549,25 @@ fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, D
                     exports.push(ExportItem {
                         kind: "datatype",
                         name,
-                        detail: if detail.is_empty() {
-                            None
-                        } else {
-                            Some(detail)
-                        },
+                        detail: (!detail.is_empty()).then_some(detail),
                     });
                 }
             }
-            "type_alias_declaration" => {
+            kind => {
+                let export_kind = match kind {
+                    "value_rec_declaration" => "val rec",
+                    "type_alias_declaration" => "type",
+                    "effect_declaration" => "effect",
+                    _ => continue,
+                };
                 if let Some(name) = field_text(child, "name", source) {
                     exports.push(ExportItem {
-                        kind: "type",
+                        kind: export_kind,
                         name,
                         detail: None,
                     });
                 }
             }
-            "effect_declaration" => {
-                if let Some(name) = field_text(child, "name", source) {
-                    exports.push(ExportItem {
-                        kind: "effect",
-                        name,
-                        detail: None,
-                    });
-                }
-            }
-            _ => {}
         }
     }
 
@@ -661,8 +636,8 @@ fn write_package_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
         let import_name = format!("{}.{}", package.manifest.name, module.name);
         let docs_cell = if module.docs_exists {
             format!(
-                "<a href=\"./modules/{}.html\">{}.html</a>",
-                module.name, module.name
+                "<a href=\"./modules/{name}.html\">{name}.html</a>",
+                name = escape_html(&module.name)
             )
         } else {
             "—".to_string()
@@ -670,14 +645,12 @@ fn write_package_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
 
         write!(
             rows,
-            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./modules/{}.source.html\">source.html</a></td><td><a href=\"./modules/{}.hml\">{}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
+            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./modules/{name}.source.html\">source.html</a></td><td><a href=\"./modules/{name}.hml\">{name}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
             escape_html(&import_name),
             docs_cell,
-            module.name,
-            module.name,
-            module.name,
             escape_html(&module.hash),
-            escape_html(&trim_hash(&module.hash))
+            escape_html(&trim_hash(&module.hash)),
+            name = escape_html(&module.name)
         )?;
     }
 
@@ -709,8 +682,8 @@ fn write_modules_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
         let import_name = format!("{}.{}", package.manifest.name, module.name);
         let docs_cell = if module.docs_exists {
             format!(
-                "<a href=\"./{}.html\">{}.html</a>",
-                module.name, module.name
+                "<a href=\"./{name}.html\">{name}.html</a>",
+                name = escape_html(&module.name)
             )
         } else {
             "—".to_string()
@@ -718,15 +691,12 @@ fn write_modules_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
 
         write!(
             rows,
-            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./{}.source.html\">{}.source.html</a></td><td><a href=\"./{}.hml\">{}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
+            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./{name}.source.html\">{name}.source.html</a></td><td><a href=\"./{name}.hml\">{name}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
             escape_html(&import_name),
             docs_cell,
-            module.name,
-            module.name,
-            module.name,
-            module.name,
             escape_html(&module.hash),
-            escape_html(&trim_hash(&module.hash))
+            escape_html(&trim_hash(&module.hash)),
+            name = escape_html(&module.name)
         )?;
     }
 
@@ -764,8 +734,8 @@ fn write_module_source_page(
     let import_name = format!("{}.{}", package.manifest.name, module.name);
     let docs_meta = if module.docs_exists {
         format!(
-            "Narrative docs: <a href=\"./{}.html\">{}.html</a><br>",
-            module.name, module.name
+            "Narrative docs: <a href=\"./{name}.html\">{name}.html</a><br>",
+            name = escape_html(&module.name)
         )
     } else {
         String::new()
@@ -804,8 +774,8 @@ fn write_module_source_page(
         escape_html(&package.manifest.name),
         escape_html(&module.name),
         docs_meta,
-        module.name,
-        module.name,
+        escape_html(&module.name),
+        escape_html(&module.name),
         escape_html(&module.hash),
         escape_html(&trim_hash(&module.hash)),
         exports,
