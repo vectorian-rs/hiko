@@ -143,11 +143,24 @@ compilation:
 - `Perform` and `InstallHandler` reference declared effect tags;
 - `Perform` has enough stack depth for a payload;
 - `Resume` has enough stack depth for a continuation and argument;
-- handler clause targets are instruction boundaries with valid stack depth.
+- handler clause targets are instruction boundaries with valid stack depth;
+- handler clause flags use only the defined `resumes` bit.
 
 The verifier still does not prove the full high-level source effect protocol for
 arbitrary hand-written bytecode. Runtime checks must continue to reject invalid
 continuation values and malformed resume attempts with controlled errors.
+
+## Abortive Handler Clauses
+
+A clause whose body never refers to its continuation, for example
+`Fail msg _ => Err msg`, cannot resume. The compiler marks each clause with a
+`resumes` flag, set only when the clause body refers to the continuation
+variable (a shadowed `k` does not count). For a clause without the flag,
+`perform` unwinds the stack, call frames and handlers back to the handler and
+runs the clause directly. It does not copy the frames and stack between the
+`perform` site and the handler, and it does not allocate a continuation. The
+continuation slot of such a clause holds a placeholder that the clause never
+reads.
 
 ## Undecided Behavior
 

@@ -478,7 +478,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     let default_ending = default_line_ending(&lines).to_string();
     let mut result = lines.clone();
     let mut sorted_edits: Vec<&Edit> = edits.iter().collect();
-    sorted_edits.sort_by(|a, b| b.line_num.cmp(&a.line_num));
+    sorted_edits.sort_by_key(|edit| std::cmp::Reverse(edit.line_num));
 
     for edit in &sorted_edits {
         let idx = edit.line_num - 1;

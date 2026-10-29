@@ -1,3 +1,13 @@
+/// `InstallHandler` encodes each clause as `u16 effect_tag, u8 flags,
+/// i16 relative_offset`. This flag bit is set when the clause body mentions
+/// its continuation variable. When it is clear, `Perform` unwinds to the
+/// handler without capturing a continuation and passes `Unit` in the
+/// continuation slot. All other flag bits are reserved and must be zero.
+pub const HANDLER_CLAUSE_RESUMES: u8 = 0b0000_0001;
+
+/// Byte length of one `InstallHandler` clause entry.
+pub const HANDLER_CLAUSE_BYTES: usize = 5;
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {

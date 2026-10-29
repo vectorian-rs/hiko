@@ -152,9 +152,20 @@ pub struct ContinuationData {
     pub saved_handler: Option<SavedHandler>,
 }
 
+/// One decoded `InstallHandler` clause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandlerClause {
+    pub effect_tag: u16,
+    /// Absolute instruction pointer of the clause body.
+    pub ip: usize,
+    /// False when the clause body never mentions its continuation, so
+    /// `Perform` can unwind without capturing one.
+    pub resumes: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct SavedHandler {
-    pub clauses: Vec<(u16, usize)>,
+    pub clauses: Vec<HandlerClause>,
     pub proto_idx: usize,
     pub captures: Arc<[Value]>,
     pub locals_offset: usize,        // stack_base - handler_frame.base
@@ -199,7 +210,7 @@ impl HeapObject {
                 let handler_clause_bytes = data
                     .saved_handler
                     .as_ref()
-                    .map(|handler| handler.clauses.capacity() * size_of::<(u16, usize)>())
+                    .map(|handler| handler.clauses.capacity() * size_of::<HandlerClause>())
                     .unwrap_or(0);
                 base + size_of::<ContinuationData>()
                     + data.saved_frames.capacity() * size_of::<SavedFrame>()

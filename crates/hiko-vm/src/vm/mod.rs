@@ -15,12 +15,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
-use hiko_compile::op::Op;
+use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
 
 use crate::heap::Heap;
 use crate::process::ProcessFailure;
 use crate::value::{
-    BuiltinEntry, ContinuationData, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
+    BuiltinEntry, ContinuationData, Fields, GcRef, HandlerClause, HeapObject, SavedFrame,
+    SavedHandler, Value,
 };
 use crate::verify::{VerificationError, verify_program};
 
@@ -80,7 +81,7 @@ struct CallFrame {
 struct HandlerFrame {
     call_frame_idx: usize,
     stack_base: usize,
-    clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
+    clauses: Vec<HandlerClause>,
     proto_idx: usize,
     captures: Arc<[Value]>,
 }
@@ -1134,6 +1135,46 @@ mod tests {
     }
 
     #[test]
+    fn test_set_local_out_of_range_is_runtime_error_without_verifier() {
+        use hiko_compile::chunk::Chunk;
+        let programs = [
+            vec![Op::Unit as u8, Op::SetLocal as u8, 5, 0, Op::Halt as u8],
+            vec![
+                Op::Unit as u8,
+                Op::SetLocal as u8,
+                0xff,
+                0xff,
+                Op::Halt as u8,
+            ],
+            vec![Op::Unit as u8, Op::SetLocal3 as u8, Op::Halt as u8],
+        ];
+        for code in programs {
+            let program = hiko_compile::chunk::CompiledProgram {
+                main: Arc::new(Chunk {
+                    code: code.clone(),
+                    constants: Vec::new(),
+                    spans: Vec::new(),
+                }),
+                main_n_locals: 0,
+                functions: Arc::from([]),
+                effects: Arc::from([]),
+            };
+            assert!(
+                verify_program(&program).is_err(),
+                "{code:?} should fail verification"
+            );
+            // Skip the verifier to exercise the VM's own bounds check.
+            let mut vm = VM::from_verified_program(program, None);
+            let err = vm.run().expect_err("out-of-range SetLocal should fail");
+            assert!(
+                err.message.contains("SetLocal") && err.message.contains("out of bounds"),
+                "{code:?}: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
     fn test_perform_rejects_handler_from_returned_frame_without_panicking() {
         // Hand-written bytecode that returns from a function without removing
         // its handler passes the verifier. A later perform must fail cleanly.
@@ -1150,6 +1191,7 @@ mod tests {
                     0,
                     0,
                     0,
+                    HANDLER_CLAUSE_RESUMES,
                     0,
                     0,
                     Op::Unit as u8,
@@ -1291,6 +1333,175 @@ mod tests {
                 ),
             }
         }
+    }
+
+    fn continuation_count(vm: &VM) -> usize {
+        vm.heap
+            .count_objects(|o| matches!(o, HeapObject::Continuation(_)))
+    }
+
+    #[test]
+    fn test_abortive_clause_allocates_no_continuation() {
+        // The programs are small enough that no collection runs, so any
+        // continuation allocated by Perform is still in the heap afterwards.
+        for clause in ["Fail n _ => n", "Fail n k => n"] {
+            let vm = run(&format!(
+                "effect Fail of int
+                 fun f () = 1 + perform Fail 41
+                 val result = handle f () with return x => x | {clause}"
+            ));
+            assert_eq!(global_int(&vm, "result"), 41, "{clause}");
+            assert_eq!(continuation_count(&vm), 0, "{clause}");
+        }
+        // Control: a clause that mentions k still captures.
+        let vm = run("effect Fail of int
+             fun f () = 1 + perform Fail 41
+             val result = handle f () with return x => x | Fail n k => resume k n");
+        assert_eq!(global_int(&vm, "result"), 42);
+        assert_eq!(continuation_count(&vm), 1);
+    }
+
+    #[test]
+    fn test_abortive_clause_early_exit_from_deep_recursion() {
+        let vm = run("effect Fail of int
+             fun dive n = if n = 0 then perform Fail 7 else 1 + dive (n - 1)
+             fun tail_handle d = handle dive d with return x => x | Fail n _ => n
+             fun non_tail a d =
+               let val r = handle dive d with return x => x | Fail n _ => n * 2
+               in a + r end
+             val t1 = tail_handle 10000
+             val t2 = tail_handle 10000
+             val nt = non_tail 100 10000
+             val top = 1 + (handle dive 10000 with return x => x | Fail n _ => n)");
+        assert_eq!(global_int(&vm, "t1"), 7);
+        assert_eq!(global_int(&vm, "t2"), 7);
+        assert_eq!(global_int(&vm, "nt"), 114);
+        assert_eq!(global_int(&vm, "top"), 8);
+        assert_eq!(continuation_count(&vm), 0);
+        assert!(vm.handlers.is_empty());
+    }
+
+    #[test]
+    fn test_nested_handlers_inner_resumes_outer_aborts() {
+        let vm = run("effect Ask of int
+             effect Fail of int
+             fun body () =
+               let val a = perform Ask 1
+                   val _ = perform Fail (a + 5)
+               in 1000 end
+             val result = handle
+               (handle body () with return x => x | Ask n k => resume k (n * 10))
+             with return x => x | Fail n _ => n * 2
+             val after = handle perform Ask 2 with return x => x | Ask n k => resume k (n + 1)");
+        assert_eq!(global_int(&vm, "result"), 30);
+        assert_eq!(global_int(&vm, "after"), 3);
+        assert!(vm.handlers.is_empty());
+    }
+
+    #[test]
+    fn test_nested_handlers_inner_aborts_outer_resumes() {
+        // The inner handle aborts with 105, then the outer clause resumes
+        // the Ask in the enclosing expression with 10.
+        //
+        // Note: an inner handler that is live when an outer handler captures
+        // a continuation is not saved in that continuation (pre-existing
+        // behavior, unchanged here), so the inner handle must not span the
+        // outer perform.
+        let vm = run("effect Ask of int
+             effect Fail of int
+             val result = handle
+               (handle 1 + perform Fail 5 with return x => x | Fail n _ => n + 100)
+                 + perform Ask 1
+             with return x => x | Ask n k => resume k (n * 10)");
+        assert_eq!(global_int(&vm, "result"), 115);
+        assert_eq!(continuation_count(&vm), 1);
+        assert!(vm.handlers.is_empty());
+    }
+
+    #[test]
+    fn test_abort_to_handler_installed_inside_resumed_continuation() {
+        // The outer clause resumes k. The resumed body then installs an
+        // inner handler and aborts to it.
+        let vm = run("effect Ask of int
+             effect Fail of int
+             fun body () =
+               let val a = perform Ask 1
+               in 1 + (handle 1 + perform Fail a with return x => x | Fail n _ => n + 100) end
+             val result = handle body ()
+             with return x => x | Ask n k => resume k (n * 10) + 1000");
+        assert_eq!(global_int(&vm, "result"), 1111);
+        assert!(vm.handlers.is_empty());
+    }
+
+    #[test]
+    fn test_abort_from_inside_resumed_continuation() {
+        // The inner clause resumes k. Inside the resumed continuation the
+        // body performs Fail, which aborts to the outer handler and discards
+        // the pending `+ 100` in the inner clause.
+        let vm = run("effect Ask of int
+             effect Fail of int
+             fun body () =
+               let val a = perform Ask 1
+                   val _ = perform Fail (a + 2)
+               in 0 end
+             val result = handle
+               (handle body () with return x => x | Ask n k => resume k n + 100)
+             with return x => x | Fail n _ => n
+             val after = handle (perform Ask 4) + 1
+               with return x => x | Ask n k => resume k (n * 3)");
+        assert_eq!(global_int(&vm, "result"), 3);
+        assert_eq!(global_int(&vm, "after"), 13);
+        assert!(vm.handlers.is_empty());
+    }
+
+    #[test]
+    fn test_abortive_clause_survives_gc_at_perform() {
+        // Low object limits force a collection on nearly every allocation:
+        // just before Perform (the payload) and in the clause (the concat).
+        // The payload must stay rooted while the stack is unwound.
+        let src = "effect Fail of string
+             fun dive n =
+               if n = 0 then perform Fail (int_to_string 12345)
+               else let val s = int_to_string n in dive (n - 1) end
+             val result = handle dive 20
+               with return x => x | Fail s _ => s ^ \"!\"";
+        let mut completed = false;
+        for max in 1..96 {
+            let mut vm = compile_vm(src);
+            vm.set_max_heap(max);
+            match vm.run() {
+                Ok(()) => {
+                    completed = true;
+                    assert_eq!(global_str(&vm, "result"), "12345!", "max_heap={max}");
+                    assert_eq!(continuation_count(&vm), 0, "max_heap={max}");
+                }
+                Err(err) => assert!(
+                    err.is_heap_limit(),
+                    "max_heap={max}: unexpected error: {}",
+                    err.message
+                ),
+            }
+        }
+        assert!(completed, "no object limit let the program finish");
+    }
+
+    #[test]
+    fn test_abortive_clause_charges_fuel() {
+        // An endless loop of aborting performs must still run out of fuel.
+        let mut vm = compile_vm(
+            "effect Fail of int
+             fun loop i =
+               let val r = handle perform Fail i with return x => x | Fail n _ => n
+               in loop (r + 1) end
+             val _ = loop 0",
+        );
+        vm.set_fuel(10_000);
+        let err = vm.run().expect_err("loop should exhaust fuel");
+        assert!(
+            err.message.contains("fuel exhausted"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]

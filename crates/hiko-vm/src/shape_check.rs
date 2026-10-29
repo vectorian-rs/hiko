@@ -80,7 +80,7 @@ impl ShapeParser {
             return Err(format!(
                 "unexpected trailing input at position {}: '{}'",
                 self.pos,
-                &self.chars[self.pos..].iter().collect::<String>()
+                self.chars[self.pos..].iter().collect::<String>()
             ));
         }
         Ok(ty)

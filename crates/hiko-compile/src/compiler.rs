@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use hiko_types::ty::Type;
 use serde::Deserialize;
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
-use crate::op::Op;
+use crate::op::{HANDLER_CLAUSE_RESUMES, Op};
 
 /// Overrides for resolving named imports listed in `hiko.lock.toml`.
 ///
@@ -373,6 +374,9 @@ fn normalize_blake3(hash: &str) -> String {
 struct Local {
     name: String,
     depth: u32,
+    /// Set when a variable reference resolves to this local, either directly
+    /// or as an upvalue of a nested function.
+    used: Cell<bool>,
 }
 
 struct UpvalueDesc {
@@ -849,6 +853,7 @@ impl Compiler {
     fn resolve_local(&self, name: &str) -> Option<u16> {
         for (i, local) in self.ctx().locals.iter().enumerate().rev() {
             if local.name == name {
+                local.used.set(true);
                 return Some(i as u16);
             }
         }
@@ -871,6 +876,7 @@ impl Compiler {
             .rev()
         {
             if local.name == name {
+                local.used.set(true);
                 return Some(self.add_upvalue(func_idx, true, i as u16));
             }
         }
@@ -997,7 +1003,11 @@ impl Compiler {
     fn add_local(&mut self, name: String) -> u16 {
         let ctx = self.ctx_mut();
         let depth = ctx.scope_depth;
-        ctx.locals.push(Local { name, depth });
+        ctx.locals.push(Local {
+            name,
+            depth,
+            used: Cell::new(false),
+        });
         ctx.max_locals = ctx.max_locals.max(ctx.locals.len());
         (ctx.locals.len() - 1) as u16
     }
@@ -2083,11 +2093,12 @@ impl Compiler {
         handlers: &[EffectHandler],
     ) -> Result<(), CompileError> {
         // Emit InstallHandler: u16 n_clauses, then per clause:
-        //   u16 effect_tag, i16 offset (placeholder)
+        //   u16 effect_tag, u8 flags (placeholder), i16 offset (placeholder)
         self.emit(Op::InstallHandler);
         let n_clauses = handlers.len() as u16;
         self.emit_u16(n_clauses);
-        // Record positions of clause offset placeholders
+        // Record positions of clause flag and offset placeholders
+        let mut clause_flag_positions = Vec::new();
         let mut clause_offset_positions = Vec::new();
         for handler in handlers {
             let eff_name = self.interner.resolve(handler.effect_name).to_string();
@@ -2096,6 +2107,8 @@ impl Compiler {
                 .get(&eff_name)
                 .ok_or_else(|| CompileError::codegen(format!("unknown effect: {eff_name}")))?;
             self.emit_u16(tag);
+            clause_flag_positions.push(self.chunk().code.len());
+            self.emit_u8(0); // placeholder flags
             let pos = self.chunk().code.len();
             self.emit_u16(0); // placeholder offset
             clause_offset_positions.push(pos);
@@ -2112,8 +2125,15 @@ impl Compiler {
             let payload_name = self.interner.resolve(handler.payload_var).to_string();
             let cont_name = self.interner.resolve(handler.cont_var).to_string();
             self.add_local(payload_name);
-            self.add_local(cont_name);
+            let cont_slot = self.add_local(cont_name);
             self.compile_expr_inner(&handler.body, false)?;
+            // The clause resumes only if its body refers to the continuation
+            // variable. Resolution is scope-aware, so a shadowed `k` or a `_`
+            // pattern leaves the slot unused and Perform can skip the capture.
+            if self.ctx().locals[cont_slot as usize].used.get() {
+                let pos = clause_flag_positions[i];
+                self.chunk().code[pos] = HANDLER_CLAUSE_RESUMES;
+            }
             self.end_scope_keep_result();
             clause_end_jumps.push(self.emit_jump(Op::Jump));
         }
@@ -3493,6 +3513,54 @@ Filesystem = "blake3:deadbeef"
             }
             other => panic!("expected codegen error for 256-element tuple, got {other:?}"),
         }
+    }
+
+    /// Flags of the clauses of the first `InstallHandler` that starts a
+    /// function chunk. A non-tail `handle` compiles to a thunk whose body
+    /// starts with `InstallHandler`.
+    fn handler_clause_flags(source: &str) -> Vec<u8> {
+        let (program, _) = Compiler::compile(parse_program(source)).expect("compile");
+        let code = &program
+            .functions
+            .iter()
+            .find(|f| f.chunk.code.first() == Some(&(Op::InstallHandler as u8)))
+            .expect("a function chunk starting with InstallHandler")
+            .chunk
+            .code;
+        let n_clauses = u16::from_le_bytes([code[1], code[2]]) as usize;
+        (0..n_clauses)
+            .map(|i| code[3 + i * crate::op::HANDLER_CLAUSE_BYTES + 2])
+            .collect()
+    }
+
+    #[test]
+    fn handler_clause_resumes_flag_tracks_continuation_use() {
+        let effects = "effect A of int\neffect B of int\neffect C of int\neffect D of int\n";
+        let flags = handler_clause_flags(&format!(
+            "{effects}val r = 1 + (handle perform A 1\n\
+             with return x => x\n\
+                | A n _ => n\n\
+                | B n k => n\n\
+                | C n k => resume k n\n\
+                | D n k => (fn u => resume k u) n)"
+        ));
+        assert_eq!(
+            flags,
+            vec![0, 0, HANDLER_CLAUSE_RESUMES, HANDLER_CLAUSE_RESUMES]
+        );
+    }
+
+    #[test]
+    fn handler_clause_with_shadowed_continuation_does_not_resume() {
+        // The inner `k` is a new binding, so the clause never refers to the
+        // continuation.
+        let flags = handler_clause_flags(
+            "effect A of int\n\
+             val r = 1 + (handle perform A 1\n\
+             with return x => x\n\
+                | A n k => let val k = n + 1 in k end)",
+        );
+        assert_eq!(flags, vec![0]);
     }
 
     #[test]

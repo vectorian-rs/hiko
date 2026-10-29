@@ -1221,7 +1221,7 @@ impl RunConfig {
         }
         if !self.limits.host_resources.is_empty() {
             let mut limits: Vec<_> = self.limits.host_resources.iter().collect();
-            limits.sort_by(|(left, _), (right, _)| left.cmp(right));
+            limits.sort_by_key(|(left, _)| *left);
             s.push_str("            .host_resource_limits(std::collections::HashMap::from([\n");
             for (kind, limit) in limits {
                 let kind = kind.replace('\\', "\\\\").replace('"', "\\\"");
