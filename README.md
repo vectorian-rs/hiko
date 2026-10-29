@@ -96,7 +96,7 @@ fun describe xs = case xs of
 
 ### Algebraic Effect Handlers
 
-OCaml 5 / Eio-inspired shallow effect handlers with delimited continuations:
+OCaml 5-inspired deep effect handlers with delimited continuations. Effects are for control flow (generators, state); recoverable errors use `Std.Result`. See [docs/language/effects.md](docs/language/effects.md) for the current semantics:
 
 ```sml
 (* Declare an effect *)
@@ -190,7 +190,7 @@ val fn_count =
 | `split` | `(string, string) -> string list` | Split by delimiter |
 | `trim` | `string -> string` | Trim whitespace |
 | `read_file` / `write_file` | File I/O | Read/write file contents |
-| `http_get` | `string -> string` | Synchronous HTTP GET |
+| `http_get` | `string -> int * (string * string) list * string` | HTTP GET returning `(status, headers, body)` |
 | `assert` / `assert_eq` | Testing helpers | Runtime assertions |
 
 ## Architecture
@@ -214,7 +214,7 @@ Type Inference ──> Typed AST   (Algorithm W, Hindley-Milner)
 Exhaustiveness ──> Warnings    (Maranget usefulness algorithm)
   |
   v
-Compiler ──> Bytecode          (57 opcodes, two-pass pattern compilation)
+Compiler ──> Bytecode          (71 opcodes, two-pass pattern compilation)
   |
   v
 VM ──> Execution               (stack-based, mark-and-sweep GC)
@@ -245,13 +245,13 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 **Exhaustiveness Checking.** Based on Maranget's "Warnings for pattern matching" (JFP 2007). Uses the usefulness algorithm: a match is exhaustive iff the wildcard pattern is not useful against the existing clauses. Reports both missing cases and redundant clauses.
 
-**Bytecode Compiler.** Direct walk of the typed AST producing 57 opcodes. Two-pass pattern compilation (test-then-bind) with tail-call optimization propagated through `if`/`let`/`case` branches.
+**Bytecode Compiler.** Direct walk of the typed AST producing 71 opcodes. Two-pass pattern compilation (test-then-bind) with tail-call optimization propagated through `if`/`let`/`case` branches.
 
 **VM.** Stack-based with `Vec<Value>` stack and `Vec<CallFrame>` frames. `Value` is `Copy` (no Rc, no Drop), 16 bytes, passed by value. Heap objects referenced via `GcRef(u32)` indices into the GC arena.
 
 **Garbage Collector.** Mark-and-sweep with worklist-based marking (avoids stack overflow on deep object graphs), free-list reuse, and adaptive collection threshold.
 
-**Effect Handlers.** Shallow, one-shot delimited continuations. `perform` captures the stack and frames between the perform site and the nearest matching handler. `resume` restores the captured continuation. Supports nested handlers, recursive handlers, and the generator/state patterns.
+**Effect Handlers.** Deep handlers over copied delimited continuations. `perform` captures the stack and frames between the perform site and the nearest matching handler and removes that handler. `resume` copies the captured continuation back onto the stack and reinstalls the handler, so later performs in the resumed computation reach the same handler. A continuation can currently be resumed more than once; this is not a stable guarantee. See [docs/language/effects.md](docs/language/effects.md#current-continuation-semantics).
 
 **Tail-Call Optimization.** The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
 
@@ -279,7 +279,7 @@ The `examples/` directory includes programs demonstrating:
 | `option.hml` | Algebraic data types |
 | `either.hml` | Sum types for error handling |
 | `result.hml` | Canonical success/error datatype |
-| `error_handling.hml` | Error handling via algebraic effects |
+| `error_handling.hml` | Recoverable errors with `Std.Result` |
 | `spawn_stress.hml` | Isolated-process concurrency stress test |
 | `expr_eval.hml` | Recursive expression evaluator |
 | `math.hml` | float arithmetic, sqrt |
@@ -331,9 +331,9 @@ cd hiko-vm-reader && cargo build --release
 
 ### Run Config Files
 
-Each run config defines a capability boundary.
-- `hiko run --config ...` loads the config at runtime and only registers the allowed builtins for that invocation.
-- `hiko build-vm ...` bakes the same config into a generated binary, so disallowed builtins are not compiled into that artifact.
+Each run config (policy file) defines a capability boundary.
+- `hiko run [--config <hiko.toml>] [--policy <name>] script.hml` resolves a project manifest, `hiko.toml`. With `--config` it uses that manifest; without it, the CLI searches upward from the current directory for `hiko.toml`. The manifest maps policy names to run config files under `[policies.<name>]` and names a default in `[defaults].policy`. `--policy` selects a different named policy. Only the builtins that the policy allows are registered for that invocation. When no manifest is found, the script runs with the core-only builtin surface.
+- `hiko build-vm <run-config.toml>` bakes one run config into a generated binary, so disallowed builtins are not compiled into that artifact.
 
 Path rules:
 - relative `entry` and filesystem `folders` are resolved from the current working directory
@@ -409,7 +409,7 @@ agent="$1"; shift; script="$1"; shift
 """
 
 [tasks.dev]
-description = "Run a script with the full CLI (core only unless --config is provided)"
+description = "Run a script with the full CLI (hiko.toml default policy, or core only without a manifest)"
 run = "hiko run \"$@\""
 
 [tasks.check]

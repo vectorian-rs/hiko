@@ -1,4 +1,4 @@
-(* testing.hml -- unit testing with assert, assert_eq, and effects *)
+(* testing.hml -- unit testing with assert, assert_eq, and Result *)
 import Std.List
 
 (* ── Basic assertions ─────────────────────────────────────────────── *)
@@ -68,30 +68,19 @@ val _ = assert (not (regex_match ("hello", "\\d+")), "regex no digits")
 
 val _ = assert (regex_replace ("a-b-c", "-", "_") = "a_b_c", "regex replace")
 
-(* ── Error handling with effects ──────────────────────────────────── *)
-datatype 'a result =
-    Ok of 'a
-  | Err of string
+(* ── Error handling with Result ──────────────────────────────────── *)
+import Std.Result
 
-effect Fail of string
-
-fun run_safe f =
-  handle
-    f ()
-  with
-    return x => Ok x
-  | Fail msg _ => Err msg
-
-fun safe_divide a b = if b = 0 then perform Fail "division by zero" else a / b
+fun safe_divide a b = if b = 0 then Result.Err "division by zero" else Result.Ok (a / b)
 
 val _ =
-  case run_safe (fn _ => safe_divide 10 2) of
-      Ok n => assert_eq (n, 5, "safe_divide 10/2")
-    | Err _ => assert (false, "should not fail")
+  case safe_divide 10 2 of
+      Result.Ok n => assert_eq (n, 5, "safe_divide 10/2")
+    | Result.Err _ => assert (false, "should not fail")
 
 val _ =
-  case run_safe (fn _ => safe_divide 10 0) of
-      Ok _ => assert (false, "should have failed")
-    | Err msg => assert (msg = "division by zero", "safe_divide 10/0")
+  case safe_divide 10 0 of
+      Result.Ok _ => assert (false, "should have failed")
+    | Result.Err msg => assert (msg = "division by zero", "safe_divide 10/0")
 
 val _ = println "All tests passed!"

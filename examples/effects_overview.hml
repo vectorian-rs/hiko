@@ -2,44 +2,33 @@
  *
  * Effects in Hiko are for control flow, NOT for I/O.
  * I/O uses builtins (http_get, read_file, sleep, etc.).
+ * Recoverable errors use Std.Result, not effects.
  *
- * This example shows three classic effect patterns:
- *   1. Error handling (Fail)
+ * This example shows:
+ *   1. Error handling with Result (for contrast: no effect needed)
  *   2. Generators (Yield)
  *   3. Mutable state (Get/Put)
  *)
+import Std.Result
 
 (* ── 1. Error handling ─────────────────────────────────────── *)
-datatype 'a result =
-    Ok of 'a
-  | Err of string
-
-effect Fail of string
-
-fun run_safe f =
-  handle
-    f ()
-  with
-    return x => Ok x
-  | Fail msg _ => Err msg
-
-fun divide a b = if b = 0 then perform Fail "division by zero" else a / b
+fun divide a b = if b = 0 then Result.Err "division by zero" else Result.Ok (a / b)
 
 val _ = println "--- Error handling ---"
 
-val good = run_safe (fn () => divide 100 5 + divide 20 4)
+val good = Result.map2 (fn x => fn y => x + y) (divide 100 5) (divide 20 4)
 
 val _ =
   case good of
-      Ok n => println ("100/5 + 20/4 = " ^ int_to_string n)
-    | Err e => println ("Error: " ^ e)
+      Result.Ok n => println ("100/5 + 20/4 = " ^ int_to_string n)
+    | Result.Err e => println ("Error: " ^ e)
 
-val bad = run_safe (fn () => divide 10 0)
+val bad = divide 10 0
 
 val _ =
   case bad of
-      Ok n => println ("Unexpected: " ^ int_to_string n)
-    | Err e => println ("Caught: " ^ e)
+      Result.Ok n => println ("Unexpected: " ^ int_to_string n)
+    | Result.Err e => println ("Caught: " ^ e)
 
 (* ── 2. Generators ─────────────────────────────────────────── *)
 effect Yield of int

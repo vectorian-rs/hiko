@@ -19,6 +19,14 @@ runtime shape sample in `crates/hiko-vm/src/shape_check.rs`. If a builtin cannot
 be sampled in a unit test because it is runtime-only, non-returning, or requires
 external I/O, it must have an explicit exemption there with a reason.
 
+## Notation
+
+Types use Hiko syntax. A builtin that takes several arguments takes one tuple,
+written `a * b`: `substring : string * int * int -> string` is called as
+`substring (s, start, len)`. The authoritative list is
+`crates/hiko-builtin-meta/src/signatures.rs`; this page covers the common
+builtins and is not exhaustive.
+
 ## I/O
 
 | Builtin      | Type             | Description                         |
@@ -48,14 +56,14 @@ external I/O, it must have an explicit exemption there with a reason.
 | Builtin           | Type                                 | Description                            |
 | ----------------- | ------------------------------------ | -------------------------------------- |
 | `string_length`   | `string -> int`                      | Number of characters                   |
-| `substring`       | `(string, int, int) -> string`       | Substring from start index with length |
-| `string_contains` | `(string, string) -> bool`           | Does haystack contain needle           |
+| `substring`       | `string * int * int -> string`       | Substring from start index with length |
+| `string_contains` | `string * string -> bool`            | Does haystack contain needle           |
 | `trim`            | `string -> string`                   | Strip leading/trailing whitespace      |
-| `split`           | `(string, string) -> string list`    | Split string by delimiter              |
-| `string_replace`  | `(string, string, string) -> string` | Replace all occurrences                |
-| `string_join`     | `(string list, string) -> string`    | Join list with separator               |
-| `starts_with`     | `(string, string) -> bool`           | Prefix test                            |
-| `ends_with`       | `(string, string) -> bool`           | Suffix test                            |
+| `split`           | `string * string -> string list`     | Split string by delimiter              |
+| `string_replace`  | `string * string * string -> string` | Replace all occurrences                |
+| `string_join`     | `string list * string -> string`     | Join list with separator               |
+| `starts_with`     | `string * string -> bool`            | Prefix test                            |
+| `ends_with`       | `string * string -> bool`            | Suffix test                            |
 | `to_upper`        | `string -> string`                   | Uppercase                              |
 | `to_lower`        | `string -> string`                   | Lowercase                              |
 
@@ -71,56 +79,56 @@ external I/O, it must have an explicit exemption there with a reason.
 
 ## File System
 
-| Builtin           | Type                       | Description                               |
-| ----------------- | -------------------------- | ----------------------------------------- |
-| `read_file`       | `string -> string`         | Read entire file as string                |
-| `read_file_bytes` | `string -> bytes`          | Read entire file as raw bytes             |
-| `write_file`      | `(string, string) -> unit` | Write string to file (creates/overwrites) |
-| `file_exists`     | `string -> bool`           | Does path exist                           |
-| `remove_file`     | `string -> unit`           | Delete a file                             |
-| `create_dir`      | `string -> unit`           | Create directory (recursive)              |
-| `is_dir`          | `string -> bool`           | Is path a directory                       |
-| `is_file`         | `string -> bool`           | Is path a regular file                    |
-| `list_dir`        | `string -> string list`    | List directory entries                    |
-| `glob`            | `string -> string list`    | Glob pattern matching                     |
-| `walk_dir`        | `string -> string list`    | Recursive directory walk                  |
+| Builtin           | Type                      | Description                               |
+| ----------------- | ------------------------- | ----------------------------------------- |
+| `read_file`       | `string -> string`        | Read entire file as string                |
+| `read_file_bytes` | `string -> bytes`         | Read entire file as raw bytes             |
+| `write_file`      | `string * string -> unit` | Write string to file (creates/overwrites) |
+| `file_exists`     | `string -> bool`          | Does path exist                           |
+| `remove_file`     | `string -> unit`          | Delete a file                             |
+| `create_dir`      | `string -> unit`          | Create directory (recursive)              |
+| `is_dir`          | `string -> bool`          | Is path a directory                       |
+| `is_file`         | `string -> bool`          | Is path a regular file                    |
+| `list_dir`        | `string -> string list`   | List directory entries                    |
+| `glob`            | `string -> string list`   | Glob pattern matching                     |
+| `walk_dir`        | `string -> string list`   | Recursive directory walk                  |
 
 ## Path
 
-| Builtin     | Type                         | Description                                              |
-| ----------- | ---------------------------- | -------------------------------------------------------- |
-| `path_join` | `(string, string) -> string` | Join two path components without touching the filesystem |
+| Builtin     | Type                        | Description                                              |
+| ----------- | --------------------------- | -------------------------------------------------------- |
+| `path_join` | `string * string -> string` | Join two path components without touching the filesystem |
 
 ## Hashline (content-addressed editing)
 
 | Builtin            | Type                           | Description                              |
 | ------------------ | ------------------------------ | ---------------------------------------- |
-| `read_file_tagged` | `(string, int, int) -> string` | Read file with 64-bit FNV-1a line hashes |
-| `edit_file_tagged` | `(string, string) -> string`   | Apply hashline-based edit                |
+| `read_file_tagged` | `string * int * int -> string` | Read file with 64-bit FNV-1a line hashes |
+| `edit_file_tagged` | `string * string -> string`    | Apply hashline-based edit                |
 
 ## HTTP
 
-| Builtin        | Type                                                                                        | Description                                                        |
-| -------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `http_get`     | `string -> (int, (string * string) list, string)`                                           | GET url, returns (status, headers, body)                           |
-| `http`         | `(string, string, (string * string) list, string) -> (int, (string * string) list, string)` | Full HTTP: (method, url, headers, body) -> (status, headers, body) |
-| `http_json`    | `(string, string, (string * string) list, string) -> (int, (string * string) list, 'a)`     | HTTP with JSON-parsed body                                         |
-| `http_msgpack` | `(string, string, (string * string) list, string) -> (int, (string * string) list, 'a)`     | HTTP with msgpack-parsed body                                      |
-| `http_bytes`   | `(string, string, (string * string) list, string) -> (int, (string * string) list, bytes)`  | HTTP with raw bytes body                                           |
+| Builtin        | Type                                                                                         | Description                                                        |
+| -------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `http_get`     | `string -> int * (string * string) list * string`                                            | GET url, returns (status, headers, body)                           |
+| `http`         | `string * string * (string * string) list * string -> int * (string * string) list * string` | Full HTTP: (method, url, headers, body) -> (status, headers, body) |
+| `http_json`    | `string * string * (string * string) list * string -> int * (string * string) list * 'a`     | HTTP with JSON-parsed body                                         |
+| `http_msgpack` | `string * string * (string * string) list * string -> int * (string * string) list * 'a`     | HTTP with msgpack-parsed body                                      |
+| `http_bytes`   | `string * string * (string * string) list * string -> int * (string * string) list * bytes`  | HTTP with raw bytes body                                           |
 
 In the threaded runtime, `http_get` and `read_file` suspend the process instead of blocking the worker thread.
 
 ## JSON
 
-Requires `use "libraries/Std-v0.1.0/modules/Json.hml"` for typed JSON ADT (`JNull | JBool | JInt | JFloat | JStr | JArray | JObject`).
+Use `import Std.Json` for the typed JSON ADT (`JNull | JBool | JInt | JFloat | JStr | JArray | JObject`).
 
-| Builtin          | Type                         | Description                           |
-| ---------------- | ---------------------------- | ------------------------------------- |
-| `json_parse`     | `string -> 'a`               | Parse JSON string to typed JSON value |
-| `json_to_string` | `'a -> string`               | Serialize value to JSON string        |
-| `json_get`       | `(string, string) -> string` | Get field from JSON string by key     |
-| `json_keys`      | `string -> string list`      | Get keys from JSON object string      |
-| `json_length`    | `string -> int`              | Length of JSON array/object string    |
+| Builtin          | Type                        | Description                           |
+| ---------------- | --------------------------- | ------------------------------------- |
+| `json_parse`     | `string -> 'a`              | Parse JSON string to typed JSON value |
+| `json_to_string` | `'a -> string`              | Serialize value to JSON string        |
+| `json_get`       | `string * string -> string` | Get field from JSON string by key     |
+| `json_keys`      | `string -> string list`     | Get keys from JSON object string      |
+| `json_length`    | `string -> int`             | Length of JSON array/object string    |
 
 ## bytes
 
@@ -129,8 +137,8 @@ Requires `use "libraries/Std-v0.1.0/modules/Json.hml"` for typed JSON ADT (`JNul
 | `bytes_length`    | `bytes -> int`               | Number of bytes                |
 | `bytes_to_string` | `bytes -> string`            | Decode UTF-8                   |
 | `string_to_bytes` | `string -> bytes`            | Encode UTF-8                   |
-| `bytes_get`       | `(bytes, int) -> int`        | Get byte at index (0-255)      |
-| `bytes_slice`     | `(bytes, int, int) -> bytes` | Slice from start with length   |
+| `bytes_get`       | `bytes * int -> int`         | Get byte at index (0-255)      |
+| `bytes_slice`     | `bytes * int * int -> bytes` | Slice from start with length   |
 | `random_bytes`    | `int -> bytes`               | Cryptographically random bytes |
 
 ## Hash
@@ -143,18 +151,18 @@ Requires `use "libraries/Std-v0.1.0/modules/Json.hml"` for typed JSON ADT (`JNul
 
 Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 
-| Builtin     | Type                         | Description                                |
-| ----------- | ---------------------------- | ------------------------------------------ |
-| `rng_seed`  | `bytes -> rng`               | Create RNG from seed bytes                 |
-| `rng_bytes` | `(rng, int) -> (bytes, rng)` | Generate N random bytes, return new state  |
-| `rng_int`   | `(rng, int) -> (int, rng)`   | Random int in [0, bound), return new state |
+| Builtin     | Type                       | Description                                |
+| ----------- | -------------------------- | ------------------------------------------ |
+| `rng_seed`  | `bytes -> rng`             | Create RNG from seed bytes                 |
+| `rng_bytes` | `rng * int -> bytes * rng` | Generate N random bytes, return new state  |
+| `rng_int`   | `rng * int -> int * rng`   | Random int in [0, bound), return new state |
 
 ## Regex
 
 | Builtin         | Type                                 | Description                                    |
 | --------------- | ------------------------------------ | ---------------------------------------------- |
-| `regex_match`   | `(string, string) -> bool`           | Does string match pattern                      |
-| `regex_replace` | `(string, string, string) -> string` | Replace matches: (input, pattern, replacement) |
+| `regex_match`   | `string * string -> bool`            | Does string match pattern                      |
+| `regex_replace` | `string * string * string -> string` | Replace matches: (input, pattern, replacement) |
 
 ## Time
 
@@ -167,12 +175,12 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 
 ## Environment & System
 
-| Builtin  | Type                                             | Description                                                 |
-| -------- | ------------------------------------------------ | ----------------------------------------------------------- |
-| `getenv` | `string -> string`                               | Get environment variable (empty string if unset)            |
-| `exec`   | `(string, string list) -> (int, string, string)` | Run command: (program, args) -> (exit_code, stdout, stderr) |
-| `exit`   | `int -> unit`                                    | Exit process with status code                               |
-| `panic`  | `string -> 'a`                                   | Abort with error message                                    |
+| Builtin  | Type                                            | Description                                                 |
+| -------- | ----------------------------------------------- | ----------------------------------------------------------- |
+| `getenv` | `string -> string`                              | Get environment variable (empty string if unset)            |
+| `exec`   | `string * string list -> int * string * string` | Run command: (program, args) -> (exit_code, stdout, stderr) |
+| `exit`   | `int -> unit`                                   | Exit process with status code                               |
+| `panic`  | `string -> 'a`                                  | Abort with error message                                    |
 
 ## Concurrency (threaded runtime)
 
@@ -191,5 +199,23 @@ The raw builtins are intended to sit under `Std.Fiber`, which provides the user-
 
 | Builtin     | Type                       | Description                   |
 | ----------- | -------------------------- | ----------------------------- |
-| `assert`    | `(bool, string) -> unit`   | Assert condition with message |
-| `assert_eq` | `('a, 'a, string) -> unit` | Assert equality with message  |
+| `assert`    | `bool * string -> unit`    | Assert condition with message |
+| `assert_eq` | `'a * 'a * string -> unit` | Assert equality with message  |
+
+## AWS and GitHub (out of focus)
+
+These builtins are out of the project's current focus and may move out of this
+repository. Prefer the library wrappers (`Aws.S3`, `Aws.SQS`, `Gh.Issue`), which
+return `Std.Result`. The raw builtins return `bool * ... * string` tuples: a
+success flag, the payload, and an error message.
+
+- `aws_config_sso_profile : string -> aws_config`
+- `aws_config_instance_profile : unit -> aws_config`
+- `aws_s3_client : aws_config -> aws_s3_client`
+- `aws_s3_list_buckets : aws_s3_client -> bool * (string * string * string) list * string`
+- `aws_sqs_client : aws_config -> aws_sqs_client`
+- `aws_sqs_list_queues : aws_sqs_client -> bool * string list * string`
+- `github_issue_create : string * string * string -> bool * string * string`
+- `github_issue_view : string * int -> bool * string * string`
+- `github_issue_update : string * int * string -> bool * string * string`
+- `github_issue_list : string -> bool * string * string`

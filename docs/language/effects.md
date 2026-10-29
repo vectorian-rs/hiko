@@ -162,15 +162,70 @@ runs the clause directly. It does not copy the frames and stack between the
 continuation slot of such a clause holds a placeholder that the clause never
 reads.
 
-## Undecided Behavior
+## Current Continuation Semantics
 
-These are implemented but not yet settled, and may change:
+This section describes what the VM does today. It is implemented, but it is
+not a stable guarantee and may change.
 
-- Continuations are **deep**: the handler stays installed when the
-  continuation resumes.
-- A continuation can be resumed more than once, because `Resume` copies the
-  captured frames and stack. Whether Hiko keeps multi-shot resumption or
-  restricts continuations to one-shot is an open research question.
+**Handlers are deep.** `perform` removes the matching handler and stores it in
+the continuation (`ContinuationData::saved_handler` in
+`crates/hiko-vm/src/value.rs`). `resume` reinstalls it. A second `perform` of the
+same effect inside the resumed computation therefore reaches the same handler:
 
-See the open research questions in
-[project-state.md](../project/project-state.md#open-research-questions).
+```hiko
+effect Tick of unit
+
+fun two () =
+  let
+    val _ = perform Tick ()
+    val _ = perform Tick ()
+  in
+    0
+  end
+
+fun count () =
+  handle
+    two ()
+  with
+    return x => x
+  | Tick _ k => 1 + resume k ()
+
+(* count () = 2 *)
+```
+
+**A continuation runs to the end of its `handle` expression.** The captured
+continuation starts at the `perform` site and ends where the `handle`
+expression ends. After the resumed computation finishes, control returns to
+the handler clause that called `resume`. This holds for a `handle` at the top
+level of a script and for a `handle` nested inside a larger expression, such
+as `(handle ... ) + 100`. The compiler puts a `handle` that is not in function
+tail position into its own zero-argument function, so the `handle` always ends
+its own call frame (`ExprKind::Handle` in `crates/hiko-compile/src/compiler.rs`).
+
+**Local continuations are multi-shot by copy.** `resume` copies the saved stack
+slice and frames back onto the VM stack and does not consume the continuation.
+The same `k` can be resumed more than once:
+
+```hiko
+effect Choose of unit
+
+fun body () = if perform Choose () then 10 else 20
+
+fun both () =
+  handle
+    body ()
+  with
+    return x => x
+  | Choose _ k => resume k true + resume k false
+
+(* both () = 30 *)
+```
+
+**Direction.** One-shot continuations are the intended direction. Multi-shot
+resumption works today only as a consequence of copying, and it may be removed
+or put behind an explicit marker, so do not rely on it. Whether Hiko keeps
+multi-shot resumption is an open research question; see
+[project-state.md](../project/project-state.md#open-research-questions) and
+[rnd/effects-design.md](../rnd/effects-design.md). The threaded runtime's I/O
+suspensions are a separate mechanism and are always one-shot (see
+[`../architecture/runtime.md`](../architecture/runtime.md)).
