@@ -71,12 +71,12 @@ fn pretty_decl_list(
             }
         }
 
-        if let Some(ctx) = ctx {
-            if let Some(first) = leading.first() {
-                if i > 0 && first.start_line > line_for(ctx, cursor) + 1 {
-                    ensure_blank_line(buf);
-                }
-            }
+        if let Some(ctx) = ctx
+            && let Some(first) = leading.first()
+            && i > 0
+            && first.start_line > line_for(ctx, cursor) + 1
+        {
+            ensure_blank_line(buf);
         }
         write_comment_sequence(buf, &leading, indent);
 
@@ -98,10 +98,11 @@ fn pretty_decl_list(
     if let Some(ctx) = ctx {
         let trailing =
             leading_comments(ctx, cursor, container_end, container_end).collect::<Vec<_>>();
-        if let Some(first) = trailing.first() {
-            if !buf.is_empty() && first.start_line > line_for(ctx, cursor) + 1 {
-                ensure_blank_line(buf);
-            }
+        if let Some(first) = trailing.first()
+            && !buf.is_empty()
+            && first.start_line > line_for(ctx, cursor) + 1
+        {
+            ensure_blank_line(buf);
         }
         write_comment_sequence(buf, &trailing, indent);
         trim_trailing_newlines(buf);
@@ -329,7 +330,7 @@ fn pretty_decl(
                 }
                 buf.push_str(interner.resolve(*sym));
             }
-            buf.push_str(")");
+            buf.push(')');
         }
         DeclKind::Use(path) => {
             write_indent(buf, indent);
