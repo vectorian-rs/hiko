@@ -177,12 +177,6 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
             package_name,
             &format!("package entry in '{}'", path.display()),
         )?;
-        if package_name.trim().is_empty() {
-            return Err(CompileError::codegen(format!(
-                "package entry in '{}' has an empty name",
-                path.display()
-            )));
-        }
         if package.version.trim().is_empty() {
             return Err(CompileError::codegen(format!(
                 "package '{package_name}' in '{}' is missing version",
@@ -300,7 +294,9 @@ fn validate_remote_base_url(
         return Ok(());
     }
     if let Some(rest) = base_url.strip_prefix("http://") {
-        let authority = rest.split('/').next().unwrap_or_default();
+        // The authority ends at the first '/', '?' or '#'. '\' is treated as a
+        // terminator too, since some URL parsers read it as a path separator.
+        let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
         let host = authority
             .rsplit_once('@')
             .map(|(_, host)| host)
@@ -371,11 +367,41 @@ struct UpvalueDesc {
 struct FuncCtx {
     chunk: Chunk,
     locals: Vec<Local>,
-    max_locals: u16,
+    max_locals: usize,
     upvalues: Vec<UpvalueDesc>,
     scope_depth: u32,
     arity: u8,
     name: Option<String>,
+    /// Constant pool indexes already used by this chunk, so repeated
+    /// literals and global names share one entry.
+    string_constants: HashMap<String, u16>,
+    scalar_constants: HashMap<ScalarConstant, u16>,
+}
+
+impl FuncCtx {
+    fn new(name: Option<String>, arity: u8) -> Self {
+        FuncCtx {
+            chunk: Chunk::default(),
+            locals: Vec::new(),
+            max_locals: 0,
+            upvalues: Vec::new(),
+            scope_depth: 0,
+            arity,
+            name,
+            string_constants: HashMap::new(),
+            scalar_constants: HashMap::new(),
+        }
+    }
+}
+
+/// Hashable identity of a non-string constant. Floats compare by bit
+/// pattern, so `0.0` and `-0.0` stay distinct.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ScalarConstant {
+    Int(i64),
+    Float(u64),
+    Word(u64),
+    Char(char),
 }
 
 #[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
@@ -495,6 +521,19 @@ impl ResolvedImport {
         }
     }
 
+    /// Whether the source was fetched from a remote package.
+    fn is_remote(&self) -> bool {
+        match self {
+            #[cfg(all(
+                feature = "loader-named-imports",
+                feature = "loader-http",
+                feature = "loader-integrity-blake3"
+            ))]
+            Self::VerifiedFile { .. } => true,
+            _ => false,
+        }
+    }
+
     fn display_name(&self) -> &str {
         match self {
             Self::File { display_name, .. } => display_name,
@@ -563,6 +602,10 @@ pub struct Compiler {
     entry_file: Option<PathBuf>,
     /// Imports currently being loaded (for cycle detection).
     loading_imports: HashSet<ImportKey>,
+    /// True while inferring a remote module or anything it imports. Local
+    /// `use` is rejected there: a hash-pinned module must not pull in
+    /// unverified files relative to the shared module cache.
+    in_remote_import: bool,
     /// Imports whose type inference is complete.
     inferred_imports: HashSet<ImportKey>,
     /// Imports whose codegen is complete.
@@ -589,7 +632,8 @@ pub struct Compiler {
         allow(dead_code)
     )]
     module_cache_dir: Option<PathBuf>,
-    /// Global function name -> proto_idx (for direct calls).
+    /// Global name -> proto_idx of the capture-free function it is currently
+    /// bound to, for `CallDirect`. Every global rebinding clears the entry.
     global_protos: HashMap<String, u16>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
@@ -633,15 +677,7 @@ impl Compiler {
 
         let mut c = Compiler {
             functions: Vec::new(),
-            func_stack: vec![FuncCtx {
-                chunk: Chunk::default(),
-                locals: Vec::new(),
-                max_locals: 0,
-                upvalues: Vec::new(),
-                scope_depth: 0,
-                arity: 0,
-                name: None,
-            }],
+            func_stack: vec![FuncCtx::new(None, 0)],
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
             effect_tags: HashMap::new(),
@@ -649,6 +685,7 @@ impl Compiler {
             base_dir,
             entry_file,
             loading_imports,
+            in_remote_import: false,
             inferred_imports: HashSet::new(),
             compiled_imports: HashSet::new(),
             imported_programs: HashMap::new(),
@@ -678,7 +715,7 @@ impl Compiler {
         Ok((
             CompiledProgram {
                 main: Arc::new(main.chunk),
-                main_n_locals: main.max_locals,
+                main_n_locals: checked_u16(main.max_locals, "local slots")?,
                 functions: Arc::<[FunctionProto]>::from(c.functions),
                 effects: Arc::<[crate::chunk::EffectMeta]>::from(
                     c.effect_tags
@@ -715,10 +752,7 @@ impl Compiler {
         self.chunk().emit_u16(val);
     }
     fn emit_constant(&mut self, c: Constant) -> Result<(), CompileError> {
-        let idx = self
-            .chunk()
-            .add_constant(c)
-            .map_err(CompileError::codegen)?;
+        let idx = self.add_constant(c)?;
         self.emit(Op::Const);
         self.emit_u16(idx);
         Ok(())
@@ -729,22 +763,40 @@ impl Compiler {
     fn patch_jump(&mut self, pos: usize) -> Result<(), CompileError> {
         self.chunk().patch_jump(pos).map_err(CompileError::codegen)
     }
+    /// Add a constant to the current chunk, reusing an existing equal entry.
+    fn add_constant(&mut self, c: Constant) -> Result<u16, CompileError> {
+        let key = match &c {
+            Constant::String(s) => return self.add_string_constant(s),
+            Constant::Int(n) => ScalarConstant::Int(*n),
+            Constant::Float(f) => ScalarConstant::Float(f.to_bits()),
+            Constant::Word(w) => ScalarConstant::Word(*w),
+            Constant::Char(c) => ScalarConstant::Char(*c),
+        };
+        if let Some(&idx) = self.ctx().scalar_constants.get(&key) {
+            return Ok(idx);
+        }
+        let idx = self
+            .chunk()
+            .add_constant(c)
+            .map_err(CompileError::codegen)?;
+        self.ctx_mut().scalar_constants.insert(key, idx);
+        Ok(idx)
+    }
+
     fn add_string_constant(&mut self, s: &str) -> Result<u16, CompileError> {
-        self.chunk()
+        if let Some(&idx) = self.ctx().string_constants.get(s) {
+            return Ok(idx);
+        }
+        let idx = self
+            .chunk()
             .add_constant(Constant::String(s.to_string()))
-            .map_err(CompileError::codegen)
+            .map_err(CompileError::codegen)?;
+        self.ctx_mut().string_constants.insert(s.to_string(), idx);
+        Ok(idx)
     }
 
     fn push_new_function(&mut self, name: Option<String>) {
-        self.func_stack.push(FuncCtx {
-            chunk: Chunk::default(),
-            locals: Vec::new(),
-            max_locals: 0,
-            upvalues: Vec::new(),
-            scope_depth: 0,
-            arity: 1,
-            name,
-        });
+        self.func_stack.push(FuncCtx::new(name, 1));
     }
 
     // ── Variable resolution ──────────────────────────────────────────
@@ -821,15 +873,24 @@ impl Compiler {
         }
     }
 
-    fn emit_get_field(&mut self, idx: u8) {
+    fn emit_get_field(&mut self, idx: usize) -> Result<(), CompileError> {
         match idx {
             0 => self.emit(Op::GetField0),
             1 => self.emit(Op::GetField1),
             _ => {
+                let idx = checked_u8(idx, "tuple fields")?;
                 self.emit(Op::GetField);
                 self.emit_u8(idx);
             }
         }
+        Ok(())
+    }
+
+    fn emit_make_tuple(&mut self, len: usize) -> Result<(), CompileError> {
+        let len = checked_u8(len, "tuple elements")?;
+        self.emit(Op::MakeTuple);
+        self.emit_u8(len);
+        Ok(())
     }
 
     fn emit_get_var(&mut self, name: &str) -> Result<(), CompileError> {
@@ -847,17 +908,53 @@ impl Compiler {
     }
 
     fn emit_set_global(&mut self, name: &str) -> Result<(), CompileError> {
+        // The global may no longer hold the function recorded for direct calls.
+        self.global_protos.remove(name);
         let c = self.add_string_constant(name)?;
         self.emit(Op::SetGlobal);
         self.emit_u16(c);
         Ok(())
     }
 
-    fn add_local(&mut self, name: String) {
-        let depth = self.ctx().scope_depth;
-        self.ctx_mut().locals.push(Local { name, depth });
-        let len = self.ctx().locals.len();
-        self.ctx_mut().max_locals = self.ctx().max_locals.max(len as u16);
+    /// Proto index for a `CallDirect` to `name`: only when `name` resolves to
+    /// a global that is currently bound to a capture-free function.
+    fn direct_call_proto(&mut self, name: &str) -> Option<u16> {
+        if self.resolve_local(name).is_some() || self.resolve_upvalue(name).is_some() {
+            return None;
+        }
+        self.global_protos.get(name).copied()
+    }
+
+    fn forget_global_proto(&mut self, name: &str) {
+        if self.ctx().scope_depth == 0 {
+            self.global_protos.remove(name);
+        }
+    }
+
+    /// After binding `name` to the closure of the function finished last,
+    /// record it for direct calls when it is a capture-free global.
+    fn register_global_proto(&mut self, name: &str) {
+        if self.ctx().scope_depth != 0 {
+            return;
+        }
+        let Some(proto) = self.functions.last() else {
+            return;
+        };
+        if proto.n_captures == 0 {
+            // finish_function already checked that the index fits in u16.
+            let proto_idx = (self.functions.len() - 1) as u16;
+            self.global_protos.insert(name.to_string(), proto_idx);
+        }
+    }
+
+    /// Add a local in the current scope and return its slot. Slots above
+    /// u16::MAX are rejected when the function is finished (max_locals).
+    fn add_local(&mut self, name: String) -> u16 {
+        let ctx = self.ctx_mut();
+        let depth = ctx.scope_depth;
+        ctx.locals.push(Local { name, depth });
+        ctx.max_locals = ctx.max_locals.max(ctx.locals.len());
+        (ctx.locals.len() - 1) as u16
     }
 
     fn begin_scope(&mut self) {
@@ -891,11 +988,10 @@ impl Compiler {
     }
 
     /// Emit GetLocal slot + GetField idx, add as temp local, return new slot.
-    fn emit_field_extract(&mut self, slot: u16, idx: u8) -> u16 {
+    fn emit_field_extract(&mut self, slot: u16, idx: usize) -> Result<u16, CompileError> {
         self.emit_get_local(slot);
-        self.emit_get_field(idx);
-        self.add_local("_tmp".to_string());
-        (self.ctx().locals.len() - 1) as u16
+        self.emit_get_field(idx)?;
+        Ok(self.add_local("_tmp".to_string()))
     }
 
     /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
@@ -939,16 +1035,24 @@ impl Compiler {
                 self.compile_binding_pattern(pat)
             }
             DeclKind::ValRec(sym, expr) => {
-                self.compile_expr(expr)?;
                 let name = self.interner.resolve(*sym).to_string();
+                self.forget_global_proto(&name);
+                self.compile_expr(expr)?;
                 self.bind_name(&name)?;
                 Ok(())
             }
             DeclKind::Fun(bindings) => {
+                // `fun` is recursive: inside the bodies, these names refer to
+                // the new bindings, never to an earlier global function.
+                for binding in bindings {
+                    let name = self.interner.resolve(binding.name).to_string();
+                    self.forget_global_proto(&name);
+                }
                 for binding in bindings {
                     self.compile_fun_binding(binding)?;
                     let name = self.interner.resolve(binding.name).to_string();
                     self.bind_name(&name)?;
+                    self.register_global_proto(&name);
                 }
                 Ok(())
             }
@@ -964,8 +1068,15 @@ impl Compiler {
                     kind: ExprKind::Var(*internal_name),
                     span: decl.span,
                 })?;
+                let internal = self.interner.resolve(*internal_name).to_string();
+                let internal_proto = self.direct_call_proto(&internal);
                 let name = self.interner.resolve(*public_name).to_string();
                 self.bind_name(&name)?;
+                if self.ctx().scope_depth == 0
+                    && let Some(proto_idx) = internal_proto
+                {
+                    self.global_protos.insert(name, proto_idx);
+                }
                 Ok(())
             }
             DeclKind::Effect(sym, _) => {
@@ -1015,6 +1126,11 @@ impl Compiler {
     // ── Local and named import handling ─────────────────────────────
 
     fn resolve_local_use(&self, path: &str) -> Result<ResolvedImport, CompileError> {
+        if self.in_remote_import {
+            return Err(CompileError::codegen(format!(
+                "local use '{path}' is not allowed in a remote module; use a named import instead"
+            )));
+        }
         let resolved = self.base_dir.join(path);
         let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
             CompileError::codegen(format!(
@@ -1248,6 +1364,7 @@ impl Compiler {
     fn infer_import_source(&mut self, import: ResolvedImport) -> Result<(), CompileError> {
         let key = import.key();
         let display_name = import.display_name().to_string();
+        let is_remote = import.is_remote();
         if self.loading_imports.contains(&key) {
             return Err(CompileError::codegen(format!(
                 "circular import detected while loading '{display_name}'"
@@ -1279,9 +1396,12 @@ impl Compiler {
         self.loading_imports.insert(key.clone());
         let old_base = self.base_dir.clone();
         self.base_dir = imported_base_dir.clone();
+        let old_in_remote = self.in_remote_import;
+        self.in_remote_import |= is_remote;
 
         let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
 
+        self.in_remote_import = old_in_remote;
         self.base_dir = old_base;
         self.loading_imports.remove(&key);
 
@@ -1322,8 +1442,8 @@ impl Compiler {
         // Now bind aliases for each exposed name. Exposed names are explicit
         // imports, so collisions are compile errors rather than silent shadowing.
         let module_short = module_name_str
-            .split('.')
-            .last()
+            .rsplit('.')
+            .next()
             .unwrap_or(&module_name_str);
         let mut seen_exposed = HashSet::new();
         for sym in names {
@@ -1346,7 +1466,7 @@ impl Compiler {
             if self.infer_ctx.has_constructor(&qualified) {
                 self.infer_ctx
                     .bind_constructor_alias(&name, &qualified)
-                    .map_err(|e| CompileError::codegen(e))?;
+                    .map_err(CompileError::codegen)?;
                 // Also register in the compiler's constructor tag/arity maps
                 // so codegen can resolve the aliased name.
                 // Use infer_ctx's tags since compile_datatype hasn't run yet.
@@ -1361,7 +1481,7 @@ impl Compiler {
             } else if self.infer_ctx.has_value(&qualified) {
                 self.infer_ctx
                     .bind_value_alias(&name, &qualified)
-                    .map_err(|e| CompileError::codegen(e))?;
+                    .map_err(CompileError::codegen)?;
             } else {
                 return Err(CompileError::codegen(format!(
                     "import '{}' does not export '{}'",
@@ -1416,8 +1536,8 @@ impl Compiler {
 
         // Now create global aliases for each exposed name
         let module_short = module_name_str
-            .split('.')
-            .last()
+            .rsplit('.')
+            .next()
             .unwrap_or(&module_name_str);
         for sym in names {
             let name = self.interner.resolve(*sym).to_string();
@@ -1446,11 +1566,10 @@ impl Compiler {
                 Ok(())
             }
             PatKind::Tuple(pats) => {
-                self.add_local("_tup".to_string());
-                let tup_slot = (self.ctx().locals.len() - 1) as u16;
+                let tup_slot = self.add_local("_tup".to_string());
                 for (i, p) in pats.iter().enumerate() {
                     self.emit_get_local(tup_slot);
-                    self.emit_get_field(i as u8);
+                    self.emit_get_field(i)?;
                     self.compile_binding_pattern(p)?;
                 }
                 Ok(())
@@ -1466,7 +1585,7 @@ impl Compiler {
     fn compile_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), CompileError> {
         for (i, con) in dt.constructors.iter().enumerate() {
             let con_name = self.interner.resolve(con.name).to_string();
-            let tag = i as u16;
+            let tag = checked_u16(i, "datatype constructors")?;
             let has_payload = con.payload.is_some();
             self.constructor_tags.insert(con_name.clone(), tag);
             self.constructor_arities
@@ -1487,6 +1606,9 @@ impl Compiler {
                 self.emit_u8(0);
             }
             self.bind_name(&con_name)?;
+            if has_payload {
+                self.register_global_proto(&con_name);
+            }
         }
         Ok(())
     }
@@ -1500,16 +1622,7 @@ impl Compiler {
             return self.compile_curried_fn(Some(&name), &clause.pats, 0, &clause.body);
         }
         let arity = binding.clauses[0].pats.len();
-        self.compile_clausal_fn(Some(&name), arity, &binding.clauses)
-    }
-
-    fn compile_clausal_fn(
-        &mut self,
-        name: Option<&str>,
-        arity: usize,
-        clauses: &[FunClause],
-    ) -> Result<(), CompileError> {
-        self.compile_clausal_fn_inner(name, arity, 0, clauses)
+        self.compile_clausal_fn_inner(Some(&name), arity, 0, &binding.clauses)
     }
 
     fn compile_clausal_fn_inner(
@@ -1533,18 +1646,15 @@ impl Compiler {
             self.begin_scope();
             if arity == 1 {
                 self.emit_get_var("_arg0")?;
-                self.add_local("_scrut".to_string());
-                let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+                let scrut_slot = self.add_local("_scrut".to_string());
                 let branches: Vec<_> = clauses.iter().map(|c| (&c.pats[0], &c.body)).collect();
                 self.compile_case_branches_inner(scrut_slot, &branches, true)?;
             } else {
                 for i in 0..arity {
                     self.emit_get_var(&format!("_arg{i}"))?;
                 }
-                self.emit(Op::MakeTuple);
-                self.emit_u8(arity as u8);
-                self.add_local("_scrut".to_string());
-                let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+                self.emit_make_tuple(arity)?;
+                let scrut_slot = self.add_local("_scrut".to_string());
                 let tuple_pats: Vec<Pat> = clauses
                     .iter()
                     .map(|c| Pat {
@@ -1596,8 +1706,7 @@ impl Compiler {
             self.add_local("_arg".to_string());
             self.begin_scope();
             self.emit_get_local(0);
-            self.add_local("_scrut".to_string());
-            let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+            let scrut_slot = self.add_local("_scrut".to_string());
             self.compile_case_branches_inner(scrut_slot, &[(pat, body)], true)?;
             self.end_scope_keep_result();
         }
@@ -1607,23 +1716,16 @@ impl Compiler {
 
     fn finish_function(&mut self) -> Result<(), CompileError> {
         let func_ctx = self.func_stack.pop().unwrap();
-        let n_captures = func_ctx.upvalues.len() as u8;
-        let fn_name = func_ctx.name.clone();
+        let n_captures = checked_u8(func_ctx.upvalues.len(), "closure captures")?;
         let proto = FunctionProto {
             name: func_ctx.name,
             arity: func_ctx.arity,
             n_captures,
-            n_locals: func_ctx.max_locals,
+            n_locals: checked_u16(func_ctx.max_locals, "local slots")?,
             chunk: func_ctx.chunk,
         };
-        let proto_idx = self.functions.len() as u16;
+        let proto_idx = checked_u16(self.functions.len(), "functions")?;
         self.functions.push(proto);
-        // Register for direct calls if this is a top-level function with no captures
-        if n_captures == 0
-            && let Some(name) = &fn_name
-        {
-            self.global_protos.insert(name.clone(), proto_idx);
-        }
         self.emit(Op::MakeClosure);
         self.emit_u16(proto_idx);
         self.emit_u8(n_captures);
@@ -1664,29 +1766,30 @@ impl Compiler {
 
             // Fail path: each fail point has a different number of
             // temporaries on the stack. Emit a separate cleanup
-            // trampoline for each, jumping to a shared landing pad.
-            let mut cleanup_end_jumps = Vec::new();
-            for (fj, locals_at_fail) in &fail_jumps {
-                self.chunk()
-                    .patch_jump(*fj)
-                    .map_err(CompileError::codegen)?;
+            // trampoline for each, jumping to a shared landing pad. Fail
+            // points without temporaries jump straight to the landing pad;
+            // they must not fall into a later trampoline's pops.
+            let mut landing_jumps = Vec::new();
+            for &(fj, locals_at_fail) in &fail_jumps {
                 let n_pops = locals_at_fail - locals_before;
+                if n_pops == 0 {
+                    landing_jumps.push(fj);
+                    continue;
+                }
+                self.patch_jump(fj)?;
                 for _ in 0..n_pops {
                     self.emit(Op::Pop);
                 }
-                if n_pops > 0 {
-                    cleanup_end_jumps.push(self.emit_jump(Op::Jump));
-                }
+                landing_jumps.push(self.emit_jump(Op::Jump));
             }
-            for j in cleanup_end_jumps {
+            for j in landing_jumps {
                 self.patch_jump(j)?;
             }
 
             // Restore compiler state for next branch
-            while self.ctx().locals.len() > locals_before {
-                self.ctx_mut().locals.pop();
-            }
-            self.ctx_mut().scope_depth = depth_before;
+            let ctx = self.ctx_mut();
+            ctx.locals.truncate(locals_before);
+            ctx.scope_depth = depth_before;
         }
 
         // Non-exhaustive match: emit runtime panic
@@ -1721,13 +1824,12 @@ impl Compiler {
                 self.emit_scalar_check(slot, Constant::Word(*w), Op::Eq, fail_jumps)?;
             }
             PatKind::BoolLit(b) => {
+                // The scrutinee is already a bool: branch on it directly
+                // (negated for `false`) instead of a generic Eq.
                 self.emit_get_local(slot);
-                if *b {
-                    self.emit(Op::True);
-                } else {
-                    self.emit(Op::False);
+                if !*b {
+                    self.emit(Op::Not);
                 }
-                self.emit(Op::Eq);
                 let jmp = self.emit_jump(Op::JumpIfFalse);
                 fail_jumps.push((jmp, self.ctx().locals.len()));
             }
@@ -1754,7 +1856,7 @@ impl Compiler {
 
             PatKind::Tuple(pats) => {
                 for (i, p) in pats.iter().enumerate() {
-                    self.emit_field_extract_test(slot, i as u8, p, fail_jumps)?;
+                    self.emit_field_extract_test(slot, i, p, fail_jumps)?;
                 }
             }
 
@@ -1786,7 +1888,7 @@ impl Compiler {
     fn emit_field_extract_test(
         &mut self,
         slot: u16,
-        field_idx: u8,
+        field_idx: usize,
         sub_pat: &Pat,
         fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
@@ -1794,7 +1896,7 @@ impl Compiler {
             return Ok(()); // wildcard/var: nothing to test
         }
         // Push field value as temp local for sub-pattern testing
-        let field_slot = self.emit_field_extract(slot, field_idx);
+        let field_slot = self.emit_field_extract(slot, field_idx)?;
         self.compile_pattern_test(field_slot, sub_pat, fail_jumps)?;
         // Pop the temp local (we'll re-extract during bind phase)
         self.ctx_mut().locals.pop();
@@ -1820,21 +1922,21 @@ impl Compiler {
 
             PatKind::Constructor(_, None) => {}
             PatKind::Constructor(_, Some(sub_pat)) => {
-                let field_slot = self.emit_field_extract(slot, 0);
+                let field_slot = self.emit_field_extract(slot, 0)?;
                 self.compile_pattern_bind(field_slot, sub_pat)?;
             }
 
             PatKind::Tuple(pats) => {
                 for (i, p) in pats.iter().enumerate() {
-                    let field_slot = self.emit_field_extract(slot, i as u8);
+                    let field_slot = self.emit_field_extract(slot, i)?;
                     self.compile_pattern_bind(field_slot, p)?;
                 }
             }
 
             PatKind::Cons(hd, tl) => {
-                let hd_slot = self.emit_field_extract(slot, 0);
+                let hd_slot = self.emit_field_extract(slot, 0)?;
                 self.compile_pattern_bind(hd_slot, hd)?;
-                let tl_slot = self.emit_field_extract(slot, 1);
+                let tl_slot = self.emit_field_extract(slot, 1)?;
                 self.compile_pattern_bind(tl_slot, tl)?;
             }
 
@@ -1896,6 +1998,25 @@ impl Compiler {
         self.compile_expr_inner(expr, false)
     }
 
+    /// Compile operands left to right, leaving each value on the stack.
+    ///
+    /// Locals live on the same stack as operands, so while a later operand
+    /// is compiled the earlier values occupy slots. Reserve those slots as
+    /// unnamed locals; otherwise a `case` scrutinee, `let` binding or pattern
+    /// temporary inside a later operand gets a slot index that ignores them.
+    fn compile_operands(&mut self, operands: &[&Expr]) -> Result<(), CompileError> {
+        let locals_before = self.ctx().locals.len();
+        for (i, operand) in operands.iter().enumerate() {
+            self.compile_expr(operand)?;
+            if i + 1 < operands.len() {
+                // An empty name never resolves as a variable.
+                self.add_local(String::new());
+            }
+        }
+        self.ctx_mut().locals.truncate(locals_before);
+        Ok(())
+    }
+
     fn compile_expr_tail(&mut self, expr: &Expr) -> Result<(), CompileError> {
         self.compile_expr_inner(expr, true)
     }
@@ -1911,21 +2032,15 @@ impl Compiler {
             ExprKind::BoolLit(true) => self.emit(Op::True),
             ExprKind::BoolLit(false) => self.emit(Op::False),
             ExprKind::Unit => self.emit(Op::Unit),
-            ExprKind::Var(sym) => {
-                let name = self.interner.resolve(*sym).to_string();
-                self.emit_get_var(&name)?;
-            }
-            ExprKind::Constructor(sym) => {
+            ExprKind::Var(sym) | ExprKind::Constructor(sym) => {
                 let name = self.interner.resolve(*sym).to_string();
                 self.emit_get_var(&name)?;
             }
 
             ExprKind::Tuple(elems) => {
-                for e in elems {
-                    self.compile_expr(e)?;
-                }
-                self.emit(Op::MakeTuple);
-                self.emit_u8(elems.len() as u8);
+                let elems_refs: Vec<&Expr> = elems.iter().collect();
+                self.compile_operands(&elems_refs)?;
+                self.emit_make_tuple(elems.len())?;
             }
             ExprKind::List(elems) => {
                 assert!(
@@ -1937,8 +2052,7 @@ impl Compiler {
                 self.emit_u8(0);
             }
             ExprKind::Cons(head, tail) => {
-                self.compile_expr(head)?;
-                self.compile_expr(tail)?;
+                self.compile_operands(&[head, tail])?;
                 self.emit(Op::MakeCons);
             }
 
@@ -1946,15 +2060,11 @@ impl Compiler {
                 unreachable!("desugared to if-then-else")
             }
             ExprKind::BinOp(op, lhs, rhs) => {
-                if let Some(resolved_op) = self.resolve_generic_binop(*op, expr.span) {
-                    self.compile_expr(lhs)?;
-                    self.compile_expr(rhs)?;
-                    self.emit(resolved_op);
-                } else {
-                    self.compile_expr(lhs)?;
-                    self.compile_expr(rhs)?;
-                    self.emit(binop_to_op(*op));
-                }
+                let resolved_op = self
+                    .resolve_generic_binop(*op, expr.span)
+                    .unwrap_or_else(|| binop_to_op(*op));
+                self.compile_operands(&[lhs, rhs])?;
+                self.emit(resolved_op);
             }
 
             ExprKind::UnaryNeg(e) => {
@@ -1975,18 +2085,7 @@ impl Compiler {
                 // is a known global function with no captures
                 let direct_proto = if let ExprKind::Var(sym) = &func.kind {
                     let name = self.interner.resolve(*sym).to_string();
-                    if self.resolve_local(&name).is_none() && self.resolve_upvalue(&name).is_none()
-                    {
-                        // Global function
-                        self.global_protos.get(&name).copied()
-                    } else if self.ctx().name.as_deref() == Some(&name) {
-                        // Self-recursive call: proto_idx will be self.functions.len()
-                        Some(self.functions.len() as u16)
-                    } else {
-                        // Also check if name matches a known global even as upvalue
-                        // (recursive calls capture the function as an upvalue)
-                        self.global_protos.get(&name).copied()
-                    }
+                    self.direct_call_proto(&name)
                 } else {
                     None
                 };
@@ -1999,8 +2098,7 @@ impl Compiler {
                     }
                     self.emit_u16(proto_idx);
                 } else {
-                    self.compile_expr(func)?;
-                    self.compile_expr(arg)?;
+                    self.compile_operands(&[func, arg])?;
                     if tail {
                         self.emit(Op::TailCall);
                     } else {
@@ -2034,8 +2132,7 @@ impl Compiler {
             ExprKind::Case(scrutinee, branches) => {
                 self.begin_scope();
                 self.compile_expr(scrutinee)?;
-                self.add_local("_scrut".to_string());
-                let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+                let scrut_slot = self.add_local("_scrut".to_string());
                 let branch_refs: Vec<_> = branches.iter().map(|(p, e)| (p, e)).collect();
                 self.compile_case_branches_inner(scrut_slot, &branch_refs, tail)?;
                 self.end_scope_keep_result();
@@ -2125,6 +2222,28 @@ impl Compiler {
         }
         Ok(())
     }
+}
+
+/// Convert a count or index to a `u8` bytecode operand, failing instead of
+/// silently truncating.
+fn checked_u8(value: usize, what: &str) -> Result<u8, CompileError> {
+    u8::try_from(value).map_err(|_| {
+        CompileError::codegen(format!(
+            "too many {what}: {value} exceeds the bytecode limit of {}",
+            u8::MAX
+        ))
+    })
+}
+
+/// Convert a count or index to a `u16` bytecode operand, failing instead of
+/// silently truncating.
+fn checked_u16(value: usize, what: &str) -> Result<u16, CompileError> {
+    u16::try_from(value).map_err(|_| {
+        CompileError::codegen(format!(
+            "too many {what}: {value} exceeds the bytecode limit of {}",
+            u16::MAX
+        ))
+    })
 }
 
 fn simple_pat_name(pat: &Pat, interner: &StringInterner) -> String {
@@ -2322,6 +2441,55 @@ mod tests {
         let program = parse_program("val xs = 1 :: []\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
         assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
+    }
+
+    #[test]
+    fn compile_direct_calls_only_unshadowed_global_functions() {
+        let program = parse_program(
+            "fun g x = x + 1\nval a = g 1\nfun h g = g 10\nval g = fn x => x * 2\nval b = g 2\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let call_direct = Op::CallDirect as u8;
+        let h = compiled
+            .functions
+            .iter()
+            .find(|proto| proto.name.as_deref() == Some("h"))
+            .expect("function proto");
+        // `a = g 1` calls the global function directly ...
+        assert_eq!(
+            compiled
+                .main
+                .code
+                .iter()
+                .filter(|&&b| b == call_direct)
+                .count(),
+            1,
+            "expected exactly one CallDirect in main (for `g 1`, not `g 2`)"
+        );
+        // ... but the parameter `g` inside `h` shadows it.
+        assert!(!h.chunk.code.contains(&call_direct));
+    }
+
+    #[test]
+    fn compile_deduplicates_constants_per_chunk() {
+        let program = parse_program("val x = 1\nval y = x + x + 1\nval s = \"x\"\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        // Int 1, and the strings "x", "y", "s" (the literal "x" shares the
+        // entry used for the global name `x`).
+        assert_eq!(compiled.main.constants.len(), 4);
+    }
+
+    #[test]
+    fn compile_bool_pattern_branches_without_generic_eq() {
+        let program = parse_program("fun f b = case b of true => 1 | false => 0\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let proto = compiled
+            .functions
+            .iter()
+            .find(|proto| proto.name.as_deref() == Some("f"))
+            .expect("function proto");
+        assert!(!proto.chunk.code.contains(&(Op::Eq as u8)));
+        assert!(proto.chunk.code.contains(&(Op::Not as u8)));
     }
 
     #[test]
@@ -2591,6 +2759,25 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-named-imports")]
+    #[test]
+    fn remote_base_url_allows_only_https_or_local_http() {
+        let check = |base_url: &str| {
+            validate_remote_base_url("Std", base_url, Path::new("hiko.lock.toml")).is_ok()
+        };
+        assert!(check("https://modules.example.com/Std-v0.1.0"));
+        assert!(check("http://127.0.0.1:8000/Std-v0.1.0"));
+        assert!(check("http://localhost/Std-v0.1.0"));
+        assert!(check("http://[::1]:8000/Std-v0.1.0"));
+        assert!(!check("http://modules.example.com/Std-v0.1.0"));
+        assert!(!check("http://127.0.0.1@modules.example.com/Std-v0.1.0"));
+        assert!(!check("http://localhost.example.com/Std-v0.1.0"));
+        // Text after the authority must not be mistaken for the host.
+        assert!(!check("http://modules.example.com?@127.0.0.1/Std-v0.1.0"));
+        assert!(!check("http://modules.example.com#@localhost/Std-v0.1.0"));
+        assert!(!check("http://modules.example.com\\@127.0.0.1/Std-v0.1.0"));
+    }
+
     #[test]
     fn named_import_rejects_oversized_remote_module() {
         let project_dir = unique_temp_dir("named-import-too-large");
@@ -2629,6 +2816,48 @@ Answer = "blake3:deadbeef"
         }
         assert!(!cache_path.exists());
 
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_local_use_inside_remote_module() {
+        let project_dir = unique_temp_dir("named-import-remote-use");
+        write_project_manifest(&project_dir);
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "use \"../secret.hml\"\nval remote_answer = 42\n".to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (answer_url, server) =
+            spawn_single_response_server("/modules/Answer.hml", module_source);
+        let base_url = answer_url
+            .trim_end_matches("/modules/Answer.hml")
+            .to_string();
+        let cache_path =
+            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Test.Answer\nval result = remote_answer\n",
+        );
+        let _ = std::fs::remove_file(&cache_path);
+
+        let result = compile_path(&entry_path);
+        server.join().expect("join server");
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(
+                    message.contains("not allowed in a remote module"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected local use in remote module to fail, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&cache_path);
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
@@ -2942,5 +3171,56 @@ Filesystem = "blake3:deadbeef"
         }
 
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn short_jump_beyond_i16_offset_compiles() {
+        // A short forward jump whose absolute position exceeds i16::MAX must
+        // still be encodable: only the relative offset has to fit in i16.
+        let mut source = String::from("val b = true\n");
+        for i in 0..6000 {
+            source.push_str(&format!("val v{i} = {i}\n"));
+        }
+        source.push_str("val y = if b then 1 else 2\n");
+        let (compiled, _) = Compiler::compile(parse_program(&source)).expect("compile");
+        assert!(compiled.main.code.len() > i16::MAX as usize);
+    }
+
+    #[test]
+    fn tuple_with_more_than_255_elements_is_rejected() {
+        let elems = (0..256).map(|i| i.to_string()).collect::<Vec<_>>();
+        let source = format!("val t = ({})\n", elems.join(", "));
+        match Compiler::compile(parse_program(&source)) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("tuple"), "unexpected error: {message}");
+            }
+            other => panic!("expected codegen error for 256-element tuple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closure_with_more_than_255_captures_is_rejected() {
+        let mut source = String::from("val f = let\n");
+        for i in 0..256 {
+            source.push_str(&format!("  val c{i} = {i}\n"));
+        }
+        // Group the captures into small tuples to keep the expression shallow.
+        let groups = (0..16)
+            .map(|g| {
+                let names = (0..16)
+                    .map(|i| format!("c{}", g * 16 + i))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({names})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        source.push_str(&format!("in fn x => (x, {groups}) end\n"));
+        match Compiler::compile(parse_program(&source)) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("capture"), "unexpected error: {message}");
+            }
+            other => panic!("expected codegen error for 256 captures, got {other:?}"),
+        }
     }
 }

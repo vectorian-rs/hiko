@@ -793,6 +793,81 @@ mod tests {
     }
 
     #[test]
+    fn test_parameter_shadowing_global_function_is_not_direct_called() {
+        let vm = run("fun g x = x + 1
+             fun h g = g 10
+             val result = h (fn x => x * 2)");
+        assert_eq!(global_int(&vm, "result"), 20);
+    }
+
+    #[test]
+    fn test_redefined_recursive_function_calls_new_definition() {
+        let vm = run("fun f x = 1
+             fun f x = if x = 0 then 0 else f (x - 1)
+             val result = f 5");
+        assert_eq!(global_int(&vm, "result"), 0);
+    }
+
+    #[test]
+    fn test_global_function_rebound_by_val_is_not_direct_called() {
+        let vm = run("fun g x = x + 1
+             val g = fn x => x * 2
+             val result = g 10");
+        assert_eq!(global_int(&vm, "result"), 20);
+    }
+
+    #[test]
+    fn test_case_as_binary_operand_reads_its_own_scrutinee() {
+        let vm = run("datatype l = End | Link of int
+             fun g x = 1 + (case x of End => 0 | Link n => n)
+             val result = g (Link 3)");
+        assert_eq!(global_int(&vm, "result"), 4);
+    }
+
+    #[test]
+    fn test_case_as_call_argument_reads_its_own_scrutinee() {
+        let vm = run("datatype l = End | Link of int
+             fun id x = x
+             val f = id
+             fun g x = f (case x of End => 0 | Link n => n)
+             val result = g (Link 7)");
+        assert_eq!(global_int(&vm, "result"), 7);
+    }
+
+    #[test]
+    fn test_case_and_let_nested_in_operands() {
+        let vm = run("datatype l = End | Link of int
+             fun g x = (1, (case x of End => 0 | Link n => n), 3)
+             val (a, b, c) = g (Link 5)
+             fun h x = 10 + (let val y = x * 2 in y end)
+             val d = h 4
+             fun k x = 1 :: (case x of End => [] | Link n => [n])
+             val e = case k (Link 9) of _ :: m :: _ => m | _ => 0");
+        assert_eq!(global_int(&vm, "a"), 1);
+        assert_eq!(global_int(&vm, "b"), 5);
+        assert_eq!(global_int(&vm, "c"), 3);
+        assert_eq!(global_int(&vm, "d"), 18);
+        assert_eq!(global_int(&vm, "e"), 9);
+    }
+
+    #[test]
+    fn test_case_fail_paths_with_and_without_temporaries() {
+        // `Link 5` fails at the tag check (no temporaries) or at the nested
+        // literal check (one temporary); both must reach the next clause.
+        let vm = run("datatype l = End | Link of int
+             fun f x = case x of Link 5 => 1 | _ => 2
+             val a = f End
+             val b = f (Link 4)
+             val c = f (Link 5)
+             fun g p = case p of (Link 5, 1) => 1 | (_, n) => n + 10
+             val d = g (End, 3)");
+        assert_eq!(global_int(&vm, "a"), 2);
+        assert_eq!(global_int(&vm, "b"), 2);
+        assert_eq!(global_int(&vm, "c"), 1);
+        assert_eq!(global_int(&vm, "d"), 13);
+    }
+
+    #[test]
     fn test_closure() {
         let vm = run("fun make_adder n = fn x => n + x
              val add5 = make_adder 5
