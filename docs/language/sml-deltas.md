@@ -14,36 +14,36 @@ This is a design note, not a complete catalog of all issues in the SML definitio
 
 ## Defects We Already Avoided
 
-| SML defect | Why it is avoided in Hiko | Practical implication |
-|---|---|---|
-| `val rec` weirdness and static/dynamic mismatch | Hiko chose the simpler recursive-binding surface | Keep only the simplified rule; do not reintroduce legacy `val rec` forms |
-| `abstype` incoherence | Hiko does not have `abstype` | No need to model its equality and principality problems |
-| Large parts of SML's grammar ambiguity | Hiko's surface is much smaller than full SML | Keep specifying one parse, not “whatever the implementation does” |
-| Module-system complexity from full SML | Hiko stopped at minimal modules: `structure`, `signature`, `:>`, qualified names | Do not rush into full SML module features |
-| Confusion around uppercase primitive type names vs ML conventions | Hiko normalized source syntax to lowercase builtin types | Keep source syntax ML-like and explicit |
+| SML defect                                                        | Why it is avoided in Hiko                                                        | Practical implication                                                    |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `val rec` weirdness and static/dynamic mismatch                   | Hiko chose the simpler recursive-binding surface                                 | Keep only the simplified rule; do not reintroduce legacy `val rec` forms |
+| `abstype` incoherence                                             | Hiko does not have `abstype`                                                     | No need to model its equality and principality problems                  |
+| Large parts of SML's grammar ambiguity                            | Hiko's surface is much smaller than full SML                                     | Keep specifying one parse, not “whatever the implementation does”        |
+| Module-system complexity from full SML                            | Hiko stopped at minimal modules: `structure`, `signature`, `:>`, qualified names | Do not rush into full SML module features                                |
+| Confusion around uppercase primitive type names vs ML conventions | Hiko normalized source syntax to lowercase builtin types                         | Keep source syntax ML-like and explicit                                  |
 
 ## Defects We Still Need To Guard Against
 
-| SML defect | Why it still matters for Hiko | Practical implication |
-|---|---|---|
-| Under-specified defaulting machinery | Hiko already rejects operator overloading; the remaining risk is accidentally reintroducing ad hoc defaulting through literals or builtin families | Keep operators monomorphic and require any future defaulting rule to be explicit and formal |
-| Parser ambiguity from new sugar | Every new convenience feature can reintroduce SML-style ambiguity | For each syntax feature, specify precedence and a unique parse up front |
-| Exhaustiveness and redundancy edge cases | Hiko already performs pattern analysis; richer patterns make it subtle quickly | Keep pattern features modest unless the checker story stays precise |
-| Module elaboration complexity creep | Adding functors, `where type`, local modules, or first-class modules would import the hard part of SML | Treat new module features as expensive and require a concrete use case; in particular, do not add functors just to get `MakeSet`/`MakeMap`, because Hiko can cover that use case with ordinary modules plus explicit comparator-passing |
-| Toplevel and type-inference corner cases | HM inference plus declaration forms always has sharp edges | Keep the implementation explicit and regression-test every deliberate divergence |
-| Executable-spec drift | SML and HaMLet show how easily parser, typechecker, and implementation behavior can drift apart | Keep docs, semantics, and tests aligned |
+| SML defect                               | Why it still matters for Hiko                                                                                                                      | Practical implication                                                                                                                                                                                                                   |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Under-specified defaulting machinery     | Hiko already rejects operator overloading; the remaining risk is accidentally reintroducing ad hoc defaulting through literals or builtin families | Keep operators monomorphic and require any future defaulting rule to be explicit and formal                                                                                                                                             |
+| Parser ambiguity from new sugar          | Every new convenience feature can reintroduce SML-style ambiguity                                                                                  | For each syntax feature, specify precedence and a unique parse up front                                                                                                                                                                 |
+| Exhaustiveness and redundancy edge cases | Hiko already performs pattern analysis; richer patterns make it subtle quickly                                                                     | Keep pattern features modest unless the checker story stays precise                                                                                                                                                                     |
+| Module elaboration complexity creep      | Adding functors, `where type`, local modules, or first-class modules would import the hard part of SML                                             | Treat new module features as expensive and require a concrete use case; in particular, do not add functors just to get `MakeSet`/`MakeMap`, because Hiko can cover that use case with ordinary modules plus explicit comparator-passing |
+| Toplevel and type-inference corner cases | HM inference plus declaration forms always has sharp edges                                                                                         | Keep the implementation explicit and regression-test every deliberate divergence                                                                                                                                                        |
+| Executable-spec drift                    | SML and HaMLet show how easily parser, typechecker, and implementation behavior can drift apart                                                    | Keep docs, semantics, and tests aligned                                                                                                                                                                                                 |
 
 ## Defects That Are Irrelevant Because Hiko Intentionally Diverges
 
-| SML defect | Why it is irrelevant for Hiko | Practical implication |
-|---|---|---|
-| Full Basis overloading complexity (`word`, `real`, etc.) | Hiko is not trying to replicate the full SML Basis surface | Do not import that hierarchy unless it is clearly needed |
-| Flexible-record under-specification | Hiko does not currently have SML-style records and row inference | Ignore for now; revisit only if records become a real feature |
-| Sharing, `where type`, and manifest-type oddities | Hiko intentionally omitted those advanced module corners | Keep them out unless there is a strong need |
-| Higher-order functor principal-typing problems | Hiko does not have higher-order functors | Keep it that way unless there is a concrete reason to pay that complexity; generic collections are not a sufficient reason on their own |
-| Views, transformation patterns, and first-class modules | Those are Successor ML experiments, not part of Hiko's core direction | Treat them as out of scope |
-| `use`/REPL/Basis-loading oddities from SML | Hiko has a different config, runtime, and module-delivery story | Build explicit import and config rules instead of inheriting historical SML behavior |
-| Mailbox-style language baggage | Hiko already moved to `spawn` / `await_process` and runtime-managed suspension | Keep message passing out unless intentionally reintroduced |
+| SML defect                                               | Why it is irrelevant for Hiko                                                  | Practical implication                                                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Full Basis overloading complexity (`word`, `real`, etc.) | Hiko is not trying to replicate the full SML Basis surface                     | Do not import that hierarchy unless it is clearly needed                                                                                |
+| Flexible-record under-specification                      | Hiko does not currently have SML-style records and row inference               | Ignore for now; revisit only if records become a real feature                                                                           |
+| Sharing, `where type`, and manifest-type oddities        | Hiko intentionally omitted those advanced module corners                       | Keep them out unless there is a strong need                                                                                             |
+| Higher-order functor principal-typing problems           | Hiko does not have higher-order functors                                       | Keep it that way unless there is a concrete reason to pay that complexity; generic collections are not a sufficient reason on their own |
+| Views, transformation patterns, and first-class modules  | Those are Successor ML experiments, not part of Hiko's core direction          | Treat them as out of scope                                                                                                              |
+| `use`/REPL/Basis-loading oddities from SML               | Hiko has a different config, runtime, and module-delivery story                | Build explicit import and config rules instead of inheriting historical SML behavior                                                    |
+| Mailbox-style language features                          | Hiko already moved to `spawn` / `await_process` and runtime-managed suspension | Keep message passing out unless intentionally reintroduced                                                                              |
 
 ## Design Policy
 
@@ -81,7 +81,7 @@ This is especially important because Hiko already combines HM inference with mod
 
 ## References
 
-- Andreas Rossberg, *Defects in the Revised Definition of Standard ML*:
+- Andreas Rossberg, _Defects in the Revised Definition of Standard ML_:
   <https://people.mpi-sws.org/~rossberg/papers/sml-defects-2013-09-18.pdf>
 - HaMLet:
   <https://people.mpi-sws.org/~rossberg/hamlet/>
