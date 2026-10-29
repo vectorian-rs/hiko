@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ff80022636a5191bed5c81ea98d937c91fb0918958774316b78693b8b5e522b5 # shrinks to prog = "val a = 0 (\"\") (\"\")"
+cc 0c372c4c3280b90b749d66f429135513a0bf5626a3052bf05366e2d162b3af45 # shrinks to prog = "val a = 0 \"\" + if \"\" then \"\" else 0 : int"
+cc e1266047627fa4a19249b38439d90a7b982b338380aba85266af855933b309db # shrinks to prog = "val a = ~case \"\" of a => \"\" | _ => 0.0"
+cc 4df28d14da73e5243fe034ef9140221e17955a4b5c324eec3a5ad78946e8b97e # shrinks to prog = "val a = ~case (0.0, \"\") of a => 0 | _ => []"
+cc ee4e3105a69b5d6f49a2c0b2fdbcdc806354944b6665696a4f3b3a6131c5e1cc # shrinks to prog = "fun a a = if a then \"\" else \"\" : int \"\""
+cc 0376a6548dafe7862eb4e1f69f07261e40253b9480284275f476a75985e22151 # shrinks to prog = "val a = 0.0 ~fn a => 0"

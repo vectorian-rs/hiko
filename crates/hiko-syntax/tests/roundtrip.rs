@@ -1,3 +1,5 @@
+mod common;
+
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::pretty::pretty_program;
@@ -14,6 +16,11 @@ fn assert_roundtrip(input: &str) {
     assert_eq!(
         first, second,
         "round-trip failed:\n  input:  {input}\n  first:  {first}\n  second: {second}"
+    );
+    assert_eq!(
+        common::normalized_ast(input),
+        common::normalized_ast(&first),
+        "printing changed the AST:\n  input:  {input}\n  first:  {first}"
     );
 }
 
