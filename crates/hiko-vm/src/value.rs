@@ -229,6 +229,9 @@ impl HeapObject {
                 for frame in &data.saved_frames {
                     visit(&frame.captures, &mut f);
                 }
+                if let Some(handler) = &data.saved_handler {
+                    visit(&handler.captures, &mut f);
+                }
             }
         }
     }

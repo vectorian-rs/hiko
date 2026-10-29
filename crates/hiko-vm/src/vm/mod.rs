@@ -1110,6 +1110,29 @@ mod tests {
     }
 
     #[test]
+    fn test_perform_payload_survives_gc_during_continuation_alloc() {
+        // Perform pops the payload before allocating the continuation. A GC
+        // forced by that allocation must still treat the payload as live, or
+        // the clause sees a freed (and possibly reused) heap slot.
+        let src = "effect Ask of string
+             fun f () = perform Ask (int_to_string 12345)
+             val result = handle f ()
+               with return x => x | Ask s k => s";
+        for max in 1..64 {
+            let mut vm = compile_vm(src);
+            vm.set_max_heap(max);
+            match vm.run() {
+                Ok(()) => assert_eq!(global_str(&vm, "result"), "12345", "max_heap={max}"),
+                Err(err) => assert!(
+                    err.is_heap_limit(),
+                    "max_heap={max}: unexpected error: {}",
+                    err.message
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn test_effect_state() {
         // State effect: get/put pattern
         let vm = run("effect Get of unit

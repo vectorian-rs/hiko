@@ -577,6 +577,9 @@ impl VM {
                                 .ok_or_else(|| RuntimeError {
                                     message: "perform: invalid handler locals offset".into(),
                                 })?;
+                        // Keep the payload on the stack while allocating the
+                        // continuation so a collection triggered here roots it.
+                        self.push(payload)?;
                         let cont =
                             self.alloc(HeapObject::Continuation(Box::new(ContinuationData {
                                 saved_frames,
@@ -597,7 +600,6 @@ impl VM {
                         self.frames[hfi].captures = handler.captures;
                         self.frames[hfi].ip = clause_ip;
 
-                        self.push(payload)?;
                         self.push(cont)?;
                     }
                 }
