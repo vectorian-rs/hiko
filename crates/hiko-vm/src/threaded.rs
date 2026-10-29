@@ -792,6 +792,10 @@ fn handle_slice_result(
             park(cx, process, &mut terminations);
             drain_terminations(cx, &mut terminations);
 
+            // Cancelled while parking: never start the request.
+            if !cx.table.io_waiters.contains_key(&token) {
+                return;
+            }
             match cx.io.register(token, request) {
                 Ok(()) => {
                     // Cancelled before the backend knew the token: release it.
