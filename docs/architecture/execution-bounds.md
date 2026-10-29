@@ -169,6 +169,7 @@ gets the default.
 | `max_http_response_bytes` | 67108864 (64 MiB) | One HTTP response body |
 | `max_file_read_bytes` | 67108864 (64 MiB) | One `read_file`, `read_file_bytes`, `read_file_tagged`, or `edit_file_tagged` read |
 | `max_exec_output_bytes` | 16777216 (16 MiB) | Each of `exec`'s stdout and stderr |
+| `max_concurrent_io` | 32 | Async I/O requests running at once per process tree (threaded runtime) |
 
 Rules:
 
@@ -180,7 +181,8 @@ Rules:
   `max_io_bytes` for a rejected read.
 - Both runtimes apply the same limits. In the threaded runtime, the HTTP
   request runs on an I/O pool thread while the process is suspended, so other
-  processes keep running until the request completes or times out.
+  processes keep running until the request completes or times out. See
+  [Async I/O pool](#async-io-pool) for how requests share the pool.
 - `exec` runs the child in its own process group. On timeout, or when an output
   stream exceeds `max_exec_output_bytes`, the whole group is killed, including
   grandchildren, and the call fails without waiting for the timeout.
@@ -189,6 +191,37 @@ Rules:
   the error in. In the threaded runtime, `Std.Fiber.join` reports a child's
   failure as `Result.Err`, which is how a script recovers from one.
 - Spawned child processes inherit the parent's per-operation limits.
+
+## Async I/O pool
+
+In the threaded runtime, a process that makes an I/O request is suspended
+while the request runs on the I/O backend (`ThreadPoolIoBackend`):
+
+- **Sleeps use no worker.** `sleep` is completed by a timer thread at its
+  deadline, however busy the workers are.
+- **One shared queue, fair across process trees.** A process tree is a root
+  process plus every process it spawns, directly or indirectly. Blocking
+  requests (HTTP, file reads, AWS calls) wait in a queue per tree, and a free
+  worker takes the next request round-robin across trees.
+- **Slow requests do not block others.** Blocking calls hold a worker each, so
+  the pool grows when requests are waiting and no worker is idle, up to 256
+  threads (`DEFAULT_MAX_IO_THREADS`). Workers above the core count exit after
+  five idle seconds. A slow request occupies only its own worker.
+- **`max_concurrent_io` caps one tree.** At most that many of a tree's
+  requests run at once. Further requests stay queued, and the processes that
+  made them stay suspended: one script cannot take over the pool, and other
+  trees' requests still start promptly.
+- **HTTP deadlines count from the request.** `http_timeout_ms` runs from the
+  moment the script makes the request, including time spent queued. A request
+  still queued at its deadline fails without starting, with
+  `http: timeout: deadline passed while the request was queued`. A request
+  that starts late gets only the time left, and one with less than 10 ms left
+  fails instead of starting.
+- **Cancelled requests are dropped.** Cancelling a process removes its queued
+  request; a request already running finishes, and its result is discarded.
+
+The single-threaded runtime runs I/O inline, one request at a time, so these
+rules do not apply there.
 
 Module fetching (`import` of remote modules and `hiko lock verify`) does not
 follow redirects, and accepts plain `http://` only for loopback hosts
@@ -246,8 +279,10 @@ Hiko does not currently provide:
 - preemption inside GC marking/sweeping;
 - exact wall-clock accounting for host work (only HTTP and `exec` have
   wall-clock timeouts);
-- a dedicated I/O thread per request: async requests share a fixed I/O pool,
-  so a slow request occupies one pool thread until it completes or times out.
+- deadlines for file reads and AWS calls: they can wait in the I/O queue and
+  run for as long as the operation takes;
+- more than 256 blocking I/O requests running at once in one runtime: beyond
+  that, requests queue (HTTP deadlines still apply).
 
 These are explicit boundaries of the current runtime contract, not accidental
 omissions.
