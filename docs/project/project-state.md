@@ -319,7 +319,6 @@ been taken.
 | ---------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `initial.md`                       | Historical      | Original project brief. Could move to `docs/project/`.                                                                          |
 | `SYSTEM.md`, `hiko-harness.toml`   | Out of focus    | Harness system prompt and config.                                                                                               |
-| `package.json`, `bun.lock`, `.pi/` | Out of focus    | pi coding agent setup. `.pi/agents/` and `.pi/graphs/` are untracked.                                                           |
 | `test_hashline.hml`                | Stray           | Test file at the repository root.                                                                                               |
 | `vim-sml.zip`                      | Stray           | Binary in git.                                                                                                                  |
 | `_apalache-out/`                   | Generated       | Already in `.gitignore`. Safe to delete locally.                                                                                |
@@ -367,8 +366,8 @@ been taken.
 2. Fix the top-level `resume` bug and add regression tests for deep and
    multi-shot behavior.
 3. Close the finished issues (#80, #54, #55) and the out-of-focus ones.
-4. Move `hiko-harness`, AWS, GitHub, Hashline, `.pi/`, `SYSTEM.md`,
-   `package.json`, and their policies, examples, and libraries out of the
+4. Move `hiko-harness`, AWS, GitHub, Hashline, `SYSTEM.md`, and their
+   policies, examples, and libraries out of the
    repository.
 5. Decide on the threaded runtime and structured concurrency.
 6. Make `json`, `regex`, `hash`, and `date` non-default features.
