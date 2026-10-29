@@ -661,8 +661,8 @@ fn write_package_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
         let import_name = format!("{}.{}", package.manifest.name, module.name);
         let docs_cell = if module.docs_exists {
             format!(
-                "<a href=\"./modules/{}.html\">{}.html</a>",
-                module.name, module.name
+                "<a href=\"./modules/{name}.html\">{name}.html</a>",
+                name = escape_html(&module.name)
             )
         } else {
             "—".to_string()
@@ -670,14 +670,12 @@ fn write_package_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
 
         write!(
             rows,
-            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./modules/{}.source.html\">source.html</a></td><td><a href=\"./modules/{}.hml\">{}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
+            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./modules/{name}.source.html\">source.html</a></td><td><a href=\"./modules/{name}.hml\">{name}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
             escape_html(&import_name),
             docs_cell,
-            module.name,
-            module.name,
-            module.name,
             escape_html(&module.hash),
-            escape_html(&trim_hash(&module.hash))
+            escape_html(&trim_hash(&module.hash)),
+            name = escape_html(&module.name)
         )?;
     }
 
@@ -709,8 +707,8 @@ fn write_modules_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
         let import_name = format!("{}.{}", package.manifest.name, module.name);
         let docs_cell = if module.docs_exists {
             format!(
-                "<a href=\"./{}.html\">{}.html</a>",
-                module.name, module.name
+                "<a href=\"./{name}.html\">{name}.html</a>",
+                name = escape_html(&module.name)
             )
         } else {
             "—".to_string()
@@ -718,15 +716,12 @@ fn write_modules_index(libraries_root: &Path, package: &PackageInfo) -> Result<(
 
         write!(
             rows,
-            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./{}.source.html\">{}.source.html</a></td><td><a href=\"./{}.hml\">{}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
+            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"./{name}.source.html\">{name}.source.html</a></td><td><a href=\"./{name}.hml\">{name}.hml</a></td><td><code title=\"{}\">{}</code></td></tr>",
             escape_html(&import_name),
             docs_cell,
-            module.name,
-            module.name,
-            module.name,
-            module.name,
             escape_html(&module.hash),
-            escape_html(&trim_hash(&module.hash))
+            escape_html(&trim_hash(&module.hash)),
+            name = escape_html(&module.name)
         )?;
     }
 
@@ -764,8 +759,8 @@ fn write_module_source_page(
     let import_name = format!("{}.{}", package.manifest.name, module.name);
     let docs_meta = if module.docs_exists {
         format!(
-            "Narrative docs: <a href=\"./{}.html\">{}.html</a><br>",
-            module.name, module.name
+            "Narrative docs: <a href=\"./{name}.html\">{name}.html</a><br>",
+            name = escape_html(&module.name)
         )
     } else {
         String::new()
@@ -804,8 +799,8 @@ fn write_module_source_page(
         escape_html(&package.manifest.name),
         escape_html(&module.name),
         docs_meta,
-        module.name,
-        module.name,
+        escape_html(&module.name),
+        escape_html(&module.name),
         escape_html(&module.hash),
         escape_html(&trim_hash(&module.hash)),
         exports,
