@@ -630,48 +630,14 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         return alloc_list(heap, paths);
     }
 
-    let roots = heap
-        .allowed_fs_folders_for("glob")
-        .map_err(|e| format!("glob: {e}"))?;
-
-    if roots.is_empty() {
-        for entry in glob::glob(&pattern).map_err(|e| format!("glob: {e}"))? {
-            let path = entry.map_err(|e| format!("glob: {e}"))?;
-            let text = path.to_string_lossy().to_string();
-            if seen.insert(text.clone()) {
-                heap.charge_io_bytes(text.len() as u64)
-                    .map_err(|e| format!("glob: {e}"))?;
-                paths.push(heap_alloc(heap, HeapObject::String(text))?);
-            }
-        }
-    } else if std::path::Path::new(&pattern).is_absolute() {
-        for entry in glob::glob(&pattern).map_err(|e| format!("glob: {e}"))? {
-            let path = entry.map_err(|e| format!("glob: {e}"))?;
-            let checked = heap
-                .check_fs_path_for("glob", path.to_string_lossy().as_ref())
+    // Without a filesystem policy the pattern is used as given.
+    for entry in glob::glob(&pattern).map_err(|e| format!("glob: {e}"))? {
+        let path = entry.map_err(|e| format!("glob: {e}"))?;
+        let text = path.to_string_lossy().to_string();
+        if seen.insert(text.clone()) {
+            heap.charge_io_bytes(text.len() as u64)
                 .map_err(|e| format!("glob: {e}"))?;
-            let text = checked.to_string_lossy().to_string();
-            if seen.insert(text.clone()) {
-                heap.charge_io_bytes(text.len() as u64)
-                    .map_err(|e| format!("glob: {e}"))?;
-                paths.push(heap_alloc(heap, HeapObject::String(text))?);
-            }
-        }
-    } else {
-        for root in roots {
-            let rooted_pattern = root.join(&pattern).to_string_lossy().to_string();
-            for entry in glob::glob(&rooted_pattern).map_err(|e| format!("glob: {e}"))? {
-                let path = entry.map_err(|e| format!("glob: {e}"))?;
-                let checked = heap
-                    .check_fs_path_for("glob", path.to_string_lossy().as_ref())
-                    .map_err(|e| format!("glob: {e}"))?;
-                let text = checked.to_string_lossy().to_string();
-                if seen.insert(text.clone()) {
-                    heap.charge_io_bytes(text.len() as u64)
-                        .map_err(|e| format!("glob: {e}"))?;
-                    paths.push(heap_alloc(heap, HeapObject::String(text))?);
-                }
-            }
+            paths.push(heap_alloc(heap, HeapObject::String(text))?);
         }
     }
     alloc_list(heap, paths)

@@ -1115,7 +1115,12 @@ mod tests {
     fn test_resume_rejects_non_continuation_without_panicking() {
         let program = hiko_compile::chunk::CompiledProgram {
             main: Arc::new(hiko_compile::chunk::Chunk {
-                code: vec![Op::Unit as u8, Op::Unit as u8, Op::Resume as u8],
+                code: vec![
+                    Op::Unit as u8,
+                    Op::Unit as u8,
+                    Op::Resume as u8,
+                    Op::Halt as u8,
+                ],
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),
@@ -1126,6 +1131,87 @@ mod tests {
         let mut vm = VM::new(program);
         let err = vm.run().expect_err("invalid resume should fail");
         assert_eq!(err.message, "resume: expected continuation");
+    }
+
+    #[test]
+    fn test_perform_rejects_handler_from_returned_frame_without_panicking() {
+        // Hand-written bytecode that returns from a function without removing
+        // its handler passes the verifier. A later perform must fail cleanly.
+        use hiko_compile::chunk::{Chunk, EffectMeta};
+        let function = FunctionProto {
+            name: None,
+            arity: 0,
+            n_captures: 0,
+            n_locals: 0,
+            chunk: Chunk {
+                code: vec![
+                    Op::InstallHandler as u8,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Op::Unit as u8,
+                    Op::Return as u8,
+                ],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            },
+        };
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(Chunk {
+                code: vec![
+                    Op::CallDirect as u8,
+                    0,
+                    0,
+                    Op::Pop as u8,
+                    Op::Unit as u8,
+                    Op::Perform as u8,
+                    0,
+                    0,
+                    Op::Halt as u8,
+                ],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([function]),
+            effects: Arc::from([EffectMeta {
+                name: "Test".into(),
+                tag: 0,
+            }]),
+        };
+        let mut vm = VM::try_new(program).expect("program should verify");
+        let err = vm.run().expect_err("stale handler should fail");
+        assert!(err.message.contains("perform"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn test_builtin_call_with_wrong_arity_fails_without_panicking() {
+        use hiko_compile::chunk::Chunk;
+        for arity in [0u8, 2] {
+            let mut code = vec![Op::GetGlobal as u8, 0, 0];
+            code.extend(std::iter::repeat_n(Op::Unit as u8, arity as usize));
+            code.extend([Op::Call as u8, arity, Op::Halt as u8]);
+            let program = hiko_compile::chunk::CompiledProgram {
+                main: Arc::new(Chunk {
+                    code,
+                    constants: vec![Constant::String("abs_int".into())],
+                    spans: Vec::new(),
+                }),
+                main_n_locals: 0,
+                functions: Arc::from([]),
+                effects: Arc::from([]),
+            };
+            let mut vm = VM::try_new(program).expect("program should verify");
+            let err = vm.run().expect_err("wrong builtin arity should fail");
+            assert!(
+                err.message.contains("arg"),
+                "arity {arity}: {}",
+                err.message
+            );
+        }
     }
 
     #[test]
@@ -1140,6 +1226,71 @@ mod tests {
              with return x => x
                 | B _ k => resume k 100");
         assert_eq!(global_int(&vm, "result"), 111);
+    }
+
+    #[test]
+    fn test_effect_code_after_resume_runs_at_top_level() {
+        // The continuation is delimited by the handle expression, so code
+        // after `resume` in the clause must run whether or not the handle
+        // is inside a function.
+        let vm = run("effect Ask of unit
+             fun fa () = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100
+             val in_fn = fa ()
+             val top = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100
+             val twice = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 1 + resume k 2
+             fun twice_fn () = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 1 + resume k 2
+             val twice_in_fn = twice_fn ()");
+        assert_eq!(global_int(&vm, "in_fn"), 111);
+        assert_eq!(global_int(&vm, "top"), 111);
+        assert_eq!(global_int(&vm, "twice"), 5);
+        assert_eq!(global_int(&vm, "twice_in_fn"), 5);
+    }
+
+    #[test]
+    fn test_effect_continuation_excludes_code_after_handle() {
+        // Code after a non-tail handle in the same frame is not part of the
+        // continuation and must run exactly once.
+        let vm = run("effect Ask of unit
+             fun fb () = (handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100) + 1000
+             val in_fn = fb ()
+             val top = (handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100) + 1000
+             fun fc y = let val a = y + 1
+               in (handle (perform Ask () + a)
+                   with return x => x * 2 | Ask _ k => resume k 10 + 100) + a end
+             val with_locals = fc 1");
+        assert_eq!(global_int(&vm, "in_fn"), 1111);
+        assert_eq!(global_int(&vm, "top"), 1111);
+        // (10 + 2) * 2 + 100 + 2
+        assert_eq!(global_int(&vm, "with_locals"), 126);
+    }
+
+    #[test]
+    fn test_perform_payload_survives_gc_during_continuation_alloc() {
+        // Perform pops the payload before allocating the continuation. A GC
+        // forced by that allocation must still treat the payload as live, or
+        // the clause sees a freed (and possibly reused) heap slot.
+        let src = "effect Ask of string
+             fun f () = perform Ask (int_to_string 12345)
+             val result = handle f ()
+               with return x => x | Ask s k => s";
+        for max in 1..64 {
+            let mut vm = compile_vm(src);
+            vm.set_max_heap(max);
+            match vm.run() {
+                Ok(()) => assert_eq!(global_str(&vm, "result"), "12345", "max_heap={max}"),
+                Err(err) => assert!(
+                    err.is_heap_limit(),
+                    "max_heap={max}: unexpected error: {}",
+                    err.message
+                ),
+            }
+        }
     }
 
     #[test]
@@ -1339,6 +1490,24 @@ mod tests {
 
         assert_eq!(child.fuel, None);
         assert_eq!(child.max_fuel_remaining, Some(42));
+    }
+
+    #[test]
+    fn test_create_child_inherits_host_work_and_resource_limits() {
+        let mut vm = compile_vm("val x = 1");
+        vm.set_max_host_work(100);
+        vm.heap.charge_host_work(30).unwrap();
+        vm.set_max_host_resources(4);
+        vm.set_host_resource_limits(HashMap::from([("aws_config".to_string(), 1)]));
+
+        let child = vm.create_child();
+
+        assert_eq!(child.heap.max_host_work(), Some(70));
+        assert_eq!(child.heap.max_host_resources(), Some(4));
+        assert_eq!(
+            child.heap.host_resource_limits().get("aws_config"),
+            Some(&1)
+        );
     }
 
     #[test]

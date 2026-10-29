@@ -540,6 +540,14 @@ impl Heap {
         self.host_resource_limits = limits;
     }
 
+    pub fn max_host_resources(&self) -> Option<usize> {
+        self.max_host_resources
+    }
+
+    pub fn host_resource_limits(&self) -> &HashMap<String, usize> {
+        &self.host_resource_limits
+    }
+
     pub fn max_host_work(&self) -> Option<u64> {
         self.max_host_work
     }

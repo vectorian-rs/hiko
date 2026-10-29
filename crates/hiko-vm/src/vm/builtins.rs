@@ -93,6 +93,13 @@ impl VM {
         callee_pos: usize,
         arity: usize,
     ) -> Result<(), RuntimeError> {
+        // Every builtin takes one (possibly tuple) argument; the compiler
+        // always emits `Call 1`, but bytecode may use another arity.
+        if arity != 1 {
+            return Err(RuntimeError {
+                message: format!("builtin expects 1 arg, got {arity}"),
+            });
+        }
         let first_arg = self.stack[callee_pos + 1];
 
         if self.spawn_builtin_id == Some(builtin_id) {
