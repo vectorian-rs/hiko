@@ -1783,21 +1783,23 @@ impl Compiler {
 
             // Fail path: each fail point has a different number of
             // temporaries on the stack. Emit a separate cleanup
-            // trampoline for each, jumping to a shared landing pad.
-            let mut cleanup_end_jumps = Vec::new();
-            for (fj, locals_at_fail) in &fail_jumps {
-                self.chunk()
-                    .patch_jump(*fj)
-                    .map_err(CompileError::codegen)?;
+            // trampoline for each, jumping to a shared landing pad. Fail
+            // points without temporaries jump straight to the landing pad;
+            // they must not fall into a later trampoline's pops.
+            let mut landing_jumps = Vec::new();
+            for &(fj, locals_at_fail) in &fail_jumps {
                 let n_pops = locals_at_fail - locals_before;
+                if n_pops == 0 {
+                    landing_jumps.push(fj);
+                    continue;
+                }
+                self.patch_jump(fj)?;
                 for _ in 0..n_pops {
                     self.emit(Op::Pop);
                 }
-                if n_pops > 0 {
-                    cleanup_end_jumps.push(self.emit_jump(Op::Jump));
-                }
+                landing_jumps.push(self.emit_jump(Op::Jump));
             }
-            for j in cleanup_end_jumps {
+            for j in landing_jumps {
                 self.patch_jump(j)?;
             }
 

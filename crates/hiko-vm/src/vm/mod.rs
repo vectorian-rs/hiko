@@ -851,6 +851,23 @@ mod tests {
     }
 
     #[test]
+    fn test_case_fail_paths_with_and_without_temporaries() {
+        // `Link 5` fails at the tag check (no temporaries) or at the nested
+        // literal check (one temporary); both must reach the next clause.
+        let vm = run("datatype l = End | Link of int
+             fun f x = case x of Link 5 => 1 | _ => 2
+             val a = f End
+             val b = f (Link 4)
+             val c = f (Link 5)
+             fun g p = case p of (Link 5, 1) => 1 | (_, n) => n + 10
+             val d = g (End, 3)");
+        assert_eq!(global_int(&vm, "a"), 2);
+        assert_eq!(global_int(&vm, "b"), 2);
+        assert_eq!(global_int(&vm, "c"), 1);
+        assert_eq!(global_int(&vm, "d"), 13);
+    }
+
+    #[test]
     fn test_closure() {
         let vm = run("fun make_adder n = fn x => n + x
              val add5 = make_adder 5
