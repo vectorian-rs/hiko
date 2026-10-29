@@ -5,6 +5,7 @@
 [limits]
 max_fuel = 50_000_000
 max_heap = 500_000
+exec_timeout_ms = 30000
 
 [capabilities.stdio.print]
 enabled = true
@@ -110,4 +111,3 @@ allowed_commands = [
   "wc",
   "xargs",
 ]
-timeout = 30

@@ -1,6 +1,7 @@
 [limits]
 max_fuel = 100_000_000
 max_heap = 1_000_000
+exec_timeout_ms = 30000
 
 [capabilities.stdio.println]
 enabled = true
@@ -44,7 +45,6 @@ allowed_commands = [
   "./target/release/hiko-vm-hiko-run-all-policy",
   "./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy",
 ]
-timeout = 30
 
 [capabilities.testing.panic]
 enabled = true

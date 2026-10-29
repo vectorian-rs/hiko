@@ -1,7 +1,9 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-/// Applies caller headers and disables redirect following.
+use crate::HttpTimeouts;
+
+/// Applies caller headers and timeouts, and disables redirect following.
 ///
 /// Callers (the VM HTTP builtins) enforce a host allowlist on the request URL
 /// only, so following a 3xx would let a server bounce the request to any host
@@ -9,8 +11,14 @@ use std::time::Duration;
 fn apply_headers<State>(
     request: ureq::RequestBuilder<State>,
     headers: &[(&str, &str)],
+    timeouts: HttpTimeouts,
 ) -> ureq::RequestBuilder<State> {
-    let mut request = request.config().max_redirects(0).build();
+    let mut request = request
+        .config()
+        .max_redirects(0)
+        .timeout_connect(Some(timeouts.connect))
+        .timeout_global(Some(timeouts.global))
+        .build();
     for (key, value) in headers {
         request = request.header(*key, *value);
     }
@@ -22,14 +30,15 @@ pub fn dispatch_ureq(
     url: &str,
     headers: &[(&str, &str)],
     body: &str,
+    timeouts: HttpTimeouts,
 ) -> Result<ureq::http::Response<ureq::Body>, String> {
     let send_no_body = |request: ureq::RequestBuilder<ureq::typestate::WithoutBody>| {
-        apply_headers(request, headers)
+        apply_headers(request, headers, timeouts)
             .call()
             .map_err(|e| format!("http: {e}"))
     };
     let send_with_body = |request: ureq::RequestBuilder<ureq::typestate::WithBody>| {
-        apply_headers(request, headers)
+        apply_headers(request, headers, timeouts)
             .send(body.as_bytes())
             .map_err(|e| format!("http: {e}"))
     };
@@ -110,6 +119,12 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::time::Instant;
+
+    const TEST_TIMEOUTS: HttpTimeouts = HttpTimeouts {
+        connect: Duration::from_secs(5),
+        global: Duration::from_secs(5),
+    };
 
     /// Serve one connection with a fixed raw HTTP response.
     fn serve_once(response: &'static [u8]) -> (String, std::thread::JoinHandle<()>) {
@@ -126,20 +141,36 @@ mod tests {
 
     #[test]
     fn dispatch_does_not_follow_redirects() {
+        let (base, server) = serve_once(
+            b"HTTP/1.1 302 Found\r\nLocation: http://evil.invalid/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let response = dispatch_ureq("GET", &format!("{base}/"), &[], "", TEST_TIMEOUTS).unwrap();
+        assert_eq!(response.status().as_u16(), 302);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn dispatch_times_out_when_server_never_responds() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        // Accept the connection and hold it open without answering.
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
-            stream
-                .write_all(
-                    b"HTTP/1.1 302 Found\r\nLocation: http://evil.invalid/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            drop(stream);
         });
-        let response = dispatch_ureq("GET", &format!("http://{addr}/"), &[], "").unwrap();
-        assert_eq!(response.status().as_u16(), 302);
+        let timeouts = HttpTimeouts {
+            connect: Duration::from_secs(1),
+            global: Duration::from_millis(500),
+        };
+        let started = Instant::now();
+        let result = dispatch_ureq("GET", &format!("http://{addr}/"), &[], "", timeouts);
+        let elapsed = started.elapsed();
+        assert!(result.is_err(), "expected timeout error");
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "timeout took {elapsed:?}"
+        );
         server.join().unwrap();
     }
 

@@ -7,6 +7,7 @@
 [limits]
 max_fuel = 100_000_000
 max_heap = 1_000_000
+exec_timeout_ms = 60000
 
 [capabilities.stdio.print]
 enabled = true
@@ -350,7 +351,6 @@ allowed_commands = [
   "xargs",
   "zip",
 ]
-timeout = 60
 
 [capabilities.github.issue.create]
 enabled = true

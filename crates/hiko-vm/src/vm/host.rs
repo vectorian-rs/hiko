@@ -1,11 +1,12 @@
 //! Host-facing helpers for output, stdin, and `exec`.
 
 use smallvec::smallvec;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use crate::io_limits::ReadLimit;
 
 pub trait OutputSink: Send + Sync {
     fn write(&self, text: &str) -> std::io::Result<()>;
@@ -81,27 +82,33 @@ fn command_has_explicit_path(command: &str) -> bool {
 }
 
 fn read_exec_pipe<R: std::io::Read>(
-    mut reader: R,
-    limit: Option<usize>,
+    reader: R,
+    limit: ReadLimit,
     stream: &str,
 ) -> Result<String, String> {
-    let mut buf = Vec::new();
-    if let Some(limit) = limit {
-        let read_limit = limit.saturating_add(1) as u64;
-        reader
-            .by_ref()
-            .take(read_limit)
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("exec: {stream}: {e}"))?;
-        if buf.len() > limit {
-            return Err(format!("exec: {stream} output exceeds I/O byte limit"));
+    let context = format!("exec: {stream}");
+    let (buf, _) = crate::io_backend::read_to_bytes_limited(reader, limit, &context)?;
+    String::from_utf8(buf).map_err(|e| format!("{context}: {e}"))
+}
+
+/// Kill an `exec` child and every process in its process group.
+///
+/// Must be called before the child is reaped: while the group leader is
+/// unreaped its pid, and so the group id, cannot be reused by another process.
+fn kill_exec_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+            // SAFETY: killpg only sends a signal; `pgid` is the id of the
+            // group this child leads, which is still reserved because the
+            // child has not been reaped.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
         }
-    } else {
-        reader
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("exec: {stream}: {e}"))?;
     }
-    String::from_utf8(buf).map_err(|e| format!("exec: {stream}: {e}"))
+    child.kill().ok();
+    child.wait().ok();
 }
 
 fn canonicalize_exec_candidate(path: &Path) -> Option<PathBuf> {
@@ -191,11 +198,6 @@ impl VM {
         self.exec_allowed = allowed;
         self.exec_allowed_paths = resolved;
         self.exec_allowed_resolution_errors = errors;
-    }
-
-    /// Set the timeout for exec calls (in seconds).
-    pub fn set_exec_timeout(&mut self, timeout: u64) {
-        self.exec_timeout = timeout;
     }
 
     /// Format a value for display in `print` / `println`.
@@ -315,7 +317,9 @@ impl VM {
         }
     }
 
-    /// Execute a previously authorized command with timeout.
+    /// Execute a previously authorized command with a wall-clock timeout and
+    /// per-stream output limit. On timeout or overflow the child's whole
+    /// process group is killed.
     pub(super) fn run_exec(&mut self, exec: ResolvedExec) -> Result<Value, String> {
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
@@ -328,47 +332,83 @@ impl VM {
             ));
         }
 
-        let mut child = Command::new(&exec.allowed_path.path)
+        let mut command = Command::new(&exec.allowed_path.path);
+        command
             .args(&exec.args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("exec: {e}"))?;
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            // Lead a new process group so a timeout can kill grandchildren too.
+            command.process_group(0);
+        }
+        let mut child = command.spawn().map_err(|e| format!("exec: {e}"))?;
 
-        let child_stdout = child.stdout.take().unwrap();
-        let child_stderr = child.stderr.take().unwrap();
-        let output_limit = self.heap.max_io_bytes().map(|max| {
-            max.saturating_sub(self.heap.io_bytes_used())
-                .min(usize::MAX as u64) as usize
-        });
+        let timeout = self.heap.io_limits().exec_timeout;
+        let output_limit = self.heap.exec_output_limit();
+        let (tx, rx) = mpsc::channel();
+        for (stream, is_stdout) in [("stdout", true), ("stderr", false)] {
+            let tx = tx.clone();
+            let pipe: Box<dyn std::io::Read + Send> = if is_stdout {
+                Box::new(child.stdout.take().expect("stdout is piped"))
+            } else {
+                Box::new(child.stderr.take().expect("stderr is piped"))
+            };
+            std::thread::spawn(move || {
+                let _ = tx.send((is_stdout, read_exec_pipe(pipe, output_limit, stream)));
+            });
+        }
+        drop(tx);
 
-        let stdout_handle =
-            std::thread::spawn(move || read_exec_pipe(child_stdout, output_limit, "stdout"));
-        let stderr_handle =
-            std::thread::spawn(move || read_exec_pipe(child_stderr, output_limit, "stderr"));
+        let deadline = Instant::now() + timeout;
+        let timed_out = |child: &mut std::process::Child| {
+            kill_exec_child(child);
+            format!(
+                "exec: '{}' timed out after {}ms",
+                exec.display_command,
+                timeout.as_millis()
+            )
+        };
 
-        let deadline = Instant::now() + Duration::from_secs(self.exec_timeout);
+        // Read both streams to EOF first. The child is not reaped during this
+        // phase, so `kill_exec_child` can still safely signal its group.
+        let mut stdout_str = None;
+        let mut stderr_str = None;
+        while stdout_str.is_none() || stderr_str.is_none() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok((is_stdout, Ok(text))) => {
+                    if is_stdout {
+                        stdout_str = Some(text);
+                    } else {
+                        stderr_str = Some(text);
+                    }
+                }
+                Ok((_, Err(err))) => {
+                    kill_exec_child(&mut child);
+                    return Err(err);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => return Err(timed_out(&mut child)),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    kill_exec_child(&mut child);
+                    return Err("exec: output reader thread panicked".into());
+                }
+            }
+        }
+        let (stdout_str, stderr_str) = (
+            stdout_str.unwrap_or_default(),
+            stderr_str.unwrap_or_default(),
+        );
+
         let status = loop {
             match child.try_wait().map_err(|e| format!("exec: {e}"))? {
                 Some(status) => break status,
-                None if Instant::now() >= deadline => {
-                    child.kill().ok();
-                    child.wait().ok();
-                    return Err(format!(
-                        "exec: '{}' timed out after {}s",
-                        exec.display_command, self.exec_timeout
-                    ));
-                }
-                None => std::thread::sleep(Duration::from_millis(50)),
+                None if Instant::now() >= deadline => return Err(timed_out(&mut child)),
+                None => std::thread::sleep(Duration::from_millis(10)),
             }
         };
 
-        let stdout_str = stdout_handle
-            .join()
-            .map_err(|_| "exec: stdout reader thread panicked".to_string())??;
-        let stderr_str = stderr_handle
-            .join()
-            .map_err(|_| "exec: stderr reader thread panicked".to_string())??;
         self.heap
             .charge_io_bytes((stdout_str.len() + stderr_str.len()) as u64)
             .map_err(|e| format!("exec: {e}"))?;
@@ -415,15 +455,23 @@ mod tests {
         std::fs::set_permissions(path, perms).expect("chmod executable");
     }
 
+    const LIMIT_3: ReadLimit = ReadLimit {
+        max_bytes: 3,
+        limit_name: "max_exec_output_bytes",
+    };
+
     #[test]
     fn read_exec_pipe_rejects_output_over_limit() {
-        let err = read_exec_pipe(std::io::Cursor::new("abcd"), Some(3), "stdout").unwrap_err();
-        assert!(err.contains("output exceeds I/O byte limit"));
+        let err = read_exec_pipe(std::io::Cursor::new("abcd"), LIMIT_3, "stdout").unwrap_err();
+        assert_eq!(
+            err,
+            "exec: stdout: result exceeds max_exec_output_bytes (3 bytes)"
+        );
     }
 
     #[test]
     fn read_exec_pipe_allows_output_at_limit() {
-        let text = read_exec_pipe(std::io::Cursor::new("abc"), Some(3), "stdout").unwrap();
+        let text = read_exec_pipe(std::io::Cursor::new("abc"), LIMIT_3, "stdout").unwrap();
         assert_eq!(text, "abc");
     }
 

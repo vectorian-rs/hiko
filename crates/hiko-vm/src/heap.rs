@@ -1,3 +1,4 @@
+use crate::io_limits::{IoLimits, ReadLimit};
 use crate::value::{GcRef, HeapObject, HostHandleId, HostHandleKind, HostResource, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,7 @@ pub struct Heap {
     next_host_handle_id: u64,
     io_bytes_used: u64,
     max_io_bytes: Option<u64>,
+    io_limits: IoLimits,
     host_work_used: u64,
     max_host_work: Option<u64>,
     /// Count of host resources by kind.
@@ -163,6 +165,7 @@ impl Heap {
             next_host_handle_id: 1,
             io_bytes_used: 0,
             max_io_bytes: None,
+            io_limits: IoLimits::default(),
             host_work_used: 0,
             max_host_work: None,
             host_resources_by_kind: HashMap::new(),
@@ -511,6 +514,41 @@ impl Heap {
     pub fn remaining_io_bytes(&self) -> Option<u64> {
         self.max_io_bytes
             .map(|max| max.saturating_sub(self.io_bytes_used))
+    }
+
+    pub fn set_io_limits(&mut self, limits: IoLimits) {
+        self.io_limits = limits;
+    }
+
+    pub fn io_limits(&self) -> IoLimits {
+        self.io_limits
+    }
+
+    /// Limit for reading one HTTP response body.
+    pub fn http_response_limit(&self) -> ReadLimit {
+        ReadLimit::new(
+            self.io_limits.max_http_response_bytes,
+            "max_http_response_bytes",
+            self.remaining_io_bytes(),
+        )
+    }
+
+    /// Limit for reading one file.
+    pub fn file_read_limit(&self) -> ReadLimit {
+        ReadLimit::new(
+            self.io_limits.max_file_read_bytes,
+            "max_file_read_bytes",
+            self.remaining_io_bytes(),
+        )
+    }
+
+    /// Limit for reading each of one `exec` call's stdout and stderr.
+    pub fn exec_output_limit(&self) -> ReadLimit {
+        ReadLimit::new(
+            self.io_limits.max_exec_output_bytes,
+            "max_exec_output_bytes",
+            self.remaining_io_bytes(),
+        )
     }
 
     pub fn charge_io_bytes(&mut self, bytes: u64) -> Result<(), IoLimitExceeded> {

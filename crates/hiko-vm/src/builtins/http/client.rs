@@ -44,8 +44,14 @@ fn do_http_request(
         let url = args.url(heap)?;
         let body = args.body(heap)?;
         let headers = args.headers(heap)?;
-        hiko_common::dispatch_ureq(method, url, &headers, body)
-            .map_err(|e| format!("{name}: {e}"))?
+        hiko_common::dispatch_ureq(
+            method,
+            url,
+            &headers,
+            body,
+            heap.io_limits().http_timeouts(),
+        )
+        .map_err(|e| format!("{name}: {e}"))?
     };
 
     let status = Value::Int(response.status().as_u16() as i64);
@@ -65,7 +71,8 @@ pub(super) fn http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     heap.check_http_host_for("http_get", &url)
         .map_err(|e| format!("http_get: {e}"))?;
     let response =
-        hiko_common::dispatch_ureq("GET", &url, &[], "").map_err(|e| format!("http_get: {e}"))?;
+        hiko_common::dispatch_ureq("GET", &url, &[], "", heap.io_limits().http_timeouts())
+            .map_err(|e| format!("http_get: {e}"))?;
     let status = Value::Int(response.status().as_u16() as i64);
     let headers = collect_headers(
         response
@@ -76,7 +83,7 @@ pub(super) fn http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     )?;
     let reader = Box::new(response.into_body().into_reader()) as Box<dyn std::io::Read + Send>;
     let (body_str, io_bytes) =
-        crate::io_backend::read_to_string_limited(reader, heap.remaining_io_bytes(), "http_get")?;
+        crate::io_backend::read_to_string_limited(reader, heap.http_response_limit(), "http_get")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http_get: {e}"))?;
     let body = heap_alloc(heap, HeapObject::String(body_str))?;
@@ -87,7 +94,7 @@ pub(super) fn http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let request = extract_http_arg_refs(args, heap, "http")?;
     let (status, resp_headers, reader) = do_http_request(&request, "http", heap)?;
     let (body_str, io_bytes) =
-        crate::io_backend::read_to_string_limited(reader, heap.remaining_io_bytes(), "http")?;
+        crate::io_backend::read_to_string_limited(reader, heap.http_response_limit(), "http")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http: {e}"))?;
     let resp_body = heap_alloc(heap, HeapObject::String(body_str))?;
@@ -101,7 +108,7 @@ pub(super) fn http_json(args: &[Value], heap: &mut Heap) -> Result<Value, String
     let request = extract_http_arg_refs(args, heap, "http_json")?;
     let (status, resp_headers, reader) = do_http_request(&request, "http_json", heap)?;
     let (body_str, io_bytes) =
-        crate::io_backend::read_to_string_limited(reader, heap.remaining_io_bytes(), "http_json")?;
+        crate::io_backend::read_to_string_limited(reader, heap.http_response_limit(), "http_json")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http_json: {e}"))?;
     let parsed: serde_json::Value =
@@ -118,7 +125,7 @@ pub(super) fn http_msgpack(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     let (status, resp_headers, reader) = do_http_request(&request, "http_msgpack", heap)?;
     let (buf, io_bytes) = crate::io_backend::read_to_bytes_limited(
         reader,
-        heap.remaining_io_bytes(),
+        heap.http_response_limit(),
         "http_msgpack",
     )?;
     heap.charge_io_bytes(io_bytes)
@@ -136,7 +143,7 @@ pub(super) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     let request = extract_http_arg_refs(args, heap, "http_bytes")?;
     let (status, resp_headers, reader) = do_http_request(&request, "http_bytes", heap)?;
     let (buf, io_bytes) =
-        crate::io_backend::read_to_bytes_limited(reader, heap.remaining_io_bytes(), "http_bytes")?;
+        crate::io_backend::read_to_bytes_limited(reader, heap.http_response_limit(), "http_bytes")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http_bytes: {e}"))?;
     let resp_body = heap_alloc(heap, HeapObject::Bytes(buf))?;

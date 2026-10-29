@@ -1439,6 +1439,7 @@ dependencies = [
  "hiko-compile",
  "hiko-syntax",
  "jiff",
+ "libc",
  "proptest",
  "regex",
  "rmp-serde",

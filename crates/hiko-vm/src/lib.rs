@@ -3,6 +3,7 @@ pub mod builtins;
 pub mod config;
 pub mod heap;
 pub mod io_backend;
+pub mod io_limits;
 pub mod process;
 pub mod runtime;
 pub mod runtime_ops;
