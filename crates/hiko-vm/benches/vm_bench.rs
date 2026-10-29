@@ -96,11 +96,42 @@ fn bench_pattern_matching(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Effects: early exit ─────────────────────────────────────────────
+
+/// An abortive handler (`Fail v _ => v`) reached from recursion depth `depth`,
+/// repeated 1,000 times. The clause never resumes, so this measures the cost
+/// of unwinding to the handler.
+fn bench_effect_early_exit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("effect_early_exit");
+    for depth in [10, 1000] {
+        let src = format!(
+            "effect Fail of int\n\
+             fun dive n = if n = 0 then perform Fail 1 else 1 + dive (n - 1)\n\
+             fun attempt d = handle dive d with return x => x | Fail v _ => v\n\
+             fun loop i acc = if i = 0 then acc else loop (i - 1) (acc + attempt {depth})\n\
+             val result = loop 1000 0"
+        );
+        let compiled = compile_source(&src);
+        group.bench_with_input(
+            BenchmarkId::new("abort_x1000", depth),
+            &compiled,
+            |b, compiled| {
+                b.iter(|| {
+                    let mut vm = hiko_vm::vm::VM::new(compiled.clone());
+                    vm.run().unwrap();
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_vm_creation,
     bench_fibonacci,
     bench_list_ops,
-    bench_pattern_matching
+    bench_pattern_matching,
+    bench_effect_early_exit
 );
 criterion_main!(benches);
