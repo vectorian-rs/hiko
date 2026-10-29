@@ -259,7 +259,12 @@ impl Parser {
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut decls = Vec::new();
         while !matches!(self.peek(), TokenKind::Eof) {
-            decls.push(self.parse_decl()?);
+            let decl = match self.peek() {
+                TokenKind::Signature => self.parse_signature_decl()?,
+                TokenKind::Structure => self.parse_structure_decl()?,
+                _ => self.parse_decl()?,
+            };
+            decls.push(decl);
         }
         Ok(Program {
             decls,
@@ -269,6 +274,9 @@ impl Parser {
 
     // ── Declarations ─────────────────────────────────────────────────
 
+    /// Parse a declaration in any position. `signature` and `structure` are
+    /// handled by `parse_program` because modules are a single top-level
+    /// layer; desugaring has no representation for nested ones.
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
         match self.peek() {
             TokenKind::Val => self.parse_val_decl(),
@@ -278,8 +286,9 @@ impl Parser {
             TokenKind::Local => self.parse_local_decl(),
             TokenKind::Import => self.parse_import_decl(),
             TokenKind::Use => self.parse_use_decl(),
-            TokenKind::Signature => self.parse_signature_decl(),
-            TokenKind::Structure => self.parse_structure_decl(),
+            TokenKind::Signature | TokenKind::Structure => Err(self.err(
+                "signature and structure declarations are only allowed at top level",
+            )),
             TokenKind::Effect => self.parse_effect_decl(),
             _ => {
                 Err(self
@@ -2173,5 +2182,19 @@ mod tests {
         "#;
         let prog = parse(src);
         assert_eq!(prog.decls.len(), 3);
+    }
+
+    #[test]
+    fn test_modules_rejected_below_top_level() {
+        let msg = "signature and structure declarations are only allowed at top level";
+        for src in [
+            "structure S = struct structure T = struct val x = 1 end end",
+            "structure S = struct signature T = sig end end",
+            "local structure T = struct val x = 1 end in end",
+            "local in signature T = sig end end",
+            "val z = let structure T = struct val x = 1 end in 1 end",
+        ] {
+            assert_eq!(parse_err(src), msg, "{src}");
+        }
     }
 }
