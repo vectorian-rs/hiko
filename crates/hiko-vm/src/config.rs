@@ -50,6 +50,7 @@ pub struct Limits {
     pub max_http_response_bytes: Option<u64>,
     pub max_file_read_bytes: Option<u64>,
     pub max_exec_output_bytes: Option<u64>,
+    pub max_concurrent_io: Option<u64>,
 }
 
 type BuilderLimitSetter = fn(VMBuilder, u64) -> VMBuilder;
@@ -58,7 +59,7 @@ impl Limits {
     /// Per-operation I/O limits that are set, as (builder method name, value,
     /// setter). The name is also the policy key.
     fn io_limit_settings(&self) -> Vec<(&'static str, u64, BuilderLimitSetter)> {
-        let all: [(&'static str, Option<u64>, BuilderLimitSetter); 6] = [
+        let all: [(&'static str, Option<u64>, BuilderLimitSetter); 7] = [
             (
                 "http_timeout_ms",
                 self.http_timeout_ms,
@@ -88,6 +89,11 @@ impl Limits {
                 "max_exec_output_bytes",
                 self.max_exec_output_bytes,
                 VMBuilder::max_exec_output_bytes,
+            ),
+            (
+                "max_concurrent_io",
+                self.max_concurrent_io,
+                VMBuilder::max_concurrent_io,
             ),
         ];
         all.into_iter()

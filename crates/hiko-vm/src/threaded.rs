@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::{DashMap, DashSet};
 
-use crate::io_backend::{IoBackend, IoResult, IoToken, ThreadPoolIoBackend};
+use crate::io_backend::{IoBackend, IoContext, IoResult, IoToken, ThreadPoolIoBackend};
 use crate::process::{
     AwaitKind, BlockReason, ChildOutcome, ChildRecord, Pid, Process, ProcessFailure, ProcessStatus,
     Scope, ScopeId,
@@ -763,8 +763,9 @@ fn handle_slice_result(
                 Ok(child_vm) => {
                     let child_pid = cx.table.alloc_pid();
                     process.children.insert(child_pid);
-                    cx.table
-                        .insert(Process::new(child_pid, child_vm, Some(pid)));
+                    cx.table.insert(
+                        Process::new(child_pid, child_vm, Some(pid)).with_root(process.root),
+                    );
                     cx.scheduler.enqueue(child_pid);
 
                     process.vm.stack.pop();
@@ -791,6 +792,12 @@ fn handle_slice_result(
         }
         RunResult::Io(request) => {
             let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
+            let context = IoContext {
+                owner: process.root.0,
+                max_in_flight: usize::try_from(process.vm.io_limits().max_concurrent_io)
+                    .unwrap_or(usize::MAX)
+                    .max(1),
+            };
             // Register and park before handing the request to the backend, so
             // a completion always finds the process parked.
             process.status = ProcessStatus::Blocked(BlockReason::Io(token));
@@ -803,7 +810,7 @@ fn handle_slice_result(
             if !cx.table.io_waiters.contains_key(&token) {
                 return;
             }
-            match cx.io.register(token, request) {
+            match cx.io.register_for(token, request, context) {
                 Ok(()) => {
                     // Cancelled before the backend knew the token: release it.
                     if !cx.table.io_waiters.contains_key(&token) {
@@ -1908,6 +1915,174 @@ mod tests {
         assert_eq!(output, vec!["rooted\n"]);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Local HTTP server that answers every request with `body` after
+    /// `delay`, handling each connection on its own thread.
+    #[cfg(feature = "builtin-http")]
+    fn delayed_http_server(delay: std::time::Duration, body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                std::thread::spawn(move || {
+                    let mut request = [0u8; 1024];
+                    let _ = stream.read(&mut request);
+                    std::thread::sleep(delay);
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// Program for the pool-fairness tests: `slow_count` requests to
+    /// `slow_url`, then a `sleep 10` and one request to `fast_url`, each of
+    /// which prints how long it took in milliseconds.
+    #[cfg(feature = "builtin-http")]
+    fn pool_fairness_program(slow_url: &str, slow_count: usize, fast_url: &str) -> CompiledProgram {
+        let slows = (0..slow_count)
+            .map(|_| format!("spawn (fn () => http_get {slow_url:?})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        compile(&format!(
+            "val slows = [{slows}]\n\
+             val sleeper = spawn (fn () =>\n\
+               let val a = monotonic_ms () val _ = sleep 10 in monotonic_ms () - a end)\n\
+             val fast = spawn (fn () =>\n\
+               let val a = monotonic_ms () val _ = http_get {fast_url:?} in monotonic_ms () - a end)\n\
+             val _ = println (int_to_string (await_process sleeper))\n\
+             val _ = println (int_to_string (await_process fast))"
+        ))
+    }
+
+    #[cfg(feature = "builtin-http")]
+    fn http_test_vm(program: CompiledProgram) -> crate::builder::VMBuilder {
+        crate::builder::VMBuilder::new(program)
+            .with_core()
+            .register_builtin_name("spawn")
+            .register_builtin_name("await_process")
+            .allow_http_builtin("http_get", vec!["127.0.0.1".to_string()])
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_slow_io_does_not_delay_sleep_or_fast_requests() {
+        let slow_url = delayed_http_server(std::time::Duration::from_secs(2), "slow");
+        let fast_url = delayed_http_server(std::time::Duration::ZERO, "fast");
+        let vm = http_test_vm(pool_fairness_program(&slow_url, 8, &fast_url)).build();
+        let runtime =
+            ThreadedRuntime::new(1).with_io_backend(Arc::new(ThreadPoolIoBackend::new(4)));
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+
+        let output = runtime.table.get_output(pid);
+        let sleep_ms: u64 = output[0].trim().parse().unwrap();
+        let fast_ms: u64 = output[1].trim().parse().unwrap();
+        eprintln!("sleep 10 took {sleep_ms}ms, fast request took {fast_ms}ms");
+        assert!(sleep_ms <= 60, "sleep 10 took {sleep_ms}ms");
+        assert!(fast_ms <= 100, "fast request took {fast_ms}ms");
+    }
+
+    /// `count` spawned `http_get url` children, then await each one's result
+    /// so a failed child does not fail the root.
+    #[cfg(feature = "builtin-http")]
+    fn spawn_and_join_program(
+        url: &str,
+        count: usize,
+        prelude: &str,
+        epilogue: &str,
+    ) -> CompiledProgram {
+        let mut source = String::from(prelude);
+        for i in 0..count {
+            source.push_str(&format!("val c{i} = spawn (fn () => http_get {url:?})\n"));
+        }
+        for i in 0..count {
+            source.push_str(&format!("val _ = await_process_result c{i}\n"));
+        }
+        source.push_str(epilogue);
+        compile(&source)
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_http_timeout_counts_time_spent_queued() {
+        // Two requests may run at once; four more queue behind 2s responses.
+        // Every request must end within its 500ms timeout of being issued.
+        let slow_url = delayed_http_server(std::time::Duration::from_secs(2), "slow");
+        let program = spawn_and_join_program(&slow_url, 6, "", "");
+        let vm = http_test_vm(program)
+            .register_builtin_name("await_process_result")
+            .http_timeout_ms(500)
+            .max_concurrent_io(2)
+            .build();
+        let runtime =
+            ThreadedRuntime::new(1).with_io_backend(Arc::new(ThreadPoolIoBackend::new(4)));
+        let pid = runtime.spawn_root_vm(vm);
+
+        let started = std::time::Instant::now();
+        runtime.run_to_completion().unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+        assert!(
+            elapsed >= std::time::Duration::from_millis(450)
+                && elapsed <= std::time::Duration::from_millis(800),
+            "requests ended after {elapsed:?}"
+        );
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_process_tree_over_io_limit_waits_while_others_proceed() {
+        let slow_url = delayed_http_server(std::time::Duration::from_millis(500), "slow");
+        let fast_url = delayed_http_server(std::time::Duration::ZERO, "fast");
+
+        // Tree A may run two requests at once, so its six take three rounds.
+        let busy = spawn_and_join_program(
+            &slow_url,
+            6,
+            "val t0 = monotonic_ms ()\n",
+            "val _ = println (int_to_string (monotonic_ms () - t0))",
+        );
+        let busy_vm = http_test_vm(busy)
+            .register_builtin_name("await_process_result")
+            .max_concurrent_io(2)
+            .build();
+        // Tree B starts its request once A's are queued.
+        let other = compile(&format!(
+            "val _ = sleep 100\n\
+             val a = monotonic_ms ()\n\
+             val _ = http_get {fast_url:?}\n\
+             val _ = println (int_to_string (monotonic_ms () - a))"
+        ));
+        let other_vm = http_test_vm(other).build();
+
+        let runtime =
+            ThreadedRuntime::new(1).with_io_backend(Arc::new(ThreadPoolIoBackend::new(4)));
+        let busy_pid = runtime.spawn_root_vm(busy_vm);
+        let other_pid = runtime.spawn_root_vm(other_vm);
+        runtime.run_to_completion().unwrap();
+
+        let busy_ms: u64 = runtime.table.get_output(busy_pid)[0]
+            .trim()
+            .parse()
+            .unwrap();
+        let other_ms: u64 = runtime.table.get_output(other_pid)[0]
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            busy_ms >= 1400,
+            "tree A ran more than two at once: {busy_ms}ms"
+        );
+        assert!(other_ms <= 100, "tree B waited {other_ms}ms");
     }
 
     #[cfg(feature = "builtin-http")]

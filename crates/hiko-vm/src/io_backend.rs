@@ -93,9 +93,40 @@ pub enum IoResult {
 
 /// Abstract I/O backend. Implementations handle the actual I/O
 /// (epoll, io_uring, mock, etc.) without the runtime knowing details.
+/// Who issued an I/O request, so a backend can share its threads fairly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IoContext {
+    /// The process tree (its root pid) the request belongs to.
+    pub owner: u64,
+    /// Maximum requests of this owner that may run at once.
+    pub max_in_flight: usize,
+}
+
+impl Default for IoContext {
+    fn default() -> Self {
+        Self {
+            owner: 0,
+            max_in_flight: usize::MAX,
+        }
+    }
+}
+
 pub trait IoBackend: Send + Sync {
     /// Register an I/O request. The backend will eventually produce a result.
     fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String>;
+
+    /// Register a request on behalf of `context`. Backends that schedule
+    /// fairly across process trees override this; the default ignores the
+    /// context.
+    fn register_for(
+        &self,
+        token: IoToken,
+        request: IoRequest,
+        context: IoContext,
+    ) -> Result<(), String> {
+        let _ = context;
+        self.register(token, request)
+    }
 
     /// Poll for completed I/O operations. Returns immediately.
     /// Non-blocking — returns empty vec if nothing is ready.
@@ -208,27 +239,278 @@ impl IoBackend for MockIoBackend {
     }
 }
 
-/// I/O backend with a fixed pool of worker threads plus one timer thread.
+/// Upper bound on worker threads, however many requests are in flight.
+pub const DEFAULT_MAX_IO_THREADS: usize = 256;
+
+/// How long a worker above the core count waits for work before exiting.
+const IDLE_WORKER_EXIT: Duration = Duration::from_secs(5);
+
+/// I/O backend with a shared work queue, an elastic worker pool, and one
+/// timer thread.
 ///
-/// Blocking requests are round-robin dispatched to the workers, each of which
-/// has its own channel. `Sleep` requests never occupy a worker: the timer
-/// thread completes them at their deadline and drops them when they are
-/// cancelled. Results are pushed to a shared completion queue.
+/// Blocking requests wait in one queue per owner (process tree). Idle workers
+/// take the next request round-robin across owners, skipping owners that
+/// already run their `max_in_flight` requests. When a request arrives and no
+/// worker is idle, the pool grows, up to `max_threads`; workers above the core
+/// count exit after idling. A slow request therefore occupies only its own
+/// worker and never delays unrelated requests.
 ///
-/// Dropping the backend cancels every pending timer and returns without
-/// waiting for a worker that is inside a blocking call (an HTTP request, for
-/// example). Such a worker exits once its call returns, and its result is
-/// discarded. [`ThreadPoolIoBackend::shutdown`] instead joins every worker.
+/// An HTTP request's deadline runs from registration, not from when a worker
+/// starts it: the timer thread fails a request that is still queued when its
+/// deadline passes, and a worker starting a request shortens its timeouts to
+/// the time left. `Sleep` requests never occupy a worker: the timer thread
+/// completes them at their deadline.
+///
+/// Dropping the backend cancels every pending timer and queued request, and
+/// returns without waiting for a worker that is inside a blocking call (an
+/// HTTP request, for example). Such a worker exits once its call returns, and
+/// its result is discarded. [`ThreadPoolIoBackend::shutdown`] instead joins
+/// every worker.
 pub struct ThreadPoolIoBackend {
-    senders: Vec<std::sync::mpsc::Sender<(IoToken, IoRequest)>>,
-    next_worker: std::sync::atomic::AtomicUsize,
+    work: Arc<WorkQueue>,
     completed: Arc<Mutex<Vec<(IoToken, IoResult)>>>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     timers: Arc<Timers>,
     timer_thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Pending `Sleep` requests, shared by the backend and its timer thread.
+type Completions = Mutex<Vec<(IoToken, IoResult)>>;
+
+fn push_completion(completed: &Completions, token: IoToken, result: IoResult) {
+    completed
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((token, result));
+}
+
+/// A blocking request waiting for, or running on, a worker.
+struct Job {
+    token: IoToken,
+    request: IoRequest,
+    context: IoContext,
+    /// When the request must have completed, counted from registration.
+    deadline: Option<Instant>,
+}
+
+/// Blocking requests not yet started, plus the bookkeeping that decides which
+/// one a free worker takes next.
+struct WorkQueue {
+    state: Mutex<WorkState>,
+    available: std::sync::Condvar,
+    core_threads: usize,
+    max_threads: usize,
+}
+
+#[derive(Default)]
+struct WorkState {
+    /// Queued jobs per owner. An owner is present only while it has jobs.
+    queues: std::collections::HashMap<u64, std::collections::VecDeque<Job>>,
+    /// Owners with queued jobs, in round-robin order.
+    order: std::collections::VecDeque<u64>,
+    /// Running jobs per owner. An owner is present only while it has some.
+    in_flight: std::collections::HashMap<u64, usize>,
+    /// Workers waiting for a job.
+    idle: usize,
+    /// Live workers.
+    threads: usize,
+    shutdown: bool,
+}
+
+impl WorkState {
+    /// Take the next job round-robin across owners, skipping owners at their
+    /// in-flight limit.
+    fn take_next(&mut self) -> Option<Job> {
+        for _ in 0..self.order.len() {
+            let owner = self.order.pop_front()?;
+            let running = self.in_flight.get(&owner).copied().unwrap_or(0);
+            let queue = self.queues.get_mut(&owner)?;
+            let limit = queue.front().map_or(0, |job| job.context.max_in_flight);
+            if running < limit {
+                let job = queue.pop_front()?;
+                if queue.is_empty() {
+                    self.queues.remove(&owner);
+                } else {
+                    self.order.push_back(owner);
+                }
+                *self.in_flight.entry(owner).or_default() += 1;
+                return Some(job);
+            }
+            self.order.push_back(owner);
+        }
+        None
+    }
+
+    /// Queued jobs that could start now: per owner, up to its free slots.
+    fn runnable_jobs(&self) -> usize {
+        self.queues
+            .iter()
+            .map(|(owner, queue)| {
+                let running = self.in_flight.get(owner).copied().unwrap_or(0);
+                let limit = queue.front().map_or(0, |job| job.context.max_in_flight);
+                queue.len().min(limit.saturating_sub(running))
+            })
+            .sum()
+    }
+
+    fn finish(&mut self, owner: u64) {
+        if let Some(running) = self.in_flight.get_mut(&owner) {
+            *running -= 1;
+            if *running == 0 {
+                self.in_flight.remove(&owner);
+            }
+        }
+    }
+
+    /// Remove a queued job. Returns `None` if it already started or is unknown.
+    fn remove_queued(&mut self, token: IoToken) -> Option<Job> {
+        let (owner, index) = self.queues.iter().find_map(|(owner, queue)| {
+            queue
+                .iter()
+                .position(|job| job.token == token)
+                .map(|index| (*owner, index))
+        })?;
+        let queue = self.queues.get_mut(&owner)?;
+        let job = queue.remove(index);
+        if queue.is_empty() {
+            self.queues.remove(&owner);
+            self.order.retain(|queued| *queued != owner);
+        }
+        job
+    }
+}
+
+impl WorkQueue {
+    fn new(core_threads: usize, max_threads: usize) -> Self {
+        Self {
+            state: Mutex::new(WorkState::default()),
+            available: std::sync::Condvar::new(),
+            core_threads,
+            max_threads,
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, WorkState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queue a job. Returns whether the caller should start another worker.
+    fn push(&self, job: Job) -> Result<bool, String> {
+        let mut state = self.lock();
+        if state.shutdown {
+            return Err("io backend is shut down".into());
+        }
+        let owner = job.context.owner;
+        let queue = state.queues.entry(owner).or_default();
+        queue.push_back(job);
+        if queue.len() == 1 {
+            state.order.push_back(owner);
+        }
+        // An idle worker woken for an earlier job still counts as idle until
+        // it takes that job, so compare against all runnable queued jobs
+        // rather than checking for zero idle workers.
+        let grow = state.runnable_jobs() > state.idle && state.threads < self.max_threads;
+        if grow {
+            state.threads += 1;
+        }
+        self.available.notify_one();
+        Ok(grow)
+    }
+
+    fn remove_queued(&self, token: IoToken) -> Option<Job> {
+        self.lock().remove_queued(token)
+    }
+
+    /// Drop every queued job and tell workers to exit.
+    fn shutdown(&self) {
+        let mut state = self.lock();
+        state.shutdown = true;
+        state.queues.clear();
+        state.order.clear();
+        self.available.notify_all();
+    }
+
+    /// Worker thread body.
+    fn run_worker(&self, timers: &Timers, completed: &Completions) {
+        let mut state = self.lock();
+        loop {
+            if state.shutdown {
+                state.threads -= 1;
+                return;
+            }
+            if let Some(job) = state.take_next() {
+                drop(state);
+                // The job left the queue, so its queue deadline is moot.
+                timers.cancel(job.token);
+                let (token, owner) = (job.token, job.context.owner);
+                let result = run_job(job);
+                push_completion(completed, token, result);
+                state = self.lock();
+                state.finish(owner);
+                continue;
+            }
+            state.idle += 1;
+            let (next, wait) = self
+                .available
+                .wait_timeout(state, IDLE_WORKER_EXIT)
+                .unwrap_or_else(|e| e.into_inner());
+            state = next;
+            state.idle -= 1;
+            if wait.timed_out() && state.threads > self.core_threads && state.order.is_empty() {
+                state.threads -= 1;
+                return;
+            }
+        }
+    }
+}
+
+/// When an HTTP request must have completed, counted from `issued`.
+fn request_deadline(request: &IoRequest, issued: Instant) -> Option<Instant> {
+    match request {
+        IoRequest::HttpGet { timeouts, .. } | IoRequest::Http { timeouts, .. } => {
+            issued.checked_add(timeouts.global)
+        }
+        _ => None,
+    }
+}
+
+fn queued_timeout_error(request: &IoRequest) -> IoResult {
+    let builtin = match request {
+        IoRequest::Http { format, .. } => format.builtin_name(),
+        _ => "http_get",
+    };
+    IoResult::Err(format!(
+        "{builtin}: http: timeout: deadline passed while the request was queued"
+    ))
+}
+
+/// A request dequeued with less time than this before its deadline fails
+/// instead of starting. It could not complete anyway, and ureq does not
+/// honour timeouts of about one millisecond: they take about a second.
+const MIN_START_BUDGET: Duration = Duration::from_millis(10);
+
+/// Run a dequeued job, shortening HTTP timeouts to the time left before its
+/// deadline.
+fn run_job(mut job: Job) -> IoResult {
+    if let Some(deadline) = job.deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left < MIN_START_BUDGET {
+            return queued_timeout_error(&job.request);
+        }
+        if let IoRequest::HttpGet { timeouts, .. } | IoRequest::Http { timeouts, .. } =
+            &mut job.request
+        {
+            timeouts.global = timeouts.global.min(left);
+            timeouts.connect = timeouts.connect.min(left);
+        }
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        execute_io_request(job.request)
+    }))
+    .unwrap_or_else(|_| IoResult::Err("io backend worker panicked".into()))
+}
+
+/// Pending timers, shared by the backend and its timer thread: `Sleep`
+/// requests, and deadlines of queued HTTP requests.
 struct Timers {
     state: Mutex<TimerState>,
     changed: std::sync::Condvar,
@@ -240,8 +522,16 @@ struct TimerState {
     /// are skipped when they reach the top, and pruned when they dominate.
     deadlines: std::collections::BinaryHeap<std::cmp::Reverse<(Instant, u64)>>,
     /// Tokens whose timer has neither fired nor been cancelled.
-    pending: std::collections::HashSet<IoToken>,
+    pending: std::collections::HashMap<IoToken, TimerKind>,
     shutdown: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimerKind {
+    /// Complete a `Sleep` request.
+    Sleep,
+    /// Fail the request if it is still queued.
+    QueueDeadline,
 }
 
 impl Timers {
@@ -257,24 +547,28 @@ impl Timers {
     }
 
     fn add(&self, token: IoToken, duration: Duration) -> Result<(), String> {
-        let mut state = self.lock();
-        if state.shutdown {
-            return Err("io backend is shut down".into());
-        }
         let now = Instant::now();
         // Durations too large to represent are clamped to roughly a century.
         let deadline = now
             .checked_add(duration)
             .unwrap_or_else(|| now + Duration::from_secs(100 * 365 * 24 * 3600));
+        self.add_at(token, deadline, TimerKind::Sleep)
+    }
+
+    fn add_at(&self, token: IoToken, deadline: Instant, kind: TimerKind) -> Result<(), String> {
+        let mut state = self.lock();
+        if state.shutdown {
+            return Err("io backend is shut down".into());
+        }
         state.deadlines.push(std::cmp::Reverse((deadline, token.0)));
-        state.pending.insert(token);
+        state.pending.insert(token, kind);
         self.changed.notify_one();
         Ok(())
     }
 
     fn cancel(&self, token: IoToken) {
         let mut state = self.lock();
-        if !state.pending.remove(&token) {
+        if state.pending.remove(&token).is_none() {
             return;
         }
         // Keep the heap proportional to the live timers so that cancelled
@@ -283,7 +577,7 @@ impl Timers {
             let TimerState {
                 deadlines, pending, ..
             } = &mut *state;
-            deadlines.retain(|entry| pending.contains(&IoToken(entry.0.1)));
+            deadlines.retain(|entry| pending.contains_key(&IoToken(entry.0.1)));
         }
         self.changed.notify_one();
     }
@@ -296,8 +590,11 @@ impl Timers {
         self.changed.notify_all();
     }
 
-    /// Timer thread body: complete each pending sleep at its deadline.
-    fn run(&self, completed: &Mutex<Vec<(IoToken, IoResult)>>) {
+    /// Timer thread body: complete each pending sleep at its deadline, and
+    /// fail each HTTP request still queued at its deadline.
+    ///
+    /// Lock order is timers, then work queue; nothing takes them the other way.
+    fn run(&self, completed: &Completions, work: &WorkQueue) {
         let mut state = self.lock();
         loop {
             if state.shutdown {
@@ -311,14 +608,25 @@ impl Timers {
                 Some((deadline, raw_token)) if deadline <= now => {
                     state.deadlines.pop();
                     let token = IoToken(raw_token);
-                    if state.pending.remove(&token) {
-                        completed.lock().unwrap_or_else(|e| e.into_inner()).push((
+                    match state.pending.remove(&token) {
+                        Some(TimerKind::Sleep) => push_completion(
+                            completed,
                             token,
                             IoResult::Ok {
                                 value: SendableValue::Unit,
                                 io_bytes: 0,
                             },
-                        ));
+                        ),
+                        Some(TimerKind::QueueDeadline) => {
+                            if let Some(job) = work.remove_queued(token) {
+                                push_completion(
+                                    completed,
+                                    token,
+                                    queued_timeout_error(&job.request),
+                                );
+                            }
+                        }
+                        None => {}
                     }
                 }
                 Some((deadline, _)) => {
@@ -334,45 +642,53 @@ impl Timers {
 }
 
 impl ThreadPoolIoBackend {
+    /// A pool that keeps `num_threads` workers and grows up to
+    /// [`DEFAULT_MAX_IO_THREADS`] while requests are waiting.
     pub fn new(num_threads: usize) -> Self {
-        let num_threads = num_threads.max(1);
+        Self::with_max_threads(num_threads, DEFAULT_MAX_IO_THREADS)
+    }
+
+    /// A pool that keeps `core_threads` workers and grows up to `max_threads`.
+    pub fn with_max_threads(core_threads: usize, max_threads: usize) -> Self {
+        let core_threads = core_threads.max(1);
+        let max_threads = max_threads.max(core_threads);
         let completed = Arc::new(Mutex::new(Vec::new()));
-        let mut senders = Vec::with_capacity(num_threads);
-        let mut workers = Vec::with_capacity(num_threads);
-
-        for _ in 0..num_threads {
-            let (tx, rx) = std::sync::mpsc::channel::<(IoToken, IoRequest)>();
-            let done = Arc::clone(&completed);
-            let worker = std::thread::spawn(move || {
-                while let Ok((token, request)) = rx.recv() {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        execute_io_request(request)
-                    }))
-                    .unwrap_or_else(|_| IoResult::Err("io backend worker panicked".into()));
-                    done.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push((token, result));
-                }
-            });
-            senders.push(tx);
-            workers.push(worker);
-        }
-
+        let work = Arc::new(WorkQueue::new(core_threads, max_threads));
         let timers = Arc::new(Timers::new());
         let timer_thread = {
             let timers = Arc::clone(&timers);
             let done = Arc::clone(&completed);
-            std::thread::spawn(move || timers.run(&done))
+            let work = Arc::clone(&work);
+            std::thread::spawn(move || timers.run(&done, &work))
         };
 
-        Self {
-            senders,
-            next_worker: std::sync::atomic::AtomicUsize::new(0),
+        let backend = Self {
+            work,
             completed,
-            workers: Mutex::new(workers),
+            workers: Mutex::new(Vec::with_capacity(core_threads)),
             timers,
             timer_thread: Some(timer_thread),
+        };
+        backend.work.lock().threads = core_threads;
+        for _ in 0..core_threads {
+            backend.spawn_worker();
         }
+        backend
+    }
+
+    fn spawn_worker(&self) {
+        let work = Arc::clone(&self.work);
+        let timers = Arc::clone(&self.timers);
+        let done = Arc::clone(&self.completed);
+        let worker = std::thread::spawn(move || work.run_worker(&timers, &done));
+        let mut workers = self.workers.lock().unwrap_or_else(|e| e.into_inner());
+        workers.retain(|handle| !handle.is_finished());
+        workers.push(worker);
+    }
+
+    /// Live worker threads.
+    pub fn worker_count(&self) -> usize {
+        self.work.lock().threads
     }
 
     /// Stop accepting requests, cancel pending timers, and join every thread.
@@ -381,7 +697,7 @@ impl ThreadPoolIoBackend {
     /// return. Dropping the backend does not wait for those.
     pub fn shutdown(&mut self) -> Result<(), String> {
         self.stop_timers();
-        self.senders.clear();
+        self.work.shutdown();
         let workers = self.workers.get_mut().unwrap_or_else(|e| e.into_inner());
         let mut panicked = 0;
         for worker in workers.drain(..) {
@@ -408,19 +724,34 @@ impl ThreadPoolIoBackend {
 
 impl IoBackend for ThreadPoolIoBackend {
     fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String> {
-        if self.senders.is_empty() {
-            return Err("io backend is shut down".into());
-        }
+        self.register_for(token, request, IoContext::default())
+    }
+
+    fn register_for(
+        &self,
+        token: IoToken,
+        request: IoRequest,
+        context: IoContext,
+    ) -> Result<(), String> {
         if let IoRequest::Sleep(duration) = request {
             return self.timers.add(token, duration);
         }
-        let idx = self
-            .next_worker
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % self.senders.len();
-        self.senders[idx]
-            .send((token, request))
-            .map_err(|e| format!("io backend worker unavailable: {e}"))
+        let deadline = request_deadline(&request, Instant::now());
+        let job = Job {
+            token,
+            request,
+            context,
+            deadline,
+        };
+        if self.work.push(job)? {
+            self.spawn_worker();
+        }
+        if let Some(deadline) = deadline {
+            // If a worker already took the job, the timer finds nothing queued.
+            self.timers
+                .add_at(token, deadline, TimerKind::QueueDeadline)?;
+        }
+        Ok(())
     }
 
     fn poll(&self) -> Vec<(IoToken, IoResult)> {
@@ -429,19 +760,21 @@ impl IoBackend for ThreadPoolIoBackend {
     }
 
     fn cancel(&self, token: IoToken) {
-        // A blocking request cannot be interrupted once a worker has started
-        // it; the runtime ignores its late result.
+        // A queued request is dropped. A blocking request cannot be
+        // interrupted once a worker has started it; the runtime ignores its
+        // late result.
         self.timers.cancel(token);
+        self.work.remove_queued(token);
     }
 }
 
 impl Drop for ThreadPoolIoBackend {
     fn drop(&mut self) {
         self.stop_timers();
-        // Closing the channels lets idle workers exit. Workers inside a
-        // blocking call are detached rather than joined, so dropping the
-        // backend never waits on the network or the disk.
-        self.senders.clear();
+        // Idle workers exit. Workers inside a blocking call are detached
+        // rather than joined, so dropping the backend never waits on the
+        // network or the disk.
+        self.work.shutdown();
         self.workers
             .get_mut()
             .unwrap_or_else(|e| e.into_inner())
@@ -1200,7 +1533,7 @@ mod tests {
             }
             std::thread::yield_now();
         }
-        assert!(backend.timers.lock().pending.contains(&IoToken(1)));
+        assert!(backend.timers.lock().pending.contains_key(&IoToken(1)));
     }
 
     #[test]
@@ -1239,5 +1572,225 @@ mod tests {
             .register(IoToken(1), IoRequest::Sleep(Duration::from_millis(0)))
             .unwrap_err();
         assert!(err.contains("shut down"));
+    }
+
+    /// Local HTTP server that answers each request after `delay`, one thread
+    /// per connection. Returns its URL and a count of accepted connections.
+    #[cfg(feature = "builtin-http")]
+    fn slow_server(delay: Duration) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&accepted);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut request = [0u8; 1024];
+                    let _ = stream.read(&mut request);
+                    std::thread::sleep(delay);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    );
+                });
+            }
+        });
+        (format!("http://{addr}/"), accepted)
+    }
+
+    #[cfg(feature = "builtin-http")]
+    fn http_get_request(url: &str, timeout: Duration) -> IoRequest {
+        IoRequest::HttpGet {
+            url: url.to_string(),
+            max_response: ReadLimit {
+                max_bytes: 1024,
+                limit_name: "max_http_response_bytes",
+            },
+            timeouts: HttpTimeouts {
+                connect: timeout,
+                global: timeout,
+            },
+        }
+    }
+
+    /// Poll until `count` completions arrived or `limit` passed.
+    fn collect(
+        backend: &ThreadPoolIoBackend,
+        count: usize,
+        limit: Duration,
+    ) -> Vec<(IoToken, IoResult, Duration)> {
+        let start = Instant::now();
+        let mut results = Vec::new();
+        while results.len() < count && start.elapsed() < limit {
+            for (token, result) in backend.poll() {
+                results.push((token, result, start.elapsed()));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        results
+    }
+
+    #[test]
+    fn test_thread_pool_sleeps_never_occupy_a_worker() {
+        // One worker, which may never grow: if any sleep took the worker, the
+        // file read below could not run until that sleep ended.
+        let backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+        for raw in 0..50 {
+            backend
+                .register(IoToken(raw), IoRequest::Sleep(Duration::from_secs(60)))
+                .unwrap();
+        }
+        let path = std::env::temp_dir().join(format!("hiko-io-pool-{}", std::process::id()));
+        std::fs::write(&path, "data").unwrap();
+        backend
+            .register(
+                IoToken(100),
+                IoRequest::ReadFile {
+                    path: path.to_string_lossy().into_owned(),
+                    max_bytes: ReadLimit {
+                        max_bytes: 1024,
+                        limit_name: "max_file_read_bytes",
+                    },
+                },
+            )
+            .unwrap();
+        let results = collect(&backend, 1, Duration::from_secs(1));
+        let _ = std::fs::remove_file(path);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, IoToken(100));
+        assert!(matches!(results[0].1, IoResult::Ok { .. }));
+        assert_eq!(backend.worker_count(), 1);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_thread_pool_grows_while_workers_are_busy() {
+        let (url, _) = slow_server(Duration::from_millis(500));
+        let backend = ThreadPoolIoBackend::with_max_threads(2, 16);
+        for raw in 0..6 {
+            backend
+                .register(IoToken(raw), http_get_request(&url, Duration::from_secs(5)))
+                .unwrap();
+        }
+        let results = collect(&backend, 6, Duration::from_secs(5));
+        assert_eq!(results.len(), 6);
+        // All six ran at once: none waited for another to finish.
+        for (_, result, elapsed) in &results {
+            assert!(matches!(result, IoResult::Ok { .. }), "{result:?}");
+            assert!(*elapsed < Duration::from_millis(900), "took {elapsed:?}");
+        }
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_thread_pool_limits_in_flight_per_owner_and_round_robins() {
+        let (slow_url, slow_accepted) = slow_server(Duration::from_millis(400));
+        let (fast_url, _) = slow_server(Duration::ZERO);
+        let backend = ThreadPoolIoBackend::with_max_threads(4, 16);
+        let busy = IoContext {
+            owner: 1,
+            max_in_flight: 2,
+        };
+        for raw in 0..6 {
+            backend
+                .register_for(
+                    IoToken(raw),
+                    http_get_request(&slow_url, Duration::from_secs(5)),
+                    busy,
+                )
+                .unwrap();
+        }
+        let other = IoContext {
+            owner: 2,
+            max_in_flight: 2,
+        };
+        backend
+            .register_for(
+                IoToken(10),
+                http_get_request(&fast_url, Duration::from_secs(5)),
+                other,
+            )
+            .unwrap();
+
+        let first = collect(&backend, 1, Duration::from_secs(1));
+        assert_eq!(
+            first[0].0,
+            IoToken(10),
+            "the other owner was not served first"
+        );
+        assert!(
+            first[0].2 < Duration::from_millis(100),
+            "took {:?}",
+            first[0].2
+        );
+        // Only two of owner 1's requests have started.
+        assert_eq!(slow_accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let rest = collect(&backend, 6, Duration::from_secs(5));
+        assert_eq!(rest.len(), 6);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_thread_pool_fails_request_whose_deadline_passes_in_queue() {
+        let (url, accepted) = slow_server(Duration::from_secs(2));
+        let backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+        // The first request holds the only worker; the second waits.
+        backend
+            .register(IoToken(1), http_get_request(&url, Duration::from_secs(5)))
+            .unwrap();
+        backend
+            .register(
+                IoToken(2),
+                http_get_request(&url, Duration::from_millis(300)),
+            )
+            .unwrap();
+
+        let results = collect(&backend, 1, Duration::from_secs(1));
+        assert_eq!(results.len(), 1);
+        let (token, result, elapsed) = &results[0];
+        assert_eq!(*token, IoToken(2));
+        match result {
+            IoResult::Err(message) => assert_eq!(
+                message,
+                "http_get: http: timeout: deadline passed while the request was queued"
+            ),
+            other => panic!("expected queue timeout, got {other:?}"),
+        }
+        assert!(
+            *elapsed >= Duration::from_millis(250) && *elapsed < Duration::from_millis(500),
+            "failed after {elapsed:?}"
+        );
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_thread_pool_cancel_removes_queued_request() {
+        let (url, accepted) = slow_server(Duration::from_millis(300));
+        let backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+        backend
+            .register(IoToken(1), http_get_request(&url, Duration::from_secs(5)))
+            .unwrap();
+        // Wait until the only worker is busy with the first request, so the
+        // second one stays queued.
+        let start = Instant::now();
+        while accepted.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && start.elapsed() < Duration::from_secs(1)
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        backend
+            .register(IoToken(2), http_get_request(&url, Duration::from_secs(5)))
+            .unwrap();
+        backend.cancel(IoToken(2));
+        assert!(backend.work.lock().queues.is_empty());
+
+        let results = collect(&backend, 2, Duration::from_secs(1));
+        assert_eq!(results.len(), 1, "cancelled request completed: {results:?}");
+        assert_eq!(results[0].0, IoToken(1));
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(backend.timers.lock().pending.is_empty());
     }
 }

@@ -327,7 +327,8 @@ fn policy_io_limit_keys_reach_the_vm() {
          exec_timeout_ms = 2500\n\
          max_http_response_bytes = 10\n\
          max_file_read_bytes = 20\n\
-         max_exec_output_bytes = 30\n",
+         max_exec_output_bytes = 30\n\
+         max_concurrent_io = 40\n",
     )
     .unwrap();
     let vm = config.build_vm(compile("val x = 1"));
@@ -340,6 +341,7 @@ fn policy_io_limit_keys_reach_the_vm() {
             max_http_response_bytes: 10,
             max_file_read_bytes: 20,
             max_exec_output_bytes: 30,
+            max_concurrent_io: 40,
         }
     );
 
@@ -351,6 +353,7 @@ fn policy_io_limit_keys_reach_the_vm() {
         ".max_http_response_bytes(10)",
         ".max_file_read_bytes(20)",
         ".max_exec_output_bytes(30)",
+        ".max_concurrent_io(40)",
     ] {
         assert!(source.contains(line), "generated source misses {line}");
     }

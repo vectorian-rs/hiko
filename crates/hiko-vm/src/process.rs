@@ -161,6 +161,9 @@ pub struct Process {
     pub(crate) vm: VM,
     pub(crate) status: ProcessStatus,
     pub(crate) parent: Option<Pid>,
+    /// Root of this process's tree: itself for a root process, otherwise its
+    /// parent's root. Async I/O concurrency is limited per tree.
+    pub(crate) root: Pid,
     /// The scope this process belongs to.
     pub(crate) scope_id: Option<ScopeId>,
     /// Children whose result has not been consumed yet: live children and
@@ -177,6 +180,7 @@ impl Process {
             vm,
             status: ProcessStatus::Runnable,
             parent,
+            root: pid,
             scope_id: None,
             children: HashSet::new(),
         }
@@ -188,6 +192,7 @@ impl Process {
             vm,
             status: ProcessStatus::Runnable,
             parent,
+            root: pid,
             scope_id: Some(scope_id),
             children: HashSet::new(),
         }
@@ -207,6 +212,16 @@ impl Process {
 
     pub fn parent(&self) -> Option<Pid> {
         self.parent
+    }
+
+    /// Make this process part of the tree rooted at `root`.
+    pub fn with_root(mut self, root: Pid) -> Self {
+        self.root = root;
+        self
+    }
+
+    pub fn root(&self) -> Pid {
+        self.root
     }
 
     pub fn scope_id(&self) -> Option<ScopeId> {

@@ -370,6 +370,12 @@ impl VMBuilder {
         self
     }
 
+    /// Set the maximum async I/O requests one process tree runs at once.
+    pub fn max_concurrent_io(mut self, count: u64) -> Self {
+        self.io_limits.max_concurrent_io = count;
+        self
+    }
+
     /// Set maximum host-work budget for CPU-bound builtin operations.
     pub fn max_host_work(mut self, work: u64) -> Self {
         self.max_host_work = Some(work);
