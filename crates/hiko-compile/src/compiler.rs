@@ -1892,6 +1892,74 @@ impl Compiler {
 
     // ── Expressions ──────────────────────────────────────────────────
 
+    /// Compiles a handle expression whose end is also the end of the current
+    /// function, so the return clause is compiled in tail position.
+    fn compile_handle(
+        &mut self,
+        body: &Expr,
+        return_var: Symbol,
+        return_body: &Expr,
+        handlers: &[EffectHandler],
+    ) -> Result<(), CompileError> {
+        // Emit InstallHandler: u16 n_clauses, then per clause:
+        //   u16 effect_tag, i16 offset (placeholder)
+        self.emit(Op::InstallHandler);
+        let n_clauses = handlers.len() as u16;
+        self.emit_u16(n_clauses);
+        // Record positions of clause offset placeholders
+        let mut clause_offset_positions = Vec::new();
+        for handler in handlers {
+            let eff_name = self.interner.resolve(handler.effect_name).to_string();
+            let tag = *self
+                .effect_tags
+                .get(&eff_name)
+                .ok_or_else(|| CompileError::codegen(format!("unknown effect: {eff_name}")))?;
+            self.emit_u16(tag);
+            let pos = self.chunk().code.len();
+            self.emit_u16(0); // placeholder offset
+            clause_offset_positions.push(pos);
+        }
+
+        // Jump over clause code
+        let skip_jump = self.emit_jump(Op::Jump);
+
+        // Compile each effect clause
+        let mut clause_end_jumps = Vec::new();
+        for (i, handler) in handlers.iter().enumerate() {
+            self.patch_jump(clause_offset_positions[i])?;
+            self.begin_scope();
+            let payload_name = self.interner.resolve(handler.payload_var).to_string();
+            let cont_name = self.interner.resolve(handler.cont_var).to_string();
+            self.add_local(payload_name);
+            self.add_local(cont_name);
+            self.compile_expr_inner(&handler.body, false)?;
+            self.end_scope_keep_result();
+            clause_end_jumps.push(self.emit_jump(Op::Jump));
+        }
+
+        // Patch skip_jump to land here (after clause code)
+        self.patch_jump(skip_jump)?;
+
+        // Compile the body (runs under the handler)
+        self.compile_expr_inner(body, false)?;
+
+        // Body returned normally; remove handler
+        self.emit(Op::RemoveHandler);
+
+        // Compile the return clause
+        self.begin_scope();
+        let return_var_name = self.interner.resolve(return_var).to_string();
+        self.add_local(return_var_name);
+        self.compile_expr_tail(return_body)?;
+        self.end_scope_keep_result();
+
+        // Patch all clause end jumps to here
+        for j in clause_end_jumps {
+            self.patch_jump(j)?;
+        }
+        Ok(())
+    }
+
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         self.compile_expr_inner(expr, false)
     }
@@ -2060,60 +2128,22 @@ impl Compiler {
                 return_body,
                 handlers,
             } => {
-                // Emit InstallHandler: u16 n_clauses, then per clause:
-                //   u16 effect_tag, i16 offset (placeholder)
-                self.emit(Op::InstallHandler);
-                let n_clauses = handlers.len() as u16;
-                self.emit_u16(n_clauses);
-                // Record positions of clause offset placeholders
-                let mut clause_offset_positions = Vec::new();
-                for handler in handlers {
-                    let eff_name = self.interner.resolve(handler.effect_name).to_string();
-                    let tag = *self.effect_tags.get(&eff_name).ok_or_else(|| {
-                        CompileError::codegen(format!("unknown effect: {eff_name}"))
-                    })?;
-                    self.emit_u16(tag);
-                    let pos = self.chunk().code.len();
-                    self.emit_u16(0); // placeholder offset
-                    clause_offset_positions.push(pos);
-                }
-
-                // Jump over clause code
-                let skip_jump = self.emit_jump(Op::Jump);
-
-                // Compile each effect clause
-                let mut clause_end_jumps = Vec::new();
-                for (i, handler) in handlers.iter().enumerate() {
-                    self.patch_jump(clause_offset_positions[i])?;
-                    self.begin_scope();
-                    let payload_name = self.interner.resolve(handler.payload_var).to_string();
-                    let cont_name = self.interner.resolve(handler.cont_var).to_string();
-                    self.add_local(payload_name);
-                    self.add_local(cont_name);
-                    self.compile_expr_inner(&handler.body, false)?;
-                    self.end_scope_keep_result();
-                    clause_end_jumps.push(self.emit_jump(Op::Jump));
-                }
-
-                // Patch skip_jump to land here (after clause code)
-                self.patch_jump(skip_jump)?;
-
-                // Compile the body (runs under the handler)
-                self.compile_expr_inner(body, false)?;
-
-                // Body returned normally; remove handler
-                self.emit(Op::RemoveHandler);
-
-                // Compile the return clause
-                self.begin_scope();
-                let return_var_name = self.interner.resolve(*return_var).to_string();
-                self.add_local(return_var_name);
-                self.compile_expr_inner(return_body, tail)?;
-                self.end_scope_keep_result();
-
-                // Patch all clause end jumps to here
-                for j in clause_end_jumps {
-                    self.patch_jump(j)?;
+                // A continuation captured by `perform` restores the frame that
+                // installed the handler and runs it until that frame returns.
+                // The handle expression must therefore end its frame, or a
+                // resumed continuation also runs the code after the handle.
+                // Outside function tail position, run it in its own thunk.
+                if tail && self.func_stack.len() > 1 {
+                    self.compile_handle(body, *return_var, return_body, handlers)?;
+                } else {
+                    self.push_new_function(None);
+                    self.add_local("<handle>".to_string());
+                    self.compile_handle(body, *return_var, return_body, handlers)?;
+                    self.emit(Op::Return);
+                    self.finish_function()?;
+                    self.emit(Op::Unit);
+                    self.emit(if tail { Op::TailCall } else { Op::Call });
+                    self.emit_u8(1);
                 }
             }
 

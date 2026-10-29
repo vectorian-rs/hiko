@@ -1068,6 +1068,48 @@ mod tests {
     }
 
     #[test]
+    fn test_effect_code_after_resume_runs_at_top_level() {
+        // The continuation is delimited by the handle expression, so code
+        // after `resume` in the clause must run whether or not the handle
+        // is inside a function.
+        let vm = run("effect Ask of unit
+             fun fa () = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100
+             val in_fn = fa ()
+             val top = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100
+             val twice = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 1 + resume k 2
+             fun twice_fn () = handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 1 + resume k 2
+             val twice_in_fn = twice_fn ()");
+        assert_eq!(global_int(&vm, "in_fn"), 111);
+        assert_eq!(global_int(&vm, "top"), 111);
+        assert_eq!(global_int(&vm, "twice"), 5);
+        assert_eq!(global_int(&vm, "twice_in_fn"), 5);
+    }
+
+    #[test]
+    fn test_effect_continuation_excludes_code_after_handle() {
+        // Code after a non-tail handle in the same frame is not part of the
+        // continuation and must run exactly once.
+        let vm = run("effect Ask of unit
+             fun fb () = (handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100) + 1000
+             val in_fn = fb ()
+             val top = (handle (perform Ask () + 1)
+               with return x => x | Ask _ k => resume k 10 + 100) + 1000
+             fun fc y = let val a = y + 1
+               in (handle (perform Ask () + a)
+                   with return x => x * 2 | Ask _ k => resume k 10 + 100) + a end
+             val with_locals = fc 1");
+        assert_eq!(global_int(&vm, "in_fn"), 1111);
+        assert_eq!(global_int(&vm, "top"), 1111);
+        // (10 + 2) * 2 + 100 + 2
+        assert_eq!(global_int(&vm, "with_locals"), 126);
+    }
+
+    #[test]
     fn test_effect_state() {
         // State effect: get/put pattern
         let vm = run("effect Get of unit
