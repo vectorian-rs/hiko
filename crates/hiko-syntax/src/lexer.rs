@@ -170,10 +170,11 @@ impl<'src> Lexer<'src> {
                 self.pos += 2; // skip the two hex digits (main +1 below)
                 val as char
             }
-            other => {
+            _ => {
+                let other = self.char_at(self.pos);
                 return Err(LexError {
-                    message: format!("unknown escape sequence: \\{}", other as char),
-                    span: self.span(self.pos - 1, self.pos + 1),
+                    message: format!("unknown escape sequence: \\{other}"),
+                    span: self.span(self.pos - 1, self.pos + other.len_utf8()),
                 });
             }
         };
@@ -420,9 +421,10 @@ impl<'src> Lexer<'src> {
             }
 
             _ => {
-                self.pos += 1;
+                let c = self.char_at(start);
+                self.pos += c.len_utf8();
                 return Err(LexError {
-                    message: format!("unexpected character: '{}'", ch as char),
+                    message: format!("unexpected character: '{c}'"),
                     span: self.span(start, self.pos),
                 });
             }
@@ -500,6 +502,14 @@ impl<'src> Lexer<'src> {
 
     fn peek_at(&self, offset: usize) -> Option<u8> {
         self.bytes.get(self.pos + offset).copied()
+    }
+
+    /// The full (possibly multi-byte) character starting at byte `pos`.
+    fn char_at(&self, pos: usize) -> char {
+        self.source
+            .get(pos..)
+            .and_then(|rest| rest.chars().next())
+            .unwrap_or(char::REPLACEMENT_CHARACTER)
     }
 
     fn span(&self, start: usize, end: usize) -> Span {
@@ -754,6 +764,17 @@ mod tests {
     #[test]
     fn test_unexpected_char() {
         assert_eq!(lex_err("@"), "unexpected character: '@'");
+    }
+
+    #[test]
+    fn test_non_ascii_errors_report_whole_character() {
+        let err = Lexer::new("x é", 0).tokenize().unwrap_err();
+        assert_eq!(err.message, "unexpected character: 'é'");
+        assert_eq!((err.span.start, err.span.end), (2, 4));
+
+        let err = Lexer::new("\"\\é\"", 0).tokenize().unwrap_err();
+        assert_eq!(err.message, "unknown escape sequence: \\é");
+        assert_eq!((err.span.start, err.span.end), (1, 4));
     }
 
     #[test]
