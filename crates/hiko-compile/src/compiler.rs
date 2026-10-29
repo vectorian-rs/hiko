@@ -2014,6 +2014,25 @@ impl Compiler {
         self.compile_expr_inner(expr, false)
     }
 
+    /// Compile operands left to right, leaving each value on the stack.
+    ///
+    /// Locals live on the same stack as operands, so while a later operand
+    /// is compiled the earlier values occupy slots. Reserve those slots as
+    /// unnamed locals; otherwise a `case` scrutinee, `let` binding or pattern
+    /// temporary inside a later operand gets a slot index that ignores them.
+    fn compile_operands(&mut self, operands: &[&Expr]) -> Result<(), CompileError> {
+        let locals_before = self.ctx().locals.len();
+        for (i, operand) in operands.iter().enumerate() {
+            self.compile_expr(operand)?;
+            if i + 1 < operands.len() {
+                // An empty name never resolves as a variable.
+                self.add_local(String::new());
+            }
+        }
+        self.ctx_mut().locals.truncate(locals_before);
+        Ok(())
+    }
+
     fn compile_expr_tail(&mut self, expr: &Expr) -> Result<(), CompileError> {
         self.compile_expr_inner(expr, true)
     }
@@ -2039,9 +2058,8 @@ impl Compiler {
             }
 
             ExprKind::Tuple(elems) => {
-                for e in elems {
-                    self.compile_expr(e)?;
-                }
+                let elems_refs: Vec<&Expr> = elems.iter().collect();
+                self.compile_operands(&elems_refs)?;
                 self.emit_make_tuple(elems.len())?;
             }
             ExprKind::List(elems) => {
@@ -2054,8 +2072,7 @@ impl Compiler {
                 self.emit_u8(0);
             }
             ExprKind::Cons(head, tail) => {
-                self.compile_expr(head)?;
-                self.compile_expr(tail)?;
+                self.compile_operands(&[head, tail])?;
                 self.emit(Op::MakeCons);
             }
 
@@ -2063,15 +2080,11 @@ impl Compiler {
                 unreachable!("desugared to if-then-else")
             }
             ExprKind::BinOp(op, lhs, rhs) => {
-                if let Some(resolved_op) = self.resolve_generic_binop(*op, expr.span) {
-                    self.compile_expr(lhs)?;
-                    self.compile_expr(rhs)?;
-                    self.emit(resolved_op);
-                } else {
-                    self.compile_expr(lhs)?;
-                    self.compile_expr(rhs)?;
-                    self.emit(binop_to_op(*op));
-                }
+                let resolved_op = self
+                    .resolve_generic_binop(*op, expr.span)
+                    .unwrap_or_else(|| binop_to_op(*op));
+                self.compile_operands(&[lhs, rhs])?;
+                self.emit(resolved_op);
             }
 
             ExprKind::UnaryNeg(e) => {
@@ -2105,8 +2118,7 @@ impl Compiler {
                     }
                     self.emit_u16(proto_idx);
                 } else {
-                    self.compile_expr(func)?;
-                    self.compile_expr(arg)?;
+                    self.compile_operands(&[func, arg])?;
                     if tail {
                         self.emit(Op::TailCall);
                     } else {

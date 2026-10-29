@@ -817,6 +817,40 @@ mod tests {
     }
 
     #[test]
+    fn test_case_as_binary_operand_reads_its_own_scrutinee() {
+        let vm = run("datatype l = End | Link of int
+             fun g x = 1 + (case x of End => 0 | Link n => n)
+             val result = g (Link 3)");
+        assert_eq!(global_int(&vm, "result"), 4);
+    }
+
+    #[test]
+    fn test_case_as_call_argument_reads_its_own_scrutinee() {
+        let vm = run("datatype l = End | Link of int
+             fun id x = x
+             val f = id
+             fun g x = f (case x of End => 0 | Link n => n)
+             val result = g (Link 7)");
+        assert_eq!(global_int(&vm, "result"), 7);
+    }
+
+    #[test]
+    fn test_case_and_let_nested_in_operands() {
+        let vm = run("datatype l = End | Link of int
+             fun g x = (1, (case x of End => 0 | Link n => n), 3)
+             val (a, b, c) = g (Link 5)
+             fun h x = 10 + (let val y = x * 2 in y end)
+             val d = h 4
+             fun k x = 1 :: (case x of End => [] | Link n => [n])
+             val e = case k (Link 9) of _ :: m :: _ => m | _ => 0");
+        assert_eq!(global_int(&vm, "a"), 1);
+        assert_eq!(global_int(&vm, "b"), 5);
+        assert_eq!(global_int(&vm, "c"), 3);
+        assert_eq!(global_int(&vm, "d"), 18);
+        assert_eq!(global_int(&vm, "e"), 9);
+    }
+
+    #[test]
     fn test_closure() {
         let vm = run("fun make_adder n = fn x => n + x
              val add5 = make_adder 5
