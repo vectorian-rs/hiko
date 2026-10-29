@@ -144,7 +144,7 @@ pub(super) fn rng_int(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
     heap.charge_host_work(RNG_INT_HOST_WORK)
         .map_err(|e| format!("rng_int: {e}"))?;
     let (word, new_state) = pcg_next(state, inc);
-    let value = (word as i64).abs() % bound;
+    let value = i64::from(word) % bound;
     let rng_val = heap_alloc(
         heap,
         HeapObject::Rng {
