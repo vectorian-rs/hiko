@@ -519,89 +519,93 @@ impl VM {
                         message: format!("unhandled effect (tag {effect_tag})"),
                     })?;
 
-                    {
-                        let handler_count_before = self.handlers.len();
-                        let handler = self.handlers.remove(h_idx);
-                        self.handlers.truncate(h_idx);
-
-                        let handler_base = self.frames[handler.call_frame_idx].base;
-                        let save_from = handler.stack_base;
-                        let mut saved_stack = self.stack.split_off(save_from);
-
-                        let handler_locals_count =
-                            save_from
-                                .checked_sub(handler_base)
-                                .ok_or_else(|| RuntimeError {
-                                    message: "perform: invalid handler stack range".into(),
-                                })?;
-                        if handler_locals_count > 0 {
-                            let mut combined =
-                                Vec::with_capacity(handler_locals_count + saved_stack.len());
-                            combined.extend_from_slice(&self.stack[handler_base..save_from]);
-                            combined.extend_from_slice(&saved_stack);
-                            saved_stack = combined;
-                        }
-
-                        let hf = &self.frames[handler.call_frame_idx];
-                        let handler_frame = SavedFrame {
-                            proto_idx: hf.proto_idx,
-                            ip: hf.ip,
-                            base_offset: 0,
-                            captures: hf.captures.clone(),
-                        };
-
-                        let mut saved_frames = vec![handler_frame];
-                        for frame in &self.frames[handler.call_frame_idx + 1..] {
-                            let frame_offset =
-                                frame
-                                    .base
-                                    .checked_sub(save_from)
-                                    .ok_or_else(|| RuntimeError {
-                                        message: "perform: invalid saved frame base".into(),
-                                    })?;
-                            saved_frames.push(SavedFrame {
-                                proto_idx: frame.proto_idx,
-                                ip: frame.ip,
-                                base_offset: handler_locals_count
-                                    .checked_add(frame_offset)
-                                    .ok_or_else(|| RuntimeError {
-                                        message: "perform: saved frame base overflow".into(),
-                                    })?,
-                                captures: frame.captures.clone(),
-                            });
-                        }
-
-                        let locals_offset =
-                            save_from
-                                .checked_sub(handler_base)
-                                .ok_or_else(|| RuntimeError {
-                                    message: "perform: invalid handler locals offset".into(),
-                                })?;
-                        // Keep the payload on the stack while allocating the
-                        // continuation so a collection triggered here roots it.
-                        self.push(payload)?;
-                        let cont =
-                            self.alloc(HeapObject::Continuation(Box::new(ContinuationData {
-                                saved_frames,
-                                saved_stack,
-                                saved_handler: Some(SavedHandler {
-                                    clauses: handler.clauses.clone(),
-                                    proto_idx: handler.proto_idx,
-                                    captures: handler.captures.clone(),
-                                    locals_offset,
-                                    handler_count_before,
-                                }),
-                            })))?;
-
-                        self.frames.truncate(handler.call_frame_idx + 1);
-
-                        let hfi = self.frames.len() - 1;
-                        self.frames[hfi].proto_idx = handler.proto_idx;
-                        self.frames[hfi].captures = handler.captures;
-                        self.frames[hfi].ip = clause_ip;
-
-                        self.push(cont)?;
+                    // The verifier does not prove handler install/remove
+                    // balance, so a handler may outlive the frame or stack
+                    // range it was installed in. Check before capturing.
+                    let handler_frame_idx = self.handlers[h_idx].call_frame_idx;
+                    let save_from = self.handlers[h_idx].stack_base;
+                    let handler_base = self
+                        .frames
+                        .get(handler_frame_idx)
+                        .map(|frame| frame.base)
+                        .ok_or_else(|| RuntimeError {
+                        message: "perform: handler frame is no longer active".into(),
+                    })?;
+                    if save_from > self.stack.len() {
+                        return Err(RuntimeError {
+                            message: "perform: invalid handler stack range".into(),
+                        });
                     }
+                    let handler_locals_count =
+                        save_from
+                            .checked_sub(handler_base)
+                            .ok_or_else(|| RuntimeError {
+                                message: "perform: invalid handler stack range".into(),
+                            })?;
+
+                    let handler_count_before = self.handlers.len();
+                    let handler = self.handlers.remove(h_idx);
+                    self.handlers.truncate(h_idx);
+
+                    let mut saved_stack = self.stack.split_off(save_from);
+                    if handler_locals_count > 0 {
+                        let mut combined =
+                            Vec::with_capacity(handler_locals_count + saved_stack.len());
+                        combined.extend_from_slice(&self.stack[handler_base..save_from]);
+                        combined.extend_from_slice(&saved_stack);
+                        saved_stack = combined;
+                    }
+
+                    let hf = &self.frames[handler_frame_idx];
+                    let mut saved_frames = vec![SavedFrame {
+                        proto_idx: hf.proto_idx,
+                        ip: hf.ip,
+                        base_offset: 0,
+                        captures: hf.captures.clone(),
+                    }];
+                    for frame in &self.frames[handler_frame_idx + 1..] {
+                        let frame_offset =
+                            frame
+                                .base
+                                .checked_sub(save_from)
+                                .ok_or_else(|| RuntimeError {
+                                    message: "perform: invalid saved frame base".into(),
+                                })?;
+                        saved_frames.push(SavedFrame {
+                            proto_idx: frame.proto_idx,
+                            ip: frame.ip,
+                            base_offset: handler_locals_count
+                                .checked_add(frame_offset)
+                                .ok_or_else(|| RuntimeError {
+                                    message: "perform: saved frame base overflow".into(),
+                                })?,
+                            captures: frame.captures.clone(),
+                        });
+                    }
+
+                    // Keep the payload on the stack while allocating the
+                    // continuation so a collection triggered here roots it.
+                    self.push(payload)?;
+                    let cont =
+                        self.alloc(HeapObject::Continuation(Box::new(ContinuationData {
+                            saved_frames,
+                            saved_stack,
+                            saved_handler: Some(SavedHandler {
+                                clauses: handler.clauses,
+                                proto_idx: handler.proto_idx,
+                                captures: handler.captures.clone(),
+                                locals_offset: handler_locals_count,
+                                handler_count_before,
+                            }),
+                        })))?;
+
+                    self.frames.truncate(handler_frame_idx + 1);
+                    let frame = &mut self.frames[handler_frame_idx];
+                    frame.proto_idx = handler.proto_idx;
+                    frame.captures = handler.captures;
+                    frame.ip = clause_ip;
+
+                    self.push(cont)?;
                 }
 
                 Op::Resume => {

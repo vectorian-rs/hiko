@@ -1059,6 +1059,60 @@ mod tests {
     }
 
     #[test]
+    fn test_perform_rejects_handler_from_returned_frame_without_panicking() {
+        // Hand-written bytecode that returns from a function without removing
+        // its handler passes the verifier. A later perform must fail cleanly.
+        use hiko_compile::chunk::{Chunk, EffectMeta};
+        let function = FunctionProto {
+            name: None,
+            arity: 0,
+            n_captures: 0,
+            n_locals: 0,
+            chunk: Chunk {
+                code: vec![
+                    Op::InstallHandler as u8,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Op::Unit as u8,
+                    Op::Return as u8,
+                ],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            },
+        };
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(Chunk {
+                code: vec![
+                    Op::CallDirect as u8,
+                    0,
+                    0,
+                    Op::Pop as u8,
+                    Op::Unit as u8,
+                    Op::Perform as u8,
+                    0,
+                    0,
+                    Op::Halt as u8,
+                ],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([function]),
+            effects: Arc::from([EffectMeta {
+                name: "Test".into(),
+                tag: 0,
+            }]),
+        };
+        let mut vm = VM::try_new(program).expect("program should verify");
+        let err = vm.run().expect_err("stale handler should fail");
+        assert!(err.message.contains("perform"), "got: {}", err.message);
+    }
+
+    #[test]
     fn test_effect_nested_handlers() {
         // Nested handle blocks with different effects
         let vm = run("effect A of unit
