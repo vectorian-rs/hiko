@@ -139,7 +139,7 @@ impl Config {
         }
 
         // Check if it's provider/model format
-        if let Some((provider_name, model_id)) = name.split_once('/') {
+        if let Some((provider_name, model_id)) = model_name.split_once('/') {
             let provider = self
                 .providers
                 .get(provider_name)
@@ -152,7 +152,36 @@ impl Config {
             .providers
             .get(&self.default.provider)
             .ok_or_else(|| format!("default provider '{}' not found", self.default.provider))?;
-        ResolvedModel::from_provider(provider, name.to_string())
+        ResolvedModel::from_provider(provider, model_name.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn role_resolves_to_provider_model() {
+        let cfg: Config = toml::from_str(
+            r#"
+[default]
+model = "fast"
+provider = "a"
+
+[providers.a]
+api_url = "http://a"
+
+[providers.b]
+api_url = "http://b"
+
+[roles]
+fast = "b/small"
+"#,
+        )
+        .unwrap();
+        let resolved = cfg.resolve_model("fast").unwrap();
+        assert_eq!(resolved.api_url, "http://b");
+        assert_eq!(resolved.model_id, "small");
     }
 }
 
