@@ -423,22 +423,34 @@ fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
     }
 }
 
-fn parse_flag_value<'a>(args: &'a [String], flag: &str, index: usize, usage: &str) -> &'a str {
+/// Parses `<flag> <value>` or `<flag>=<value>` starting at `args[index]`.
+///
+/// Returns `None` when `args[index]` is not `flag`. Otherwise returns the value
+/// and the number of arguments consumed. A missing or empty value prints
+/// `usage` and exits.
+fn parse_flag_value<'a>(
+    args: &'a [String],
+    flag: &str,
+    index: usize,
+    usage: &str,
+) -> Option<(&'a str, usize)> {
     let arg = &args[index];
-    if arg == flag {
-        args.get(index + 1).unwrap_or_else(|| {
-            eprintln!("{usage}");
-            process::exit(1);
-        })
-    } else if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
-        if value.is_empty() {
+    let (value, consumed) = if arg == flag {
+        (args.get(index + 1).map(String::as_str), 2)
+    } else if let Some(value) = arg
+        .strip_prefix(flag)
+        .and_then(|rest| rest.strip_prefix('='))
+    {
+        (Some(value), 1)
+    } else {
+        return None;
+    };
+    match value {
+        Some(value) if !value.is_empty() => Some((value, consumed)),
+        _ => {
             eprintln!("{usage}");
             process::exit(1);
         }
-        value
-    } else {
-        eprintln!("{usage}");
-        process::exit(1);
     }
 }
 
@@ -451,26 +463,12 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        if arg == "--config" {
-            config_path = Some(parse_flag_value(args, "--config", i, usage).to_string());
-            i += 2;
-        } else if let Some(value) = arg.strip_prefix("--config=") {
-            if value.is_empty() {
-                eprintln!("{usage}");
-                process::exit(1);
-            }
+        if let Some((value, consumed)) = parse_flag_value(args, "--config", i, usage) {
             config_path = Some(value.to_string());
-            i += 1;
-        } else if arg == "--policy" {
-            policy_name = Some(parse_flag_value(args, "--policy", i, usage).to_string());
-            i += 2;
-        } else if let Some(value) = arg.strip_prefix("--policy=") {
-            if value.is_empty() {
-                eprintln!("{usage}");
-                process::exit(1);
-            }
+            i += consumed;
+        } else if let Some((value, consumed)) = parse_flag_value(args, "--policy", i, usage) {
             policy_name = Some(value.to_string());
-            i += 1;
+            i += consumed;
         } else if arg == "--strict" {
             strict = true;
             i += 1;
@@ -1489,6 +1487,29 @@ mod tests {
                 strict: false,
             }
         );
+    }
+
+    #[test]
+    fn parse_run_args_inline_policy() {
+        let args = vec![
+            "--policy=docs-writer".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_run_args(&args),
+            ScriptOptions {
+                config_path: None,
+                policy_name: Some("docs-writer".to_string()),
+                script_path: Some("tools/read.hml".to_string()),
+                strict: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_flag_value_ignores_other_flags() {
+        let args = vec!["--configuration".to_string(), "x".to_string()];
+        assert_eq!(super::parse_flag_value(&args, "--config", 0, "usage"), None);
     }
 
     #[test]

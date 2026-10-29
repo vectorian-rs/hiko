@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
-use crate::find_project_manifest_from;
+use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
 use serde::Deserialize;
 
@@ -95,24 +95,12 @@ fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
     let mut config_path = None;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "--config" => {
-                let Some(path) = args.get(i + 1) else {
-                    eprintln!("{usage}");
-                    process::exit(1);
-                };
-                config_path = Some(PathBuf::from(path));
-                i += 2;
-            }
-            arg if arg.starts_with("--config=") => {
-                config_path = Some(PathBuf::from(arg.trim_start_matches("--config=")));
-                i += 1;
-            }
-            _ => {
-                eprintln!("{usage}");
-                process::exit(1);
-            }
-        }
+        let Some((path, consumed)) = parse_flag_value(args, "--config", i, usage) else {
+            eprintln!("{usage}");
+            process::exit(1);
+        };
+        config_path = Some(PathBuf::from(path));
+        i += consumed;
     }
     config_path
 }
@@ -346,8 +334,18 @@ fn normalize_blake3(hash: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_remote_base_url;
-    use std::path::Path;
+    use super::{parse_verify_args, validate_remote_base_url};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn parse_verify_args_accepts_both_config_forms() {
+        let separate = vec!["--config".to_string(), "a/hiko.toml".to_string()];
+        let inline = vec!["--config=a/hiko.toml".to_string()];
+        let expected = Some(PathBuf::from("a/hiko.toml"));
+        assert_eq!(parse_verify_args(&separate, "usage"), expected);
+        assert_eq!(parse_verify_args(&inline, "usage"), expected);
+        assert_eq!(parse_verify_args(&[], "usage"), None);
+    }
 
     fn check(base_url: &str) -> Result<(), String> {
         validate_remote_base_url("Std", base_url, Path::new("hiko.lock.toml"))
