@@ -177,12 +177,6 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
             package_name,
             &format!("package entry in '{}'", path.display()),
         )?;
-        if package_name.trim().is_empty() {
-            return Err(CompileError::codegen(format!(
-                "package entry in '{}' has an empty name",
-                path.display()
-            )));
-        }
         if package.version.trim().is_empty() {
             return Err(CompileError::codegen(format!(
                 "package '{package_name}' in '{}' is missing version",
@@ -953,11 +947,14 @@ impl Compiler {
         }
     }
 
-    fn add_local(&mut self, name: String) {
-        let depth = self.ctx().scope_depth;
-        self.ctx_mut().locals.push(Local { name, depth });
-        let len = self.ctx().locals.len();
-        self.ctx_mut().max_locals = self.ctx().max_locals.max(len);
+    /// Add a local in the current scope and return its slot. Slots above
+    /// u16::MAX are rejected when the function is finished (max_locals).
+    fn add_local(&mut self, name: String) -> u16 {
+        let ctx = self.ctx_mut();
+        let depth = ctx.scope_depth;
+        ctx.locals.push(Local { name, depth });
+        ctx.max_locals = ctx.max_locals.max(ctx.locals.len());
+        (ctx.locals.len() - 1) as u16
     }
 
     fn begin_scope(&mut self) {
@@ -994,8 +991,7 @@ impl Compiler {
     fn emit_field_extract(&mut self, slot: u16, idx: usize) -> Result<u16, CompileError> {
         self.emit_get_local(slot);
         self.emit_get_field(idx)?;
-        self.add_local("_tmp".to_string());
-        Ok((self.ctx().locals.len() - 1) as u16)
+        Ok(self.add_local("_tmp".to_string()))
     }
 
     /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
@@ -1446,8 +1442,8 @@ impl Compiler {
         // Now bind aliases for each exposed name. Exposed names are explicit
         // imports, so collisions are compile errors rather than silent shadowing.
         let module_short = module_name_str
-            .split('.')
-            .last()
+            .rsplit('.')
+            .next()
             .unwrap_or(&module_name_str);
         let mut seen_exposed = HashSet::new();
         for sym in names {
@@ -1470,7 +1466,7 @@ impl Compiler {
             if self.infer_ctx.has_constructor(&qualified) {
                 self.infer_ctx
                     .bind_constructor_alias(&name, &qualified)
-                    .map_err(|e| CompileError::codegen(e))?;
+                    .map_err(CompileError::codegen)?;
                 // Also register in the compiler's constructor tag/arity maps
                 // so codegen can resolve the aliased name.
                 // Use infer_ctx's tags since compile_datatype hasn't run yet.
@@ -1485,7 +1481,7 @@ impl Compiler {
             } else if self.infer_ctx.has_value(&qualified) {
                 self.infer_ctx
                     .bind_value_alias(&name, &qualified)
-                    .map_err(|e| CompileError::codegen(e))?;
+                    .map_err(CompileError::codegen)?;
             } else {
                 return Err(CompileError::codegen(format!(
                     "import '{}' does not export '{}'",
@@ -1540,8 +1536,8 @@ impl Compiler {
 
         // Now create global aliases for each exposed name
         let module_short = module_name_str
-            .split('.')
-            .last()
+            .rsplit('.')
+            .next()
             .unwrap_or(&module_name_str);
         for sym in names {
             let name = self.interner.resolve(*sym).to_string();
@@ -1570,8 +1566,7 @@ impl Compiler {
                 Ok(())
             }
             PatKind::Tuple(pats) => {
-                self.add_local("_tup".to_string());
-                let tup_slot = (self.ctx().locals.len() - 1) as u16;
+                let tup_slot = self.add_local("_tup".to_string());
                 for (i, p) in pats.iter().enumerate() {
                     self.emit_get_local(tup_slot);
                     self.emit_get_field(i)?;
@@ -1627,16 +1622,7 @@ impl Compiler {
             return self.compile_curried_fn(Some(&name), &clause.pats, 0, &clause.body);
         }
         let arity = binding.clauses[0].pats.len();
-        self.compile_clausal_fn(Some(&name), arity, &binding.clauses)
-    }
-
-    fn compile_clausal_fn(
-        &mut self,
-        name: Option<&str>,
-        arity: usize,
-        clauses: &[FunClause],
-    ) -> Result<(), CompileError> {
-        self.compile_clausal_fn_inner(name, arity, 0, clauses)
+        self.compile_clausal_fn_inner(Some(&name), arity, 0, &binding.clauses)
     }
 
     fn compile_clausal_fn_inner(
@@ -1660,8 +1646,7 @@ impl Compiler {
             self.begin_scope();
             if arity == 1 {
                 self.emit_get_var("_arg0")?;
-                self.add_local("_scrut".to_string());
-                let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+                let scrut_slot = self.add_local("_scrut".to_string());
                 let branches: Vec<_> = clauses.iter().map(|c| (&c.pats[0], &c.body)).collect();
                 self.compile_case_branches_inner(scrut_slot, &branches, true)?;
             } else {
@@ -1669,8 +1654,7 @@ impl Compiler {
                     self.emit_get_var(&format!("_arg{i}"))?;
                 }
                 self.emit_make_tuple(arity)?;
-                self.add_local("_scrut".to_string());
-                let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+                let scrut_slot = self.add_local("_scrut".to_string());
                 let tuple_pats: Vec<Pat> = clauses
                     .iter()
                     .map(|c| Pat {
@@ -1722,8 +1706,7 @@ impl Compiler {
             self.add_local("_arg".to_string());
             self.begin_scope();
             self.emit_get_local(0);
-            self.add_local("_scrut".to_string());
-            let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+            let scrut_slot = self.add_local("_scrut".to_string());
             self.compile_case_branches_inner(scrut_slot, &[(pat, body)], true)?;
             self.end_scope_keep_result();
         }
@@ -1804,10 +1787,9 @@ impl Compiler {
             }
 
             // Restore compiler state for next branch
-            while self.ctx().locals.len() > locals_before {
-                self.ctx_mut().locals.pop();
-            }
-            self.ctx_mut().scope_depth = depth_before;
+            let ctx = self.ctx_mut();
+            ctx.locals.truncate(locals_before);
+            ctx.scope_depth = depth_before;
         }
 
         // Non-exhaustive match: emit runtime panic
@@ -2050,11 +2032,7 @@ impl Compiler {
             ExprKind::BoolLit(true) => self.emit(Op::True),
             ExprKind::BoolLit(false) => self.emit(Op::False),
             ExprKind::Unit => self.emit(Op::Unit),
-            ExprKind::Var(sym) => {
-                let name = self.interner.resolve(*sym).to_string();
-                self.emit_get_var(&name)?;
-            }
-            ExprKind::Constructor(sym) => {
+            ExprKind::Var(sym) | ExprKind::Constructor(sym) => {
                 let name = self.interner.resolve(*sym).to_string();
                 self.emit_get_var(&name)?;
             }
@@ -2154,8 +2132,7 @@ impl Compiler {
             ExprKind::Case(scrutinee, branches) => {
                 self.begin_scope();
                 self.compile_expr(scrutinee)?;
-                self.add_local("_scrut".to_string());
-                let scrut_slot = (self.ctx().locals.len() - 1) as u16;
+                let scrut_slot = self.add_local("_scrut".to_string());
                 let branch_refs: Vec<_> = branches.iter().map(|(p, e)| (p, e)).collect();
                 self.compile_case_branches_inner(scrut_slot, &branch_refs, tail)?;
                 self.end_scope_keep_result();
