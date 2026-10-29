@@ -295,10 +295,6 @@ pub fn is_internal_builtin_package(package_name: &str) -> bool {
     package_name == INTERNAL_BUILTIN_PACKAGE
 }
 
-pub fn internal_builtin_modules() -> impl Iterator<Item = &'static InternalBuiltinModule> {
-    MODULES.iter()
-}
-
 pub fn internal_builtin_module(leaf_name: &str) -> Option<&'static InternalBuiltinModule> {
     MODULES.iter().find(|module| module.leaf_name == leaf_name)
 }

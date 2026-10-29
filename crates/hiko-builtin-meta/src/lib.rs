@@ -96,7 +96,7 @@ impl BuiltinMeta {
 
 pub use internal::{
     INTERNAL_BUILTIN_PACKAGE, InternalBuiltinModule, internal_builtin_module,
-    internal_builtin_modules, is_internal_builtin_package,
+    is_internal_builtin_package,
 };
 pub use signatures::{
     BuiltinTypeSignature, PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_AWAIT_RESULT_ERR_TAG,
@@ -106,7 +106,7 @@ pub use signatures::{
     PROCESS_JOIN_ERROR_RUNTIME_ERROR_TAG, builtin_type_signature, builtin_type_signatures,
 };
 
-pub const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
+const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     #[cfg(feature = "builtin-aws-config")]
     aws_config::BUILTINS,
     #[cfg(feature = "builtin-aws-s3")]
@@ -179,16 +179,4 @@ pub fn unrestricted_runtime_builtin_names() -> impl Iterator<Item = &'static str
                 && meta.capability_path.is_none()
         })
         .map(|meta| meta.name)
-}
-
-pub fn public_builtin_names() -> impl Iterator<Item = &'static str> {
-    builtins()
-        .filter(|meta| meta.surface == BuiltinSurface::Public)
-        .map(|meta| meta.name)
-}
-
-pub fn is_public_builtin(name: &str) -> bool {
-    builtin_meta(name)
-        .map(|meta| meta.surface == BuiltinSurface::Public)
-        .unwrap_or(false)
 }
