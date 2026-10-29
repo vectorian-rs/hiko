@@ -176,7 +176,7 @@ a:hover {
 .tok-type { color: var(--tok-type); }
 .tok-constructor { color: var(--tok-constructor); }
 .tok-function-special { color: var(--tok-function-special); font-weight: 700; }
-.tok-function { color: var(--tok-function-special); }
+.tok-function { color: var(--tok-function); }
 .tok-module { color: var(--tok-module); font-weight: 700; }
 .tok-namespace { color: var(--tok-namespace); }
 .tok-variable { color: var(--tok-variable); }
