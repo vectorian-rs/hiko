@@ -133,6 +133,12 @@ Requires `use "libraries/Std-v0.1.0/modules/Json.hml"` for typed JSON ADT (`JNul
 | `bytes_slice`     | `(bytes, int, int) -> bytes` | Slice from start with length   |
 | `random_bytes`    | `int -> bytes`               | Cryptographically random bytes |
 
+## Hash
+
+| Builtin  | Type              | Description                            |
+| -------- | ----------------- | -------------------------------------- |
+| `blake3` | `bytes -> string` | BLAKE3 digest as 64-char lowercase hex |
+
 ## Random Number Generation
 
 Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
