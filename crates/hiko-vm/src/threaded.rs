@@ -368,7 +368,7 @@ fn handle_io_completion(
         }
     }
 
-    match result {
+    let failure = match result {
         IoResult::Ok { value, io_bytes } => {
             match process
                 .vm
@@ -381,26 +381,19 @@ fn handle_io_completion(
                     process.status = ProcessStatus::Runnable;
                     drop(process);
                     scheduler.enqueue(pid);
+                    return;
                 }
-                Err(failure) => {
-                    process.status = ProcessStatus::Failed(failure);
-                    drop(process);
-                    scheduler.remove(pid);
-                    wake_any_waiters(table, scheduler, pid);
-                    wake_join_waiters(table, scheduler, pid);
-                }
+                Err(failure) => failure,
             }
         }
-        IoResult::Err(msg) => {
-            process.status = match process.vm.heap.charge_io_bytes(msg.len() as u64) {
-                Ok(()) => ProcessStatus::Failed(ProcessFailure::runtime(msg)),
-                Err(err) => ProcessStatus::Failed(ProcessFailure::runtime(err.to_string())),
-            };
-            drop(process);
-            scheduler.remove(pid);
-            wake_any_waiters(table, scheduler, pid);
-            wake_join_waiters(table, scheduler, pid);
-        }
+        IoResult::Err(msg) => match process.vm.heap.charge_io_bytes(msg.len() as u64) {
+            Ok(()) => ProcessFailure::runtime(msg),
+            Err(err) => ProcessFailure::runtime(err.to_string()),
+        },
+    };
+    drop(process);
+    if let Some(process) = table.take(pid) {
+        terminate_process(table, scheduler, process, ChildOutcome::Err(failure));
     }
 }
 
@@ -426,6 +419,23 @@ fn make_terminal(table: &ProcessTable, process: Process, outcome: ChildOutcome) 
         }
         table.return_process(process);
     }
+}
+
+/// Finish a process: record its outcome, cancel its children, and wake every
+/// process waiting on it. All terminal transitions go through here so that
+/// waiters always find a tombstone (or a terminal root) to read.
+fn terminate_process(
+    table: &ProcessTable,
+    scheduler: &dyn Scheduler,
+    process: Process,
+    outcome: ChildOutcome,
+) {
+    let pid = process.pid;
+    make_terminal(table, process, outcome);
+    cancel_scope_children(table, scheduler, pid);
+    scheduler.remove(pid);
+    wake_any_waiters(table, scheduler, pid);
+    wake_join_waiters(table, scheduler, pid);
 }
 
 /// Cancel all running children of a terminating process (scope cleanup).
@@ -558,22 +568,14 @@ fn worker_loop(
                 } else {
                     ChildOutcome::Ok(crate::sendable::SendableValue::Unit)
                 };
-                make_terminal(table, process, outcome);
-                cancel_scope_children(table, scheduler, pid);
-                scheduler.remove(pid);
-                wake_any_waiters(table, scheduler, pid);
-                wake_join_waiters(table, scheduler, pid);
+                terminate_process(table, scheduler, process, outcome);
             }
             RunResult::Yielded => {
                 table.return_process(process);
                 scheduler.enqueue(pid);
             }
             RunResult::Failed(failure) => {
-                make_terminal(table, process, ChildOutcome::Err(failure));
-                cancel_scope_children(table, scheduler, pid);
-                scheduler.remove(pid);
-                wake_any_waiters(table, scheduler, pid);
-                wake_join_waiters(table, scheduler, pid);
+                terminate_process(table, scheduler, process, ChildOutcome::Err(failure));
             }
             RunResult::Spawn {
                 proto_idx,
@@ -597,10 +599,7 @@ fn worker_loop(
                         scheduler.enqueue(pid);
                     }
                     Err(failure) => {
-                        make_terminal(table, process, ChildOutcome::Err(failure));
-                        scheduler.remove(pid);
-                        wake_any_waiters(table, scheduler, pid);
-                        wake_join_waiters(table, scheduler, pid);
+                        terminate_process(table, scheduler, process, ChildOutcome::Err(failure));
                     }
                 }
             }
@@ -628,24 +627,22 @@ fn worker_loop(
                 if let Err(message) = io_backend.register(token, request) {
                     table.io_waiters.remove(&token);
                     if let Some(process) = table.take(pid) {
-                        make_terminal(
+                        terminate_process(
                             table,
+                            scheduler,
                             process,
                             ChildOutcome::Err(ProcessFailure::runtime(message)),
                         );
-                        cancel_scope_children(table, scheduler, pid);
-                        scheduler.remove(pid);
-                        wake_any_waiters(table, scheduler, pid);
-                        wake_join_waiters(table, scheduler, pid);
                     }
                 }
             }
             RunResult::Cancelled => {
-                make_terminal(table, process, ChildOutcome::Err(ProcessFailure::Cancelled));
-                cancel_scope_children(table, scheduler, pid);
-                scheduler.remove(pid);
-                wake_any_waiters(table, scheduler, pid);
-                wake_join_waiters(table, scheduler, pid);
+                terminate_process(
+                    table,
+                    scheduler,
+                    process,
+                    ChildOutcome::Err(ProcessFailure::Cancelled),
+                );
             }
         }
     }
@@ -1660,6 +1657,17 @@ mod tests {
             .unwrap_or_else(|| "<missing>".into());
         assert_eq!(status, "Done");
         assert_eq!(output, vec!["fiber error tests passed\n"]);
+    }
+
+    #[test]
+    fn test_join_on_child_that_fails_during_io_returns_error() {
+        let program = compile_file(&test_program_path("test_fiber_io_failure.hml"));
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+        assert_eq!(runtime.table.get_output(pid), vec!["err\n"]);
+        runtime.check_invariants().unwrap();
     }
 
     #[test]
