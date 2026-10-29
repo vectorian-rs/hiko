@@ -1460,6 +1460,14 @@ impl Parser {
                 span,
             };
         }
+        // A bare `Tuple` here is a `(t1, t2, ...)` argument list that was never
+        // applied to a type constructor; `t1 * t2` tuples are built above us.
+        if matches!(ty.kind, TypeExprKind::Tuple(_)) {
+            return Err(ParseError {
+                message: "expected type constructor after type argument list".into(),
+                span: ty.span,
+            });
+        }
         Ok(ty)
     }
 
@@ -2023,6 +2031,27 @@ mod tests {
                 panic!("expected App");
             }
         }
+    }
+
+    #[test]
+    fn test_type_arg_list_requires_constructor() {
+        assert_eq!(
+            parse_err("val x : (int, string) = (1, \"a\")"),
+            "expected type constructor after type argument list"
+        );
+        assert_eq!(
+            parse_err("type t = (int, string) -> int"),
+            "expected type constructor after type argument list"
+        );
+        let prog = parse("type t = (int, string) either * (int * string)");
+        let DeclKind::TypeAlias(ref ta) = prog.decls[0].kind else {
+            panic!("expected type alias");
+        };
+        let TypeExprKind::Tuple(elems) = &ta.ty.kind else {
+            panic!("expected tuple type");
+        };
+        assert!(matches!(&elems[0].kind, TypeExprKind::App(_, args) if args.len() == 2));
+        assert!(matches!(&elems[1].kind, TypeExprKind::Paren(_)));
     }
 
     #[test]
