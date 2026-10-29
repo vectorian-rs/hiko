@@ -44,7 +44,7 @@ fn collect_signatures(decls: &[Decl]) -> HashMap<Symbol, SignatureDecl> {
     signatures
 }
 
-pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
+fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
     let span = decl.span;
     let kind = match decl.kind {
         DeclKind::Val(pat, expr) => DeclKind::Val(desugar_pat(pat), desugar_expr(expr, interner)),
@@ -56,8 +56,6 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
                 .collect();
             DeclKind::Fun(bindings)
         }
-        DeclKind::Datatype(dt) => DeclKind::Datatype(dt),
-        DeclKind::TypeAlias(ta) => DeclKind::TypeAlias(ta),
         DeclKind::Local(locals, body) => DeclKind::Local(
             locals
                 .into_iter()
@@ -67,24 +65,19 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
                 .map(|decl| desugar_decl(decl, interner))
                 .collect(),
         ),
-        DeclKind::Import(name) => DeclKind::Import(name),
-        DeclKind::ImportWithNames(name, names) => DeclKind::ImportWithNames(name, names),
-        DeclKind::Use(path) => DeclKind::Use(path),
         DeclKind::Signature(_) => unreachable!("signatures are removed before decl desugaring"),
         DeclKind::Structure { .. } => {
             unreachable!("structures are flattened before decl desugaring")
         }
-        DeclKind::AbstractType(dt) => DeclKind::AbstractType(dt),
-        DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        } => DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty: rename_type_expr(ty, &ModuleScope::default()),
-        },
-        DeclKind::Effect(name, ty) => DeclKind::Effect(name, ty),
+        // No expressions or patterns inside.
+        kind @ (DeclKind::Datatype(_)
+        | DeclKind::TypeAlias(_)
+        | DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::AbstractType(_)
+        | DeclKind::ExportVal { .. }
+        | DeclKind::Effect(_, _)) => kind,
     };
     Decl { kind, span }
 }
