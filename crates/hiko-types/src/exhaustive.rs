@@ -10,7 +10,7 @@
 //! - A match is exhaustive iff the wildcard vector is NOT useful.
 //! - A clause is redundant iff its row is NOT useful against preceding rows.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use hiko_syntax::ast::{Pat, PatKind};
 use hiko_syntax::intern::StringInterner;
@@ -106,37 +106,11 @@ pub struct CheckResult {
     pub redundant_clauses: Vec<usize>,
 }
 
-/// Resolve a constructor name to its canonical (first) name.
-/// If the name is already in datatype_constructors, return it as-is.
-/// Otherwise, find the canonical name with the same tag.
-fn resolve_canonical_name(
-    name: &str,
-    tag: u16,
-    con_tags: &std::collections::HashMap<String, u16>,
-    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
-) -> String {
-    // If the name is already in some datatype's constructor list, it's canonical
-    for cons in dt_constructors.values() {
-        if cons.iter().any(|(n, _)| n == name) {
-            return name.to_string();
-        }
-    }
-    // Find the first canonical constructor with the same tag
-    for cons in dt_constructors.values() {
-        for (canonical_name, _) in cons {
-            if con_tags.get(canonical_name).copied() == Some(tag) {
-                return canonical_name.clone();
-            }
-        }
-    }
-    name.to_string()
-}
-
 /// Convert a surface pattern to a simplified pattern.
 fn simplify_pat(
     pat: &Pat,
-    con_tags: &std::collections::HashMap<String, u16>,
-    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
+    con_tags: &HashMap<String, u16>,
+    con_aliases: &HashMap<String, String>,
     interner: &StringInterner,
 ) -> SPat {
     match &pat.kind {
@@ -154,29 +128,29 @@ fn simplify_pat(
 
         PatKind::Constructor(sym, payload) => {
             let name = interner.resolve(*sym);
-            let tag = con_tags.get(name).copied().unwrap_or(0);
-            // Normalize: resolve aliases to the canonical constructor name
-            // (the first name in any datatype_constructors entry with the same tag)
-            let type_name = resolve_canonical_name(name, tag, con_tags, dt_constructors);
+            // Import aliases are matched as the constructor they name, which
+            // is the name listed in the datatype's constructor table.
+            let canonical = con_aliases.get(name).map_or(name, String::as_str);
+            let tag = con_tags.get(canonical).copied().unwrap_or(0);
             let sub_pats = match payload {
-                Some(p) => vec![simplify_pat(p, con_tags, dt_constructors, interner)],
+                Some(p) => vec![simplify_pat(p, con_tags, con_aliases, interner)],
                 None => vec![],
             };
-            SPat::Con(Constructor::Adt(type_name, tag), sub_pats)
+            SPat::Con(Constructor::Adt(canonical.to_string(), tag), sub_pats)
         }
 
         PatKind::Tuple(pats) => {
             let sub = pats
                 .iter()
-                .map(|p| simplify_pat(p, con_tags, dt_constructors, interner))
+                .map(|p| simplify_pat(p, con_tags, con_aliases, interner))
                 .collect();
             SPat::Con(Constructor::Tuple(pats.len()), sub)
         }
 
         PatKind::Cons(hd, tl) => {
             let sub = vec![
-                simplify_pat(hd, con_tags, dt_constructors, interner),
-                simplify_pat(tl, con_tags, dt_constructors, interner),
+                simplify_pat(hd, con_tags, con_aliases, interner),
+                simplify_pat(tl, con_tags, con_aliases, interner),
             ];
             SPat::Con(Constructor::Cons, sub)
         }
@@ -190,17 +164,15 @@ fn simplify_pat(
                 for p in pats.iter().rev() {
                     result = SPat::Con(
                         Constructor::Cons,
-                        vec![simplify_pat(p, con_tags, dt_constructors, interner), result],
+                        vec![simplify_pat(p, con_tags, con_aliases, interner), result],
                     );
                 }
                 result
             }
         }
 
-        PatKind::As(_, p) => simplify_pat(p, con_tags, dt_constructors, interner),
-        PatKind::Paren(p) | PatKind::Ann(p, _) => {
-            simplify_pat(p, con_tags, dt_constructors, interner)
-        }
+        PatKind::As(_, p) => simplify_pat(p, con_tags, con_aliases, interner),
+        PatKind::Paren(p) | PatKind::Ann(p, _) => simplify_pat(p, con_tags, con_aliases, interner),
     }
 }
 
@@ -210,17 +182,19 @@ type PatternMatrix = Vec<Vec<SPat>>;
 ///
 /// `type_info` describes the constructors of the scrutinee's type.
 /// `con_tags` maps constructor names to their tags.
+/// `con_aliases` maps import aliases to the constructor names they stand for.
 /// `dt_constructors` maps type names to their full constructor lists.
 pub fn check_match(
     patterns: &[&Pat],
     type_info: &TypeInfo,
-    con_tags: &std::collections::HashMap<String, u16>,
-    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
+    con_tags: &HashMap<String, u16>,
+    con_aliases: &HashMap<String, String>,
+    dt_constructors: &DtMap,
     interner: &StringInterner,
 ) -> CheckResult {
     let matrix: PatternMatrix = patterns
         .iter()
-        .map(|p| vec![simplify_pat(p, con_tags, dt_constructors, interner)])
+        .map(|p| vec![simplify_pat(p, con_tags, con_aliases, interner)])
         .collect();
 
     let wildcard = vec![SPat::Wild];
@@ -249,10 +223,11 @@ pub fn check_match(
     }
 }
 
-/// Is the pattern vector `q` useful with respect to the matrix `p`?
-/// Returns true if there exists a value matched by `q` but not by any row of `p`.
-type DtMap = std::collections::HashMap<String, Vec<(String, usize)>>;
+/// Type name -> its constructors with their arities.
+type DtMap = HashMap<String, Vec<(String, usize)>>;
 
+/// Is the pattern vector `q` useful with respect to the matrix?
+/// Returns true if there exists a value matched by `q` but not by any row.
 fn is_useful(matrix: &[Vec<SPat>], q: &[SPat], type_infos: &[TypeInfo], dt: &DtMap) -> bool {
     let Some(head) = q.first() else {
         return matrix.is_empty();

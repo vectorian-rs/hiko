@@ -36,6 +36,8 @@ pub struct InferCtx {
     abstract_impls: HashMap<String, String>,
     /// Constructor name → tag (for exhaustiveness checking)
     constructor_tags: HashMap<String, u16>,
+    /// Import alias -> constructor name it stands for (for exhaustiveness)
+    constructor_aliases: HashMap<String, String>,
     /// Type name → list of (constructor_name, arity) (for exhaustiveness)
     datatype_constructors: HashMap<String, Vec<(String, usize)>>,
     /// Accumulated warnings (redundant clauses, etc.)
@@ -206,6 +208,7 @@ impl InferCtx {
             type_aliases: HashMap::new(),
             abstract_impls: HashMap::new(),
             constructor_tags: HashMap::new(),
+            constructor_aliases: HashMap::new(),
             datatype_constructors: HashMap::new(),
             warnings: Vec::new(),
             effect_sigs: HashMap::new(),
@@ -1403,6 +1406,7 @@ impl InferCtx {
             pats,
             type_info,
             &self.constructor_tags,
+            &self.constructor_aliases,
             &self.datatype_constructors,
             &self.interner,
         );
@@ -1489,6 +1493,13 @@ impl InferCtx {
         if let Some(&tag) = self.constructor_tags.get(target_name) {
             self.constructor_tags.insert(alias_name.to_string(), tag);
         }
+        let canonical = self
+            .constructor_aliases
+            .get(target_name)
+            .cloned()
+            .unwrap_or_else(|| target_name.to_string());
+        self.constructor_aliases
+            .insert(alias_name.to_string(), canonical);
         Ok(())
     }
 }
@@ -2424,6 +2435,32 @@ mod tests {
              datatype t = A of flag | B
              val x = case A Off of A On => 1 | A Off => 2 | B => 0",
         );
+    }
+
+    #[test]
+    fn test_constructor_alias_nested_non_exhaustive() {
+        // `X1`/`X2` alias `A1`/`A2`, as named imports do. `A3` is missing, so
+        // the match must be rejected whichever datatype shares their tags.
+        // Repeat with fresh contexts so HashMap iteration order varies.
+        let src = "datatype a = A1 | A2 | A3
+                   datatype b = B1 | B2
+                   datatype 'x box = Box of 'x
+                   val f = fn v => case v of Box X1 => 1 | Box X2 => 2";
+        for _ in 0..32 {
+            let tokens = Lexer::new(src, 0).tokenize().expect("lex error");
+            let program = Parser::new(tokens).parse_program().expect("parse error");
+            let program = hiko_syntax::desugar::desugar_program(program);
+            let mut ctx = InferCtx::new();
+            ctx.interner = program.interner.clone();
+            let (types, rest) = program.decls.split_at(3);
+            for decl in types {
+                ctx.infer_decl(decl).expect("type error");
+            }
+            ctx.bind_constructor_alias("X1", "A1").unwrap();
+            ctx.bind_constructor_alias("X2", "A2").unwrap();
+            let msg = ctx.infer_decl(&rest[0]).unwrap_err().message;
+            assert!(msg.contains("non-exhaustive"), "got: {msg}");
+        }
     }
 
     // ── fn pattern exhaustiveness ────────────────────────────────────
