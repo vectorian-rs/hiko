@@ -152,7 +152,6 @@ impl DiagCtx {
 
 struct Compiled {
     program: CompiledProgram,
-    warnings: Vec<hiko_types::infer::Warning>,
     ctx: DiagCtx,
 }
 
@@ -285,41 +284,33 @@ pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn compile_source(path: &str) -> Result<Compiled, ()> {
+/// Compiles `path`, printing any diagnostics. Warnings are printed and
+/// compilation continues; errors are printed and the process exits with 1.
+fn compile_or_exit(path: &str) -> Compiled {
     let source = read_source_or_exit(path);
-
     let ctx = DiagCtx::new(path, source.clone());
 
-    let tokens = match Lexer::new(&source, 0).tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            ctx.error(&e.message, Some(e.span));
-            return Err(());
-        }
-    };
-
-    let program = match Parser::new(tokens).parse_program() {
-        Ok(p) => p,
-        Err(e) => {
-            ctx.error(&e.message, Some(e.span));
-            return Err(());
-        }
-    };
-
-    match Compiler::compile_file(program, std::path::Path::new(path)) {
-        Ok((compiled, warnings)) => Ok(Compiled {
-            program: compiled,
-            warnings,
-            ctx,
-        }),
-        Err(e) => {
+    let tokens = Lexer::new(&source, 0).tokenize().unwrap_or_else(|e| {
+        ctx.error(&e.message, Some(e.span));
+        process::exit(1);
+    });
+    let program = Parser::new(tokens).parse_program().unwrap_or_else(|e| {
+        ctx.error(&e.message, Some(e.span));
+        process::exit(1);
+    });
+    let (program, warnings) =
+        Compiler::compile_file(program, Path::new(path)).unwrap_or_else(|e| {
             match &e {
                 CompileError::Type(te) => ctx.error(&te.message, Some(te.span)),
                 CompileError::Codegen(msg) => ctx.error(msg, None),
             }
-            Err(())
-        }
+            process::exit(1);
+        });
+
+    for warning in &warnings {
+        ctx.warning(&warning.message, Some(warning.span));
     }
+    Compiled { program, ctx }
 }
 
 fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
@@ -327,6 +318,14 @@ fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
         &policy.policy_path.to_string_lossy(),
         &format!("policy '{}'", policy.policy_name),
     )
+}
+
+/// Loads the run config behind `surface`, or `None` for the core-only surface.
+fn load_surface_config(surface: &RuntimeSurface) -> Option<RunConfig> {
+    match surface {
+        RuntimeSurface::CoreOnly => None,
+        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
+    }
 }
 
 fn load_run_config(config_path: &str, label: &str) -> RunConfig {
@@ -769,7 +768,7 @@ fn strict_violations(
 }
 
 fn validate_strict_surface(
-    compiled: &Compiled,
+    program: &CompiledProgram,
     config: Option<&RunConfig>,
 ) -> Result<(), Vec<StrictViolation>> {
     let allowed: BTreeSet<&'static str> = if let Some(config) = config {
@@ -778,7 +777,7 @@ fn validate_strict_surface(
         core_builtin_names().collect()
     };
 
-    match strict_violations(&compiled.program, &allowed) {
+    match strict_violations(program, &allowed) {
         Ok(violations) if violations.is_empty() => Ok(()),
         Ok(violations) => Err(violations),
         Err(message) => Err(vec![StrictViolation {
@@ -786,6 +785,23 @@ fn validate_strict_surface(
             capability_path: None,
             span: None,
         }]),
+    }
+}
+
+/// Under `--strict`, reports builtins the active surface does not enable and
+/// exits with 1 if there are any.
+fn enforce_strict_or_exit(
+    compiled: &Compiled,
+    config: Option<&RunConfig>,
+    surface: &RuntimeSurface,
+) {
+    if let Err(violations) = validate_strict_surface(&compiled.program, config) {
+        for violation in &violations {
+            compiled
+                .ctx
+                .error(&strict_message(violation, surface), violation.span);
+        }
+        process::exit(1);
     }
 }
 
@@ -922,15 +938,7 @@ fn inspect_program_work(program: &CompiledProgram) -> Result<WorkInspection, Str
 }
 
 fn inspect_work_file(path: &str) {
-    let compiled = match compile_source(path) {
-        Ok(compiled) => compiled,
-        Err(()) => process::exit(1),
-    };
-
-    for warning in &compiled.warnings {
-        compiled.ctx.warning(&warning.message, Some(warning.span));
-    }
-
+    let compiled = compile_or_exit(path);
     let inspection = inspect_program_work(&compiled.program).unwrap_or_else(|message| {
         eprintln!("error: {message}");
         process::exit(1);
@@ -958,37 +966,16 @@ fn inspect_work_file(path: &str) {
 fn run_file(options: &ScriptOptions) {
     let surface = resolve_runtime_surface(options);
     eprintln!("info: {}", surface.describe());
-    let config = match &surface {
-        RuntimeSurface::CoreOnly => None,
-        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
-    };
+    let config = load_surface_config(&surface);
     let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
-    let compiled = match compile_source(&path) {
-        Ok(c) => c,
-        Err(()) => process::exit(1),
-    };
-
-    for w in &compiled.warnings {
-        compiled.ctx.warning(&w.message, Some(w.span));
-    }
-
-    if options.strict
-        && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
-    {
-        for violation in &violations {
-            compiled
-                .ctx
-                .error(&strict_message(violation, &surface), violation.span);
-        }
-        process::exit(1);
+    let compiled = compile_or_exit(&path);
+    if options.strict {
+        enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
     }
 
     let output_sink = Arc::new(StdoutOutputSink::default());
-    if config.as_ref().is_some_and(RunConfig::requires_runtime) {
-        let mut vm = config
-            .as_ref()
-            .expect("runtime-backed execution requires an active config")
-            .build_vm(compiled.program);
+    if let Some(config) = config.as_ref().filter(|config| config.requires_runtime()) {
+        let mut vm = config.build_vm(compiled.program);
         vm.set_output_sink(output_sink);
 
         let runtime = ThreadedRuntime::new(1);
@@ -1012,13 +999,10 @@ fn run_file(options: &ScriptOptions) {
         VMBuilder::new(compiled.program).with_core().build()
     };
     vm.set_output_sink(output_sink);
-    match vm.run() {
-        Ok(()) => {}
-        Err(e) => {
-            let message = runtime_error_message(&e.message, &surface);
-            compiled.ctx.error(&message, vm.error_span());
-            process::exit(1);
-        }
+    if let Err(e) = vm.run() {
+        let message = runtime_error_message(&e.message, &surface);
+        compiled.ctx.error(&message, vm.error_span());
+        process::exit(1);
     }
 }
 
@@ -1029,28 +1013,10 @@ fn check_file(options: &ScriptOptions) {
         .script_path
         .as_deref()
         .expect("check requires a script");
-    let compiled = match compile_source(path) {
-        Ok(c) => c,
-        Err(()) => process::exit(1),
-    };
-
-    for w in &compiled.warnings {
-        compiled.ctx.warning(&w.message, Some(w.span));
-    }
-
-    let config = match &surface {
-        RuntimeSurface::CoreOnly => None,
-        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
-    };
-    if options.strict
-        && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
-    {
-        for violation in &violations {
-            compiled
-                .ctx
-                .error(&strict_message(violation, &surface), violation.span);
-        }
-        process::exit(1);
+    let compiled = compile_or_exit(path);
+    let config = load_surface_config(&surface);
+    if options.strict {
+        enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
     }
 
     println!("OK");
@@ -1255,10 +1221,10 @@ hiko-vm = "{version}"
 #[cfg(test)]
 mod tests {
     use super::{
-        Compiled, DiagCtx, FmtOptions, ManifestSource, ResolvedPolicy, RuntimeSurface,
-        ScriptOptions, inspect_program_work, parse_check_args, parse_fmt_args,
-        parse_inspect_work_args, parse_run_args, resolve_policy_from_manifest, resolve_run_target,
-        runtime_error_message, strict_message, strict_violations, validate_strict_surface,
+        FmtOptions, ManifestSource, ResolvedPolicy, RuntimeSurface, ScriptOptions,
+        inspect_program_work, parse_check_args, parse_fmt_args, parse_inspect_work_args,
+        parse_run_args, resolve_policy_from_manifest, resolve_run_target, runtime_error_message,
+        strict_message, strict_violations, validate_strict_surface,
     };
     use hiko_builtin_meta::core_builtin_names;
     use hiko_compile::compiler::Compiler;
@@ -1592,11 +1558,6 @@ val _ = exec ("echo", [])
     #[test]
     fn strict_validation_uses_run_config_surface() {
         let program = compile_program(r#"val _ = println "ok""#);
-        let compiled = Compiled {
-            program,
-            warnings: Vec::new(),
-            ctx: DiagCtx::new("<test>", String::new()),
-        };
         let config = RunConfig::from_toml(
             r#"
 [capabilities.stdio.println]
@@ -1604,7 +1565,7 @@ enabled = true
 "#,
         )
         .expect("config should parse");
-        assert!(validate_strict_surface(&compiled, Some(&config)).is_ok());
+        assert!(validate_strict_surface(&program, Some(&config)).is_ok());
     }
 
     #[test]
