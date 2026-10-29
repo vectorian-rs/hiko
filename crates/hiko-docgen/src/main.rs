@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use hiko_common::blake3_hex;
 use serde::Deserialize;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, Query, QueryCursor};
+use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 use tree_sitter_hiko::{HIGHLIGHTS_QUERY, LANGUAGE};
 
 type DynError = Box<dyn Error>;
@@ -400,21 +400,26 @@ fn load_package(package_dir: &Path) -> Result<PackageInfo, DynError> {
     })
 }
 
-fn highlight_source(source: &str) -> Result<String, DynError> {
-    let language = tree_sitter::Language::from(LANGUAGE);
+fn parse_source(source: &str, action: &str) -> Result<Tree, DynError> {
     let mut parser = Parser::new();
-    parser.set_language(&language)?;
+    parser.set_language(&LANGUAGE.into())?;
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| invalid_input("tree-sitter-hiko returned no parse tree"))?;
 
     if tree.root_node().has_error() {
-        return Err(invalid_input(
-            "tree-sitter-hiko reported syntax errors while parsing module source",
-        )
+        return Err(invalid_input(format!(
+            "tree-sitter-hiko reported syntax errors while {action}"
+        ))
         .into());
     }
 
+    Ok(tree)
+}
+
+fn highlight_source(source: &str) -> Result<String, DynError> {
+    let tree = parse_source(source, "parsing module source")?;
+    let language = tree.language();
     let query = Query::new(&language, HIGHLIGHTS_QUERY)?;
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -469,20 +474,7 @@ fn highlight_source(source: &str) -> Result<String, DynError> {
 }
 
 fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, DynError> {
-    let language = tree_sitter::Language::from(LANGUAGE);
-    let mut parser = Parser::new();
-    parser.set_language(&language)?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| invalid_input("tree-sitter-hiko returned no parse tree"))?;
-
-    if tree.root_node().has_error() {
-        return Err(invalid_input(
-            "tree-sitter-hiko reported syntax errors while extracting exports",
-        )
-        .into());
-    }
-
+    let tree = parse_source(source, "extracting exports")?;
     let root = tree.root_node();
     let structures = root
         .named_children(&mut root.walk())
@@ -534,15 +526,6 @@ fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, D
                     }
                 }
             }
-            "value_rec_declaration" => {
-                if let Some(name) = field_text(child, "name", source) {
-                    exports.push(ExportItem {
-                        kind: "val rec",
-                        name,
-                        detail: None,
-                    });
-                }
-            }
             "value_declaration" => {
                 if let Some(pattern) = child.child_by_field_name("pattern")
                     && let Some(name) = export_name_from_pattern(pattern, source)
@@ -566,33 +549,25 @@ fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, D
                     exports.push(ExportItem {
                         kind: "datatype",
                         name,
-                        detail: if detail.is_empty() {
-                            None
-                        } else {
-                            Some(detail)
-                        },
+                        detail: (!detail.is_empty()).then_some(detail),
                     });
                 }
             }
-            "type_alias_declaration" => {
+            kind => {
+                let export_kind = match kind {
+                    "value_rec_declaration" => "val rec",
+                    "type_alias_declaration" => "type",
+                    "effect_declaration" => "effect",
+                    _ => continue,
+                };
                 if let Some(name) = field_text(child, "name", source) {
                     exports.push(ExportItem {
-                        kind: "type",
+                        kind: export_kind,
                         name,
                         detail: None,
                     });
                 }
             }
-            "effect_declaration" => {
-                if let Some(name) = field_text(child, "name", source) {
-                    exports.push(ExportItem {
-                        kind: "effect",
-                        name,
-                        detail: None,
-                    });
-                }
-            }
-            _ => {}
         }
     }
 
