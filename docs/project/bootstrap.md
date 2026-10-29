@@ -1,5 +1,9 @@
 # Hiko: Technical Bootstrap Document (v1.0)
 
+> **Historical (v1.0 MVP plan).** Hiko has since added a minimal module system,
+> effects, and an isolated-process runtime. See
+> [project-state.md](project-state.md) for current scope.
+
 **File extension:** `.hml`
 **CLI command:** `hiko`
 
