@@ -618,11 +618,26 @@ impl InferCtx {
         Ok(ty)
     }
 
+    /// Reject a user type name that is already declared or that names a
+    /// primitive. Primitives are `Type::Con` values, so a datatype named
+    /// `Int` would otherwise be the same type as `int`.
+    fn check_new_type_name(&self, name: &str, span: Span) -> Result<(), TypeError> {
+        if Type::primitive(name).is_some() || Type::primitive_surface_name(name).is_some() {
+            return Err(self.err(
+                &format!("type name '{name}' is reserved for a primitive type"),
+                span,
+            ));
+        }
+        // Type aliases are also recorded in `type_arities`.
+        if self.type_arities.contains_key(name) {
+            return Err(self.err(&format!("duplicate type name: {name}"), span));
+        }
+        Ok(())
+    }
+
     fn register_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), TypeError> {
         let dt_name = self.interner.resolve(dt.name).to_string();
-        if self.type_arities.contains_key(&dt_name) {
-            return Err(self.err(&format!("duplicate type name: {dt_name}"), dt.span));
-        }
+        self.check_new_type_name(&dt_name, dt.span)?;
         let arity = dt.tyvars.len();
         self.type_arities.insert(dt_name.clone(), arity);
 
@@ -687,9 +702,7 @@ impl InferCtx {
 
     fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
         let ta_name = self.interner.resolve(ta.name).to_string();
-        if self.type_arities.contains_key(&ta_name) || self.type_aliases.contains_key(&ta_name) {
-            return Err(self.err(&format!("duplicate type name: {ta_name}"), ta.span));
-        }
+        self.check_new_type_name(&ta_name, ta.span)?;
         let mut tyvar_map: HashMap<String, u32> = HashMap::new();
         let mut param_vars = Vec::new();
         for tv in &ta.tyvars {
@@ -707,9 +720,7 @@ impl InferCtx {
 
     fn register_abstract_type(&mut self, dt: &AbstractTypeDecl) -> Result<(), TypeError> {
         let name = self.interner.resolve(dt.name).to_string();
-        if self.type_arities.contains_key(&name) || self.type_aliases.contains_key(&name) {
-            return Err(self.err(&format!("duplicate type name: {name}"), dt.span));
-        }
+        self.check_new_type_name(&name, dt.span)?;
 
         if let Some(implementation) = dt.implementation {
             let impl_name = self.interner.resolve(implementation).to_string();
@@ -1930,6 +1941,20 @@ mod tests {
     fn test_duplicate_type_name() {
         let msg = infer_err("datatype color = Red type color = int");
         assert!(msg.contains("duplicate type"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_datatype_cannot_reuse_primitive_name() {
+        // `Int` is the internal name of `int`; a datatype with that name
+        // would make its constructors usable as integers.
+        let msg = infer_err("datatype Int = A val x : int = A val y = x + 1");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+        let msg = infer_err("datatype Bool = X | Y val c = if X then 1 else 2");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+        let msg = infer_err("datatype int = A");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+        let msg = infer_err("type String = int");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
     }
 
     // ── val rec polymorphism ─────────────────────────────────────────
