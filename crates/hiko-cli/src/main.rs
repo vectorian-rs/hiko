@@ -699,18 +699,6 @@ fn scan_chunk_globals(
         let op = Op::try_from(read_u8(code, &mut ip)?)
             .map_err(|byte| format!("invalid opcode while scanning bytecode: {byte}"))?;
         match op {
-            Op::Const
-            | Op::GetLocal
-            | Op::SetLocal
-            | Op::GetUpvalue
-            | Op::Jump
-            | Op::JumpIfFalse
-            | Op::CallDirect
-            | Op::TailCallDirect
-            | Op::Panic
-            | Op::Perform => {
-                skip_bytes(code, &mut ip, 2)?;
-            }
             Op::GetGlobal => {
                 let idx = read_u16(code, &mut ip)? as usize;
                 let name = read_const_string(chunk, idx)?.to_string();
@@ -721,9 +709,7 @@ fn scan_chunk_globals(
                 let name = read_const_string(chunk, idx)?.to_string();
                 defs.insert(name);
             }
-            _ => {
-                advance_operands(code, &mut ip, op)?;
-            }
+            _ => advance_operands(code, &mut ip, op)?,
         }
     }
 
