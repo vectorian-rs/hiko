@@ -136,6 +136,7 @@ fn decode_chunk(
     Ok(decoded)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_instruction(
     chunk: &Chunk,
     n_locals: usize,

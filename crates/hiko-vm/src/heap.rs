@@ -610,14 +610,14 @@ impl Heap {
         let kind = resource.kind();
 
         // Check total host resources limit.
-        if let Some(max) = self.max_host_resources {
-            if self.host_resources.len() >= max {
-                return Err(HeapLimitExceeded::HostResources {
-                    kind: None,
-                    live: self.host_resources.len(),
-                    limit: max,
-                });
-            }
+        if let Some(max) = self.max_host_resources
+            && self.host_resources.len() >= max
+        {
+            return Err(HeapLimitExceeded::HostResources {
+                kind: None,
+                live: self.host_resources.len(),
+                limit: max,
+            });
         }
 
         // Check per-kind host resource limits.
@@ -887,14 +887,14 @@ impl Heap {
         self.free_list.clear();
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
-                if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref() {
-                    if self.host_resources.remove(id).is_some() {
-                        // Decrement the per-kind count. Peak counters are monotonic.
-                        let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
-                        *count = count.saturating_sub(1);
-                        if *count == 0 {
-                            self.host_resources_by_kind.remove(kind);
-                        }
+                if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref()
+                    && self.host_resources.remove(id).is_some()
+                {
+                    // Decrement the per-kind count. Peak counters are monotonic.
+                    let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.host_resources_by_kind.remove(kind);
                     }
                 }
                 self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);

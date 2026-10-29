@@ -436,13 +436,11 @@ fn parse_flag_value<'a>(
     let arg = &args[index];
     let (value, consumed) = if arg == flag {
         (args.get(index + 1).map(String::as_str), 2)
-    } else if let Some(value) = arg
-        .strip_prefix(flag)
-        .and_then(|rest| rest.strip_prefix('='))
-    {
-        (Some(value), 1)
     } else {
-        return None;
+        let value = arg
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))?;
+        (Some(value), 1)
     };
     match value {
         Some(value) if !value.is_empty() => Some((value, consumed)),

@@ -198,10 +198,9 @@ impl VM {
                 Op::AddWord => self.word_binop(u64::wrapping_add)?,
                 Op::SubWord => self.word_binop(u64::wrapping_sub)?,
                 Op::MulWord => self.word_binop(u64::wrapping_mul)?,
-                Op::DivWord => self.word_checked_binop(
-                    |a, b| if b == 0 { None } else { Some(a / b) },
-                    "word division by zero",
-                )?,
+                Op::DivWord => {
+                    self.word_checked_binop(u64::checked_div, "word division by zero")?
+                }
                 Op::ModWord => self.word_checked_binop(
                     |a, b| if b == 0 { None } else { Some(a % b) },
                     "word mod by zero",
