@@ -127,7 +127,7 @@ cap-std = { version = "4", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Kill the process group of a timed-out `exec` child.
-libc = "0.2"
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
 
 [dev-dependencies]
 hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"] }

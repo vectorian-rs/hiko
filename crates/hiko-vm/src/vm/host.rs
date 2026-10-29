@@ -98,14 +98,10 @@ fn read_exec_pipe<R: std::io::Read>(
 fn kill_exec_child(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
-            // SAFETY: killpg only sends a signal; `pgid` is the id of the
-            // group this child leads, which is still reserved because the
-            // child has not been reaped.
-            unsafe {
-                libc::killpg(pgid, libc::SIGKILL);
-            }
-        }
+        use rustix::process::{Pid, Signal, kill_process_group};
+        // The child leads its own group (`process_group(0)`), so its pid is
+        // the group id.
+        kill_process_group(Pid::from_child(child), Signal::KILL).ok();
     }
     child.kill().ok();
     child.wait().ok();
