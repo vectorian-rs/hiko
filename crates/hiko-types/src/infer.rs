@@ -1772,6 +1772,58 @@ mod tests {
     }
 
     #[test]
+    fn test_transparent_ascription_keeps_type_equalities() {
+        let ctx = infer(
+            "signature COUNTER = sig
+               type t
+               type 'a box
+               val zero : t
+               val wrap : 'a -> 'a box
+             end
+             structure C : COUNTER = struct
+               type t = int
+               type 'a box = 'a list
+               val zero = 0
+               fun wrap x = [x]
+               val hidden = 1
+             end
+             val n = C.zero + 1
+             val xs : int list = C.wrap 1
+             val z : C.t = 5",
+        );
+        assert_eq!(type_of(&ctx, "n"), "int");
+        assert_eq!(type_of(&ctx, "xs"), "int list");
+        // Transparency only reveals types; unlisted values stay hidden.
+        let msg = infer_err(
+            "signature S = sig type t val zero : t end
+             structure C : S = struct type t = int val zero = 0 val hidden = 1 end
+             val h = C.hidden",
+        );
+        assert!(msg.contains("unbound variable: C.hidden"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_opaque_ascription_hides_type_equalities() {
+        for use_site in ["val n = C.zero + 1", "val z : C.t = 5"] {
+            let msg = infer_err(&format!(
+                "signature COUNTER = sig type t val zero : t end
+                 structure C :> COUNTER = struct type t = int val zero = 0 end
+                 {use_site}"
+            ));
+            assert!(msg.contains("type mismatch"), "{use_site}: got: {msg}");
+        }
+    }
+
+    #[test]
+    fn test_transparent_ascription_checks_type_specs() {
+        let msg = infer_err(
+            "signature S = sig type t val x : t end
+             structure M : S = struct val x = 1 end",
+        );
+        assert!(msg.contains("unknown type"), "got: {msg}");
+    }
+
+    #[test]
     fn test_opaque_ascription_hides_constructors() {
         let msg = infer_err(
             "signature BOX = sig

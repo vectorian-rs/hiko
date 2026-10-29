@@ -234,7 +234,7 @@ fn signature_assertions(
     signature: &SignatureDecl,
     scope: &ModuleScope,
     module_path: &[String],
-    _opaque: bool,
+    opaque: bool,
     interner: &mut StringInterner,
 ) -> Vec<Decl> {
     let mut out = Vec::new();
@@ -250,15 +250,42 @@ fn signature_assertions(
         }
         let public_sym = mangle_symbol(module_path, *name, interner, false);
         let hidden_sym = mangle_symbol(module_path, *name, interner, true);
-        out.push(Decl {
-            kind: DeclKind::AbstractType(AbstractTypeDecl {
+        let kind = if opaque {
+            // `:>` seals the type: only its name is visible outside.
+            DeclKind::AbstractType(AbstractTypeDecl {
                 tyvars: tyvars.clone(),
                 name: public_sym,
                 implementation: Some(hidden_sym),
                 span: *span,
-            }),
-            span: *span,
-        });
+            })
+        } else {
+            // `:` is transparent: the public name is an alias of the
+            // structure's own definition, so its equations stay visible.
+            let ty_kind = if tyvars.is_empty() {
+                TypeExprKind::Named(hidden_sym)
+            } else {
+                TypeExprKind::App(
+                    hidden_sym,
+                    tyvars
+                        .iter()
+                        .map(|&tv| TypeExpr {
+                            kind: TypeExprKind::Var(tv),
+                            span: *span,
+                        })
+                        .collect(),
+                )
+            };
+            DeclKind::TypeAlias(TypeAliasDecl {
+                tyvars: tyvars.clone(),
+                name: public_sym,
+                ty: TypeExpr {
+                    kind: ty_kind,
+                    span: *span,
+                },
+                span: *span,
+            })
+        };
+        out.push(Decl { kind, span: *span });
     }
 
     for spec in &signature.specs {
