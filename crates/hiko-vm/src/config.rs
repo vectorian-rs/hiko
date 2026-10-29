@@ -1326,6 +1326,24 @@ folders = ["."]
         RunConfig::from_toml(&text).expect("full builtin example config should parse");
     }
 
+    /// Diagnostics tell users to "enable [<capability_path>]", so every path in
+    /// the builtin metadata must be a run-config leaf that enables that builtin.
+    #[test]
+    fn every_builtin_capability_path_enables_its_builtin() {
+        for meta in hiko_builtin_meta::builtins() {
+            let Some(path) = meta.capability_path else {
+                continue;
+            };
+            let config = RunConfig::from_toml(&format!("[{path}]\nenabled = true\n"))
+                .unwrap_or_else(|err| panic!("{}: [{path}] is rejected: {err}", meta.name));
+            assert!(
+                config.enabled_builtin_names().contains(meta.name),
+                "{}: enabling [{path}] does not enable it",
+                meta.name
+            );
+        }
+    }
+
     #[test]
     fn policy_configs_include_unrestricted_runtime_numeric_builtins() {
         let config = RunConfig::from_toml("").expect("empty config should parse");
