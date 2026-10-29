@@ -679,14 +679,19 @@ fn pretty_atom_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &Str
     }
 }
 
-/// A prefix `~` or `not` takes another prefix operator or an application
-/// (`~ ~x`, `not f x`), so only other operands need parentheses.
+/// A prefix `~` or `not` takes another prefix operator, an application or
+/// any atom, including `if`, `case` and `fn` (`~ ~x`, `not f x`,
+/// `~case x of ...`), so only infix forms need parentheses.
 fn pretty_unary_operand(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
-    match &expr.kind {
-        ExprKind::UnaryNeg(_) | ExprKind::Not(_) | ExprKind::App(_, _) => {
-            pretty_expr(buf, expr, indent, interner)
-        }
-        _ => pretty_atom_expr(buf, expr, indent, interner),
+    if matches!(
+        &expr.kind,
+        ExprKind::BinOp(_, _, _) | ExprKind::Cons(_, _) | ExprKind::Ann(_, _)
+    ) {
+        buf.push('(');
+        pretty_expr(buf, expr, indent, interner);
+        buf.push(')');
+    } else {
+        pretty_expr(buf, expr, indent, interner);
     }
 }
 
@@ -725,16 +730,25 @@ fn collect_pipe_parts<'a>(expr: &'a Expr, parts: &mut Vec<&'a Expr>) {
     }
 }
 
+/// The function in an application. Atoms and the forms that end in a
+/// closing keyword or an atom (`let ... end`, `perform E x`, `resume k x`)
+/// print bare; anything whose last part would absorb the arguments
+/// (`fn`, `if`, `case`, `handle`, operators) needs parentheses.
 fn pretty_app_func(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
-    match &expr.kind {
-        ExprKind::App(_, _) | ExprKind::Var(_) | ExprKind::Constructor(_) | ExprKind::Paren(_) => {
-            pretty_expr(buf, expr, indent, interner)
-        }
-        _ => {
-            buf.push('(');
-            pretty_expr(buf, expr, indent, interner);
-            buf.push(')');
-        }
+    let bare = !needs_parens_as_atom(expr)
+        || matches!(
+            &expr.kind,
+            ExprKind::App(_, _)
+                | ExprKind::Let(_, _)
+                | ExprKind::Perform(_, _)
+                | ExprKind::Resume(_, _)
+        );
+    if bare {
+        pretty_expr(buf, expr, indent, interner);
+    } else {
+        buf.push('(');
+        pretty_expr(buf, expr, indent, interner);
+        buf.push(')');
     }
 }
 

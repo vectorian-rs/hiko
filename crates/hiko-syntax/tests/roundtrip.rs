@@ -454,10 +454,25 @@ fn rt_unary_operands_stay_unparenthesized() {
         "val x = f ~1",
         "val x = f not true",
         "val x = f ~(g x)",
+        "val x = ~fn y => y",
+        "val x = not if a then b else c",
         "val x = ~(a + b)",
     ] {
         let expected = src.replace("~ ~", "~~");
         assert_eq!(roundtrip(src), expected, "{src}");
+    }
+}
+
+#[test]
+fn rt_application_heads_stay_unparenthesized() {
+    for src in [
+        "val x = 0 1",
+        "val x = [f] 1",
+        "val x = (f, g) 1",
+        "val x = perform E x y",
+        "val x = resume k v w",
+    ] {
+        assert_eq!(roundtrip(src), src);
     }
 }
 
