@@ -1840,13 +1840,12 @@ impl Compiler {
                 self.emit_scalar_check(slot, Constant::Word(*w), Op::Eq, fail_jumps)?;
             }
             PatKind::BoolLit(b) => {
+                // The scrutinee is already a bool: branch on it directly
+                // (negated for `false`) instead of a generic Eq.
                 self.emit_get_local(slot);
-                if *b {
-                    self.emit(Op::True);
-                } else {
-                    self.emit(Op::False);
+                if !*b {
+                    self.emit(Op::Not);
                 }
-                self.emit(Op::Eq);
                 let jmp = self.emit_jump(Op::JumpIfFalse);
                 fail_jumps.push((jmp, self.ctx().locals.len()));
             }
@@ -2487,6 +2486,19 @@ mod tests {
         // Int 1, and the strings "x", "y", "s" (the literal "x" shares the
         // entry used for the global name `x`).
         assert_eq!(compiled.main.constants.len(), 4);
+    }
+
+    #[test]
+    fn compile_bool_pattern_branches_without_generic_eq() {
+        let program = parse_program("fun f b = case b of true => 1 | false => 0\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let proto = compiled
+            .functions
+            .iter()
+            .find(|proto| proto.name.as_deref() == Some("f"))
+            .expect("function proto");
+        assert!(!proto.chunk.code.contains(&(Op::Eq as u8)));
+        assert!(proto.chunk.code.contains(&(Op::Not as u8)));
     }
 
     #[test]
