@@ -300,7 +300,9 @@ fn validate_remote_base_url(
         return Ok(());
     }
     if let Some(rest) = base_url.strip_prefix("http://") {
-        let authority = rest.split('/').next().unwrap_or_default();
+        // The authority ends at the first '/', '?' or '#'. '\' is treated as a
+        // terminator too, since some URL parsers read it as a path separator.
+        let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
         let host = authority
             .rsplit_once('@')
             .map(|(_, host)| host)
@@ -2679,6 +2681,25 @@ Answer = "blake3:deadbeef"
         }
 
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-named-imports")]
+    #[test]
+    fn remote_base_url_allows_only_https_or_local_http() {
+        let check = |base_url: &str| {
+            validate_remote_base_url("Std", base_url, Path::new("hiko.lock.toml")).is_ok()
+        };
+        assert!(check("https://modules.example.com/Std-v0.1.0"));
+        assert!(check("http://127.0.0.1:8000/Std-v0.1.0"));
+        assert!(check("http://localhost/Std-v0.1.0"));
+        assert!(check("http://[::1]:8000/Std-v0.1.0"));
+        assert!(!check("http://modules.example.com/Std-v0.1.0"));
+        assert!(!check("http://127.0.0.1@modules.example.com/Std-v0.1.0"));
+        assert!(!check("http://localhost.example.com/Std-v0.1.0"));
+        // Text after the authority must not be mistaken for the host.
+        assert!(!check("http://modules.example.com?@127.0.0.1/Std-v0.1.0"));
+        assert!(!check("http://modules.example.com#@localhost/Std-v0.1.0"));
+        assert!(!check("http://modules.example.com\\@127.0.0.1/Std-v0.1.0"));
     }
 
     #[test]
