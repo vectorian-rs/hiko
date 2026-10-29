@@ -246,9 +246,9 @@ fn parse_tool_metadata(source: &str, default_name: &str) -> ToolMetadata {
                             required.push(serde_json::Value::String(name.to_string()));
                         }
                     }
-                } else if line.strip_prefix("notes:").is_some() {
+                } else if let Some(rest) = line.strip_prefix("notes:") {
                     in_notes = true;
-                    let rest = line.strip_prefix("notes:").unwrap().trim();
+                    let rest = rest.trim();
                     if !rest.is_empty() {
                         notes_lines.push(rest.to_string());
                     }

@@ -88,20 +88,7 @@ impl Agent {
                     } else {
                         Some(result.text.clone())
                     },
-                    tool_calls: Some(
-                        result
-                            .tool_calls
-                            .iter()
-                            .map(|tc| crate::llm::ToolCall {
-                                id: tc.id.clone(),
-                                kind: "function".into(),
-                                function: crate::llm::FunctionCall {
-                                    name: tc.function.name.clone(),
-                                    arguments: tc.function.arguments.clone(),
-                                },
-                            })
-                            .collect(),
-                    ),
+                    tool_calls: Some(result.tool_calls.clone()),
                     tool_call_id: None,
                 });
 
