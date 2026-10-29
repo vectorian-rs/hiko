@@ -120,10 +120,10 @@ Use a mock I/O backend (`MockIoBackend`) for deterministic testing. The backend 
 
 ## I/O semantics
 
-### One-shot continuations
+### One-shot I/O suspensions
 
-- Continuations are resumed **exactly once**
-- No multi-shot continuations in v1
+- A process suspended on a builtin I/O request is resumed **exactly once**, by the runtime, when the I/O completes
+- This applies to runtime I/O suspensions only. Local algebraic-effect continuations (`perform`/`resume`) are a separate mechanism and can currently be resumed more than once; see [`../language/effects.md`](../language/effects.md#current-continuation-semantics)
 
 ### Error handling
 
