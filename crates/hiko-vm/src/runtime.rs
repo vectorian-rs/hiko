@@ -1,24 +1,33 @@
 //! Runtime: single-threaded scheduler loop for running multiple hiko processes.
+//!
+//! The lifecycle rules match the threaded runtime (see `threaded.rs`): every
+//! terminal transition goes through [`Runtime::terminate`], which records the
+//! outcome, cancels the process's children, reaps their unconsumed tombstones,
+//! and wakes the processes waiting on it. Builtins that do I/O block the
+//! thread here, so a process is never blocked on I/O.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{
-    AwaitKind, BlockReason, ChildOutcome, ChildRecord, FiberJoinError, Pid, Process,
-    ProcessFailure, ProcessStatus,
+    AwaitKind, BlockReason, ChildOutcome, ChildRecord, Pid, Process, ProcessFailure, ProcessStatus,
 };
-use crate::runtime_ops::dedup_pids;
+use crate::runtime_ops::{ChildState, dedup_pids, deliver_already_joined, deliver_await_outcome};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::sendable::{SendableValue, serialize};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
 use hiko_compile::chunk::CompiledProgram;
 
+/// Processes waiting to be terminated; see [`Runtime::terminate`].
+type Terminations = Vec<(Pid, ChildOutcome)>;
+
 /// The hiko runtime — manages processes and scheduling.
 pub struct Runtime {
     next_pid: AtomicU64,
+    /// Live processes, plus terminated root processes.
     processes: HashMap<Pid, Process>,
-    /// Compact tombstones for terminated child processes (replaces full Process).
+    /// Outcomes of terminated children that their parent has not consumed.
     tombstones: HashMap<Pid, ChildRecord>,
     scheduler: Box<dyn Scheduler>,
     /// Processes waiting for another process to finish: child_pid → [waiter_pids]
@@ -29,14 +38,7 @@ pub struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
-        Self {
-            next_pid: AtomicU64::new(1),
-            processes: HashMap::new(),
-            tombstones: HashMap::new(),
-            scheduler: Box::new(FifoScheduler::new(1000)),
-            waiters: HashMap::new(),
-            any_waiters: HashMap::new(),
-        }
+        Self::with_scheduler(Box::new(FifoScheduler::new(1000)))
     }
 }
 
@@ -67,21 +69,8 @@ impl Runtime {
         format!("{context}: process {:?} missing from runtime table", pid)
     }
 
-    fn fail_process(&mut self, pid: Pid, failure: ProcessFailure) -> bool {
-        let Some(process) = self.processes.get_mut(&pid) else {
-            self.scheduler.remove(pid);
-            return false;
-        };
-        process.status = ProcessStatus::Failed(failure);
-        self.scheduler.remove(pid);
-        true
-    }
-
-    fn fail_missing_process(&mut self, pid: Pid, context: &str) -> bool {
-        self.fail_process(
-            pid,
-            ProcessFailure::runtime(Self::missing_process_message(context, pid)),
-        )
+    fn is_live(&self, pid: Pid) -> bool {
+        self.processes.get(&pid).is_some_and(|p| !p.is_done())
     }
 
     /// Spawn a root process from a compiled program.
@@ -104,118 +93,38 @@ impl Runtime {
     /// Run all processes to completion (single-threaded).
     /// Returns the root process's output lines.
     pub fn run_to_completion(&mut self) -> Result<Vec<String>, String> {
-        while let Some(pid) = self.try_dequeue() {
-            let reductions = self.scheduler.reductions(pid);
+        self.run_with_probe(&mut |_| {})
+    }
 
-            let result = {
-                let Some(process) = self.processes.get_mut(&pid) else {
-                    return Err(Self::missing_process_message("run", pid));
-                };
-                process.vm.run_slice(reductions)
-            };
-
-            match result {
-                RunResult::Done => {
-                    let outcome = {
-                        let Some(process) = self.processes.get_mut(&pid) else {
-                            return Err(Self::missing_process_message("finish", pid));
-                        };
-                        if process.parent.is_some() {
-                            let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                            match process
-                                .vm
-                                .heap
-                                .charge_host_work(crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK)
-                                .map_err(ProcessFailure::runtime)
-                                .and_then(|()| {
-                                    serialize(val, &process.vm.heap).map_err(|e| {
-                                        ProcessFailure::runtime(format!(
-                                            "child result not sendable: {e}"
-                                        ))
-                                    })
-                                })
-                                .and_then(|sv| {
-                                    process
-                                        .vm
-                                        .heap
-                                        .charge_host_work(crate::sendable::host_work_for_sendable(
-                                            &sv,
-                                        ))
-                                        .map_err(ProcessFailure::runtime)?;
-                                    Ok(sv)
-                                }) {
-                                Ok(sv) => ChildOutcome::Ok(sv),
-                                Err(failure) => ChildOutcome::Err(failure),
-                            }
-                        } else {
-                            ChildOutcome::Ok(SendableValue::Unit)
-                        }
-                    };
-                    self.make_terminal(pid, outcome);
-                    self.cancel_scope_children(pid);
-                    self.scheduler.remove(pid);
-                    self.wake_and_deliver_results(pid);
-                }
-                RunResult::Yielded => {
-                    self.scheduler.enqueue(pid);
-                }
-                RunResult::Failed(failure) => {
-                    self.make_terminal(pid, ChildOutcome::Err(failure));
-                    self.cancel_scope_children(pid);
-                    self.scheduler.remove(pid);
-                    self.wake_and_deliver_results(pid);
-                }
-                RunResult::Spawn {
-                    proto_idx,
-                    captures,
-                } => match self.handle_spawn(pid, proto_idx, captures) {
-                    Ok(child_pid) => {
-                        let Some(process) = self.processes.get_mut(&pid) else {
-                            return Err(Self::missing_process_message("spawn", pid));
-                        };
-                        process.vm.stack.pop();
-                        process.vm.push_value(Value::Pid(child_pid.0));
-                        self.scheduler.enqueue(pid);
-                    }
-                    Err(failure) => {
-                        self.make_terminal(pid, ChildOutcome::Err(failure));
-                        self.cancel_scope_children(pid);
-                        self.scheduler.remove(pid);
-                        self.wake_and_deliver_results(pid);
-                    }
-                },
-                RunResult::Await(child_pid_val) => {
-                    let child_pid = Pid(child_pid_val);
-                    self.handle_await(pid, child_pid, AwaitKind::Raw);
-                }
-                RunResult::AwaitResult(child_pid_val) => {
-                    let child_pid = Pid(child_pid_val);
-                    self.handle_await(pid, child_pid, AwaitKind::Result);
-                }
-                RunResult::Cancel(child_pid_val) => {
-                    let child_pid = Pid(child_pid_val);
-                    self.handle_cancel(pid, child_pid);
-                }
-                RunResult::WaitAny(child_pid_vals) => {
-                    let child_pids = child_pid_vals.into_iter().map(Pid).collect();
-                    self.handle_wait_any(pid, child_pids);
-                }
-                RunResult::Io(_req) => {
-                    self.make_terminal(
-                        pid,
-                        ChildOutcome::Err(ProcessFailure::runtime(
-                            "async I/O requires ThreadedRuntime",
-                        )),
-                    );
-                    self.cancel_scope_children(pid);
-                }
-                RunResult::Cancelled => {
-                    self.make_terminal(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
-                    self.cancel_scope_children(pid);
-                    self.scheduler.remove(pid);
-                    self.wake_and_deliver_results(pid);
-                }
+    /// `run_to_completion`, calling `probe` after every slice.
+    fn run_with_probe(&mut self, probe: &mut dyn FnMut(&Self)) -> Result<Vec<String>, String> {
+        loop {
+            while let Some(pid) = self.try_dequeue() {
+                self.run_one_slice(pid)?;
+                probe(self);
             }
+            // Safety net, as in the threaded runtime: with correct
+            // bookkeeping no process stays blocked once nothing is runnable.
+            let stuck: Vec<Pid> = self
+                .processes
+                .iter()
+                .filter(|(_, p)| matches!(p.status, ProcessStatus::Blocked(_)))
+                .map(|(pid, _)| *pid)
+                .collect();
+            if stuck.is_empty() {
+                break;
+            }
+            let mut terminations = Terminations::new();
+            for pid in stuck {
+                self.clear_blocked_registration(pid);
+                terminations.push((
+                    pid,
+                    ChildOutcome::Err(ProcessFailure::runtime(
+                        "deadlock: process blocked with no possible waker",
+                    )),
+                ));
+            }
+            self.drain_terminations(&mut terminations);
         }
 
         // Collect output from all processes (root first)
@@ -226,6 +135,82 @@ impl Runtime {
         Ok(all_output)
     }
 
+    fn run_one_slice(&mut self, pid: Pid) -> Result<(), String> {
+        let reductions = self.scheduler.reductions(pid);
+
+        let result = {
+            let Some(process) = self.processes.get_mut(&pid) else {
+                return Err(Self::missing_process_message("run", pid));
+            };
+            if !process.is_runnable() {
+                // Stale queue entry.
+                return Ok(());
+            }
+            process.vm.run_slice(reductions)
+        };
+
+        match result {
+            RunResult::Done => {
+                let Some(process) = self.processes.get_mut(&pid) else {
+                    return Err(Self::missing_process_message("finish", pid));
+                };
+                let outcome = if process.parent.is_some() {
+                    child_result(process)
+                } else {
+                    ChildOutcome::Ok(SendableValue::Unit)
+                };
+                self.terminate(pid, outcome);
+            }
+            RunResult::Yielded => {
+                self.scheduler.enqueue(pid);
+            }
+            RunResult::Failed(failure) => {
+                self.terminate(pid, ChildOutcome::Err(failure));
+            }
+            RunResult::Spawn {
+                proto_idx,
+                captures,
+            } => match self.handle_spawn(pid, proto_idx, captures) {
+                Ok(child_pid) => {
+                    let Some(process) = self.processes.get_mut(&pid) else {
+                        return Err(Self::missing_process_message("spawn", pid));
+                    };
+                    process.vm.stack.pop();
+                    process.vm.push_value(Value::Pid(child_pid.0));
+                    self.scheduler.enqueue(pid);
+                }
+                Err(failure) => {
+                    self.terminate(pid, ChildOutcome::Err(failure));
+                }
+            },
+            RunResult::Await(child_pid_val) => {
+                self.handle_await(pid, Pid(child_pid_val), AwaitKind::Raw);
+            }
+            RunResult::AwaitResult(child_pid_val) => {
+                self.handle_await(pid, Pid(child_pid_val), AwaitKind::Result);
+            }
+            RunResult::Cancel(child_pid_val) => {
+                self.handle_cancel(pid, Pid(child_pid_val));
+            }
+            RunResult::WaitAny(child_pid_vals) => {
+                let child_pids = child_pid_vals.into_iter().map(Pid).collect();
+                self.handle_wait_any(pid, child_pids);
+            }
+            RunResult::Io(_req) => {
+                self.terminate(
+                    pid,
+                    ChildOutcome::Err(ProcessFailure::runtime(
+                        "async I/O requires ThreadedRuntime",
+                    )),
+                );
+            }
+            RunResult::Cancelled => {
+                self.terminate(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
+            }
+        }
+        Ok(())
+    }
+
     /// Handle a spawn request: create child process from closure prototype.
     fn handle_spawn(
         &mut self,
@@ -233,174 +218,165 @@ impl Runtime {
         proto_idx: usize,
         captures: Vec<SendableValue>,
     ) -> Result<Pid, ProcessFailure> {
-        let child_pid = self.new_pid();
         let parent = self.processes.get(&parent_pid).ok_or_else(|| {
             ProcessFailure::runtime(Self::missing_process_message("spawn", parent_pid))
         })?;
         let child_vm =
             crate::runtime_ops::create_child_vm_from_parent(&parent.vm, proto_idx, captures)?;
+        let child_pid = self.new_pid();
         let child = Process::new(child_pid, child_vm, Some(parent_pid));
         self.processes.insert(child_pid, child);
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.insert(child_pid);
+        }
         self.scheduler.enqueue(child_pid);
         Ok(child_pid)
     }
 
-    /// Transition a process to terminal state. For children, creates a compact
-    /// tombstone and frees the full Process (VM/heap/stack). For root processes,
-    /// just sets the status.
-    fn make_terminal(&mut self, pid: Pid, outcome: ChildOutcome) {
-        let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
-        if let Some(parent_pid) = parent_pid {
-            self.tombstones.insert(
-                pid,
-                ChildRecord::Ready {
-                    parent: parent_pid,
-                    outcome,
-                },
-            );
-            self.processes.remove(&pid);
-        } else if let Some(process) = self.processes.get_mut(&pid) {
-            match outcome {
-                ChildOutcome::Ok(_) => process.status = ProcessStatus::Done,
-                ChildOutcome::Err(failure) => process.status = ProcessStatus::Failed(failure),
-            }
+    // --- Terminal transitions ---------------------------------------------------
+
+    /// Make `pid` terminal. The single entry point for terminal transitions.
+    fn terminate(&mut self, pid: Pid, outcome: ChildOutcome) {
+        let mut terminations = vec![(pid, outcome)];
+        self.drain_terminations(&mut terminations);
+    }
+
+    fn fail(&mut self, pid: Pid, failure: ProcessFailure) {
+        self.terminate(pid, ChildOutcome::Err(failure));
+    }
+
+    fn drain_terminations(&mut self, terminations: &mut Terminations) {
+        while let Some((pid, outcome)) = terminations.pop() {
+            self.finish_process(pid, outcome, terminations);
         }
     }
 
-    /// Cancel all running children of a terminating process (scope cleanup).
-    fn cancel_scope_children(&mut self, parent_pid: Pid) {
-        let children: Vec<Pid> = self
-            .processes
-            .values()
-            .filter(|p| p.parent == Some(parent_pid))
-            .map(|p| p.pid)
-            .collect();
-
-        for child_pid in children {
-            self.cancel_process(child_pid);
-        }
-    }
-
-    /// Handle an await request: check tombstones first, then live processes.
-    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid, await_kind: AwaitKind) {
-        // Check tombstone first (child already finished and freed)
-        let tombstone = self.tombstones.get(&child_pid).cloned();
-        if let Some(record) = tombstone {
-            match record {
-                ChildRecord::Consumed { parent } => {
-                    if parent != parent_pid {
-                        self.fail_process(
-                            parent_pid,
-                            ProcessFailure::runtime(format!(
-                                "await: process {:?} is not a child of {:?}",
-                                child_pid, parent_pid
-                            )),
-                        );
-                        return;
-                    }
-                    let Some(p) = self.processes.get_mut(&parent_pid) else {
-                        self.fail_missing_process(parent_pid, "await");
-                        return;
-                    };
-                    match await_kind {
-                        AwaitKind::Raw => {
-                            p.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                                "await: child result already consumed",
-                            ));
-                            self.scheduler.remove(parent_pid);
-                        }
-                        AwaitKind::Result => {
-                            match crate::runtime_ops::deliver_join_result_to_parent(
-                                &mut p.vm,
-                                Err(FiberJoinError::AlreadyJoined),
-                            ) {
-                                Ok(()) => {
-                                    p.status = ProcessStatus::Runnable;
-                                    self.scheduler.enqueue(parent_pid);
-                                }
-                                Err(failure) => {
-                                    p.status = ProcessStatus::Failed(failure);
-                                    self.scheduler.remove(parent_pid);
-                                }
-                            }
-                        }
-                    }
-                }
-                ChildRecord::Ready { parent, outcome } => {
-                    if parent != parent_pid {
-                        self.fail_process(
-                            parent_pid,
-                            ProcessFailure::runtime(format!(
-                                "await: process {:?} is not a child of {:?}",
-                                child_pid, parent_pid
-                            )),
-                        );
-                        return;
-                    }
-                    let Some(p) = self.processes.get_mut(&parent_pid) else {
-                        self.fail_missing_process(parent_pid, "await");
-                        return;
-                    };
-                    let delivered = match (&await_kind, &outcome) {
-                        (AwaitKind::Raw, ChildOutcome::Ok(sv)) => {
-                            crate::runtime_ops::deliver_result_to_parent(&mut p.vm, sv.clone())
-                        }
-                        (AwaitKind::Raw, ChildOutcome::Err(failure)) => {
-                            p.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
-                                Box::new(failure.clone()),
-                            ));
-                            self.scheduler.remove(parent_pid);
-                            self.tombstones
-                                .insert(child_pid, ChildRecord::Consumed { parent });
-                            return;
-                        }
-                        (AwaitKind::Result, ChildOutcome::Ok(sv)) => {
-                            crate::runtime_ops::deliver_join_result_to_parent(
-                                &mut p.vm,
-                                Ok(sv.clone()),
-                            )
-                        }
-                        (AwaitKind::Result, ChildOutcome::Err(failure)) => {
-                            crate::runtime_ops::deliver_join_result_to_parent(
-                                &mut p.vm,
-                                Err(FiberJoinError::from_process_failure(failure.clone())),
-                            )
-                        }
-                    };
-                    match delivered {
-                        Ok(()) => {
-                            p.status = ProcessStatus::Runnable;
-                            self.scheduler.enqueue(parent_pid);
-                        }
-                        Err(failure) => {
-                            p.status = ProcessStatus::Failed(failure);
-                            self.scheduler.remove(parent_pid);
-                        }
-                    }
-                    self.tombstones
-                        .insert(child_pid, ChildRecord::Consumed { parent });
-                }
-            }
+    /// Record the outcome (a tombstone for a child whose parent is alive, a
+    /// terminal status for a root), cancel live children, reap the tombstones
+    /// of terminated ones, and wake waiters.
+    fn finish_process(&mut self, pid: Pid, outcome: ChildOutcome, terminations: &mut Terminations) {
+        if !self.is_live(pid) {
+            // Already terminated (queued twice, e.g. by a cancel cascade).
             return;
         }
+        let Some(mut process) = self.processes.remove(&pid) else {
+            return;
+        };
+        let children = std::mem::take(&mut process.children);
+        self.scheduler.remove(pid);
 
-        // Check live processes (child still running)
-        enum ChildState {
-            Running,
-            NotFound,
-            NotChild,
+        match process.parent {
+            Some(parent) => {
+                drop(process);
+                if self.is_live(parent) {
+                    self.tombstones.insert(pid, ChildRecord { parent, outcome });
+                }
+            }
+            None => {
+                process.status = match outcome {
+                    ChildOutcome::Ok(_) => ProcessStatus::Done,
+                    ChildOutcome::Err(failure) => ProcessStatus::Failed(failure),
+                };
+                self.processes.insert(pid, process);
+            }
         }
 
-        let child_state = match self.processes.get(&child_pid) {
-            None => ChildState::NotFound,
-            Some(child) if child.parent != Some(parent_pid) => ChildState::NotChild,
-            _ => ChildState::Running,
-        };
+        // Scope exit: children must not outlive their parent.
+        for child in children {
+            if self.is_live(child) {
+                self.cancel_process(child, terminations);
+            }
+            self.tombstones.remove(&child);
+        }
 
-        match child_state {
-            ChildState::Running => {
+        self.wake_any_waiters(pid, terminations);
+        self.wake_join_waiters(pid, terminations);
+    }
+
+    /// Cancel a live process. A blocked process terminates right away; a
+    /// runnable one observes the request at the start of its next slice.
+    fn cancel_process(&mut self, pid: Pid, terminations: &mut Terminations) {
+        let Some(process) = self.processes.get_mut(&pid) else {
+            return;
+        };
+        match process.status {
+            ProcessStatus::Blocked(_) => {
+                self.clear_blocked_registration(pid);
+                terminations.push((pid, ChildOutcome::Err(ProcessFailure::Cancelled)));
+            }
+            ProcessStatus::Runnable => process.vm.request_cancellation(),
+            ProcessStatus::Done | ProcessStatus::Failed(_) => {}
+        }
+    }
+
+    fn clear_blocked_registration(&mut self, pid: Pid) {
+        let Some(ProcessStatus::Blocked(reason)) = self.processes.get(&pid).map(|p| &p.status)
+        else {
+            return;
+        };
+        match reason.clone() {
+            BlockReason::Await { child, .. } => remove_waiter(&mut self.waiters, child, pid),
+            BlockReason::WaitAny(child_pids) => self.remove_wait_any_registration(pid, &child_pids),
+            BlockReason::Io(_) => {}
+        }
+    }
+
+    // --- Process operations -------------------------------------------------------
+
+    fn classify_child(&self, parent_pid: Pid, child_pid: Pid) -> ChildState {
+        let is_child = self
+            .processes
+            .get(&parent_pid)
+            .is_some_and(|p| p.children.contains(&child_pid));
+        if is_child {
+            if self.is_live(child_pid) {
+                ChildState::Live
+            } else {
+                ChildState::Terminated
+            }
+        } else if self.processes.contains_key(&child_pid)
+            || self.tombstones.contains_key(&child_pid)
+        {
+            ChildState::NotChild
+        } else if child_pid.0 > 0 && child_pid.0 < self.next_pid.load(Ordering::Relaxed) {
+            ChildState::Reaped
+        } else {
+            ChildState::Unknown
+        }
+    }
+
+    /// Resume a process with the result of a runtime operation, or fail it.
+    fn resume_or_fail(&mut self, pid: Pid, delivered: Result<(), ProcessFailure>) {
+        match delivered {
+            Ok(()) => {
+                if let Some(process) = self.processes.get_mut(&pid) {
+                    process.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(pid);
+                }
+            }
+            Err(failure) => self.fail(pid, failure),
+        }
+    }
+
+    /// Deliver a terminated child's outcome to its parent, consuming it.
+    fn consume_child(&mut self, parent_pid: Pid, child_pid: Pid, await_kind: AwaitKind) {
+        let record = self.tombstones.remove(&child_pid);
+        let Some(parent) = self.processes.get_mut(&parent_pid) else {
+            return;
+        };
+        parent.children.remove(&child_pid);
+        let delivered = match record {
+            Some(record) => deliver_await_outcome(&mut parent.vm, await_kind, record.outcome),
+            None => deliver_already_joined(&mut parent.vm, await_kind),
+        };
+        self.resume_or_fail(parent_pid, delivered);
+    }
+
+    /// Handle an await request.
+    fn handle_await(&mut self, parent_pid: Pid, child_pid: Pid, await_kind: AwaitKind) {
+        match self.classify_child(parent_pid, child_pid) {
+            ChildState::Live => {
                 let Some(parent) = self.processes.get_mut(&parent_pid) else {
-                    self.fail_missing_process(parent_pid, "await");
                     return;
                 };
                 parent.status = ProcessStatus::Blocked(BlockReason::Await {
@@ -409,157 +385,89 @@ impl Runtime {
                 });
                 self.waiters.entry(child_pid).or_default().push(parent_pid);
             }
-            ChildState::NotFound => {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!("await: unknown process {:?}", child_pid)),
-                );
+            ChildState::Terminated => self.consume_child(parent_pid, child_pid, await_kind),
+            ChildState::Reaped => {
+                let Some(parent) = self.processes.get_mut(&parent_pid) else {
+                    return;
+                };
+                let delivered = deliver_already_joined(&mut parent.vm, await_kind);
+                self.resume_or_fail(parent_pid, delivered);
             }
-            ChildState::NotChild => {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!(
-                        "await: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )),
-                );
-            }
+            ChildState::NotChild => self.fail(
+                parent_pid,
+                ProcessFailure::runtime(format!(
+                    "await: process {child_pid:?} is not a child of {parent_pid:?}"
+                )),
+            ),
+            ChildState::Unknown => self.fail(
+                parent_pid,
+                ProcessFailure::runtime(format!("await: unknown process {child_pid:?}")),
+            ),
         }
     }
 
     fn handle_cancel(&mut self, parent_pid: Pid, child_pid: Pid) {
-        // Check tombstone first — child already terminal
-        let tombstone_parent = self.tombstones.get(&child_pid).map(|r| r.parent());
-        if let Some(tombstone_parent) = tombstone_parent {
-            if tombstone_parent != parent_pid {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!(
-                        "cancel: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )),
-                );
-                return;
+        let failure = match self.classify_child(parent_pid, child_pid) {
+            ChildState::Live => {
+                let mut terminations = Terminations::new();
+                self.cancel_process(child_pid, &mut terminations);
+                self.drain_terminations(&mut terminations);
+                None
             }
-            // Already terminal — cancel is no-op
-            let Some(parent) = self.processes.get_mut(&parent_pid) else {
-                self.fail_missing_process(parent_pid, "cancel");
-                return;
-            };
-            parent.vm.stack.pop();
-            parent.vm.push_value(Value::Unit);
-            parent.status = ProcessStatus::Runnable;
-            self.scheduler.enqueue(parent_pid);
-            return;
-        }
-
-        // Check live processes
-        enum CancelState {
-            Running,
-            NotFound,
-            NotChild,
-        }
-
-        let child_state = match self.processes.get(&child_pid) {
-            None => CancelState::NotFound,
-            Some(child) if child.parent != Some(parent_pid) => CancelState::NotChild,
-            _ => CancelState::Running,
+            // Cancelling a finished child is a no-op.
+            ChildState::Terminated | ChildState::Reaped => None,
+            ChildState::NotChild => Some(format!(
+                "cancel: process {child_pid:?} is not a child of {parent_pid:?}"
+            )),
+            ChildState::Unknown => Some(format!("cancel: unknown process {child_pid:?}")),
         };
 
-        match child_state {
-            CancelState::Running => {
-                self.cancel_process(child_pid);
+        match failure {
+            None => {
                 if let Some(parent) = self.processes.get_mut(&parent_pid) {
-                    self.scheduler.enqueue(parent_pid);
+                    parent.vm.stack.pop();
+                    parent.vm.push_value(Value::Unit);
                     parent.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(parent_pid);
                 }
             }
-            CancelState::NotFound => {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!("cancel: unknown process {:?}", child_pid)),
-                );
-            }
-            CancelState::NotChild => {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!(
-                        "cancel: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )),
-                );
-            }
+            Some(message) => self.fail(parent_pid, ProcessFailure::runtime(message)),
         }
     }
 
     fn handle_wait_any(&mut self, parent_pid: Pid, child_pids: Vec<Pid>) {
         let child_pids = dedup_pids(child_pids);
         if child_pids.is_empty() {
-            self.fail_process(
+            self.fail(
                 parent_pid,
                 ProcessFailure::runtime("wait_any: expected non-empty pid list"),
             );
             return;
         }
 
-        let mut first_finished = None;
         for &child_pid in &child_pids {
-            // Check tombstone first — child already finished
-            if let Some(record) = self.tombstones.get(&child_pid) {
-                if record.parent() != parent_pid {
-                    self.fail_process(
-                        parent_pid,
-                        ProcessFailure::runtime(format!(
-                            "wait_any: process {:?} is not a child of {:?}",
-                            child_pid, parent_pid
-                        )),
-                    );
+            let failure = match self.classify_child(parent_pid, child_pid) {
+                ChildState::Live => continue,
+                // Already terminal: the leftmost such pid wins immediately.
+                ChildState::Terminated | ChildState::Reaped => {
+                    let Some(parent) = self.processes.get_mut(&parent_pid) else {
+                        return;
+                    };
+                    let delivered =
+                        crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, child_pid);
+                    self.resume_or_fail(parent_pid, delivered);
                     return;
                 }
-                first_finished = Some(child_pid);
-                break;
-            }
-
-            // Check live process
-            let Some(child) = self.processes.get(&child_pid) else {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!("wait_any: unknown process {:?}", child_pid)),
-                );
-                return;
-            };
-            if child.parent != Some(parent_pid) {
-                self.fail_process(
-                    parent_pid,
-                    ProcessFailure::runtime(format!(
-                        "wait_any: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )),
-                );
-                return;
-            }
-        }
-
-        if let Some(winner) = first_finished {
-            let Some(parent) = self.processes.get_mut(&parent_pid) else {
-                self.fail_missing_process(parent_pid, "wait_any");
-                return;
-            };
-            match crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, winner) {
-                Ok(()) => {
-                    parent.status = ProcessStatus::Runnable;
-                    self.scheduler.enqueue(parent_pid);
+                ChildState::NotChild => {
+                    format!("wait_any: process {child_pid:?} is not a child of {parent_pid:?}")
                 }
-                Err(failure) => {
-                    parent.status = ProcessStatus::Failed(failure);
-                    self.scheduler.remove(parent_pid);
-                }
-            }
+                ChildState::Unknown => format!("wait_any: unknown process {child_pid:?}"),
+            };
+            self.fail(parent_pid, ProcessFailure::runtime(failure));
             return;
         }
 
         let Some(parent) = self.processes.get_mut(&parent_pid) else {
-            self.fail_missing_process(parent_pid, "wait_any");
             return;
         };
         parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
@@ -571,179 +479,83 @@ impl Runtime {
         }
     }
 
-    fn cancel_process(&mut self, pid: Pid) {
-        let block_reason = match self.processes.get_mut(&pid) {
-            Some(process) => match &process.status {
-                ProcessStatus::Blocked(reason) => Some(reason.clone()),
-                _ => {
-                    process.vm.request_cancellation();
-                    None
-                }
-            },
-            None => return,
-        };
-
-        if let Some(reason) = block_reason {
-            self.scheduler.remove(pid);
-            match reason {
-                BlockReason::Await { child, .. } => {
-                    remove_waiter(&mut self.waiters, child, pid);
-                }
-                BlockReason::WaitAny(child_pids) => {
-                    self.remove_wait_any_registration(pid, &child_pids);
-                }
-                BlockReason::Io(_) => {}
-            }
-            self.make_terminal(pid, ChildOutcome::Err(ProcessFailure::Cancelled));
-            self.cancel_scope_children(pid);
-            self.wake_any_waiters(pid);
-            self.wake_join_waiters(pid);
-        }
-    }
-
     fn remove_wait_any_registration(&mut self, parent_pid: Pid, child_pids: &[Pid]) {
         for &child_pid in child_pids {
             remove_waiter(&mut self.any_waiters, child_pid, parent_pid);
         }
     }
 
-    fn wake_any_waiters(&mut self, finished_pid: Pid) {
-        let waiter_pids = match self.any_waiters.remove(&finished_pid) {
-            Some(waiters) => waiters,
-            None => return,
+    // --- Waking ---------------------------------------------------------------------
+
+    fn wake_any_waiters(&mut self, finished_pid: Pid, terminations: &mut Terminations) {
+        let Some(waiter_pids) = self.any_waiters.remove(&finished_pid) else {
+            return;
         };
 
         for waiter_pid in waiter_pids {
-            let child_pids = match self.processes.get(&waiter_pid) {
-                Some(process) => match &process.status {
-                    ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => child_pids.clone(),
-                    _ => continue,
-                },
-                None => continue,
+            let child_pids = match self.processes.get(&waiter_pid).map(|p| &p.status) {
+                Some(ProcessStatus::Blocked(BlockReason::WaitAny(child_pids))) => {
+                    child_pids.clone()
+                }
+                _ => continue,
             };
 
-            let winner = child_pids.iter().copied().find(|child_pid| {
-                self.tombstones
-                    .get(child_pid)
-                    .is_some_and(|record| record.parent() == waiter_pid)
-            });
-
-            let Some(winner) = winner else {
-                // A wakeup is only a notification that some child may be ready.
-                // If the child state was concurrently consumed/removed, leave the
-                // parent blocked rather than delivering the notifying pid blindly.
+            // The finished pid is only a notification; the winner is the
+            // leftmost terminated pid in the original list.
+            let Some(winner) = child_pids
+                .iter()
+                .copied()
+                .find(|child_pid| !self.is_live(*child_pid))
+            else {
                 continue;
             };
 
             self.remove_wait_any_registration(waiter_pid, &child_pids);
-
-            if let Some(process) = self.processes.get_mut(&waiter_pid) {
-                match crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, winner) {
-                    Ok(()) => {
-                        process.status = ProcessStatus::Runnable;
-                        self.scheduler.enqueue(waiter_pid);
-                    }
-                    Err(failure) => {
-                        process.status = ProcessStatus::Failed(failure);
-                        self.scheduler.remove(waiter_pid);
-                    }
+            let Some(process) = self.processes.get_mut(&waiter_pid) else {
+                continue;
+            };
+            match crate::runtime_ops::deliver_pid_to_parent(&mut process.vm, winner) {
+                Ok(()) => {
+                    process.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(waiter_pid);
                 }
+                Err(failure) => terminations.push((waiter_pid, ChildOutcome::Err(failure))),
             }
         }
     }
 
-    /// When a child finishes, wake blocked parents and give them the result.
-    fn wake_and_deliver_results(&mut self, finished_pid: Pid) {
-        self.wake_any_waiters(finished_pid);
-        self.wake_join_waiters(finished_pid);
-    }
-
-    fn wake_join_waiters(&mut self, finished_pid: Pid) {
-        let waiter_pids = match self.waiters.remove(&finished_pid) {
-            Some(w) => w,
-            None => return,
+    fn wake_join_waiters(&mut self, finished_pid: Pid, terminations: &mut Terminations) {
+        let Some(waiter_pids) = self.waiters.remove(&finished_pid) else {
+            return;
         };
 
-        // Read delivery payload from the tombstone
-        let delivery = match self.tombstones.get(&finished_pid) {
-            Some(ChildRecord::Ready { outcome, .. }) => match outcome {
-                ChildOutcome::Ok(sv) => Ok(sv.clone()),
-                ChildOutcome::Err(failure) => Err(failure.clone()),
-            },
-            _ => return,
-        };
-
-        for waiter in waiter_pids {
-            let await_kind = match self.processes.get(&waiter) {
-                Some(process) => match &process.status {
-                    ProcessStatus::Blocked(BlockReason::Await { child, kind })
-                        if *child == finished_pid =>
-                    {
-                        *kind
-                    }
-                    _ => continue,
-                },
-                None => continue,
+        for waiter_pid in waiter_pids {
+            let await_kind = match self.processes.get(&waiter_pid).map(|p| &p.status) {
+                Some(ProcessStatus::Blocked(BlockReason::Await { child, kind }))
+                    if *child == finished_pid =>
+                {
+                    *kind
+                }
+                _ => continue,
             };
 
-            if let Some(process) = self.processes.get_mut(&waiter) {
-                match (await_kind, &delivery) {
-                    (AwaitKind::Raw, Ok(sendable)) => {
-                        match crate::runtime_ops::deliver_result_to_parent(
-                            &mut process.vm,
-                            sendable.clone(),
-                        ) {
-                            Ok(()) => {
-                                process.status = ProcessStatus::Runnable;
-                                self.scheduler.enqueue(waiter);
-                            }
-                            Err(failure) => {
-                                process.status = ProcessStatus::Failed(failure);
-                            }
-                        }
-                    }
-                    (AwaitKind::Raw, Err(msg)) => {
-                        process.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
-                            Box::new(msg.clone()),
-                        ));
-                    }
-                    (AwaitKind::Result, Ok(sendable)) => {
-                        match crate::runtime_ops::deliver_join_result_to_parent(
-                            &mut process.vm,
-                            Ok(sendable.clone()),
-                        ) {
-                            Ok(()) => {
-                                process.status = ProcessStatus::Runnable;
-                                self.scheduler.enqueue(waiter);
-                            }
-                            Err(failure) => {
-                                process.status = ProcessStatus::Failed(failure);
-                            }
-                        }
-                    }
-                    (AwaitKind::Result, Err(msg)) => {
-                        match crate::runtime_ops::deliver_join_result_to_parent(
-                            &mut process.vm,
-                            Err(FiberJoinError::from_process_failure(msg.clone())),
-                        ) {
-                            Ok(()) => {
-                                process.status = ProcessStatus::Runnable;
-                                self.scheduler.enqueue(waiter);
-                            }
-                            Err(failure) => {
-                                process.status = ProcessStatus::Failed(failure);
-                            }
-                        }
-                    }
+            // Only the parent may await, so delivery consumes the tombstone.
+            let record = self.tombstones.remove(&finished_pid);
+            let Some(process) = self.processes.get_mut(&waiter_pid) else {
+                continue;
+            };
+            process.children.remove(&finished_pid);
+            let delivered = match record {
+                Some(record) => deliver_await_outcome(&mut process.vm, await_kind, record.outcome),
+                None => deliver_already_joined(&mut process.vm, await_kind),
+            };
+            match delivered {
+                Ok(()) => {
+                    process.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(waiter_pid);
                 }
+                Err(failure) => terminations.push((waiter_pid, ChildOutcome::Err(failure))),
             }
-        }
-
-        // Mark tombstone as consumed after all deliveries
-        if let Some(ChildRecord::Ready { parent, .. }) = self.tombstones.get(&finished_pid) {
-            let parent = *parent;
-            self.tombstones
-                .insert(finished_pid, ChildRecord::Consumed { parent });
         }
     }
 
@@ -774,6 +586,31 @@ impl Runtime {
     /// Get the number of processes.
     pub fn process_count(&self) -> usize {
         self.processes.len()
+    }
+}
+
+/// Serialize the final value of a finished child for its parent.
+fn child_result(process: &mut Process) -> ChildOutcome {
+    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+    match process
+        .vm
+        .heap
+        .charge_host_work(crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK)
+        .map_err(ProcessFailure::runtime)
+        .and_then(|()| {
+            serialize(val, &process.vm.heap)
+                .map_err(|e| ProcessFailure::runtime(format!("child result not sendable: {e}")))
+        })
+        .and_then(|sv| {
+            process
+                .vm
+                .heap
+                .charge_host_work(crate::sendable::host_work_for_sendable(&sv))
+                .map_err(ProcessFailure::runtime)?;
+            Ok(sv)
+        }) {
+        Ok(sv) => ChildOutcome::Ok(sv),
+        Err(failure) => ChildOutcome::Err(failure),
     }
 }
 

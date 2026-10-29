@@ -2,6 +2,7 @@
 
 use crate::sendable::SendableValue;
 use crate::vm::VM;
+use std::collections::HashSet;
 use std::fmt;
 
 /// Unique process identifier.
@@ -104,21 +105,15 @@ pub enum ChildOutcome {
 }
 
 /// Compact tombstone replacing a full Process after termination.
-/// Stores just enough state for subsequent await/cancel operations.
+///
+/// A tombstone exists only while its result can still be consumed: it is
+/// removed when the parent awaits the child, or when the parent terminates.
+/// A pid that was allocated but has neither a live process nor a tombstone
+/// has been reaped; awaiting it reports `AlreadyJoined`.
 #[derive(Debug, Clone)]
-pub enum ChildRecord {
-    /// Result available for joining.
-    Ready { parent: Pid, outcome: ChildOutcome },
-    /// Already joined; further awaits return AlreadyJoined.
-    Consumed { parent: Pid },
-}
-
-impl ChildRecord {
-    pub fn parent(&self) -> Pid {
-        match self {
-            Self::Ready { parent, .. } | Self::Consumed { parent } => *parent,
-        }
-    }
+pub struct ChildRecord {
+    pub parent: Pid,
+    pub outcome: ChildOutcome,
 }
 
 impl ProcessFailure {
@@ -168,6 +163,11 @@ pub struct Process {
     pub(crate) parent: Option<Pid>,
     /// The scope this process belongs to.
     pub(crate) scope_id: Option<ScopeId>,
+    /// Children whose result has not been consumed yet: live children and
+    /// terminated children with a tombstone. Only the runtime that currently
+    /// owns this process mutates it, so it needs no synchronisation. It is
+    /// the authority for "is `pid` a child of this process".
+    pub(crate) children: HashSet<Pid>,
 }
 
 impl Process {
@@ -178,6 +178,7 @@ impl Process {
             status: ProcessStatus::Runnable,
             parent,
             scope_id: None,
+            children: HashSet::new(),
         }
     }
 
@@ -188,6 +189,7 @@ impl Process {
             status: ProcessStatus::Runnable,
             parent,
             scope_id: Some(scope_id),
+            children: HashSet::new(),
         }
     }
 
