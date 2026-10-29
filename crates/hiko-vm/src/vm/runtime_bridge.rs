@@ -226,6 +226,15 @@ impl VM {
         if let Some(max_io_bytes) = self.heap.max_io_bytes() {
             child.set_max_io_bytes(max_io_bytes);
         }
+        // Like fuel, host work is a budget for the whole spawn tree, so the
+        // child starts from what the parent has left.
+        if let Some(max_host_work) = self.heap.max_host_work() {
+            child.set_max_host_work(max_host_work.saturating_sub(self.heap.host_work_used()));
+        }
+        if let Some(max_host_resources) = self.heap.max_host_resources() {
+            child.set_max_host_resources(max_host_resources);
+        }
+        child.set_host_resource_limits(self.heap.host_resource_limits().clone());
         if self.output.is_some() {
             child.enable_output_capture();
         }

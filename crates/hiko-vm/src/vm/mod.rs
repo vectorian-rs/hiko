@@ -1418,6 +1418,24 @@ mod tests {
     }
 
     #[test]
+    fn test_create_child_inherits_host_work_and_resource_limits() {
+        let mut vm = compile_vm("val x = 1");
+        vm.set_max_host_work(100);
+        vm.heap.charge_host_work(30).unwrap();
+        vm.set_max_host_resources(4);
+        vm.set_host_resource_limits(HashMap::from([("aws_config".to_string(), 1)]));
+
+        let child = vm.create_child();
+
+        assert_eq!(child.heap.max_host_work(), Some(70));
+        assert_eq!(child.heap.max_host_resources(), Some(4));
+        assert_eq!(
+            child.heap.host_resource_limits().get("aws_config"),
+            Some(&1)
+        );
+    }
+
+    #[test]
     fn test_output_sink_streams_print_and_println() {
         let sink = Arc::new(CaptureOutputSink::default());
         let mut vm = compile_vm("val _ = print \"a\" val _ = println \"b\"");
