@@ -26,6 +26,19 @@ pub enum HttpResponseFormat {
     Bytes,
 }
 
+impl HttpResponseFormat {
+    /// Name of the full-request builtin that uses this format, for error
+    /// messages.
+    fn builtin_name(&self) -> &'static str {
+        match self {
+            Self::Text => "http",
+            Self::Json => "http_json",
+            Self::Msgpack => "http_msgpack",
+            Self::Bytes => "http_bytes",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum IoRequest {
     /// Delay for a duration (async sleep).
@@ -298,6 +311,7 @@ fn execute_io_request(request: IoRequest) -> IoResult {
             max_response,
             timeouts,
         } => match aio_http(
+            format.builtin_name(),
             &method,
             &url,
             &headers,
@@ -618,6 +632,7 @@ fn aio_http_get(
     timeouts: HttpTimeouts,
 ) -> Result<(SendableValue, u64), String> {
     aio_http(
+        "http_get",
         "GET",
         url,
         &[],
@@ -628,9 +643,12 @@ fn aio_http_get(
     )
 }
 
-/// Async full HTTP — runs on I/O pool thread.
+/// Async full HTTP — runs on I/O pool thread. `builtin` prefixes errors, as
+/// on the sync path.
 #[cfg(feature = "builtin-http")]
+#[allow(clippy::too_many_arguments)]
 fn aio_http(
+    builtin: &str,
     method: &str,
     url: &str,
     req_headers: &[(String, String)],
@@ -643,7 +661,8 @@ fn aio_http(
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect::<Vec<_>>();
-    let response = hiko_common::dispatch_ureq(method, url, &headers, body, timeouts)?;
+    let response = hiko_common::dispatch_ureq(method, url, &headers, body, timeouts)
+        .map_err(|e| format!("{builtin}: {e}"))?;
 
     let status = SendableValue::Int(response.status().as_u16() as i64);
     let headers: Vec<SendableValue> = response
@@ -660,7 +679,7 @@ fn aio_http(
     let (resp_body, io_bytes) = match format {
         HttpResponseFormat::Text => {
             let (s, io_bytes) =
-                read_to_string_limited(response.into_body().into_reader(), max_response, "http")?;
+                read_to_string_limited(response.into_body().into_reader(), max_response, builtin)?;
             (SendableValue::String(s.into()), io_bytes)
         }
         HttpResponseFormat::Json => {
@@ -762,7 +781,9 @@ fn aio_http_get(
 }
 
 #[cfg(not(feature = "builtin-http"))]
+#[allow(clippy::too_many_arguments)]
 fn aio_http(
+    builtin: &str,
     method: &str,
     url: &str,
     req_headers: &[(String, String)],
@@ -772,6 +793,7 @@ fn aio_http(
     timeouts: HttpTimeouts,
 ) -> Result<(SendableValue, u64), String> {
     let _ = (
+        builtin,
         method,
         url,
         req_headers,

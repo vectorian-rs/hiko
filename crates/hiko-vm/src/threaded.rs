@@ -1890,7 +1890,8 @@ mod tests {
         let failure = runtime
             .failure(pid)
             .expect("root fails when http_get times out");
-        assert!(format!("{failure:?}").contains("timeout"), "{failure:?}");
+        let failure = format!("{failure:?}");
+        assert!(failure.contains("http_get: http: timeout"), "{failure}");
         assert!(
             elapsed >= std::time::Duration::from_millis(900)
                 && elapsed <= std::time::Duration::from_secs(2),
