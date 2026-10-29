@@ -9,6 +9,8 @@ pub struct ParseError {
     pub span: Span,
 }
 
+const MAX_NESTING_DEPTH: u32 = 256;
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -166,17 +168,19 @@ impl Parser {
         }
     }
 
-    fn guard_depth(&mut self) -> Result<(), ParseError> {
-        self.depth += 1;
-        if self.depth > 256 {
-            Err(self.err("expression nesting limit exceeded"))
-        } else {
-            Ok(())
+    /// Run a recursive parse step under the nesting limit, so deeply nested
+    /// input fails with a parse error instead of overflowing the stack.
+    fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(self.err("nesting limit exceeded"));
         }
-    }
-
-    fn unguard_depth(&mut self) {
+        self.depth += 1;
+        let result = parse(self);
         self.depth -= 1;
+        result
     }
 
     fn can_start_app_arg(&self) -> bool {
@@ -283,7 +287,7 @@ impl Parser {
             TokenKind::Fun => self.parse_fun_decl(),
             TokenKind::Datatype => self.parse_datatype_decl(),
             TokenKind::Type => self.parse_type_alias_decl(),
-            TokenKind::Local => self.parse_local_decl(),
+            TokenKind::Local => self.nested(Self::parse_local_decl),
             TokenKind::Import => self.parse_import_decl(),
             TokenKind::Use => self.parse_use_decl(),
             TokenKind::Signature | TokenKind::Structure => Err(self.err(
@@ -650,10 +654,7 @@ impl Parser {
     // ── Expressions (lowest to highest precedence) ───────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.guard_depth()?;
-        let result = self.parse_expr_inner();
-        self.unguard_depth();
-        result
+        self.nested(Self::parse_expr_inner)
     }
 
     fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
@@ -804,27 +805,19 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        if matches!(self.peek(), TokenKind::Tilde) {
-            let start = self.span();
-            self.advance();
-            let operand = self.parse_unary()?;
-            let span = start.merge(operand.span);
-            return Ok(Expr {
-                kind: ExprKind::UnaryNeg(Box::new(operand)),
-                span,
-            });
-        }
-        if matches!(self.peek(), TokenKind::Not) {
-            let start = self.span();
-            self.advance();
-            let operand = self.parse_unary()?;
-            let span = start.merge(operand.span);
-            return Ok(Expr {
-                kind: ExprKind::Not(Box::new(operand)),
-                span,
-            });
-        }
-        self.parse_app()
+        let wrap: fn(Box<Expr>) -> ExprKind = match self.peek() {
+            TokenKind::Tilde => ExprKind::UnaryNeg,
+            TokenKind::Not => ExprKind::Not,
+            _ => return self.parse_app(),
+        };
+        let start = self.span();
+        self.advance();
+        let operand = self.nested(Self::parse_unary)?;
+        let span = start.merge(operand.span);
+        Ok(Expr {
+            kind: wrap(Box::new(operand)),
+            span,
+        })
     }
 
     fn parse_app(&mut self) -> Result<Expr, ParseError> {
@@ -1141,10 +1134,7 @@ impl Parser {
     // ── Patterns ─────────────────────────────────────────────────────
 
     fn parse_pat(&mut self) -> Result<Pat, ParseError> {
-        self.guard_depth()?;
-        let result = self.parse_pat_inner_dispatch();
-        self.unguard_depth();
-        result
+        self.nested(Self::parse_pat_inner_dispatch)
     }
 
     fn parse_pat_inner_dispatch(&mut self) -> Result<Pat, ParseError> {
@@ -1408,10 +1398,7 @@ impl Parser {
     // ── Type expressions ─────────────────────────────────────────────
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
-        self.guard_depth()?;
-        let result = self.parse_arrow_type();
-        self.unguard_depth();
-        result
+        self.nested(Self::parse_arrow_type)
     }
 
     fn parse_arrow_type(&mut self) -> Result<TypeExpr, ParseError> {
@@ -2196,5 +2183,34 @@ mod tests {
         ] {
             assert_eq!(parse_err(src), msg, "{src}");
         }
+    }
+
+    #[test]
+    fn test_deep_nesting_is_a_parse_error() {
+        // Reaching the nesting limit in an unoptimized build needs more than
+        // the 2 MiB default test-thread stack; use the 8 MiB a main thread
+        // gets.
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(|| {
+                let n = 100_000;
+                for src in [
+                    format!("val x = {}1", "~ ".repeat(n)),
+                    format!("val x = {}true", "not ".repeat(n)),
+                    format!("{}{}", "local ".repeat(n), "in end ".repeat(n)),
+                    format!("val x = {}1{}", "(".repeat(n), ")".repeat(n)),
+                ] {
+                    assert_eq!(parse_err(&src), "nesting limit exceeded");
+                }
+                parse(&format!("val x = {}1", "~ ".repeat(100)));
+                parse(&format!(
+                    "{}{}",
+                    "local ".repeat(100),
+                    "in end ".repeat(100)
+                ));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
