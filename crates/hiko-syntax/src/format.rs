@@ -1,7 +1,7 @@
 use crate::ast::{Decl, DeclKind, Program};
 use crate::lexer::{LexError, Lexer};
 use crate::parser::{ParseError, Parser};
-use crate::pretty::{Comment, pretty_program_with_comments};
+use crate::pretty::{Comment, line_for_offset, pretty_program_with_comments};
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -47,14 +47,6 @@ fn line_offsets(source: &str) -> Vec<usize> {
     offsets
 }
 
-fn line_for_offsets(line_offsets: &[usize], byte: usize) -> usize {
-    match line_offsets.binary_search(&byte) {
-        Ok(line) => line,
-        Err(0) => 0,
-        Err(line) => line - 1,
-    }
-}
-
 fn collect_comments(source: &str, line_offsets: &[usize]) -> Vec<Comment> {
     let bytes = source.as_bytes();
     let mut comments = Vec::new();
@@ -84,8 +76,8 @@ fn collect_comments(source: &str, line_offsets: &[usize]) -> Vec<Comment> {
                     text: source[start..end].to_string(),
                     start: start as u32,
                     end: end as u32,
-                    start_line: line_for_offsets(line_offsets, start),
-                    end_line: line_for_offsets(line_offsets, end),
+                    start_line: line_for_offset(line_offsets, start),
+                    end_line: line_for_offset(line_offsets, end),
                 });
             }
             _ => pos += 1,
@@ -143,8 +135,7 @@ fn validate_comment_convention(
         &mut allowed,
     );
 
-    if let Some((idx, comment)) = comments.iter().enumerate().find(|(idx, _)| !allowed[*idx]) {
-        let _ = idx;
+    if let Some((comment, _)) = comments.iter().zip(&allowed).find(|(_, ok)| !**ok) {
         return Err(FormatError::UnsupportedComment {
             message: "formatter only supports declaration-leading comments and short trailing declaration comments; move this comment before the declaration it describes".into(),
             span: Span::new(file_id, comment.start, comment.end),
@@ -236,7 +227,7 @@ fn mark_trailing_decl_comments(
     line_offsets: &[usize],
     allowed: &mut [bool],
 ) {
-    let decl_end_line = line_for_offsets(line_offsets, decl_end as usize);
+    let decl_end_line = line_for_offset(line_offsets, decl_end as usize);
     for (idx, comment) in comments.iter().enumerate() {
         if comment.start >= decl_end
             && comment.start < next_start

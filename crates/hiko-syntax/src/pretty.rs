@@ -159,8 +159,12 @@ fn trailing_comments<'a>(
 }
 
 fn line_for(ctx: &CommentCtx<'_>, byte: u32) -> usize {
-    let byte = byte as usize;
-    match ctx.line_offsets.binary_search(&byte) {
+    line_for_offset(ctx.line_offsets, byte as usize)
+}
+
+/// Zero-based line containing `byte`, given the start offset of every line.
+pub(crate) fn line_for_offset(line_offsets: &[usize], byte: usize) -> usize {
+    match line_offsets.binary_search(&byte) {
         Ok(line) => line,
         Err(0) => 0,
         Err(line) => line - 1,
