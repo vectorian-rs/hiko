@@ -21,6 +21,22 @@ use serde::Deserialize;
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use crate::op::Op;
 
+/// Overrides for resolving named imports listed in `hiko.lock.toml`.
+///
+/// The defaults match the CLI: modules come from `~/.hiko/lib-cache` or are
+/// downloaded from the lockfile `base_url`. Whatever the source, a module is
+/// only accepted if its BLAKE3 hash matches the lockfile entry.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleLoaderOptions {
+    /// Module cache directory. `None` uses `$HOME/.hiko/lib-cache`.
+    pub cache_dir: Option<PathBuf>,
+    /// Local package directory checked before the cache and the network.
+    /// A module `Pkg.Mod` locked at version `V` is read from
+    /// `<root>/Pkg-vV/modules/Mod.hml` if that file exists (the layout of the
+    /// repository's `libraries/` directory). A hash mismatch is an error.
+    pub local_package_root: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 pub enum CompileError {
     Type(TypeError),
@@ -632,6 +648,16 @@ pub struct Compiler {
         allow(dead_code)
     )]
     module_cache_dir: Option<PathBuf>,
+    /// Caller-supplied overrides for named-import resolution.
+    #[cfg_attr(
+        not(all(
+            feature = "loader-named-imports",
+            feature = "loader-http",
+            feature = "loader-integrity-blake3"
+        )),
+        allow(dead_code)
+    )]
+    loader_options: ModuleLoaderOptions,
     /// Global name -> proto_idx of the capture-free function it is currently
     /// bound to, for `CallDirect`. Every global rebinding clears the entry.
     global_protos: HashMap<String, u16>,
@@ -648,19 +674,36 @@ impl Compiler {
         program: Program,
         file_path: &Path,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        Self::compile_file_with_options(program, file_path, ModuleLoaderOptions::default())
+    }
+
+    /// Like [`Compiler::compile_file`], with overrides for how named imports
+    /// listed in `hiko.lock.toml` are resolved. Every module is still
+    /// verified against its lockfile BLAKE3 hash.
+    pub fn compile_file_with_options(
+        program: Program,
+        file_path: &Path,
+        loader_options: ModuleLoaderOptions,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
         let mut loading = HashSet::new();
         loading.insert(ImportKey::File(canonical.clone()));
-        Self::compile_with_ctx(program, base_dir, Some(canonical), loading)
+        Self::compile_with_ctx(program, base_dir, Some(canonical), loading, loader_options)
     }
 
     /// Compile a program without a file context (e.g., from a string).
     pub fn compile(
         program: Program,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        Self::compile_with_ctx(program, PathBuf::from("."), None, HashSet::new())
+        Self::compile_with_ctx(
+            program,
+            PathBuf::from("."),
+            None,
+            HashSet::new(),
+            ModuleLoaderOptions::default(),
+        )
     }
 
     fn compile_with_ctx(
@@ -668,6 +711,7 @@ impl Compiler {
         base_dir: PathBuf,
         entry_file: Option<PathBuf>,
         loading_imports: HashSet<ImportKey>,
+        loader_options: ModuleLoaderOptions,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         // Desugar and constant-fold
         let program = hiko_syntax::desugar::desugar_program(program);
@@ -691,6 +735,7 @@ impl Compiler {
             imported_programs: HashMap::new(),
             import_lockfile: None,
             module_cache_dir: None,
+            loader_options,
             global_protos: HashMap::new(),
             infer_ctx: InferCtx::new(),
             interner,
@@ -1203,6 +1248,7 @@ impl Compiler {
         package_name: &str,
         leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
+        let local_package_root = self.loader_options.local_package_root.clone();
         let (lockfile, cache_dir) = self.ensure_import_loader(module_name)?;
         let package = lockfile.packages.get(package_name).ok_or_else(|| {
             CompileError::codegen(format!(
@@ -1214,6 +1260,37 @@ impl Compiler {
                 "module '{leaf_module}' in package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
             ))
         })?;
+        let expected_hash = normalize_blake3(expected_hash);
+
+        if let Some(root) = &local_package_root {
+            let local_path = root
+                .join(format!("{package_name}-v{}", package.version))
+                .join("modules")
+                .join(format!("{leaf_module}.hml"));
+            if local_path.is_file() {
+                let source = std::fs::read_to_string(&local_path).map_err(|e| {
+                    CompileError::codegen(format!(
+                        "cannot read local module '{}': {e}",
+                        local_path.display()
+                    ))
+                })?;
+                verify_blake3(
+                    source.as_bytes(),
+                    &expected_hash,
+                    &format!(
+                        "local named import '{module_name}' ({})",
+                        local_path.display()
+                    ),
+                )?;
+                let canonical = std::fs::canonicalize(&local_path).unwrap_or(local_path);
+                return Ok(ResolvedImport::VerifiedFile {
+                    canonical,
+                    display_name: module_name.to_string(),
+                    source,
+                });
+            }
+        }
+
         std::fs::create_dir_all(cache_dir).map_err(|e| {
             CompileError::codegen(format!(
                 "cannot create module cache '{}': {e}",
@@ -1225,7 +1302,6 @@ impl Compiler {
             package.base_url.trim_end_matches('/')
         );
         let url_hash = blake3_hex(module_url.as_bytes());
-        let expected_hash = normalize_blake3(expected_hash);
         let cache_path = cache_dir.join(format!("{url_hash}-{expected_hash}.hml"));
 
         if cache_path.exists() {
@@ -1319,7 +1395,10 @@ impl Compiler {
             validate_lockfile(&lockfile, lockfile_path)?;
             validate_lockfile_against_manifest(&lockfile, lockfile_path, &loader_config)?;
             self.import_lockfile = Some(lockfile);
-            self.module_cache_dir = Some(default_module_cache_dir()?);
+            self.module_cache_dir = match &self.loader_options.cache_dir {
+                Some(dir) => Some(dir.clone()),
+                None => Some(default_module_cache_dir()?),
+            };
         }
         let lockfile = self.import_lockfile.as_ref().unwrap();
         let cache_dir = self.module_cache_dir.as_ref().unwrap();
@@ -2400,10 +2479,17 @@ mod tests {
         );
     }
 
-    fn cached_module_path(url: &str, hash: &str) -> PathBuf {
-        default_module_cache_dir()
-            .expect("default cache dir")
-            .join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
+    /// Per-test module cache next to the entry file, so tests never touch
+    /// the user's `~/.hiko/lib-cache`.
+    fn test_cache_dir(entry_path: &Path) -> PathBuf {
+        entry_path
+            .parent()
+            .expect("entry file has a parent directory")
+            .join(".test-lib-cache")
+    }
+
+    fn cached_module_path(entry_path: &Path, url: &str, hash: &str) -> PathBuf {
+        test_cache_dir(entry_path).join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
     }
 
     fn spawn_response_server(
@@ -2454,7 +2540,11 @@ mod tests {
         path: &Path,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let source = std::fs::read_to_string(path).expect("read source");
-        Compiler::compile_file(parse_program(&source), path)
+        let options = ModuleLoaderOptions {
+            cache_dir: Some(test_cache_dir(path)),
+            local_package_root: None,
+        };
+        Compiler::compile_file_with_options(parse_program(&source), path, options)
     }
 
     #[test]
@@ -2578,7 +2668,11 @@ val result = Box.get (Box.make 41)
         let module_hash = blake3_hex(module_source.as_bytes());
         let (list_url, server) = spawn_single_response_server("/modules/List.hml", module_source);
         let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
-        let cache_path = cached_module_path(&format!("{base_url}/modules/List.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/List.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2601,7 +2695,7 @@ val result = Box.get (Box.make 41)
         assert!(second.is_ok(), "second compile should reuse cached module");
         assert!(
             cache_path.is_file(),
-            "expected fetched module in default cache"
+            "expected fetched module in the test cache"
         );
 
         let _ = std::fs::remove_file(&cache_path);
@@ -2620,8 +2714,11 @@ val result = Box.get (Box.make 41)
         let base_url = result_url
             .trim_end_matches("/modules/Result.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Result.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Result.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2660,8 +2757,11 @@ val result = Box.get (Box.make 41)
         let base_url = result_url
             .trim_end_matches("/modules/Result.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Result.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Result.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2820,8 +2920,11 @@ Answer = "blake3:deadbeef"
         let base_url = answer_url
             .trim_end_matches("/modules/Answer.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2861,8 +2964,11 @@ Answer = "blake3:deadbeef"
         let base_url = answer_url
             .trim_end_matches("/modules/Answer.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2902,7 +3008,11 @@ Answer = "blake3:deadbeef"
         let base_url = answer_url
             .trim_end_matches("/modules/Answer.hml")
             .to_string();
-        let cache_path = cached_module_path(&format!("{base_url}/modules/Answer.hml"), "deadbeef");
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            "deadbeef",
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2925,6 +3035,77 @@ Answer = "blake3:deadbeef"
             other => panic!("expected BLAKE3 verification failure, got {other:?}"),
         }
         let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    fn write_local_package_project(module_source: &str, locked_hash: &str) -> (PathBuf, PathBuf) {
+        let project_dir = unique_temp_dir("named-import-local-root");
+        write_project_manifest(&project_dir);
+        write_file(
+            &project_dir.join("libraries/Test-v0.1.0/modules/Answer.hml"),
+            module_source,
+        );
+        // Nothing listens on the discard port; a fetch attempt would fail.
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:9/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{locked_hash}\"\n"
+            ),
+        );
+        let entry_path = project_dir.join("main.hml");
+        write_file(
+            &entry_path,
+            "import Test.Answer\nval result = Answer.value\n",
+        );
+        (project_dir, entry_path)
+    }
+
+    fn compile_with_local_root(
+        project_dir: &Path,
+        entry_path: &Path,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        let source = std::fs::read_to_string(entry_path).expect("read source");
+        let options = ModuleLoaderOptions {
+            cache_dir: Some(project_dir.join(".test-lib-cache")),
+            local_package_root: Some(project_dir.join("libraries")),
+        };
+        Compiler::compile_file_with_options(parse_program(&source), entry_path, options)
+    }
+
+    #[test]
+    fn named_import_reads_verified_module_from_local_package_root() {
+        let module_source = "structure Answer = struct\n  val value = 42\nend\n";
+        let (project_dir, entry_path) =
+            write_local_package_project(module_source, &blake3_hex(module_source.as_bytes()));
+
+        let result = compile_with_local_root(&project_dir, &entry_path);
+        assert!(
+            result.is_ok(),
+            "expected local module to load, got {result:?}"
+        );
+        assert!(
+            !project_dir.join(".test-lib-cache").exists(),
+            "local package modules must not be copied into the cache"
+        );
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_local_package_module_with_bad_blake3() {
+        let module_source = "structure Answer = struct\n  val value = 42\nend\n";
+        let (project_dir, entry_path) = write_local_package_project(module_source, "deadbeef");
+
+        match compile_with_local_root(&project_dir, &entry_path) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(
+                    message.contains("failed BLAKE3 verification"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected BLAKE3 verification failure, got {other:?}"),
+        }
+
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
@@ -2957,7 +3138,11 @@ Answer = "blake3:deadbeef"
         let (cache_url, server) =
             spawn_response_server("/modules/Cache.hml", module_source.clone(), 2);
         let base_url = cache_url.trim_end_matches("/modules/Cache.hml").to_string();
-        let cache_path = cached_module_path(&format!("{base_url}/modules/Cache.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Cache.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
