@@ -497,6 +497,19 @@ impl ResolvedImport {
         }
     }
 
+    /// Whether the source was fetched from a remote package.
+    fn is_remote(&self) -> bool {
+        match self {
+            #[cfg(all(
+                feature = "loader-named-imports",
+                feature = "loader-http",
+                feature = "loader-integrity-blake3"
+            ))]
+            Self::VerifiedFile { .. } => true,
+            _ => false,
+        }
+    }
+
     fn display_name(&self) -> &str {
         match self {
             Self::File { display_name, .. } => display_name,
@@ -565,6 +578,10 @@ pub struct Compiler {
     entry_file: Option<PathBuf>,
     /// Imports currently being loaded (for cycle detection).
     loading_imports: HashSet<ImportKey>,
+    /// True while inferring a remote module or anything it imports. Local
+    /// `use` is rejected there: a hash-pinned module must not pull in
+    /// unverified files relative to the shared module cache.
+    in_remote_import: bool,
     /// Imports whose type inference is complete.
     inferred_imports: HashSet<ImportKey>,
     /// Imports whose codegen is complete.
@@ -652,6 +669,7 @@ impl Compiler {
             base_dir,
             entry_file,
             loading_imports,
+            in_remote_import: false,
             inferred_imports: HashSet::new(),
             compiled_imports: HashSet::new(),
             imported_programs: HashMap::new(),
@@ -1075,6 +1093,11 @@ impl Compiler {
     // ── Local and named import handling ─────────────────────────────
 
     fn resolve_local_use(&self, path: &str) -> Result<ResolvedImport, CompileError> {
+        if self.in_remote_import {
+            return Err(CompileError::codegen(format!(
+                "local use '{path}' is not allowed in a remote module; use a named import instead"
+            )));
+        }
         let resolved = self.base_dir.join(path);
         let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
             CompileError::codegen(format!(
@@ -1308,6 +1331,7 @@ impl Compiler {
     fn infer_import_source(&mut self, import: ResolvedImport) -> Result<(), CompileError> {
         let key = import.key();
         let display_name = import.display_name().to_string();
+        let is_remote = import.is_remote();
         if self.loading_imports.contains(&key) {
             return Err(CompileError::codegen(format!(
                 "circular import detected while loading '{display_name}'"
@@ -1339,9 +1363,12 @@ impl Compiler {
         self.loading_imports.insert(key.clone());
         let old_base = self.base_dir.clone();
         self.base_dir = imported_base_dir.clone();
+        let old_in_remote = self.in_remote_import;
+        self.in_remote_import |= is_remote;
 
         let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
 
+        self.in_remote_import = old_in_remote;
         self.base_dir = old_base;
         self.loading_imports.remove(&key);
 
@@ -2740,6 +2767,48 @@ Answer = "blake3:deadbeef"
         }
         assert!(!cache_path.exists());
 
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_local_use_inside_remote_module() {
+        let project_dir = unique_temp_dir("named-import-remote-use");
+        write_project_manifest(&project_dir);
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "use \"../secret.hml\"\nval remote_answer = 42\n".to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (answer_url, server) =
+            spawn_single_response_server("/modules/Answer.hml", module_source);
+        let base_url = answer_url
+            .trim_end_matches("/modules/Answer.hml")
+            .to_string();
+        let cache_path =
+            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Test.Answer\nval result = remote_answer\n",
+        );
+        let _ = std::fs::remove_file(&cache_path);
+
+        let result = compile_path(&entry_path);
+        server.join().expect("join server");
+        match result {
+            Err(CompileError::Codegen(message)) => {
+                assert!(
+                    message.contains("not allowed in a remote module"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected local use in remote module to fail, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&cache_path);
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
