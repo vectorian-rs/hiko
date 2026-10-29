@@ -70,6 +70,11 @@ impl StreamAccumulator {
     }
 }
 
+/// Upper bound on tool calls in one response. Guards the OpenAI stream's
+/// `index` field, which is used to grow a Vec and would otherwise let a
+/// malformed or hostile endpoint trigger a huge allocation.
+const MAX_TOOL_CALLS_PER_TURN: usize = 128;
+
 // ── Client ──────────────────────────────────────────────────────────
 
 pub struct LlmClient {
@@ -149,15 +154,19 @@ impl LlmClient {
             for choice in &chunk.choices {
                 if let Some(ref content) = choice.delta.content {
                     on_text(content);
+                    acc.text.push_str(content);
                 }
                 if let Some(ref reason) = choice.finish_reason {
                     acc.finish_reason = Some(reason.clone());
                 }
-                if let Some(ref content) = choice.delta.content {
-                    acc.text.push_str(content);
-                }
                 if let Some(ref calls) = choice.delta.tool_calls {
                     for tc in calls {
+                        if tc.index >= MAX_TOOL_CALLS_PER_TURN {
+                            return Err(format!(
+                                "tool call index {} exceeds limit of {MAX_TOOL_CALLS_PER_TURN}",
+                                tc.index
+                            ));
+                        }
                         while acc.tool_calls.len() <= tc.index {
                             acc.tool_calls.push(ToolCall {
                                 id: String::new(),
