@@ -9,7 +9,6 @@ pub enum FormatError {
     Lex(LexError),
     Parse(ParseError),
     UnsupportedComment { message: String, span: Span },
-    TreeSitter(String),
 }
 
 impl From<LexError> for FormatError {
