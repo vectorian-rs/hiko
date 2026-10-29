@@ -279,7 +279,7 @@ The `examples/` directory includes programs demonstrating:
 | `option.hml` | Algebraic data types |
 | `either.hml` | Sum types for error handling |
 | `result.hml` | Canonical success/error datatype |
-| `error_handling.hml` | Error handling via algebraic effects |
+| `error_handling.hml` | Recoverable errors with `Std.Result` |
 | `spawn_stress.hml` | Isolated-process concurrency stress test |
 | `expr_eval.hml` | Recursive expression evaluator |
 | `math.hml` | float arithmetic, sqrt |

@@ -1,37 +1,26 @@
 (* effects_and_io.hml -- Effects + I/O working together
  *
  * Key design principle:
- *   Effects = user control flow (state, errors, generators)
+ *   Effects = user control flow (state, logging, generators)
+ *   Results = recoverable errors (Std.Result)
  *   Builtins = I/O (files, http, sleep, json, etc.)
  *
- * This example shows how effects and I/O compose naturally.
+ * This example shows how effects, Results and I/O compose.
  *)
 import Std.Json
 import Std.List
+import Std.Result
 
-(* ── Effect: safe error handling around I/O ─────────────── *)
-datatype 'a result =
-    Ok of 'a
-  | Err of string
-
-effect Fail of string
-
-fun try f =
-  handle
-    f ()
-  with
-    return x => Ok x
-  | Fail msg _ => Err msg
-
-(* Read a file, fail with a nice message if empty *)
+(* ── Result: recoverable errors around I/O ──────────────── *)
+(* Read a file, return Err with a nice message if empty *)
 fun read_nonempty path =
   let
     val contents = read_file path
   in
-    if string_length contents = 0 then perform Fail ("file is empty: " ^ path) else contents
+    if string_length contents = 0 then Result.Err ("file is empty: " ^ path) else Result.Ok contents
   end
 
-val _ = println "--- Error effects wrapping I/O ---"
+val _ = println "--- Result errors wrapping I/O ---"
 
 val nonempty_path = "target/hiko_demo_nonempty.txt"
 
@@ -43,19 +32,19 @@ val _ = write_file (nonempty_path, "hello")
 
 val _ = write_file (empty_path, "")
 
-val r1 = try (fn () => read_nonempty nonempty_path)
+val r1 = read_nonempty nonempty_path
 
 val _ =
   case r1 of
-      Ok s => println ("Read: " ^ s)
-    | Err e => println ("Failed: " ^ e)
+      Result.Ok s => println ("Read: " ^ s)
+    | Result.Err e => println ("Failed: " ^ e)
 
-val r2 = try (fn () => read_nonempty empty_path)
+val r2 = read_nonempty empty_path
 
 val _ =
   case r2 of
-      Ok s => println ("Read: " ^ s)
-    | Err e => println ("Failed: " ^ e)
+      Result.Ok s => println ("Read: " ^ s)
+    | Result.Err e => println ("Failed: " ^ e)
 
 val _ = remove_file nonempty_path
 
