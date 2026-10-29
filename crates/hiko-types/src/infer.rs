@@ -1527,6 +1527,32 @@ mod tests {
         }
     }
 
+    /// The VM builds `BuiltinProcess.await_result` and `BuiltinProcess.error`
+    /// values from the tags in `hiko_builtin_meta`; those tags must match the
+    /// declaration order of the datatypes in the `__Builtin.Process` source.
+    #[cfg(feature = "builtin-process")]
+    #[test]
+    fn builtin_process_constructor_tags_match_runtime_abi() {
+        use hiko_builtin_meta::{
+            PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_JOIN_ERROR_CONSTRUCTORS,
+            internal_builtin_module,
+        };
+        let module = internal_builtin_module("Process").expect("Process module");
+        let ctx = infer(module.source);
+        for &(name, tag, arity) in PROCESS_AWAIT_RESULT_CONSTRUCTORS
+            .iter()
+            .chain(PROCESS_JOIN_ERROR_CONSTRUCTORS)
+        {
+            let qualified = format!("BuiltinProcess.{name}");
+            assert_eq!(ctx.constructor_tag(&qualified), Some(tag), "tag of {name}");
+            let scheme = ctx
+                .constructor_scheme(&qualified)
+                .unwrap_or_else(|| panic!("missing constructor {qualified}"));
+            let has_payload = matches!(scheme.ty, Type::Arrow(..));
+            assert_eq!(has_payload, arity == 1, "arity of {name}");
+        }
+    }
+
     fn type_of(ctx: &InferCtx, name: &str) -> String {
         let scheme = ctx
             .lookup_type(name)

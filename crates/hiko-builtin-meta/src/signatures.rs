@@ -234,22 +234,4 @@ mod tests {
             "missing builtin signatures: {missing:?}"
         );
     }
-
-    #[test]
-    fn process_constructor_tags_match_declared_abi() {
-        assert_eq!(
-            super::PROCESS_AWAIT_RESULT_CONSTRUCTORS,
-            &[("Ok", 0, 1), ("Err", 1, 1)]
-        );
-        assert_eq!(
-            super::PROCESS_JOIN_ERROR_CONSTRUCTORS,
-            &[
-                ("RuntimeError", 0, 1),
-                ("Cancelled", 1, 0),
-                ("FuelExhausted", 2, 0),
-                ("AlreadyJoined", 3, 0),
-                ("HeapObjectLimitExceeded", 4, 1),
-            ]
-        );
-    }
 }
