@@ -8,6 +8,14 @@ pub const HANDLER_CLAUSE_RESUMES: u8 = 0b0000_0001;
 /// Byte length of one `InstallHandler` clause entry.
 pub const HANDLER_CLAUSE_BYTES: usize = 5;
 
+/// `MakeRecClosures` capture source: an upvalue of the current function.
+pub const REC_CAPTURE_UPVALUE: u8 = 0;
+/// `MakeRecClosures` capture source: a local slot of the current frame.
+pub const REC_CAPTURE_LOCAL: u8 = 1;
+/// `MakeRecClosures` capture source: a closure created by the same
+/// instruction, by its position in the group.
+pub const REC_CAPTURE_GROUP: u8 = 2;
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -101,6 +109,13 @@ pub enum Op {
     GetField0 = 68,
     GetField1 = 69,
     MakeCons = 70,
+
+    /// Creates a group of closures that may capture each other, for
+    /// recursive local `fun ... and ...`. Encoding: `u8 n_closures`, then per
+    /// closure `u16 proto_idx, u8 n_captures` and per capture `u8 source,
+    /// u16 index`, where `source` is one of the `REC_CAPTURE_*` constants.
+    /// Pushes the closures in group order.
+    MakeRecClosures = 71,
 }
 
 impl TryFrom<u8> for Op {
@@ -179,6 +194,7 @@ impl TryFrom<u8> for Op {
             68 => Ok(Op::GetField0),
             69 => Ok(Op::GetField1),
             70 => Ok(Op::MakeCons),
+            71 => Ok(Op::MakeRecClosures),
             _ => Err(b),
         }
     }

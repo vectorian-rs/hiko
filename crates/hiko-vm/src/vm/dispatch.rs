@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// A member of a `MakeRecClosures` group that captures other members.
+struct RecClosurePatch {
+    /// Position of the closure in the group.
+    member: usize,
+    /// Its captures, with `Unit` where a group member goes.
+    captures: Vec<Value>,
+    /// `(capture index, group position)` for each group capture.
+    group_refs: Vec<(usize, usize)>,
+}
+
 impl VM {
     pub(super) fn dispatch(&mut self) -> Result<(), RuntimeError> {
         loop {
@@ -312,6 +322,8 @@ impl VM {
                     })?;
                     self.push(val)?;
                 }
+
+                Op::MakeRecClosures => self.make_rec_closures(fi)?,
 
                 Op::Call => {
                     let arity = self.read_u8()? as usize;
@@ -719,6 +731,73 @@ impl VM {
                 }
             }
         }
+    }
+
+    /// `MakeRecClosures`: create a group of closures that capture each other.
+    ///
+    /// Each closure is pushed as soon as it is allocated, so the members
+    /// created so far stay GC roots while the next one is allocated. Group
+    /// captures hold `Unit` until every member exists; then each closure
+    /// that refers to a member gets its final capture array. Nothing can
+    /// call a member before that, because no other instruction runs in
+    /// between.
+    fn make_rec_closures(&mut self, fi: usize) -> Result<(), RuntimeError> {
+        let n_closures = self.read_u8()? as usize;
+        let base = self.stack.len();
+        let mut pending: Vec<RecClosurePatch> = Vec::new();
+        for member in 0..n_closures {
+            let proto_idx = self.read_u16()? as usize;
+            let n_captures = self.read_u8()? as usize;
+            let mut captures = Vec::with_capacity(n_captures);
+            let mut group_refs = Vec::new();
+            for capture_idx in 0..n_captures {
+                let source = self.read_u8()?;
+                let index = self.read_u16()? as usize;
+                let val = match source {
+                    REC_CAPTURE_UPVALUE => self.capture_value(fi, false, index)?,
+                    REC_CAPTURE_LOCAL => self.capture_value(fi, true, index)?,
+                    REC_CAPTURE_GROUP if index < n_closures => {
+                        group_refs.push((capture_idx, index));
+                        Value::Unit
+                    }
+                    _ => {
+                        return Err(RuntimeError {
+                            message: format!(
+                                "MakeRecClosures: invalid capture source {source} index {index}"
+                            ),
+                        });
+                    }
+                };
+                captures.push(val);
+            }
+            let closure = self.alloc(HeapObject::Closure {
+                proto_idx,
+                captures: Arc::from(captures.as_slice()),
+            })?;
+            self.push(closure)?;
+            if !group_refs.is_empty() {
+                pending.push(RecClosurePatch {
+                    member,
+                    captures,
+                    group_refs,
+                });
+            }
+        }
+        for patch in pending {
+            let mut captures = patch.captures;
+            for (capture_idx, target) in patch.group_refs {
+                captures[capture_idx] = self.stack[base + target];
+            }
+            let Value::Heap(r) = self.stack[base + patch.member] else {
+                return Err(RuntimeError {
+                    message: "MakeRecClosures: closure is not a heap value".into(),
+                });
+            };
+            self.heap
+                .set_closure_captures(r, Arc::from(captures))
+                .map_err(|e| RuntimeError { message: e.into() })?;
+        }
+        Ok(())
     }
 
     pub(super) fn push(&mut self, val: Value) -> Result<(), RuntimeError> {

@@ -624,6 +624,14 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
             let n_captures = read_u8(code, ip)? as usize;
             skip_bytes(code, ip, n_captures * 3)?;
         }
+        Op::MakeRecClosures => {
+            let n_closures = read_u8(code, ip)? as usize;
+            for _ in 0..n_closures {
+                let _proto_idx = read_u16(code, ip)?;
+                let n_captures = read_u8(code, ip)? as usize;
+                skip_bytes(code, ip, n_captures * 3)?;
+            }
+        }
         Op::InstallHandler => {
             let n_clauses = read_u16(code, ip)? as usize;
             skip_bytes(code, ip, n_clauses * HANDLER_CLAUSE_BYTES)?;

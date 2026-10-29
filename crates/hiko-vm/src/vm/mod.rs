@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
-use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
+use hiko_compile::op::{
+    HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
+};
 
 use crate::heap::Heap;
 use crate::process::ProcessFailure;
@@ -856,6 +858,133 @@ mod tests {
         assert_eq!(global_int(&vm, "c"), 3);
         assert_eq!(global_int(&vm, "d"), 18);
         assert_eq!(global_int(&vm, "e"), 9);
+    }
+
+    #[test]
+    fn test_local_recursive_fun() {
+        let vm = run("fun count n = let
+                 fun loop i acc = if i = 0 then acc else loop (i - 1) (acc + 1)
+               in loop n 0 end
+             val result = count 5");
+        assert_eq!(global_int(&vm, "result"), 5);
+    }
+
+    /// A local tail-recursive loop runs in one frame. `iterations` is far
+    /// above `DEFAULT_MAX_CALL_FRAMES`, so a non-tail call per iteration
+    /// would fail with a stack overflow.
+    fn assert_local_tail_loop_runs_in_constant_stack(iterations: i64) {
+        assert!(iterations > DEFAULT_MAX_CALL_FRAMES as i64);
+        let vm = run(&format!(
+            "fun count n = let
+                 fun loop i acc = if i = 0 then acc else loop (i - 1) (acc + 1)
+               in loop n 0 end
+             fun count_clausal n = let
+                 fun loop (0, acc) = acc
+                   | loop (i, acc) = loop (i - 1, acc + 1)
+               in loop (n, 0) end
+             val a = count {iterations}
+             val b = count_clausal {iterations}"
+        ));
+        assert_eq!(global_int(&vm, "a"), iterations);
+        assert_eq!(global_int(&vm, "b"), iterations);
+        assert!(vm.frames.len() <= 1, "frames left: {}", vm.frames.len());
+        assert_eq!(vm.stack.len(), 0);
+    }
+
+    #[test]
+    fn test_local_tail_recursive_loop_runs_in_constant_stack() {
+        assert_local_tail_loop_runs_in_constant_stack(200_000);
+    }
+
+    /// The 10,000,000-iteration case from the plan. Too slow for a debug
+    /// build; run with `cargo test --release -p hiko-vm -- --ignored`.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore)]
+    fn test_local_tail_recursive_loop_ten_million_iterations() {
+        assert_local_tail_loop_runs_in_constant_stack(10_000_000);
+    }
+
+    #[test]
+    fn test_local_mutual_recursion() {
+        let vm = run("fun parity n = let fun ev 0 = true | ev k = od (k - 1)
+                                 and od 0 = false | od k = ev (k - 1)
+                             in ev n end
+             val a = parity 10
+             val b = parity 7
+             val c = let fun ev 0 = true | ev k = od (k - 1)
+                         and od 0 = false | od k = ev (k - 1)
+                     in od 3 end");
+        assert!(global_bool(&vm, "a"));
+        assert!(!global_bool(&vm, "b"));
+        assert!(global_bool(&vm, "c"));
+    }
+
+    #[test]
+    fn test_local_recursive_fun_captures_outer_variables_and_escapes() {
+        let vm = run("fun make_sum step = let
+                 val base = step * 100
+                 fun go 0 = base
+                   | go n = step + go (n - 1)
+               in go end
+             val f = make_sum 3
+             val a = f 4
+             val b = (make_sum 1) 0
+             fun counter limit = let
+                 fun tick i = if i >= limit then [] else i :: tick (i + 1)
+                 and start () = tick 0
+               in start end
+             val c = case (counter 3) () of [_, _, x] => x | _ => 0
+             val d = let val k = 7
+                         fun add_k 0 acc = acc + k
+                           | add_k n acc = add_k (n - 1) (acc + 1)
+                     in add_k 2 0 end");
+        assert_eq!(global_int(&vm, "a"), 312);
+        assert_eq!(global_int(&vm, "b"), 100);
+        assert_eq!(global_int(&vm, "c"), 2);
+        assert_eq!(global_int(&vm, "d"), 9);
+    }
+
+    #[test]
+    fn test_local_recursion_in_nested_and_local_scopes() {
+        let vm = run("fun outer n = let
+                 fun fact 0 = 1
+                   | fact k = k * fact (k - 1)
+                 fun sum_facts 0 = 0
+                   | sum_facts k = let
+                       fun twice 0 = 0
+                         | twice j = 2 + twice (j - 1)
+                     in fact k + twice 0 + sum_facts (k - 1) end
+               in sum_facts n end
+             val a = outer 4
+             local
+               fun len [] = 0
+                 | len (_ :: xs) = 1 + len xs
+             in
+               val b = len [1, 2, 3]
+             end
+             val c = let val rec down = fn n => if n = 0 then 0 else down (n - 1) in down 5 end
+             fun len xs = 99
+             val d = let fun len [] = 0 | len (_ :: xs) = 1 + len xs in len [1, 2] end
+             val e = len [1]");
+        assert_eq!(global_int(&vm, "a"), 33);
+        assert_eq!(global_int(&vm, "b"), 3);
+        assert_eq!(global_int(&vm, "c"), 0);
+        assert_eq!(global_int(&vm, "d"), 2);
+        assert_eq!(global_int(&vm, "e"), 99);
+    }
+
+    #[test]
+    fn test_local_recursive_group_survives_gc() {
+        // About 200,000 allocations, far above the 1,024-allocation GC
+        // threshold, so collections run while groups are created and used.
+        let vm = run("fun build n = let
+                 fun ev 0 = [] | ev k = k :: od (k - 1)
+                 and od 0 = [] | od k = k :: ev (k - 1)
+               in ev n end
+             fun total 0 acc = acc
+               | total n acc = total (n - 1) (acc + (case build 50 of x :: _ => x | [] => 0))
+             val result = total 2000 0");
+        assert_eq!(global_int(&vm, "result"), 100_000);
     }
 
     #[test]

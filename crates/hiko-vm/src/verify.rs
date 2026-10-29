@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
-use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
+use hiko_compile::op::{
+    HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
+};
 
 #[derive(Debug, Clone)]
 pub struct VerificationError {
@@ -453,6 +455,55 @@ fn decode_instruction(
                 delta: 1,
             }
         }
+        Op::MakeRecClosures => {
+            let n_closures = read_u8(chunk, ip, "MakeRecClosures")? as usize;
+            if n_closures == 0 {
+                return Err(format!(
+                    "MakeRecClosures at offset {start} creates no closures"
+                ));
+            }
+            let current_captures = proto.map_or(0usize, |p| p.n_captures as usize);
+            for member in 0..n_closures {
+                let target_proto_idx = read_u16(chunk, ip, "MakeRecClosures")? as usize;
+                let target_proto = functions.get(target_proto_idx).ok_or_else(|| {
+                    format!(
+                        "MakeRecClosures at offset {start} member #{member} references function proto {target_proto_idx}, but only {} function(s) exist",
+                        functions.len()
+                    )
+                })?;
+                let n_captures = read_u8(chunk, ip, "MakeRecClosures")? as usize;
+                if n_captures != target_proto.n_captures as usize {
+                    return Err(format!(
+                        "MakeRecClosures at offset {start} member #{member} captures {n_captures} value(s), but target function expects {} capture(s)",
+                        target_proto.n_captures
+                    ));
+                }
+                for capture_idx in 0..n_captures {
+                    let source = read_u8(chunk, ip, "MakeRecClosures capture")?;
+                    let index = read_u16(chunk, ip, "MakeRecClosures capture")? as usize;
+                    let (what, limit) = match source {
+                        REC_CAPTURE_UPVALUE => ("upvalue", current_captures),
+                        REC_CAPTURE_LOCAL => ("local slot", n_locals),
+                        REC_CAPTURE_GROUP => ("group member", n_closures),
+                        _ => {
+                            return Err(format!(
+                                "MakeRecClosures at offset {start} member #{member} capture #{capture_idx} has unknown source {source}"
+                            ));
+                        }
+                    };
+                    if index >= limit {
+                        return Err(format!(
+                            "MakeRecClosures at offset {start} member #{member} capture #{capture_idx} references {what} {index}, but only {limit} exist"
+                        ));
+                    }
+                }
+            }
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 0,
+                delta: n_closures as isize,
+            }
+        }
         Op::Call => {
             let arity = read_u8(chunk, ip, "Call")? as usize;
             successors.push(*ip);
@@ -651,7 +702,7 @@ fn apply_delta(inst: &DecodedInst, depth: usize, delta: isize) -> Result<usize, 
 mod tests {
     use super::verify_program;
     use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
-    use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
+    use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_UPVALUE};
     use std::sync::Arc;
 
     fn empty_program(code: Vec<u8>) -> CompiledProgram {
@@ -853,6 +904,107 @@ mod tests {
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("MakeClosure"));
         assert!(err.message().contains("local slot 1"));
+    }
+
+    /// Main chunk running `code` with one function that has one capture.
+    fn rec_closures_program(code: Vec<u8>) -> CompiledProgram {
+        let member = proto(vec![Op::GetUpvalue as u8, 0, 0, Op::Return as u8], 1, 1, 1);
+        CompiledProgram {
+            main: Arc::new(Chunk {
+                code,
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 2,
+            functions: Arc::from([member]),
+            effects: Arc::from([]),
+        }
+    }
+
+    #[test]
+    fn accepts_make_rec_closures_group() {
+        // Two closures of function 0, each capturing the other.
+        let program = rec_closures_program(vec![
+            Op::MakeRecClosures as u8,
+            2,
+            0,
+            0,
+            1,
+            REC_CAPTURE_GROUP,
+            1,
+            0,
+            0,
+            0,
+            1,
+            REC_CAPTURE_GROUP,
+            0,
+            0,
+            Op::Pop as u8,
+            Op::Pop as u8,
+            Op::Halt as u8,
+        ]);
+        verify_program(&program).expect("MakeRecClosures group should verify");
+    }
+
+    #[test]
+    fn rejects_make_rec_closures_bad_captures() {
+        let cases: [(Vec<u8>, &str); 4] = [
+            // Group member index past the group size.
+            (
+                vec![
+                    Op::MakeRecClosures as u8,
+                    1,
+                    0,
+                    0,
+                    1,
+                    REC_CAPTURE_GROUP,
+                    1,
+                    0,
+                ],
+                "group member 1",
+            ),
+            // Main chunk has no upvalues.
+            (
+                vec![
+                    Op::MakeRecClosures as u8,
+                    1,
+                    0,
+                    0,
+                    1,
+                    REC_CAPTURE_UPVALUE,
+                    0,
+                    0,
+                ],
+                "upvalue 0",
+            ),
+            // Unknown capture source.
+            (
+                vec![Op::MakeRecClosures as u8, 1, 0, 0, 1, 3, 0, 0],
+                "unknown source 3",
+            ),
+            // Capture count differs from the function's.
+            (
+                vec![Op::MakeRecClosures as u8, 1, 0, 0, 0],
+                "expects 1 capture",
+            ),
+        ];
+        for (mut code, expected) in cases {
+            code.push(Op::Halt as u8);
+            let err = verify_program(&rec_closures_program(code))
+                .expect_err("program should fail verification");
+            assert!(
+                err.message().contains(expected),
+                "expected '{expected}' in: {}",
+                err.message()
+            );
+        }
+        let err = verify_program(&rec_closures_program(vec![
+            Op::MakeRecClosures as u8,
+            0,
+            Op::Halt as u8,
+        ]))
+        .expect_err("empty group should fail verification");
+        assert!(err.message().contains("creates no closures"));
     }
 
     #[test]
