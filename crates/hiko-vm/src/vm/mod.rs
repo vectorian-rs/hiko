@@ -793,6 +793,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parameter_shadowing_global_function_is_not_direct_called() {
+        let vm = run("fun g x = x + 1
+             fun h g = g 10
+             val result = h (fn x => x * 2)");
+        assert_eq!(global_int(&vm, "result"), 20);
+    }
+
+    #[test]
+    fn test_redefined_recursive_function_calls_new_definition() {
+        let vm = run("fun f x = 1
+             fun f x = if x = 0 then 0 else f (x - 1)
+             val result = f 5");
+        assert_eq!(global_int(&vm, "result"), 0);
+    }
+
+    #[test]
+    fn test_global_function_rebound_by_val_is_not_direct_called() {
+        let vm = run("fun g x = x + 1
+             val g = fn x => x * 2
+             val result = g 10");
+        assert_eq!(global_int(&vm, "result"), 20);
+    }
+
+    #[test]
     fn test_closure() {
         let vm = run("fun make_adder n = fn x => n + x
              val add5 = make_adder 5

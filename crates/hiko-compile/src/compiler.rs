@@ -589,7 +589,8 @@ pub struct Compiler {
         allow(dead_code)
     )]
     module_cache_dir: Option<PathBuf>,
-    /// Global function name -> proto_idx (for direct calls).
+    /// Global name -> proto_idx of the capture-free function it is currently
+    /// bound to, for `CallDirect`. Every global rebinding clears the entry.
     global_protos: HashMap<String, u16>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
@@ -856,10 +857,43 @@ impl Compiler {
     }
 
     fn emit_set_global(&mut self, name: &str) -> Result<(), CompileError> {
+        // The global may no longer hold the function recorded for direct calls.
+        self.global_protos.remove(name);
         let c = self.add_string_constant(name)?;
         self.emit(Op::SetGlobal);
         self.emit_u16(c);
         Ok(())
+    }
+
+    /// Proto index for a `CallDirect` to `name`: only when `name` resolves to
+    /// a global that is currently bound to a capture-free function.
+    fn direct_call_proto(&mut self, name: &str) -> Option<u16> {
+        if self.resolve_local(name).is_some() || self.resolve_upvalue(name).is_some() {
+            return None;
+        }
+        self.global_protos.get(name).copied()
+    }
+
+    fn forget_global_proto(&mut self, name: &str) {
+        if self.ctx().scope_depth == 0 {
+            self.global_protos.remove(name);
+        }
+    }
+
+    /// After binding `name` to the closure of the function finished last,
+    /// record it for direct calls when it is a capture-free global.
+    fn register_global_proto(&mut self, name: &str) {
+        if self.ctx().scope_depth != 0 {
+            return;
+        }
+        let Some(proto) = self.functions.last() else {
+            return;
+        };
+        if proto.n_captures == 0 {
+            // finish_function already checked that the index fits in u16.
+            let proto_idx = (self.functions.len() - 1) as u16;
+            self.global_protos.insert(name.to_string(), proto_idx);
+        }
     }
 
     fn add_local(&mut self, name: String) {
@@ -948,16 +982,24 @@ impl Compiler {
                 self.compile_binding_pattern(pat)
             }
             DeclKind::ValRec(sym, expr) => {
-                self.compile_expr(expr)?;
                 let name = self.interner.resolve(*sym).to_string();
+                self.forget_global_proto(&name);
+                self.compile_expr(expr)?;
                 self.bind_name(&name)?;
                 Ok(())
             }
             DeclKind::Fun(bindings) => {
+                // `fun` is recursive: inside the bodies, these names refer to
+                // the new bindings, never to an earlier global function.
+                for binding in bindings {
+                    let name = self.interner.resolve(binding.name).to_string();
+                    self.forget_global_proto(&name);
+                }
                 for binding in bindings {
                     self.compile_fun_binding(binding)?;
                     let name = self.interner.resolve(binding.name).to_string();
                     self.bind_name(&name)?;
+                    self.register_global_proto(&name);
                 }
                 Ok(())
             }
@@ -973,8 +1015,15 @@ impl Compiler {
                     kind: ExprKind::Var(*internal_name),
                     span: decl.span,
                 })?;
+                let internal = self.interner.resolve(*internal_name).to_string();
+                let internal_proto = self.direct_call_proto(&internal);
                 let name = self.interner.resolve(*public_name).to_string();
                 self.bind_name(&name)?;
+                if self.ctx().scope_depth == 0
+                    && let Some(proto_idx) = internal_proto
+                {
+                    self.global_protos.insert(name, proto_idx);
+                }
                 Ok(())
             }
             DeclKind::Effect(sym, _) => {
@@ -1496,6 +1545,9 @@ impl Compiler {
                 self.emit_u8(0);
             }
             self.bind_name(&con_name)?;
+            if has_payload {
+                self.register_global_proto(&con_name);
+            }
         }
         Ok(())
     }
@@ -1616,7 +1668,6 @@ impl Compiler {
     fn finish_function(&mut self) -> Result<(), CompileError> {
         let func_ctx = self.func_stack.pop().unwrap();
         let n_captures = checked_u8(func_ctx.upvalues.len(), "closure captures")?;
-        let fn_name = func_ctx.name.clone();
         let proto = FunctionProto {
             name: func_ctx.name,
             arity: func_ctx.arity,
@@ -1626,12 +1677,6 @@ impl Compiler {
         };
         let proto_idx = checked_u16(self.functions.len(), "functions")?;
         self.functions.push(proto);
-        // Register for direct calls if this is a top-level function with no captures
-        if n_captures == 0
-            && let Some(name) = &fn_name
-        {
-            self.global_protos.insert(name.clone(), proto_idx);
-        }
         self.emit(Op::MakeClosure);
         self.emit_u16(proto_idx);
         self.emit_u8(n_captures);
@@ -1982,18 +2027,7 @@ impl Compiler {
                 // is a known global function with no captures
                 let direct_proto = if let ExprKind::Var(sym) = &func.kind {
                     let name = self.interner.resolve(*sym).to_string();
-                    if self.resolve_local(&name).is_none() && self.resolve_upvalue(&name).is_none()
-                    {
-                        // Global function
-                        self.global_protos.get(&name).copied()
-                    } else if self.ctx().name.as_deref() == Some(&name) {
-                        // Self-recursive call: proto_idx will be self.functions.len()
-                        Some(self.functions.len() as u16)
-                    } else {
-                        // Also check if name matches a known global even as upvalue
-                        // (recursive calls capture the function as an upvalue)
-                        self.global_protos.get(&name).copied()
-                    }
+                    self.direct_call_proto(&name)
                 } else {
                     None
                 };
@@ -2351,6 +2385,33 @@ mod tests {
         let program = parse_program("val xs = 1 :: []\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
         assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
+    }
+
+    #[test]
+    fn compile_direct_calls_only_unshadowed_global_functions() {
+        let program = parse_program(
+            "fun g x = x + 1\nval a = g 1\nfun h g = g 10\nval g = fn x => x * 2\nval b = g 2\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let call_direct = Op::CallDirect as u8;
+        let h = compiled
+            .functions
+            .iter()
+            .find(|proto| proto.name.as_deref() == Some("h"))
+            .expect("function proto");
+        // `a = g 1` calls the global function directly ...
+        assert_eq!(
+            compiled
+                .main
+                .code
+                .iter()
+                .filter(|&&b| b == call_direct)
+                .count(),
+            1,
+            "expected exactly one CallDirect in main (for `g 1`, not `g 2`)"
+        );
+        // ... but the parameter `g` inside `h` shadows it.
+        assert!(!h.chunk.code.contains(&call_direct));
     }
 
     #[test]
