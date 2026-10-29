@@ -358,32 +358,9 @@ impl InferCtx {
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
-        let scheme = self.apply_scheme(scheme);
+        let ty = self.apply(&scheme.ty);
         let mapping: HashMap<u32, Type> = scheme.vars.iter().map(|&v| (v, self.fresh())).collect();
-        self.substitute_vars(&scheme.ty, &mapping)
-    }
-
-    fn substitute_vars(&self, ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
-        #![allow(clippy::only_used_in_recursion)]
-        match ty {
-            Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
-            Type::Arrow(a, b) => Type::arrow(
-                self.substitute_vars(a, mapping),
-                self.substitute_vars(b, mapping),
-            ),
-            Type::Tuple(ts) => Type::Tuple(
-                ts.iter()
-                    .map(|t| self.substitute_vars(t, mapping))
-                    .collect(),
-            ),
-            Type::App(n, args) => Type::App(
-                n.clone(),
-                args.iter()
-                    .map(|t| self.substitute_vars(t, mapping))
-                    .collect(),
-            ),
-            Type::Con(_) => ty.clone(),
-        }
+        substitute_vars(&ty, &mapping)
     }
 
     fn free_vars_in_env(&self, exclude_top_scope: bool) -> HashSet<u32> {
@@ -395,9 +372,7 @@ impl InferCtx {
         };
         for scope in &self.scopes[..limit] {
             for scheme in scope.values() {
-                let scheme = self.apply_scheme(scheme);
-                let fv = scheme.ty.free_vars();
-                for v in fv {
+                for v in self.apply(&scheme.ty).free_vars() {
                     if !scheme.vars.contains(&v) {
                         vars.insert(v);
                     }
@@ -477,7 +452,7 @@ impl InferCtx {
                 self.bind(name, scheme);
                 Ok(())
             }
-            DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings, decl.span),
+            DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings),
             DeclKind::Datatype(dt) => self.register_datatype(dt),
             DeclKind::TypeAlias(ta) => self.register_type_alias(ta),
             DeclKind::AbstractType(dt) => self.register_abstract_type(dt),
@@ -553,7 +528,7 @@ impl InferCtx {
         }
     }
 
-    fn infer_fun_bindings(&mut self, bindings: &[FunBinding], span: Span) -> Result<(), TypeError> {
+    fn infer_fun_bindings(&mut self, bindings: &[FunBinding]) -> Result<(), TypeError> {
         self.push_scope();
 
         // Add monomorphic bindings for all functions (enables mutual recursion)
@@ -588,7 +563,6 @@ impl InferCtx {
         for (name, scheme) in schemes {
             self.bind(name, scheme);
         }
-        let _ = span;
         Ok(())
     }
 
@@ -674,6 +648,8 @@ impl InferCtx {
         };
 
         let all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
+        // Strict resolution never adds to the map, so one copy serves all constructors.
+        let mut tyvar_map: HashMap<String, u32> = param_vars.into_iter().collect();
 
         for con in &dt.constructors {
             let con_name = self.interner.resolve(con.name).to_string();
@@ -681,9 +657,7 @@ impl InferCtx {
                 return Err(self.err(&format!("duplicate constructor name: {con_name}"), con.span));
             }
             let con_ty = if let Some(ref payload_texpr) = con.payload {
-                let tyvar_map: HashMap<String, u32> = param_vars.iter().cloned().collect();
-                let payload_ty =
-                    self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map.clone())?;
+                let payload_ty = self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map)?;
                 Type::arrow(payload_ty, result_ty.clone())
             } else {
                 result_ty.clone()
@@ -978,50 +952,12 @@ impl InferCtx {
 
             // Generic arithmetic: resolve via unification
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                self.unify(&lhs_ty, &rhs_ty, span)?;
-                let resolved = self.apply(&lhs_ty);
-                let resolved = match &resolved {
-                    Type::Var(_) => {
-                        // Default ambiguous numeric type to int
-                        self.unify(&lhs_ty, &Type::int(), span)?;
-                        Type::int()
-                    }
-                    Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => resolved,
-                    _ => {
-                        return Err(self.err(
-                            &format!(
-                                "arithmetic operators require int, float, or word, found {}",
-                                self.display(&resolved)
-                            ),
-                            span,
-                        ));
-                    }
-                };
-                self.expr_types.insert(span, resolved.clone());
-                return Ok(resolved);
+                return self.resolve_numeric_operands(&lhs_ty, &rhs_ty, "arithmetic", span);
             }
 
             // Generic comparison: resolve via unification, return bool
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                self.unify(&lhs_ty, &rhs_ty, span)?;
-                let resolved = self.apply(&lhs_ty);
-                let resolved = match &resolved {
-                    Type::Var(_) => {
-                        self.unify(&lhs_ty, &Type::int(), span)?;
-                        Type::int()
-                    }
-                    Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => resolved,
-                    _ => {
-                        return Err(self.err(
-                            &format!(
-                                "comparison operators require int, float, or word, found {}",
-                                self.display(&resolved)
-                            ),
-                            span,
-                        ));
-                    }
-                };
-                self.expr_types.insert(span, resolved);
+                self.resolve_numeric_operands(&lhs_ty, &rhs_ty, "comparison", span)?;
                 return Ok(Type::bool());
             }
 
@@ -1064,6 +1000,37 @@ impl InferCtx {
         self.unify(&lhs_ty, &expected_lhs, lhs.span)?;
         self.unify(&rhs_ty, &expected_rhs, rhs.span)?;
         Ok(result)
+    }
+
+    /// Unify the operands of a generic numeric operator and resolve their
+    /// type to int, float, or word. An unconstrained operand type defaults to
+    /// int. The resolved type is recorded for typed codegen and returned.
+    fn resolve_numeric_operands(
+        &mut self,
+        lhs_ty: &Type,
+        rhs_ty: &Type,
+        kind: &str,
+        span: Span,
+    ) -> Result<Type, TypeError> {
+        self.unify(lhs_ty, rhs_ty, span)?;
+        let resolved = match self.apply(lhs_ty) {
+            Type::Var(_) => {
+                self.unify(lhs_ty, &Type::int(), span)?;
+                Type::int()
+            }
+            Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => Type::Con(n),
+            other => {
+                return Err(self.err(
+                    &format!(
+                        "{kind} operators require int, float, or word, found {}",
+                        self.display(&other)
+                    ),
+                    span,
+                ));
+            }
+        };
+        self.expr_types.insert(span, resolved.clone());
+        Ok(resolved)
     }
 
     // ── Pattern inference ────────────────────────────────────────────
@@ -1254,7 +1221,7 @@ impl InferCtx {
                         .zip(resolved_args.iter())
                         .map(|(&v, arg)| (v, arg.clone()))
                         .collect();
-                    return Ok(self.substitute_vars(&body, &mapping));
+                    return Ok(substitute_vars(&body, &mapping));
                 }
                 // Check type constructor
                 if let Some(&arity) = self.type_arities.get(&name) {
@@ -1415,6 +1382,20 @@ impl InferCtx {
             self.constructor_tags.insert(alias_name.to_string(), tag);
         }
         Ok(())
+    }
+}
+
+/// Replace type variables according to `mapping`, leaving others untouched.
+fn substitute_vars(ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
+    match ty {
+        Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Arrow(a, b) => Type::arrow(substitute_vars(a, mapping), substitute_vars(b, mapping)),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| substitute_vars(t, mapping)).collect()),
+        Type::App(n, args) => Type::App(
+            n.clone(),
+            args.iter().map(|t| substitute_vars(t, mapping)).collect(),
+        ),
+        Type::Con(_) => ty.clone(),
     }
 }
 
