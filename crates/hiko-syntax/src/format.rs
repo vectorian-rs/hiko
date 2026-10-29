@@ -266,6 +266,15 @@ mod tests {
     }
 
     #[test]
+    fn keeps_comment_after_import_with_names() {
+        let source = "import Std.List (map, filter)\n(* about x *)\nval x = 1\n";
+        assert_eq!(
+            fmt(source),
+            "import Std.List (map, filter)\n\n(* about x *)\nval x = 1\n"
+        );
+    }
+
+    #[test]
     fn formats_comment_only_files() {
         let source = "(* hello *)\n(* world *)\n";
         assert_eq!(fmt(source), "(* hello *)\n(* world *)\n");

@@ -623,8 +623,7 @@ impl Parser {
                 let (n, _) = self.expect_exposed_import_name()?;
                 names.push(n);
             }
-            self.expect(&TokenKind::RParen, ")")?;
-            end = self.span();
+            end = self.expect(&TokenKind::RParen, ")")?;
             return Ok(Decl {
                 kind: DeclKind::ImportWithNames(name, names),
                 span: start.merge(end),
@@ -2512,6 +2511,17 @@ mod tests {
         }
         parse("val f = (fn x => x : int) (2)");
         parse("val f = let in g end 2");
+    }
+
+    #[test]
+    fn test_import_span_ends_at_its_last_token() {
+        let src = "import Std.List (map, filter)\nval x = 1";
+        let prog = parse(src);
+        let span = prog.decls[0].span;
+        assert_eq!(
+            &src[span.start as usize..span.end as usize],
+            "import Std.List (map, filter)"
+        );
     }
 
     #[test]
