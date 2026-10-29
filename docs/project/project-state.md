@@ -62,9 +62,11 @@ Size by crate (lines of Rust):
 - `fun` with clauses, `and` for mutual recursion, `fn`, `let`, `case`, `if`.
 - Pattern matching with compile-time exhaustiveness and redundancy checks.
 - `|>` pipeline, desugared to application.
-- Minimal modules: top-level `structure`, `signature`, `:` and `:>`, qualified
-  names.
-- Imports: `use "path"` and named imports `use "mod" { a, b }`.
+- Minimal modules: top-level `structure`, `signature`, opaque ascription `:>`,
+  qualified names. `:` is parsed but behaves exactly like `:>`; transparent
+  ascription is not implemented.
+- Imports: `use "./path.hml"` for local files and `import Package.Module` or
+  `import Package.Module (a, b)` for named modules.
 
 ### Deliberately absent
 
@@ -81,6 +83,10 @@ Size by crate (lines of Rust):
   every struct-like value. This is a real usability gap.
 - Mutable state: no `ref` means no in-place algorithms. This is consistent with
   the focus, but it should be a stated decision, not an omission.
+- Ascription with `:`: it is accepted but seals types like `:>`, which
+  contradicts SML. Either implement transparent ascription or remove `:` and
+  keep only `:>`. Removing it fits the minimal-language focus. No test covers
+  transparent behavior today.
 - Formal definition: [`definition.md`](../language/definition.md) is a short
   draft. A minimal language is a good candidate for a complete static and
   dynamic semantics.

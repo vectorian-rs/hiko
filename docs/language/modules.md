@@ -8,9 +8,10 @@ Implemented:
 
 - top-level `signature`
 - top-level `structure`
-- transparent ascription `:`
 - opaque ascription `:>`
-- qualified names like `List.fold` and `Queue.t`
+- ascription with `:`, which is parsed but currently behaves exactly like `:>`
+  (see [Ascription Semantics](#ascription-semantics))
+- qualified names like `Box.make` and `Json.JObject`
 
 Not implemented:
 
@@ -20,6 +21,7 @@ Not implemented:
 - sharing constraints
 - first-class modules
 - nested modules inside `struct ... end`
+- transparent ascription (`:` does not keep type definitions visible)
 
 This is deliberate. Hiko currently treats modules as a **single top-level namespace layer**, not as a full recursive module language.
 
@@ -88,13 +90,16 @@ structure List = struct
 end
 ```
 
-### Transparent Ascription
+### Ascription With `:`
 
 ```sml
 structure List : LIST = struct
   fun fold f acc xs = acc
 end
 ```
+
+In SML this is transparent ascription. In Hiko it currently seals the
+structure the same way `:>` does. See [Ascription Semantics](#ascription-semantics).
 
 ### Opaque Ascription
 
@@ -110,7 +115,7 @@ end
 
 ```sml
 val sum = List.fold (fn (x, acc) => x + acc) 0 [1, 2, 3]
-val q : Queue.t = Queue.empty
+val b : Box.t = Box.make 1
 ```
 
 ## Semantics
@@ -122,6 +127,40 @@ In Hiko, modules are **compile-time only**.
 - structures are flattened before inference and code generation
 
 This keeps the runtime simple and matches Hiko’s general design: abstraction belongs in the language front end, not in the VM.
+
+### Ascription Semantics
+
+Ascribing a signature to a structure does two things:
+
+- **checking**: every `val` in the signature must exist in the structure with a
+  compatible type, otherwise compilation fails
+- **filtering**: names that the signature does not list are hidden outside the
+  structure
+
+Both `:` and `:>` do this. Both also make every `type t` in the signature
+**abstract** outside the structure: the definition of `t` is hidden.
+
+In SML, `:` is transparent and keeps the definition visible. Hiko does not
+implement that difference. The parser records which form was used, but
+signature elaboration ignores it (`signature_assertions` in
+`crates/hiko-syntax/src/desugar.rs`). For example:
+
+```sml
+signature COUNTER = sig
+  type t
+  val zero : t
+end
+
+structure C : COUNTER = struct
+  type t = int
+  val zero = 0
+end
+
+val n = C.zero + 1   (* type error in Hiko today; accepted in SML *)
+```
+
+Until this is resolved, write `:>` when sealing is intended. Treat `:` as
+unstable: it may become transparent or be removed from the language.
 
 ## Relationship To `use` And `import`
 

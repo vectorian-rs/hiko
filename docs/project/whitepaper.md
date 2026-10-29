@@ -376,9 +376,10 @@ Implemented today:
 
 - top-level `signature`
 - top-level `structure`
-- transparent ascription `:`
 - opaque ascription `:>`
-- qualified names such as `List.fold` and `Queue.t`
+- ascription with `:`, which is parsed but currently behaves exactly like `:>`
+  (types in the signature become abstract; there is no transparent ascription)
+- qualified names such as `Box.make` and `Json.JObject`
 
 Not implemented:
 
