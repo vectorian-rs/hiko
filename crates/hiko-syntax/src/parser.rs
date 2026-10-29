@@ -25,6 +25,10 @@ pub struct Parser {
     /// started, including the levels that finished chains add below their
     /// operands. See `Chain`.
     peak: u32,
+    /// Set after an `fn`, `if`, `case` or `handle` expression. These extend
+    /// as far right as they can, so nothing may follow one as an operand:
+    /// no operator and no argument, until the enclosing `parse_expr` ends.
+    closed: bool,
     interner: StringInterner,
 }
 
@@ -53,6 +57,7 @@ impl Parser {
             pos: 0,
             depth: 0,
             peak: 0,
+            closed: false,
             interner: StringInterner::new(),
         }
     }
@@ -63,6 +68,7 @@ impl Parser {
             pos: 0,
             depth: 0,
             peak: 0,
+            closed: false,
             interner,
         }
     }
@@ -743,7 +749,9 @@ impl Parser {
     // ── Expressions (lowest to highest precedence) ───────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.nested(Self::parse_expr_inner)
+        let expr = self.nested(Self::parse_expr_inner);
+        self.closed = false;
+        expr
     }
 
     fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
@@ -790,7 +798,7 @@ impl Parser {
             TokenKind::Ge => Some(BinOp::Ge),
             _ => None,
         };
-        if let Some(op) = op {
+        if let Some(op) = op.filter(|_| !self.closed) {
             self.advance();
             let rhs = self.parse_cons()?;
             let span = lhs.span.merge(rhs.span);
@@ -835,7 +843,9 @@ impl Parser {
         let mut chain = self.begin_chain(true);
         let mut lhs = operand(self)?;
         self.end_operand(&mut chain);
-        while let Some(op) = op(self.peek()) {
+        while !self.closed
+            && let Some(op) = op(self.peek())
+        {
             self.chain_link(&mut chain)?;
             self.advance();
             let rhs = operand(self)?;
@@ -861,7 +871,7 @@ impl Parser {
         let mut chain = self.begin_chain(false);
         let mut elems = vec![operand(self)?];
         self.end_operand(&mut chain);
-        while self.at(sep) {
+        while !self.closed && self.at(sep) {
             self.chain_link(&mut chain)?;
             self.advance();
             elems.push(operand(self)?);
@@ -899,7 +909,7 @@ impl Parser {
         let mut chain = self.begin_chain(true);
         let mut lhs = self.parse_atom_expr()?;
         self.end_operand(&mut chain);
-        while self.can_start_app_arg() {
+        while !self.closed && self.can_start_app_arg() {
             self.chain_link(&mut chain)?;
             let arg = self.parse_app_arg()?;
             self.end_operand(&mut chain);
@@ -1068,15 +1078,30 @@ impl Parser {
                     span,
                 })
             }
-            TokenKind::If => self.parse_if_expr(),
+            TokenKind::If => self.parse_open_ended(Self::parse_if_expr),
             TokenKind::Let => self.parse_let_expr(),
-            TokenKind::Case => self.parse_case_expr(),
-            TokenKind::Fn => self.parse_fn_expr(),
-            TokenKind::Handle => self.parse_handle_expr(),
+            TokenKind::Case => self.parse_open_ended(Self::parse_case_expr),
+            TokenKind::Fn => self.parse_open_ended(Self::parse_fn_expr),
+            TokenKind::Handle => self.parse_open_ended(Self::parse_handle_expr),
             TokenKind::Perform => self.parse_perform_expr(),
             TokenKind::Resume => self.parse_resume_expr(),
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    /// Parse an expression that ends in a sub-expression (`fn ... => e`,
+    /// `if ... else e`, ...). That tail takes every operator and argument
+    /// it can, so anything an enclosing chain could still see was left by a
+    /// tail that stopped early, as in `fn x => x : int (2)` or
+    /// `if a then b else c < d < e`. Those are errors, as in SML, not an
+    /// application of the `fn` or a comparison of the `if`.
+    fn parse_open_ended(
+        &mut self,
+        parse: fn(&mut Self) -> Result<Expr, ParseError>,
+    ) -> Result<Expr, ParseError> {
+        let expr = parse(self)?;
+        self.closed = true;
+        Ok(expr)
     }
 
     fn parse_handle_expr(&mut self) -> Result<Expr, ParseError> {
@@ -2465,6 +2490,28 @@ mod tests {
                 panic!("expected Pipe at top");
             }
         }
+    }
+
+    #[test]
+    fn test_open_ended_forms_are_not_applied() {
+        for src in [
+            "val f = fn x => x : int (2)",
+            "val f = if a then b else c : int 2",
+            "val f = case a of _ => b : int [1]",
+            "val f = handle a with return x => x : int ~1",
+            "val f = fn x => x : int + 1",
+            "val f = if a then b else c < d < e",
+            "val f = 1 + fn x => x : int - 2",
+            "val f = g ~if a then b else c : int 1",
+        ] {
+            assert_eq!(
+                parse_err(src),
+                "expected declaration (val, fun, datatype, type, local, import, use, signature, structure, or effect)",
+                "{src}"
+            );
+        }
+        parse("val f = (fn x => x : int) (2)");
+        parse("val f = let in g end 2");
     }
 
     #[test]
