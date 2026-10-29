@@ -44,15 +44,6 @@ pub fn dispatch_ureq(
     }
 }
 
-pub fn http_get_text(url: &str) -> Result<String, String> {
-    dispatch_ureq("GET", url, &[], "").and_then(|response| {
-        response
-            .into_body()
-            .read_to_string()
-            .map_err(|e| format!("http: {e}"))
-    })
-}
-
 pub fn http_get_text_limited(
     url: &str,
     timeout: Duration,
