@@ -1661,6 +1661,14 @@ impl Compiler {
                     self.emit_get_field(i)?;
                     self.compile_binding_pattern(p)?;
                 }
+                // At top level the fields went to globals, so the tuple is
+                // back on top of the stack and nothing else will remove it.
+                // In a local scope the fields are locals above it, and the
+                // scope end removes them together.
+                if self.ctx().scope_depth == 0 {
+                    self.ctx_mut().locals.pop();
+                    self.emit(Op::Pop);
+                }
                 Ok(())
             }
             PatKind::Paren(p) | PatKind::Ann(p, _) => self.compile_binding_pattern(p),

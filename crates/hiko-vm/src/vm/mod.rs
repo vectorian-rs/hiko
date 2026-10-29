@@ -859,6 +859,31 @@ mod tests {
     }
 
     #[test]
+    fn test_top_level_tuple_destructuring_does_not_grow_main_stack() {
+        let mut source = String::new();
+        for _ in 0..1000 {
+            source.push_str("val (a, b) = (1, 2)\n");
+        }
+        source.push_str("val ((c, _), d) = ((3, 4), 5)\n");
+        let vm = run(&source);
+        assert_eq!(vm.stack.len(), 0, "destructuring left values on the stack");
+        assert_eq!(global_int(&vm, "a"), 1);
+        assert_eq!(global_int(&vm, "b"), 2);
+        assert_eq!(global_int(&vm, "c"), 3);
+        assert_eq!(global_int(&vm, "d"), 5);
+    }
+
+    #[test]
+    fn test_tuple_destructuring_in_local_body_releases_private_locals() {
+        // The private `x` is popped at the end of `local`; the tuple
+        // temporary of the public binding must not sit above it.
+        let vm = run("local val x = 10 in val (a, b) = (x, x + 1) end
+             val c = a + b");
+        assert_eq!(vm.stack.len(), 0);
+        assert_eq!(global_int(&vm, "c"), 21);
+    }
+
+    #[test]
     fn test_case_and_let_as_resume_argument() {
         // The continuation occupies a stack slot while the argument is
         // compiled, so the argument's scrutinee or `let` binding must not
