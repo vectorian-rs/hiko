@@ -667,7 +667,7 @@ fn rename_pat(pat: Pat, scope: &ModuleScope, export_names: bool) -> Pat {
         ),
         PatKind::Constructor(sym, payload) => PatKind::Constructor(
             *scope.constructors.get(&sym).unwrap_or(&sym),
-            payload.map(|payload| Box::new(rename_pat(*payload, scope, false))),
+            payload.map(|payload| Box::new(rename_pat(*payload, scope, export_names))),
         ),
         PatKind::Cons(hd, tl) => PatKind::Cons(
             Box::new(rename_pat(*hd, scope, export_names)),
@@ -1138,6 +1138,31 @@ mod tests {
     #[test]
     fn structure_renames_values_inside_parens() {
         let program = desugar("structure S = struct val x = 1 val y = (x) end");
+        let y = val_expr(&program, "S.y");
+        assert_eq!(var_name(&program, y), "S.x");
+    }
+
+    #[test]
+    fn structure_exports_names_bound_under_constructor_patterns() {
+        let program = desugar(
+            "datatype t = Box of int \
+             structure S = struct val Box x = Box 1 val y = x end",
+        );
+        let bound = program
+            .decls
+            .iter()
+            .find_map(|decl| match &decl.kind {
+                DeclKind::Val(pat, _) => match &pat.kind {
+                    PatKind::Constructor(_, Some(payload)) => Some(payload),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("constructor pattern val");
+        assert!(
+            matches!(bound.kind, PatKind::Var(sym) if program.interner.resolve(sym) == "S.x"),
+            "payload binder not exported: {bound:?}"
+        );
         let y = val_expr(&program, "S.y");
         assert_eq!(var_name(&program, y), "S.x");
     }
