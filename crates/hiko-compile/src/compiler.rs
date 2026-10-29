@@ -378,6 +378,36 @@ struct FuncCtx {
     scope_depth: u32,
     arity: u8,
     name: Option<String>,
+    /// Constant pool indexes already used by this chunk, so repeated
+    /// literals and global names share one entry.
+    string_constants: HashMap<String, u16>,
+    scalar_constants: HashMap<ScalarConstant, u16>,
+}
+
+impl FuncCtx {
+    fn new(name: Option<String>, arity: u8) -> Self {
+        FuncCtx {
+            chunk: Chunk::default(),
+            locals: Vec::new(),
+            max_locals: 0,
+            upvalues: Vec::new(),
+            scope_depth: 0,
+            arity,
+            name,
+            string_constants: HashMap::new(),
+            scalar_constants: HashMap::new(),
+        }
+    }
+}
+
+/// Hashable identity of a non-string constant. Floats compare by bit
+/// pattern, so `0.0` and `-0.0` stay distinct.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ScalarConstant {
+    Int(i64),
+    Float(u64),
+    Word(u64),
+    Char(char),
 }
 
 #[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
@@ -653,15 +683,7 @@ impl Compiler {
 
         let mut c = Compiler {
             functions: Vec::new(),
-            func_stack: vec![FuncCtx {
-                chunk: Chunk::default(),
-                locals: Vec::new(),
-                max_locals: 0,
-                upvalues: Vec::new(),
-                scope_depth: 0,
-                arity: 0,
-                name: None,
-            }],
+            func_stack: vec![FuncCtx::new(None, 0)],
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
             effect_tags: HashMap::new(),
@@ -736,10 +758,7 @@ impl Compiler {
         self.chunk().emit_u16(val);
     }
     fn emit_constant(&mut self, c: Constant) -> Result<(), CompileError> {
-        let idx = self
-            .chunk()
-            .add_constant(c)
-            .map_err(CompileError::codegen)?;
+        let idx = self.add_constant(c)?;
         self.emit(Op::Const);
         self.emit_u16(idx);
         Ok(())
@@ -750,22 +769,40 @@ impl Compiler {
     fn patch_jump(&mut self, pos: usize) -> Result<(), CompileError> {
         self.chunk().patch_jump(pos).map_err(CompileError::codegen)
     }
+    /// Add a constant to the current chunk, reusing an existing equal entry.
+    fn add_constant(&mut self, c: Constant) -> Result<u16, CompileError> {
+        let key = match &c {
+            Constant::String(s) => return self.add_string_constant(s),
+            Constant::Int(n) => ScalarConstant::Int(*n),
+            Constant::Float(f) => ScalarConstant::Float(f.to_bits()),
+            Constant::Word(w) => ScalarConstant::Word(*w),
+            Constant::Char(c) => ScalarConstant::Char(*c),
+        };
+        if let Some(&idx) = self.ctx().scalar_constants.get(&key) {
+            return Ok(idx);
+        }
+        let idx = self
+            .chunk()
+            .add_constant(c)
+            .map_err(CompileError::codegen)?;
+        self.ctx_mut().scalar_constants.insert(key, idx);
+        Ok(idx)
+    }
+
     fn add_string_constant(&mut self, s: &str) -> Result<u16, CompileError> {
-        self.chunk()
+        if let Some(&idx) = self.ctx().string_constants.get(s) {
+            return Ok(idx);
+        }
+        let idx = self
+            .chunk()
             .add_constant(Constant::String(s.to_string()))
-            .map_err(CompileError::codegen)
+            .map_err(CompileError::codegen)?;
+        self.ctx_mut().string_constants.insert(s.to_string(), idx);
+        Ok(idx)
     }
 
     fn push_new_function(&mut self, name: Option<String>) {
-        self.func_stack.push(FuncCtx {
-            chunk: Chunk::default(),
-            locals: Vec::new(),
-            max_locals: 0,
-            upvalues: Vec::new(),
-            scope_depth: 0,
-            arity: 1,
-            name,
-        });
+        self.func_stack.push(FuncCtx::new(name, 1));
     }
 
     // ── Variable resolution ──────────────────────────────────────────
@@ -2441,6 +2478,15 @@ mod tests {
         );
         // ... but the parameter `g` inside `h` shadows it.
         assert!(!h.chunk.code.contains(&call_direct));
+    }
+
+    #[test]
+    fn compile_deduplicates_constants_per_chunk() {
+        let program = parse_program("val x = 1\nval y = x + x + 1\nval s = \"x\"\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        // Int 1, and the strings "x", "y", "s" (the literal "x" shares the
+        // entry used for the global name `x`).
+        assert_eq!(compiled.main.constants.len(), 4);
     }
 
     #[test]
