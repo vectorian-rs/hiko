@@ -255,7 +255,7 @@ These are the questions the research track should answer, in rough order:
    two places. Decide and make docs, tests, and #29/#30 agree.
 3. **Effect rows in types.** Function types do not record effects, so
    unhandled effects are runtime errors (#48, #74).
-   [`effects.md`](../language/effects.md) lists strategies A to F.
+   [`effects-design.md`](../rnd/effects-design.md) lists strategies A to F.
 4. **Effects and capabilities.** Whether host capabilities become effects
    handled by the runtime, so a policy is a top-level handler. This is the
    point where the research track meets the security focus.

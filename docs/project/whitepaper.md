@@ -85,4 +85,4 @@ language as an experiment with open questions, not as a stable surface.
 | VM and runtime | [vm.md](../architecture/vm.md), [runtime.md](../architecture/runtime.md), [execution-bounds.md](../architecture/execution-bounds.md) |
 | Builtins and capabilities | [builtin-domains.md](../builtins/builtin-domains.md) |
 | Verification | [verification.md](../verification/verification.md) |
-| Effects | [effects.md](../language/effects.md) |
+| Effects | [effects.md](../language/effects.md), [effects-design.md](../rnd/effects-design.md) |
