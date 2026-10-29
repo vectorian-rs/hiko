@@ -1040,7 +1040,12 @@ mod tests {
     fn test_resume_rejects_non_continuation_without_panicking() {
         let program = hiko_compile::chunk::CompiledProgram {
             main: Arc::new(hiko_compile::chunk::Chunk {
-                code: vec![Op::Unit as u8, Op::Unit as u8, Op::Resume as u8],
+                code: vec![
+                    Op::Unit as u8,
+                    Op::Unit as u8,
+                    Op::Resume as u8,
+                    Op::Halt as u8,
+                ],
                 constants: Vec::new(),
                 spans: Vec::new(),
             }),

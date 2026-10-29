@@ -517,7 +517,15 @@ fn decode_instruction(
                 delta: 0,
             }
         }
-        Op::Resume => StackRule::Terminal { min_depth: 2 },
+        Op::Resume => {
+            // The resumed continuation runs until its outermost frame
+            // returns, then execution continues here with that result.
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 2,
+                delta: -1,
+            }
+        }
     };
 
     Ok(DecodedInst {
@@ -858,8 +866,26 @@ mod tests {
 
     #[test]
     fn rejects_resume_without_continuation_and_argument() {
-        let program = empty_program(vec![Op::Resume as u8]);
+        let program = empty_program(vec![Op::Resume as u8, Op::Halt as u8]);
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("requires stack depth >= 2"));
+    }
+
+    #[test]
+    fn verifies_stack_effects_after_resume() {
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::Unit as u8,
+            Op::Resume as u8,
+            Op::Pop as u8,
+            Op::Pop as u8,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(
+            err.message().contains("Pop at offset 4"),
+            "{}",
+            err.message()
+        );
     }
 }
