@@ -14,6 +14,17 @@ fn byte_work(bytes: usize) -> u64 {
     )
 }
 
+/// Reserve an output buffer of `n` bytes, failing with an error instead of
+/// aborting when `n` exceeds the memory limit or cannot be allocated.
+fn reserve_output(heap: &Heap, n: usize, name: &str) -> Result<Vec<u8>, String> {
+    heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(n))
+        .map_err(|e| format!("{name}: {e}"))?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(n)
+        .map_err(|_| format!("{name}: cannot allocate {n} bytes"))?;
+    Ok(buf)
+}
+
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
         ("random_bytes", random_bytes as BuiltinFn),
@@ -29,7 +40,9 @@ pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Str
             let n = *n as usize;
             heap.charge_host_work(byte_work(n))
                 .map_err(|e| format!("random_bytes: {e}"))?;
-            let buf = dryoc::rng::randombytes_buf(n);
+            let mut buf = reserve_output(heap, n, "random_bytes")?;
+            buf.resize(n, 0);
+            dryoc::rng::copy_randombytes(&mut buf);
             heap_alloc(heap, HeapObject::Bytes(buf))
         }
         Value::Int(_) => Err("random_bytes: length must be non-negative".into()),
@@ -93,7 +106,7 @@ pub(super) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String
     };
     heap.charge_host_work(byte_work(n))
         .map_err(|e| format!("rng_bytes: {e}"))?;
-    let mut output = Vec::with_capacity(n);
+    let mut output = reserve_output(heap, n, "rng_bytes")?;
     while output.len() < n {
         let (word, new_state) = pcg_next(state, inc);
         state = new_state;
@@ -163,5 +176,34 @@ mod tests {
         let mut heap = Heap::new();
         random_bytes(&[Value::Int(1)], &mut heap).unwrap();
         assert!(heap.host_work_used() >= RANDOM_BYTES_BASE_HOST_WORK);
+    }
+
+    #[test]
+    fn random_bytes_checks_memory_limit_before_allocating() {
+        let mut heap = Heap::new();
+        heap.set_max_bytes(1024);
+        let err = random_bytes(&[Value::Int(1 << 20)], &mut heap).unwrap_err();
+        assert!(err.contains("random_bytes"), "{err}");
+    }
+
+    #[test]
+    fn random_bytes_huge_length_is_an_error_not_an_abort() {
+        let mut heap = Heap::new();
+        let err = random_bytes(&[Value::Int(i64::MAX)], &mut heap).unwrap_err();
+        assert!(err.contains("cannot allocate"), "{err}");
+    }
+
+    #[test]
+    fn rng_bytes_huge_length_is_an_error_not_an_abort() {
+        let mut heap = Heap::new();
+        let seed = heap_alloc(&mut heap, HeapObject::Bytes(vec![1, 2, 3])).unwrap();
+        let rng = rng_seed(&[seed], &mut heap).unwrap();
+        let args = heap_alloc(
+            &mut heap,
+            HeapObject::Tuple(smallvec![rng, Value::Int(i64::MAX)]),
+        )
+        .unwrap();
+        let err = rng_bytes(&[args], &mut heap).unwrap_err();
+        assert!(err.contains("cannot allocate"), "{err}");
     }
 }
