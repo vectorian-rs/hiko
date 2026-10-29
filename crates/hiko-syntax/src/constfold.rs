@@ -96,6 +96,7 @@ fn fold_expr(expr: Expr) -> Expr {
                 .collect(),
         ),
         ExprKind::Tuple(elems) => ExprKind::Tuple(elems.into_iter().map(fold_expr).collect()),
+        ExprKind::List(elems) => ExprKind::List(elems.into_iter().map(fold_expr).collect()),
         ExprKind::Cons(hd, tl) => {
             ExprKind::Cons(Box::new(fold_expr(*hd)), Box::new(fold_expr(*tl)))
         }

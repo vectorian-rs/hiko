@@ -2111,13 +2111,21 @@ impl Compiler {
                 self.emit_make_tuple(elems.len())?;
             }
             ExprKind::List(elems) => {
-                assert!(
-                    elems.is_empty(),
-                    "non-empty list should be desugared to Cons"
-                );
+                // Same code as the nested `e1 :: (e2 :: ... :: [])`: the
+                // elements left to right, then Nil, then one MakeCons each.
+                let locals_before = self.ctx().locals.len();
+                for elem in elems {
+                    self.compile_expr(elem)?;
+                    // An empty name never resolves as a variable.
+                    self.add_local(String::new());
+                }
+                self.ctx_mut().locals.truncate(locals_before);
                 self.emit(Op::MakeData);
                 self.emit_u16(0); // Nil
                 self.emit_u8(0);
+                for _ in elems {
+                    self.emit(Op::MakeCons);
+                }
             }
             ExprKind::Cons(head, tail) => {
                 self.compile_operands(&[head, tail])?;
@@ -2471,6 +2479,18 @@ mod tests {
         let program = parse_program("val xs = 1 :: []\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
         assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
+    }
+
+    #[test]
+    fn list_literal_compiles_like_the_cons_chain_it_stands_for() {
+        let code = |src: &str| {
+            let (compiled, _) = Compiler::compile(parse_program(src)).expect("compile");
+            compiled.main.code.clone()
+        };
+        assert_eq!(
+            code("val xs = [print \"a\", print \"b\", ()]\n"),
+            code("val xs = print \"a\" :: print \"b\" :: () :: []\n")
+        );
     }
 
     #[test]

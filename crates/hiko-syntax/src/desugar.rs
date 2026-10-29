@@ -860,19 +860,14 @@ fn desugar_expr(expr: Expr, interner: &mut StringInterner) -> Expr {
     let span = expr.span;
     let kind = match expr.kind {
         ExprKind::Paren(e) => return desugar_expr(*e, interner),
-        ExprKind::List(elems) if !elems.is_empty() => {
-            let mut result = Expr {
-                kind: ExprKind::List(vec![]),
-                span,
-            };
-            for elem in elems.into_iter().rev() {
-                result = Expr {
-                    kind: ExprKind::Cons(Box::new(desugar_expr(elem, interner)), Box::new(result)),
-                    span,
-                };
-            }
-            return result;
-        }
+        // List literals stay flat: as nested `Cons` cells, a long literal
+        // would drive every later recursive pass one frame deeper per element.
+        ExprKind::List(elems) => ExprKind::List(
+            elems
+                .into_iter()
+                .map(|expr| desugar_expr(expr, interner))
+                .collect(),
+        ),
         ExprKind::BinOp(BinOp::Andalso, lhs, rhs) => ExprKind::If(
             Box::new(desugar_expr(*lhs, interner)),
             Box::new(desugar_expr(*rhs, interner)),
