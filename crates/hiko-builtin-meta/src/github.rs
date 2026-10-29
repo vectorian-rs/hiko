@@ -1,30 +1,8 @@
-use crate::{BuiltinMeta, BuiltinSurface};
-
-const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
+use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta {
-        name: "github_issue_create",
-        capability_path: Some("capabilities.github.issue.create"),
-        in_core_default: false,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "github_issue_view",
-        capability_path: Some("capabilities.github.issue.view"),
-        in_core_default: false,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "github_issue_update",
-        capability_path: Some("capabilities.github.issue.update"),
-        in_core_default: false,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "github_issue_list",
-        capability_path: Some("capabilities.github.issue.list"),
-        in_core_default: false,
-        surface: PUBLIC,
-    },
+    BuiltinMeta::opt_in("github_issue_create", "capabilities.github.issue.create"),
+    BuiltinMeta::opt_in("github_issue_view", "capabilities.github.issue.view"),
+    BuiltinMeta::opt_in("github_issue_update", "capabilities.github.issue.update"),
+    BuiltinMeta::opt_in("github_issue_list", "capabilities.github.issue.list"),
 ];

@@ -1,18 +1,12 @@
-use crate::{BuiltinMeta, BuiltinSurface};
-
-const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
+use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta {
-        name: "aws_config_sso_profile",
-        capability_path: Some("capabilities.aws.config.sso_profile"),
-        in_core_default: false,
-        surface: PUBLIC,
-    },
-    BuiltinMeta {
-        name: "aws_config_instance_profile",
-        capability_path: Some("capabilities.aws.config.instance_profile"),
-        in_core_default: false,
-        surface: PUBLIC,
-    },
+    BuiltinMeta::opt_in(
+        "aws_config_sso_profile",
+        "capabilities.aws.config.sso_profile",
+    ),
+    BuiltinMeta::opt_in(
+        "aws_config_instance_profile",
+        "capabilities.aws.config.instance_profile",
+    ),
 ];

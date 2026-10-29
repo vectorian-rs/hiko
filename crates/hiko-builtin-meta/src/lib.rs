@@ -4,8 +4,6 @@ mod aws_config;
 mod aws_s3;
 #[cfg(feature = "builtin-aws-sqs")]
 mod aws_sqs;
-#[cfg(feature = "builtin-github")]
-mod github;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -16,6 +14,8 @@ mod env;
 mod exec;
 #[cfg(feature = "builtin-filesystem")]
 mod filesystem;
+#[cfg(feature = "builtin-github")]
+mod github;
 #[cfg(feature = "builtin-hash")]
 mod hash;
 #[cfg(feature = "builtin-http")]
@@ -57,6 +57,41 @@ pub struct BuiltinMeta {
     pub capability_path: Option<&'static str>,
     pub in_core_default: bool,
     pub surface: BuiltinSurface,
+}
+
+// Each constructor is unused in builds that disable every family using it.
+#[allow(dead_code)]
+impl BuiltinMeta {
+    /// Public builtin that the core-only VM registers by default.
+    const fn core(name: &'static str, capability_path: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: true,
+            surface: BuiltinSurface::Public,
+        }
+    }
+
+    /// Public builtin that is only registered when a policy enables it.
+    const fn opt_in(name: &'static str, capability_path: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: false,
+            surface: BuiltinSurface::Public,
+        }
+    }
+
+    /// Internal alias used by `__Builtin` modules. It has no policy leaf and
+    /// is always registered.
+    const fn runtime_alias(name: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: None,
+            in_core_default: true,
+            surface: BuiltinSurface::RuntimeOnly,
+        }
+    }
 }
 
 pub use internal::{

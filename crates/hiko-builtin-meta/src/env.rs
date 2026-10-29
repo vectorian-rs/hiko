@@ -1,10 +1,3 @@
-use crate::{BuiltinMeta, BuiltinSurface};
+use crate::BuiltinMeta;
 
-const PUBLIC: BuiltinSurface = BuiltinSurface::Public;
-
-pub const BUILTINS: &[BuiltinMeta] = &[BuiltinMeta {
-    name: "getenv",
-    capability_path: Some("capabilities.env.getenv"),
-    in_core_default: true,
-    surface: PUBLIC,
-}];
+pub const BUILTINS: &[BuiltinMeta] = &[BuiltinMeta::core("getenv", "capabilities.env.getenv")];
