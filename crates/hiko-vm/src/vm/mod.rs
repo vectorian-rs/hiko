@@ -1113,6 +1113,33 @@ mod tests {
     }
 
     #[test]
+    fn test_builtin_call_with_wrong_arity_fails_without_panicking() {
+        use hiko_compile::chunk::Chunk;
+        for arity in [0u8, 2] {
+            let mut code = vec![Op::GetGlobal as u8, 0, 0];
+            code.extend(std::iter::repeat_n(Op::Unit as u8, arity as usize));
+            code.extend([Op::Call as u8, arity, Op::Halt as u8]);
+            let program = hiko_compile::chunk::CompiledProgram {
+                main: Arc::new(Chunk {
+                    code,
+                    constants: vec![Constant::String("abs_int".into())],
+                    spans: Vec::new(),
+                }),
+                main_n_locals: 0,
+                functions: Arc::from([]),
+                effects: Arc::from([]),
+            };
+            let mut vm = VM::try_new(program).expect("program should verify");
+            let err = vm.run().expect_err("wrong builtin arity should fail");
+            assert!(
+                err.message.contains("arg"),
+                "arity {arity}: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
     fn test_effect_nested_handlers() {
         // Nested handle blocks with different effects
         let vm = run("effect A of unit
