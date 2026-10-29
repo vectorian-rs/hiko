@@ -110,6 +110,11 @@ fn parse_offset_minutes(text: &str) -> Result<i32, String> {
         Some(b'-') => (-1, &text[1..]),
         _ => return Err(format!("invalid offset '{text}'")),
     };
+    // Digits only, so the fixed-width slices below stay on char boundaries
+    // and `parse` cannot accept a second sign.
+    if !rest.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+        return Err(format!("invalid offset '{text}'"));
+    }
 
     let (hours, minutes) = if let Some((h, m)) = rest.split_once(':') {
         let hours = h
@@ -136,7 +141,9 @@ fn parse_offset_minutes(text: &str) -> Result<i32, String> {
         return Err(format!("invalid offset '{text}'"));
     };
 
-    if !(0..=59).contains(&minutes) {
+    // jiff accepts offsets up to 25:59:59; the bound also keeps the
+    // arithmetic below from overflowing.
+    if !(0..=59).contains(&minutes) || !(0..=25).contains(&hours) {
         return Err(format!("invalid offset '{text}'"));
     }
 
@@ -506,5 +513,20 @@ mod tests {
         let mut heap = Heap::new();
         let text = fixed_offset(&[Value::Int(90)], &mut heap).unwrap();
         assert_eq!(heap_string(text, &heap), "+01:30");
+    }
+
+    #[test]
+    fn parse_offset_minutes_accepts_supported_forms() {
+        assert_eq!(parse_offset_minutes("Z"), Ok(0));
+        assert_eq!(parse_offset_minutes("+05:30"), Ok(330));
+        assert_eq!(parse_offset_minutes("-0130"), Ok(-90));
+        assert_eq!(parse_offset_minutes("+02"), Ok(120));
+    }
+
+    #[test]
+    fn parse_offset_minutes_rejects_malformed_input_without_panicking() {
+        for text in ["+1\u{e9}1", "+99999999:00", "+-5:00", "+25:60", "+26:00"] {
+            assert!(parse_offset_minutes(text).is_err(), "{text}");
+        }
     }
 }
