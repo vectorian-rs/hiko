@@ -1108,7 +1108,7 @@ fn wake_any_waiters(cx: Ctx<'_>, finished_pid: Pid, terminations: &mut Terminati
             Ok(waiter) => waiter,
             Err(NotTaken::InFlight) => continue,
             Err(NotTaken::Stale) => {
-                remove_waiter_globally(&cx.table.any_waiters, waiter_pid);
+                remove_stale_waiter(cx.table, &cx.table.any_waiters, finished_pid, waiter_pid);
                 continue;
             }
         };
@@ -1162,7 +1162,7 @@ fn wake_join_waiters(cx: Ctx<'_>, finished_pid: Pid, terminations: &mut Terminat
             Ok(waiter) => waiter,
             Err(NotTaken::InFlight) => continue,
             Err(NotTaken::Stale) => {
-                remove_waiter_globally(&cx.table.waiters, waiter_pid);
+                remove_stale_waiter(cx.table, &cx.table.waiters, finished_pid, waiter_pid);
                 continue;
             }
         };
@@ -1203,6 +1203,23 @@ fn remove_io_waiters_for_pid(table: &ProcessTable, pid: Pid) {
         .collect();
     for token in tokens {
         table.io_waiters.remove(&token);
+    }
+}
+
+/// Drop a registration that `take_waiter` found stale. A live waiter may
+/// already be registered for a different child (a late waker raced with its
+/// delivery and it has since blocked again), so only its entry for
+/// `finished_pid` goes. A terminated waiter can hold no valid registration.
+fn remove_stale_waiter(
+    table: &ProcessTable,
+    waiters: &DashMap<Pid, Vec<Pid>>,
+    finished_pid: Pid,
+    waiter_pid: Pid,
+) {
+    if table.live.contains(&waiter_pid) {
+        remove_waiter(waiters, finished_pid, waiter_pid);
+    } else {
+        remove_waiter_globally(waiters, waiter_pid);
     }
 }
 
@@ -1346,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wake_any_waiters_removes_non_blocked_waiter_registrations() {
+    fn test_wake_any_waiters_drops_only_finished_entry_of_non_blocked_live_waiter() {
         let table = ProcessTable::new();
         let waiter = Pid(10);
         let child1 = Pid(11);
@@ -1358,8 +1375,10 @@ mod tests {
         with_ctx(&table, |cx, t| wake_any_waiters(cx, child1, t));
 
         assert!(!table.any_waiters.contains_key(&child1));
+        // The waiter is live, so it may register for other children at any
+        // moment; only the entry for the finished child is removed.
         assert!(
-            !table
+            table
                 .any_waiters
                 .get(&child2)
                 .is_some_and(|waiters| waiters.contains(&waiter))
@@ -1429,8 +1448,61 @@ mod tests {
         );
     }
 
+    /// A late waker for a child the waiter already consumed must not drop
+    /// the waiter's registration for the child it awaits now. (Found by the
+    /// 50-run loop: the root's registration vanished and the deadlock safety
+    /// net failed it.)
     #[test]
-    fn test_wake_join_waiters_removes_non_blocked_waiter_registrations() {
+    fn test_late_join_wake_keeps_registration_for_current_child() {
+        let table = ProcessTable::new();
+        let waiter = Pid(10);
+        let old_child = Pid(11);
+        let current_child = Pid(12);
+        let mut process = Process::new(waiter, VM::new(compile("val _ = ()")), None);
+        process.status = ProcessStatus::Blocked(BlockReason::Await {
+            child: current_child,
+            kind: AwaitKind::Raw,
+        });
+        table.insert(process);
+        table.live.insert(current_child);
+        table.waiters.insert(old_child, vec![waiter]);
+        table.waiters.insert(current_child, vec![waiter]);
+        table.tombstones.insert(old_child, ready_unit_child(waiter));
+
+        with_ctx(&table, |cx, t| wake_join_waiters(cx, old_child, t));
+
+        assert!(!table.waiters.contains_key(&old_child));
+        assert_eq!(
+            table.waiters.get(&current_child).map(|w| w.clone()),
+            Some(vec![waiter])
+        );
+    }
+
+    /// Same race for wait_any.
+    #[test]
+    fn test_late_wait_any_wake_keeps_registration_for_current_children() {
+        let table = ProcessTable::new();
+        let waiter = Pid(10);
+        let old_child = Pid(11);
+        let current_child = Pid(12);
+        let mut process = Process::new(waiter, VM::new(compile("val _ = ()")), None);
+        process.status = ProcessStatus::Blocked(BlockReason::WaitAny(vec![current_child]));
+        table.insert(process);
+        table.live.insert(current_child);
+        table.any_waiters.insert(old_child, vec![waiter]);
+        table.any_waiters.insert(current_child, vec![waiter]);
+
+        with_ctx(&table, |cx, t| wake_any_waiters(cx, old_child, t));
+
+        assert!(!table.any_waiters.contains_key(&old_child));
+        assert_eq!(
+            table.any_waiters.get(&current_child).map(|w| w.clone()),
+            Some(vec![waiter])
+        );
+    }
+
+    #[test]
+    fn test_wake_join_waiters_drops_only_finished_entry_of_non_blocked_live_waiter() {
         let table = ProcessTable::new();
         let waiter = Pid(10);
         let child1 = Pid(11);
@@ -1443,8 +1515,10 @@ mod tests {
         with_ctx(&table, |cx, t| wake_join_waiters(cx, child1, t));
 
         assert!(!table.waiters.contains_key(&child1));
+        // The waiter is live, so it may register for other children at any
+        // moment; only the entry for the finished child is removed.
         assert!(
-            !table
+            table
                 .waiters
                 .get(&child2)
                 .is_some_and(|waiters| waiters.contains(&waiter))
