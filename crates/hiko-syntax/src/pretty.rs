@@ -553,16 +553,16 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringIn
         }
         ExprKind::UnaryNeg(e) => {
             buf.push('~');
-            pretty_atom_expr(buf, e, indent, interner);
+            pretty_unary_operand(buf, e, indent, interner);
         }
         ExprKind::Not(e) => {
             buf.push_str("not ");
-            pretty_atom_expr(buf, e, indent, interner);
+            pretty_unary_operand(buf, e, indent, interner);
         }
         ExprKind::App(func, arg) => {
             pretty_app_func(buf, func, indent, interner);
             buf.push(' ');
-            pretty_atom_expr(buf, arg, indent, interner);
+            pretty_app_arg(buf, arg, indent, interner);
         }
         ExprKind::Fn(pat, body) => {
             buf.push_str("fn ");
@@ -676,6 +676,27 @@ fn pretty_atom_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &Str
         buf.push(')');
     } else {
         pretty_expr(buf, expr, indent, interner);
+    }
+}
+
+/// A prefix `~` or `not` takes another prefix operator or an application
+/// (`~ ~x`, `not f x`), so only other operands need parentheses.
+fn pretty_unary_operand(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
+    match &expr.kind {
+        ExprKind::UnaryNeg(_) | ExprKind::Not(_) | ExprKind::App(_, _) => {
+            pretty_expr(buf, expr, indent, interner)
+        }
+        _ => pretty_atom_expr(buf, expr, indent, interner),
+    }
+}
+
+/// An argument is an atom, or `~`/`not` applied to an atom (`f ~1`).
+fn pretty_app_arg(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
+    match &expr.kind {
+        ExprKind::UnaryNeg(operand) | ExprKind::Not(operand) if !needs_parens_as_atom(operand) => {
+            pretty_expr(buf, expr, indent, interner)
+        }
+        _ => pretty_atom_expr(buf, expr, indent, interner),
     }
 }
 

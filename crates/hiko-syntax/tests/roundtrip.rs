@@ -425,6 +425,23 @@ fn rt_app_not() {
 }
 
 #[test]
+fn rt_unary_operands_stay_unparenthesized() {
+    for src in [
+        "val x = ~ ~1",
+        "val x = not not true",
+        "val x = ~f x",
+        "val x = not f x",
+        "val x = f ~1",
+        "val x = f not true",
+        "val x = f ~(g x)",
+        "val x = ~(a + b)",
+    ] {
+        let expected = src.replace("~ ~", "~~");
+        assert_eq!(roundtrip(src), expected, "{src}");
+    }
+}
+
+#[test]
 fn rt_constructor_unary_neg() {
     assert_roundtrip("val x = Some ~1");
 }
