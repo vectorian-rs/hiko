@@ -612,33 +612,39 @@ impl VM {
                     let arg = self.pop()?;
                     let cont_val = self.pop()?;
 
-                    let cont_ref = match cont_val {
-                        Value::Heap(r) => r,
+                    let data = match cont_val {
+                        Value::Heap(r) => match self.heap.get(r) {
+                            Ok(HeapObject::Continuation(data)) => data,
+                            _ => {
+                                return Err(RuntimeError {
+                                    message: "resume: expected continuation".into(),
+                                });
+                            }
+                        },
                         _ => {
                             return Err(RuntimeError {
                                 message: "resume: expected continuation".into(),
                             });
                         }
                     };
-                    let (saved_frames, saved_stack, saved_handler) =
-                        match self.heap_get(cont_ref)? {
-                            HeapObject::Continuation(data) => (
-                                data.saved_frames.clone(),
-                                data.saved_stack.clone(),
-                                data.saved_handler.clone(),
-                            ),
-                            _ => {
-                                return Err(RuntimeError {
-                                    message: "resume: expected continuation".into(),
-                                });
-                            }
-                        };
+
+                    // A continuation can be resumed more than once, so its
+                    // saved state is copied, not moved, onto the live stacks.
+                    if self.stack.len().saturating_add(data.saved_stack.len())
+                        >= DEFAULT_MAX_STACK_SLOTS
+                        || self.frames.len().saturating_add(data.saved_frames.len())
+                            > DEFAULT_MAX_CALL_FRAMES
+                    {
+                        return Err(RuntimeError {
+                            message: "stack overflow".into(),
+                        });
+                    }
 
                     let stack_base = self.stack.len();
-                    self.stack.extend_from_slice(&saved_stack);
+                    self.stack.extend_from_slice(&data.saved_stack);
 
                     let first_restored_idx = self.frames.len();
-                    for sf in &saved_frames {
+                    for sf in &data.saved_frames {
                         let frame_base =
                             stack_base
                                 .checked_add(sf.base_offset)
@@ -653,10 +659,16 @@ impl VM {
                         });
                     }
 
-                    if let Some(sh) = saved_handler
+                    if let Some(sh) = &data.saved_handler
                         && self.handlers.len() < sh.handler_count_before
                     {
-                        let handler_frame_base = self.frames[first_restored_idx].base;
+                        let handler_frame_base = self
+                            .frames
+                            .get(first_restored_idx)
+                            .map(|frame| frame.base)
+                            .ok_or_else(|| RuntimeError {
+                                message: "resume: continuation has no handler frame".into(),
+                            })?;
                         let stack_base = handler_frame_base
                             .checked_add(sh.locals_offset)
                             .ok_or_else(|| RuntimeError {
@@ -665,9 +677,9 @@ impl VM {
                         self.handlers.push(HandlerFrame {
                             call_frame_idx: first_restored_idx,
                             stack_base,
-                            clauses: sh.clauses,
+                            clauses: sh.clauses.clone(),
                             proto_idx: sh.proto_idx,
-                            captures: sh.captures,
+                            captures: sh.captures.clone(),
                         });
                     }
 
