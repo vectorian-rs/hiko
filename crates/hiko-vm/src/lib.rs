@@ -9,6 +9,8 @@ pub mod runtime_ops;
 pub mod scheduler;
 pub mod sendable;
 pub mod shape_check;
+#[cfg(test)]
+mod test_support;
 pub mod threaded;
 pub mod value;
 pub mod verify;

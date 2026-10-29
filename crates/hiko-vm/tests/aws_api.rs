@@ -1,24 +1,13 @@
 #![cfg(feature = "builtin-aws-s3")]
 
-use std::path::Path;
+mod common;
+
 use std::sync::Arc;
 
+use common::compile_file_hermetic as compile_file;
 use hiko_vm::builder::{AwsConfigPolicy, AwsS3Policy, VMBuilder};
 use hiko_vm::io_backend::MockIoBackend;
 use hiko_vm::threaded::ThreadedRuntime;
-
-fn compile_file(path: &str) -> hiko_compile::chunk::CompiledProgram {
-    let source = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("cannot read {path}"));
-    let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
-        .tokenize()
-        .expect("lex error");
-    let program = hiko_syntax::parser::Parser::new(tokens)
-        .parse_program()
-        .expect("parse error");
-    hiko_compile::compiler::Compiler::compile_file(program, Path::new(path))
-        .expect("compile error")
-        .0
-}
 
 #[test]
 fn aws_public_api_shape_compiles() {

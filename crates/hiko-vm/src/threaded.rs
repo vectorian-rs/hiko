@@ -1262,11 +1262,7 @@ mod tests {
     }
 
     fn compile_file(path: &Path) -> CompiledProgram {
-        let source = std::fs::read_to_string(path).expect("read source");
-        let tokens = Lexer::new(&source, 0).tokenize().unwrap();
-        let program = Parser::new(tokens).parse_program().unwrap();
-        let (compiled, _) = Compiler::compile_file(program, path).unwrap();
-        compiled
+        crate::test_support::compile_file_hermetic(path)
     }
 
     fn temp_path(name: &str) -> PathBuf {
