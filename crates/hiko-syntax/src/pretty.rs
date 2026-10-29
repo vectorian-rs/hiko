@@ -695,13 +695,29 @@ fn pretty_unary_operand(buf: &mut String, expr: &Expr, indent: usize, interner: 
     }
 }
 
-/// An argument is an atom, or `~`/`not` applied to an atom (`f ~1`).
+/// An argument is an atom, or `~`/`not` applied to what the parser reads as
+/// an atom there, which includes the keyword forms (`f ~1`, `f ~fn x => x`).
 fn pretty_app_arg(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
-    match &expr.kind {
-        ExprKind::UnaryNeg(operand) | ExprKind::Not(operand) if !needs_parens_as_atom(operand) => {
-            pretty_expr(buf, expr, indent, interner)
+    let bare_prefix = match &expr.kind {
+        ExprKind::UnaryNeg(operand) | ExprKind::Not(operand) => {
+            !needs_parens_as_atom(operand)
+                || matches!(
+                    &operand.kind,
+                    ExprKind::If(..)
+                        | ExprKind::Let(..)
+                        | ExprKind::Case(..)
+                        | ExprKind::Fn(..)
+                        | ExprKind::Handle { .. }
+                        | ExprKind::Perform(..)
+                        | ExprKind::Resume(..)
+                )
         }
-        _ => pretty_atom_expr(buf, expr, indent, interner),
+        _ => false,
+    };
+    if bare_prefix {
+        pretty_expr(buf, expr, indent, interner);
+    } else {
+        pretty_atom_expr(buf, expr, indent, interner);
     }
 }
 
