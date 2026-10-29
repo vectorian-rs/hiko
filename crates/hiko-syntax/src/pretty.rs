@@ -162,6 +162,27 @@ fn line_for(ctx: &CommentCtx<'_>, byte: u32) -> usize {
     line_for_offset(ctx.line_offsets, byte as usize)
 }
 
+/// Offset that divides the comments of `local <locals> in <body> end` between
+/// its two halves, so each comment is owned by exactly one of them. The AST
+/// does not record where `in` is: a comment on the last local's final line
+/// trails that declaration, and anything after that line leads the body.
+pub(crate) fn local_comment_split(
+    decl: &Decl,
+    locals: &[Decl],
+    body: &[Decl],
+    line_offsets: &[usize],
+) -> u32 {
+    let Some(last) = locals.last() else {
+        return decl.span.start;
+    };
+    let body_start = body.first().map_or(decl.span.end, |d| d.span.start);
+    let next_line = line_for_offset(line_offsets, last.span.end as usize) + 1;
+    line_offsets
+        .get(next_line)
+        .map_or(body_start, |&offset| offset as u32)
+        .min(body_start)
+}
+
 /// Zero-based line containing `byte`, given the start offset of every line.
 pub(crate) fn line_for_offset(line_offsets: &[usize], byte: usize) -> usize {
     match line_offsets.binary_search(&byte) {
@@ -269,6 +290,9 @@ fn pretty_decl(
             pretty_type(buf, &ta.ty, interner);
         }
         DeclKind::Local(locals, body) => {
+            let split = ctx.map_or(decl.span.end, |ctx| {
+                local_comment_split(decl, locals, body, ctx.line_offsets)
+            });
             write_indent(buf, indent);
             buf.push_str("local\n");
             pretty_decl_list(
@@ -278,22 +302,14 @@ fn pretty_decl(
                 interner,
                 ctx,
                 decl.span.start,
-                decl.span.end,
+                split,
             );
             if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
             buf.push_str("in\n");
-            pretty_decl_list(
-                buf,
-                body,
-                indent + 2,
-                interner,
-                ctx,
-                decl.span.start,
-                decl.span.end,
-            );
+            pretty_decl_list(buf, body, indent + 2, interner, ctx, split, decl.span.end);
             if !buf.ends_with('\n') {
                 buf.push('\n');
             }

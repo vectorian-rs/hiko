@@ -1,7 +1,7 @@
 use crate::ast::{Decl, DeclKind, Program};
 use crate::lexer::{LexError, Lexer};
 use crate::parser::{ParseError, Parser};
-use crate::pretty::{Comment, line_for_offset, pretty_program_with_comments};
+use crate::pretty::{Comment, line_for_offset, local_comment_split, pretty_program_with_comments};
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -191,22 +191,16 @@ fn mark_nested_decl_comments(
             allowed,
         ),
         DeclKind::Local(locals, body) => {
+            let split = local_comment_split(decl, locals, body, line_offsets);
             mark_allowed_decl_comments(
                 locals,
                 decl.span.start,
-                decl.span.end,
+                split,
                 comments,
                 line_offsets,
                 allowed,
             );
-            mark_allowed_decl_comments(
-                body,
-                decl.span.start,
-                decl.span.end,
-                comments,
-                line_offsets,
-                allowed,
-            );
+            mark_allowed_decl_comments(body, split, decl.span.end, comments, line_offsets, allowed);
         }
         _ => {}
     }
@@ -347,6 +341,23 @@ mod tests {
             fmt(source),
             "fun walk dir =\n  let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries =\n  case entries of\n      [] => ()\n    | name :: rest => walk_entries dir rest\n"
         );
+    }
+
+    #[test]
+    fn local_comments_are_printed_once_in_their_own_section() {
+        for source in [
+            "local\n  (* c1 *)\n  val a = 1  (* t1 *)\nin\n  (* c2 *)\n  val b = 2\nend\n",
+            "local\n  val a = 1\nin\n  val b = 2\n\n  (* tail *)\nend\n",
+        ] {
+            assert_eq!(fmt(source), source);
+        }
+    }
+
+    #[test]
+    fn rejects_comments_inside_local_body_expressions() {
+        let source = "local\n  val a = 1\nin\n  val b = (* inner *) 2\nend\n";
+        let err = format_source(source, 0).expect_err("expression comment should be rejected");
+        assert!(matches!(err, super::FormatError::UnsupportedComment { .. }));
     }
 
     #[test]
