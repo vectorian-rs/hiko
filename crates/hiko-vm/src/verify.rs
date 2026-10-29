@@ -769,6 +769,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_set_local_out_of_bounds_in_main() {
+        let cases = [
+            (vec![Op::Unit as u8, Op::SetLocal3 as u8, Op::Halt as u8], 3),
+            (
+                vec![Op::Unit as u8, Op::SetLocal as u8, 2, 0, Op::Halt as u8],
+                2,
+            ),
+        ];
+        for (code, slot) in cases {
+            let program = program_with_effects(code, slot, Vec::new());
+            let err = verify_program(&program).expect_err("program should fail verification");
+            assert!(err.message().contains("SetLocal"), "{}", err.message());
+            assert!(
+                err.message().contains(&format!("local slot {slot}")),
+                "{}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
     fn rejects_function_get_local_out_of_bounds() {
         let function = proto(vec![Op::GetLocal as u8, 1, 0, Op::Return as u8], 0, 0, 1);
         let program = CompiledProgram {

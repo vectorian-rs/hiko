@@ -1135,6 +1135,46 @@ mod tests {
     }
 
     #[test]
+    fn test_set_local_out_of_range_is_runtime_error_without_verifier() {
+        use hiko_compile::chunk::Chunk;
+        let programs = [
+            vec![Op::Unit as u8, Op::SetLocal as u8, 5, 0, Op::Halt as u8],
+            vec![
+                Op::Unit as u8,
+                Op::SetLocal as u8,
+                0xff,
+                0xff,
+                Op::Halt as u8,
+            ],
+            vec![Op::Unit as u8, Op::SetLocal3 as u8, Op::Halt as u8],
+        ];
+        for code in programs {
+            let program = hiko_compile::chunk::CompiledProgram {
+                main: Arc::new(Chunk {
+                    code: code.clone(),
+                    constants: Vec::new(),
+                    spans: Vec::new(),
+                }),
+                main_n_locals: 0,
+                functions: Arc::from([]),
+                effects: Arc::from([]),
+            };
+            assert!(
+                verify_program(&program).is_err(),
+                "{code:?} should fail verification"
+            );
+            // Skip the verifier to exercise the VM's own bounds check.
+            let mut vm = VM::from_verified_program(program, None);
+            let err = vm.run().expect_err("out-of-range SetLocal should fail");
+            assert!(
+                err.message.contains("SetLocal") && err.message.contains("out of bounds"),
+                "{code:?}: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
     fn test_perform_rejects_handler_from_returned_frame_without_panicking() {
         // Hand-written bytecode that returns from a function without removing
         // its handler passes the verifier. A later perform must fail cleanly.
