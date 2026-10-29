@@ -2481,6 +2481,68 @@ mod tests {
         assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
     }
 
+    /// Long chains and deep nesting must end in a parse error or a compiled
+    /// program, never a stack overflow, on a thread with the 8 MiB stack a
+    /// main thread gets (`hiko check` runs there).
+    #[test]
+    fn deep_and_long_sources_do_not_overflow_the_stack() {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(|| {
+                let parse_error = |src: &str| {
+                    let tokens = Lexer::new(src, 0).tokenize().expect("lex");
+                    Parser::new(tokens).parse_program().unwrap_err().message
+                };
+                let n = 5_000;
+                for src in [
+                    format!("val x = 1{}", " + 1".repeat(n)),
+                    format!("val x = {}[]", "1 :: ".repeat(n)),
+                    format!("fun f x = x\nval x = 1{}", " |> f".repeat(n)),
+                    format!("val x = \"a\"{}", " ^ \"a\"".repeat(n)),
+                    format!("val x = true{}", " andalso true".repeat(n)),
+                    format!("fun f x = f\nval x = f{}", " 1".repeat(n)),
+                    format!("fun f ({}[]) = 1", "x :: ".repeat(n)),
+                    format!("fun f [{}_] = 1", "_, ".repeat(n)),
+                    format!("val f : int{} = 1", " -> int".repeat(n)),
+                    format!("val xs : int{} = []", " list".repeat(n)),
+                ] {
+                    assert_eq!(parse_error(&src), "nesting limit exceeded");
+                }
+
+                // List literals stay flat, so a long one is fine.
+                let src = format!("val xs = [{}1]", "1, ".repeat(50_000));
+                Compiler::compile(parse_program(&src)).expect("compile long list literal");
+
+                // Just under the limit, every pass still fits the stack.
+                let m = 250;
+                for src in [
+                    format!("val x = 1{}", " + 1".repeat(m)),
+                    format!("val x = {}[]", "1 :: ".repeat(m)),
+                    format!("fun f x = x\nval x = 1{}", " |> f".repeat(m)),
+                    format!("val x = \"a\"{}", " ^ \"a\"".repeat(m)),
+                    format!("val x = true{}", " andalso true".repeat(m)),
+                    format!("val x = {}1{}", "(".repeat(m), ")".repeat(m)),
+                    format!("val x = {}1", "fn x => ".repeat(m)),
+                    format!("val x = {}1", "if true then 1 else ".repeat(m)),
+                    format!("val x = {}1", "case 1 of _ => ".repeat(m)),
+                    format!(
+                        "val x = {}1{}",
+                        "let val y = 1 in ".repeat(m),
+                        " end".repeat(m)
+                    ),
+                    format!("val x = {}1{}", "[".repeat(m), "]".repeat(m)),
+                    format!("val xs : int{} = []", " list".repeat(m)),
+                    format!("val f : (int{}) -> int = fn _ => 1", " -> int".repeat(m)),
+                ] {
+                    Compiler::compile(parse_program(&src))
+                        .unwrap_or_else(|e| panic!("{src:.40}...: {e:?}"));
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[test]
     fn list_literal_compiles_like_the_cons_chain_it_stands_for() {
         let code = |src: &str| {
