@@ -6,7 +6,7 @@
 
 use std::io::Read;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "builtin-filesystem")]
 use crate::heap::CapFsCandidate;
@@ -100,6 +100,15 @@ pub trait IoBackend: Send + Sync {
     /// Poll for completed I/O operations. Returns immediately.
     /// Non-blocking — returns empty vec if nothing is ready.
     fn poll(&self) -> Vec<(IoToken, IoResult)>;
+
+    /// Cancel an outstanding request. The runtime calls this when the process
+    /// waiting on `token` is cancelled or otherwise stops waiting.
+    ///
+    /// Best effort: a backend should release resources held for the request
+    /// (for example a pending timer) and may drop its result. A completion
+    /// that is still reported for a cancelled token is ignored by the runtime.
+    /// Cancelling an unknown or already completed token is a no-op.
+    fn cancel(&self, _token: IoToken) {}
 }
 
 /// Mock I/O backend for deterministic testing.
@@ -199,14 +208,129 @@ impl IoBackend for MockIoBackend {
     }
 }
 
-/// I/O backend with a fixed pool of worker threads.
-/// Each worker has its own channel; requests are round-robin dispatched.
-/// Results are pushed to a shared completion queue.
+/// I/O backend with a fixed pool of worker threads plus one timer thread.
+///
+/// Blocking requests are round-robin dispatched to the workers, each of which
+/// has its own channel. `Sleep` requests never occupy a worker: the timer
+/// thread completes them at their deadline and drops them when they are
+/// cancelled. Results are pushed to a shared completion queue.
+///
+/// Dropping the backend cancels every pending timer and returns without
+/// waiting for a worker that is inside a blocking call (an HTTP request, for
+/// example). Such a worker exits once its call returns, and its result is
+/// discarded. [`ThreadPoolIoBackend::shutdown`] instead joins every worker.
 pub struct ThreadPoolIoBackend {
     senders: Vec<std::sync::mpsc::Sender<(IoToken, IoRequest)>>,
     next_worker: std::sync::atomic::AtomicUsize,
     completed: Arc<Mutex<Vec<(IoToken, IoResult)>>>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    timers: Arc<Timers>,
+    timer_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Pending `Sleep` requests, shared by the backend and its timer thread.
+struct Timers {
+    state: Mutex<TimerState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct TimerState {
+    /// Min-heap of deadlines. It may hold entries for cancelled tokens; those
+    /// are skipped when they reach the top, and pruned when they dominate.
+    deadlines: std::collections::BinaryHeap<std::cmp::Reverse<(Instant, u64)>>,
+    /// Tokens whose timer has neither fired nor been cancelled.
+    pending: std::collections::HashSet<IoToken>,
+    shutdown: bool,
+}
+
+impl Timers {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(TimerState::default()),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, TimerState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn add(&self, token: IoToken, duration: Duration) -> Result<(), String> {
+        let mut state = self.lock();
+        if state.shutdown {
+            return Err("io backend is shut down".into());
+        }
+        let now = Instant::now();
+        // Durations too large to represent are clamped to roughly a century.
+        let deadline = now
+            .checked_add(duration)
+            .unwrap_or_else(|| now + Duration::from_secs(100 * 365 * 24 * 3600));
+        state.deadlines.push(std::cmp::Reverse((deadline, token.0)));
+        state.pending.insert(token);
+        self.changed.notify_one();
+        Ok(())
+    }
+
+    fn cancel(&self, token: IoToken) {
+        let mut state = self.lock();
+        if !state.pending.remove(&token) {
+            return;
+        }
+        // Keep the heap proportional to the live timers so that cancelled
+        // long sleeps do not accumulate.
+        if state.deadlines.len() > 2 * state.pending.len() + 16 {
+            let TimerState {
+                deadlines, pending, ..
+            } = &mut *state;
+            deadlines.retain(|entry| pending.contains(&IoToken(entry.0.1)));
+        }
+        self.changed.notify_one();
+    }
+
+    fn shutdown(&self) {
+        let mut state = self.lock();
+        state.shutdown = true;
+        state.pending.clear();
+        state.deadlines.clear();
+        self.changed.notify_all();
+    }
+
+    /// Timer thread body: complete each pending sleep at its deadline.
+    fn run(&self, completed: &Mutex<Vec<(IoToken, IoResult)>>) {
+        let mut state = self.lock();
+        loop {
+            if state.shutdown {
+                return;
+            }
+            let now = Instant::now();
+            match state.deadlines.peek().map(|entry| entry.0) {
+                None => {
+                    state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+                }
+                Some((deadline, raw_token)) if deadline <= now => {
+                    state.deadlines.pop();
+                    let token = IoToken(raw_token);
+                    if state.pending.remove(&token) {
+                        completed.lock().unwrap_or_else(|e| e.into_inner()).push((
+                            token,
+                            IoResult::Ok {
+                                value: SendableValue::Unit,
+                                io_bytes: 0,
+                            },
+                        ));
+                    }
+                }
+                Some((deadline, _)) => {
+                    state = self
+                        .changed
+                        .wait_timeout(state, deadline - now)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+            }
+        }
+    }
 }
 
 impl ThreadPoolIoBackend {
@@ -234,15 +358,29 @@ impl ThreadPoolIoBackend {
             workers.push(worker);
         }
 
+        let timers = Arc::new(Timers::new());
+        let timer_thread = {
+            let timers = Arc::clone(&timers);
+            let done = Arc::clone(&completed);
+            std::thread::spawn(move || timers.run(&done))
+        };
+
         Self {
             senders,
             next_worker: std::sync::atomic::AtomicUsize::new(0),
             completed,
             workers: Mutex::new(workers),
+            timers,
+            timer_thread: Some(timer_thread),
         }
     }
 
+    /// Stop accepting requests, cancel pending timers, and join every thread.
+    ///
+    /// This blocks until in-flight blocking requests (HTTP, file reads)
+    /// return. Dropping the backend does not wait for those.
     pub fn shutdown(&mut self) -> Result<(), String> {
+        self.stop_timers();
         self.senders.clear();
         let workers = self.workers.get_mut().unwrap_or_else(|e| e.into_inner());
         let mut panicked = 0;
@@ -257,12 +395,24 @@ impl ThreadPoolIoBackend {
             Err(format!("{panicked} io backend worker(s) panicked"))
         }
     }
+
+    /// Cancel every pending timer and join the timer thread. This is prompt:
+    /// the timer thread only ever blocks on its own condition variable.
+    fn stop_timers(&mut self) {
+        self.timers.shutdown();
+        if let Some(timer_thread) = self.timer_thread.take() {
+            let _ = timer_thread.join();
+        }
+    }
 }
 
 impl IoBackend for ThreadPoolIoBackend {
     fn register(&self, token: IoToken, request: IoRequest) -> Result<(), String> {
         if self.senders.is_empty() {
             return Err("io backend is shut down".into());
+        }
+        if let IoRequest::Sleep(duration) = request {
+            return self.timers.add(token, duration);
         }
         let idx = self
             .next_worker
@@ -274,14 +424,28 @@ impl IoBackend for ThreadPoolIoBackend {
     }
 
     fn poll(&self) -> Vec<(IoToken, IoResult)> {
-        let mut completed = self.completed.lock().unwrap();
+        let mut completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *completed)
+    }
+
+    fn cancel(&self, token: IoToken) {
+        // A blocking request cannot be interrupted once a worker has started
+        // it; the runtime ignores its late result.
+        self.timers.cancel(token);
     }
 }
 
 impl Drop for ThreadPoolIoBackend {
     fn drop(&mut self) {
-        let _ = self.shutdown();
+        self.stop_timers();
+        // Closing the channels lets idle workers exit. Workers inside a
+        // blocking call are detached rather than joined, so dropping the
+        // backend never waits on the network or the disk.
+        self.senders.clear();
+        self.workers
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -1016,6 +1180,54 @@ mod tests {
         }
 
         panic!("thread pool backend did not complete request");
+    }
+
+    #[test]
+    fn test_thread_pool_sleep_does_not_occupy_a_worker() {
+        // One worker: a long sleep must not delay a request queued behind it.
+        let backend = ThreadPoolIoBackend::new(1);
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_secs(60)))
+            .unwrap();
+        backend
+            .register(IoToken(2), IoRequest::Sleep(Duration::from_millis(0)))
+            .unwrap();
+        loop {
+            let results = backend.poll();
+            if let Some((token, _)) = results.first() {
+                assert_eq!(*token, IoToken(2));
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(backend.timers.lock().pending.contains(&IoToken(1)));
+    }
+
+    #[test]
+    fn test_thread_pool_cancel_releases_timer() {
+        let backend = ThreadPoolIoBackend::new(1);
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_secs(60)))
+            .unwrap();
+        backend.cancel(IoToken(1));
+        backend.cancel(IoToken(1));
+        backend.cancel(IoToken(99));
+        assert!(backend.timers.lock().pending.is_empty());
+    }
+
+    #[test]
+    fn test_thread_pool_drop_with_pending_sleep_is_prompt() {
+        let backend = ThreadPoolIoBackend::new(2);
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_secs(60)))
+            .unwrap();
+        let start = std::time::Instant::now();
+        drop(backend);
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "drop took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
