@@ -36,6 +36,7 @@ Execution-local state is owned by `VM`:
 - `pid`
 - `status`
 - `parent`
+- `children`: children whose result the process has not consumed yet
 - scope membership
 
 The runtime should treat `RunResult` as the only public execution transition.
@@ -79,8 +80,11 @@ The steady-state flow is:
 
 The threaded runtime has one extra state transition: while a process is running,
 it is removed from `processes` and exists only on the worker thread stack.
-`child_parents`, `waiters`, `any_waiters`, and `tombstones` are the runtime-side
-structures that preserve visibility across that gap.
+`live`, `waiters`, `any_waiters`, `io_waiters`, `pending_cancels`, and
+`tombstones` are the runtime-side structures that preserve visibility across
+that gap. Any party that changes a process's state first takes it out of
+`processes`; see [`runtime.md`](runtime.md#process-lifecycle) for the
+terminal transition and the wake protocol.
 
 ## Process Creation Path
 
