@@ -164,6 +164,19 @@ fn rt_string_escape() {
     assert_roundtrip(r#"val s = "hello\tworld\n""#);
 }
 
+#[test]
+fn rt_control_chars_stay_escaped() {
+    let src = r#"val s = "a\r\0\x01\x7fb" val c = #"\r""#;
+    let printed = roundtrip(src);
+    assert!(
+        !printed.chars().any(|c| c.is_ascii_control() && c != '\n'),
+        "raw control character in output: {printed:?}"
+    );
+    assert!(printed.contains(r#""a\r\0\x01\x7fb""#), "{printed}");
+    assert!(printed.contains(r##"#"\r""##), "{printed}");
+    assert_roundtrip(src);
+}
+
 // ── Operators and precedence ─────────────────────────────────────────
 
 #[test]

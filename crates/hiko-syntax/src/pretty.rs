@@ -1002,8 +1002,11 @@ fn write_escaped(buf: &mut String, c: char) {
     match c {
         '\n' => buf.push_str("\\n"),
         '\t' => buf.push_str("\\t"),
+        '\r' => buf.push_str("\\r"),
+        '\0' => buf.push_str("\\0"),
         '\\' => buf.push_str("\\\\"),
         '"' => buf.push_str("\\\""),
+        c if c.is_ascii_control() => write!(buf, "\\x{:02x}", c as u32).unwrap(),
         c => buf.push(c),
     }
 }
