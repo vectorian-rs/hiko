@@ -471,6 +471,46 @@ impl ThreadedRuntime {
     }
 }
 
+#[cfg(test)]
+impl ThreadedRuntime {
+    /// Observable result of `pid` plus any bookkeeping left behind.
+    pub(crate) fn lifecycle_report(&self, pid: Pid) -> crate::lifecycle_tests::Report {
+        let table = &self.table;
+        let mut leftovers = Vec::new();
+        let mut note = |name: &str, len: usize| {
+            if len > 0 {
+                leftovers.push(format!("{name}={len}"));
+            }
+        };
+        note("extra_processes", table.processes.len().saturating_sub(1));
+        note("live", table.live.len());
+        note("tombstones", table.tombstones.len());
+        note("pending_cancels", table.pending_cancels.len());
+        note("waiters", table.waiters.len());
+        note("any_waiters", table.any_waiters.len());
+        note("io_waiters", table.io_waiters.len());
+        if let Err(message) = table.check_invariants() {
+            leftovers.push(message);
+        }
+        crate::lifecycle_tests::Report {
+            output: table.get_output(pid),
+            status: table
+                .processes
+                .get(&pid)
+                .map(|process| format!("{:?}", process.status))
+                .unwrap_or_else(|| "<missing>".into()),
+            leftovers,
+        }
+    }
+
+    /// A probe that reads the tombstone count from another thread while the
+    /// runtime runs.
+    pub(crate) fn tombstone_probe(&self) -> impl Fn() -> usize + Send + 'static {
+        let table = Arc::clone(&self.table);
+        move || table.tombstones.len()
+    }
+}
+
 fn fail_deadlocked(cx: Ctx<'_>, stuck: &[Pid]) {
     let mut terminations = Terminations::new();
     for &pid in stuck {

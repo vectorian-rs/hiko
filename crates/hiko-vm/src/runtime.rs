@@ -589,6 +589,39 @@ impl Runtime {
     }
 }
 
+#[cfg(test)]
+impl Runtime {
+    /// Observable result of `pid` plus any bookkeeping left behind.
+    pub(crate) fn lifecycle_report(&self, pid: Pid) -> crate::lifecycle_tests::Report {
+        let mut leftovers = Vec::new();
+        let mut note = |name: &str, len: usize| {
+            if len > 0 {
+                leftovers.push(format!("{name}={len}"));
+            }
+        };
+        note("extra_processes", self.processes.len().saturating_sub(1));
+        note("tombstones", self.tombstones.len());
+        note("waiters", self.waiters.len());
+        note("any_waiters", self.any_waiters.len());
+        crate::lifecycle_tests::Report {
+            output: self.get_output(pid),
+            status: self
+                .get_status(pid)
+                .map(|status| format!("{status:?}"))
+                .unwrap_or_else(|| "<missing>".into()),
+            leftovers,
+        }
+    }
+
+    /// Run to completion and return the largest tombstone count seen after
+    /// any slice.
+    pub(crate) fn run_tracking_max_tombstones(&mut self) -> Result<usize, String> {
+        let mut max = 0;
+        self.run_with_probe(&mut |runtime| max = max.max(runtime.tombstones.len()))?;
+        Ok(max)
+    }
+}
+
 /// Serialize the final value of a finished child for its parent.
 fn child_result(process: &mut Process) -> ChildOutcome {
     let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);

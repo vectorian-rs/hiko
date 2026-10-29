@@ -4,6 +4,8 @@ pub mod config;
 pub mod heap;
 pub mod io_backend;
 pub mod io_limits;
+#[cfg(test)]
+mod lifecycle_tests;
 pub mod process;
 pub mod runtime;
 pub mod runtime_ops;
