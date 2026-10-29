@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
-use crate::find_project_manifest_from;
+use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
 use serde::Deserialize;
 
@@ -95,24 +95,12 @@ fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
     let mut config_path = None;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "--config" => {
-                let Some(path) = args.get(i + 1) else {
-                    eprintln!("{usage}");
-                    process::exit(1);
-                };
-                config_path = Some(PathBuf::from(path));
-                i += 2;
-            }
-            arg if arg.starts_with("--config=") => {
-                config_path = Some(PathBuf::from(arg.trim_start_matches("--config=")));
-                i += 1;
-            }
-            _ => {
-                eprintln!("{usage}");
-                process::exit(1);
-            }
-        }
+        let Some((path, consumed)) = parse_flag_value(args, "--config", i, usage) else {
+            eprintln!("{usage}");
+            process::exit(1);
+        };
+        config_path = Some(PathBuf::from(path));
+        i += consumed;
     }
     config_path
 }
@@ -297,7 +285,9 @@ fn validate_remote_base_url(package_name: &str, base_url: &str, path: &Path) -> 
         return Ok(());
     }
     if let Some(rest) = base_url.strip_prefix("http://") {
-        let authority = rest.split('/').next().unwrap_or_default();
+        // The authority ends at the first '/', '?' or '#'. '\' is treated as a
+        // terminator too, since some URL parsers read it as a path separator.
+        let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
         let host = authority
             .rsplit_once('@')
             .map(|(_, host)| host)
@@ -340,4 +330,47 @@ fn normalize_blake3(hash: &str) -> String {
         .strip_prefix("blake3:")
         .unwrap_or(hash.trim())
         .to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_verify_args, validate_remote_base_url};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn parse_verify_args_accepts_both_config_forms() {
+        let separate = vec!["--config".to_string(), "a/hiko.toml".to_string()];
+        let inline = vec!["--config=a/hiko.toml".to_string()];
+        let expected = Some(PathBuf::from("a/hiko.toml"));
+        assert_eq!(parse_verify_args(&separate, "usage"), expected);
+        assert_eq!(parse_verify_args(&inline, "usage"), expected);
+        assert_eq!(parse_verify_args(&[], "usage"), None);
+    }
+
+    fn check(base_url: &str) -> Result<(), String> {
+        validate_remote_base_url("Std", base_url, Path::new("hiko.lock.toml"))
+    }
+
+    #[test]
+    fn remote_base_url_allows_https_and_local_http() {
+        assert!(check("https://modules.example.com/Std-v0.1.0").is_ok());
+        assert!(check("http://127.0.0.1:8000/Std-v0.1.0").is_ok());
+        assert!(check("http://localhost/Std-v0.1.0").is_ok());
+        assert!(check("http://[::1]:8000/Std-v0.1.0").is_ok());
+    }
+
+    #[test]
+    fn remote_base_url_rejects_remote_http() {
+        assert!(check("http://modules.example.com/Std-v0.1.0").is_err());
+        assert!(check("http://127.0.0.1@modules.example.com/Std-v0.1.0").is_err());
+        assert!(check("http://localhost.example.com/Std-v0.1.0").is_err());
+    }
+
+    #[test]
+    fn remote_base_url_rejects_local_host_hidden_after_authority() {
+        // The authority ends at '/', '?' or '#'; text after it is not the host.
+        assert!(check("http://modules.example.com?@127.0.0.1/Std-v0.1.0").is_err());
+        assert!(check("http://modules.example.com#@localhost/Std-v0.1.0").is_err());
+        assert!(check("http://modules.example.com\\@127.0.0.1/Std-v0.1.0").is_err());
+    }
 }

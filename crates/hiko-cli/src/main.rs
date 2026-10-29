@@ -152,7 +152,6 @@ impl DiagCtx {
 
 struct Compiled {
     program: CompiledProgram,
-    warnings: Vec<hiko_types::infer::Warning>,
     ctx: DiagCtx,
 }
 
@@ -285,41 +284,33 @@ pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn compile_source(path: &str) -> Result<Compiled, ()> {
+/// Compiles `path`, printing any diagnostics. Warnings are printed and
+/// compilation continues; errors are printed and the process exits with 1.
+fn compile_or_exit(path: &str) -> Compiled {
     let source = read_source_or_exit(path);
-
     let ctx = DiagCtx::new(path, source.clone());
 
-    let tokens = match Lexer::new(&source, 0).tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            ctx.error(&e.message, Some(e.span));
-            return Err(());
-        }
-    };
-
-    let program = match Parser::new(tokens).parse_program() {
-        Ok(p) => p,
-        Err(e) => {
-            ctx.error(&e.message, Some(e.span));
-            return Err(());
-        }
-    };
-
-    match Compiler::compile_file(program, std::path::Path::new(path)) {
-        Ok((compiled, warnings)) => Ok(Compiled {
-            program: compiled,
-            warnings,
-            ctx,
-        }),
-        Err(e) => {
+    let tokens = Lexer::new(&source, 0).tokenize().unwrap_or_else(|e| {
+        ctx.error(&e.message, Some(e.span));
+        process::exit(1);
+    });
+    let program = Parser::new(tokens).parse_program().unwrap_or_else(|e| {
+        ctx.error(&e.message, Some(e.span));
+        process::exit(1);
+    });
+    let (program, warnings) =
+        Compiler::compile_file(program, Path::new(path)).unwrap_or_else(|e| {
             match &e {
                 CompileError::Type(te) => ctx.error(&te.message, Some(te.span)),
                 CompileError::Codegen(msg) => ctx.error(msg, None),
             }
-            Err(())
-        }
+            process::exit(1);
+        });
+
+    for warning in &warnings {
+        ctx.warning(&warning.message, Some(warning.span));
     }
+    Compiled { program, ctx }
 }
 
 fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
@@ -327,6 +318,14 @@ fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
         &policy.policy_path.to_string_lossy(),
         &format!("policy '{}'", policy.policy_name),
     )
+}
+
+/// Loads the run config behind `surface`, or `None` for the core-only surface.
+fn load_surface_config(surface: &RuntimeSurface) -> Option<RunConfig> {
+    match surface {
+        RuntimeSurface::CoreOnly => None,
+        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
+    }
 }
 
 fn load_run_config(config_path: &str, label: &str) -> RunConfig {
@@ -423,22 +422,34 @@ fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
     }
 }
 
-fn parse_flag_value<'a>(args: &'a [String], flag: &str, index: usize, usage: &str) -> &'a str {
+/// Parses `<flag> <value>` or `<flag>=<value>` starting at `args[index]`.
+///
+/// Returns `None` when `args[index]` is not `flag`. Otherwise returns the value
+/// and the number of arguments consumed. A missing or empty value prints
+/// `usage` and exits.
+fn parse_flag_value<'a>(
+    args: &'a [String],
+    flag: &str,
+    index: usize,
+    usage: &str,
+) -> Option<(&'a str, usize)> {
     let arg = &args[index];
-    if arg == flag {
-        args.get(index + 1).unwrap_or_else(|| {
-            eprintln!("{usage}");
-            process::exit(1);
-        })
-    } else if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
-        if value.is_empty() {
+    let (value, consumed) = if arg == flag {
+        (args.get(index + 1).map(String::as_str), 2)
+    } else if let Some(value) = arg
+        .strip_prefix(flag)
+        .and_then(|rest| rest.strip_prefix('='))
+    {
+        (Some(value), 1)
+    } else {
+        return None;
+    };
+    match value {
+        Some(value) if !value.is_empty() => Some((value, consumed)),
+        _ => {
             eprintln!("{usage}");
             process::exit(1);
         }
-        value
-    } else {
-        eprintln!("{usage}");
-        process::exit(1);
     }
 }
 
@@ -451,26 +462,12 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        if arg == "--config" {
-            config_path = Some(parse_flag_value(args, "--config", i, usage).to_string());
-            i += 2;
-        } else if let Some(value) = arg.strip_prefix("--config=") {
-            if value.is_empty() {
-                eprintln!("{usage}");
-                process::exit(1);
-            }
+        if let Some((value, consumed)) = parse_flag_value(args, "--config", i, usage) {
             config_path = Some(value.to_string());
-            i += 1;
-        } else if arg == "--policy" {
-            policy_name = Some(parse_flag_value(args, "--policy", i, usage).to_string());
-            i += 2;
-        } else if let Some(value) = arg.strip_prefix("--policy=") {
-            if value.is_empty() {
-                eprintln!("{usage}");
-                process::exit(1);
-            }
+            i += consumed;
+        } else if let Some((value, consumed)) = parse_flag_value(args, "--policy", i, usage) {
             policy_name = Some(value.to_string());
-            i += 1;
+            i += consumed;
         } else if arg == "--strict" {
             strict = true;
             i += 1;
@@ -702,18 +699,6 @@ fn scan_chunk_globals(
         let op = Op::try_from(read_u8(code, &mut ip)?)
             .map_err(|byte| format!("invalid opcode while scanning bytecode: {byte}"))?;
         match op {
-            Op::Const
-            | Op::GetLocal
-            | Op::SetLocal
-            | Op::GetUpvalue
-            | Op::Jump
-            | Op::JumpIfFalse
-            | Op::CallDirect
-            | Op::TailCallDirect
-            | Op::Panic
-            | Op::Perform => {
-                skip_bytes(code, &mut ip, 2)?;
-            }
             Op::GetGlobal => {
                 let idx = read_u16(code, &mut ip)? as usize;
                 let name = read_const_string(chunk, idx)?.to_string();
@@ -724,9 +709,7 @@ fn scan_chunk_globals(
                 let name = read_const_string(chunk, idx)?.to_string();
                 defs.insert(name);
             }
-            _ => {
-                advance_operands(code, &mut ip, op)?;
-            }
+            _ => advance_operands(code, &mut ip, op)?,
         }
     }
 
@@ -771,7 +754,7 @@ fn strict_violations(
 }
 
 fn validate_strict_surface(
-    compiled: &Compiled,
+    program: &CompiledProgram,
     config: Option<&RunConfig>,
 ) -> Result<(), Vec<StrictViolation>> {
     let allowed: BTreeSet<&'static str> = if let Some(config) = config {
@@ -780,7 +763,7 @@ fn validate_strict_surface(
         core_builtin_names().collect()
     };
 
-    match strict_violations(&compiled.program, &allowed) {
+    match strict_violations(program, &allowed) {
         Ok(violations) if violations.is_empty() => Ok(()),
         Ok(violations) => Err(violations),
         Err(message) => Err(vec![StrictViolation {
@@ -788,6 +771,23 @@ fn validate_strict_surface(
             capability_path: None,
             span: None,
         }]),
+    }
+}
+
+/// Under `--strict`, reports builtins the active surface does not enable and
+/// exits with 1 if there are any.
+fn enforce_strict_or_exit(
+    compiled: &Compiled,
+    config: Option<&RunConfig>,
+    surface: &RuntimeSurface,
+) {
+    if let Err(violations) = validate_strict_surface(&compiled.program, config) {
+        for violation in &violations {
+            compiled
+                .ctx
+                .error(&strict_message(violation, surface), violation.span);
+        }
+        process::exit(1);
     }
 }
 
@@ -924,15 +924,7 @@ fn inspect_program_work(program: &CompiledProgram) -> Result<WorkInspection, Str
 }
 
 fn inspect_work_file(path: &str) {
-    let compiled = match compile_source(path) {
-        Ok(compiled) => compiled,
-        Err(()) => process::exit(1),
-    };
-
-    for warning in &compiled.warnings {
-        compiled.ctx.warning(&warning.message, Some(warning.span));
-    }
-
+    let compiled = compile_or_exit(path);
     let inspection = inspect_program_work(&compiled.program).unwrap_or_else(|message| {
         eprintln!("error: {message}");
         process::exit(1);
@@ -960,37 +952,16 @@ fn inspect_work_file(path: &str) {
 fn run_file(options: &ScriptOptions) {
     let surface = resolve_runtime_surface(options);
     eprintln!("info: {}", surface.describe());
-    let config = match &surface {
-        RuntimeSurface::CoreOnly => None,
-        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
-    };
+    let config = load_surface_config(&surface);
     let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
-    let compiled = match compile_source(&path) {
-        Ok(c) => c,
-        Err(()) => process::exit(1),
-    };
-
-    for w in &compiled.warnings {
-        compiled.ctx.warning(&w.message, Some(w.span));
-    }
-
-    if options.strict
-        && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
-    {
-        for violation in &violations {
-            compiled
-                .ctx
-                .error(&strict_message(violation, &surface), violation.span);
-        }
-        process::exit(1);
+    let compiled = compile_or_exit(&path);
+    if options.strict {
+        enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
     }
 
     let output_sink = Arc::new(StdoutOutputSink::default());
-    if config.as_ref().is_some_and(RunConfig::requires_runtime) {
-        let mut vm = config
-            .as_ref()
-            .expect("runtime-backed execution requires an active config")
-            .build_vm(compiled.program);
+    if let Some(config) = config.as_ref().filter(|config| config.requires_runtime()) {
+        let mut vm = config.build_vm(compiled.program);
         vm.set_output_sink(output_sink);
 
         let runtime = ThreadedRuntime::new(1);
@@ -1014,13 +985,10 @@ fn run_file(options: &ScriptOptions) {
         VMBuilder::new(compiled.program).with_core().build()
     };
     vm.set_output_sink(output_sink);
-    match vm.run() {
-        Ok(()) => {}
-        Err(e) => {
-            let message = runtime_error_message(&e.message, &surface);
-            compiled.ctx.error(&message, vm.error_span());
-            process::exit(1);
-        }
+    if let Err(e) = vm.run() {
+        let message = runtime_error_message(&e.message, &surface);
+        compiled.ctx.error(&message, vm.error_span());
+        process::exit(1);
     }
 }
 
@@ -1031,28 +999,10 @@ fn check_file(options: &ScriptOptions) {
         .script_path
         .as_deref()
         .expect("check requires a script");
-    let compiled = match compile_source(path) {
-        Ok(c) => c,
-        Err(()) => process::exit(1),
-    };
-
-    for w in &compiled.warnings {
-        compiled.ctx.warning(&w.message, Some(w.span));
-    }
-
-    let config = match &surface {
-        RuntimeSurface::CoreOnly => None,
-        RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
-    };
-    if options.strict
-        && let Err(violations) = validate_strict_surface(&compiled, config.as_ref())
-    {
-        for violation in &violations {
-            compiled
-                .ctx
-                .error(&strict_message(violation, &surface), violation.span);
-        }
-        process::exit(1);
+    let compiled = compile_or_exit(path);
+    let config = load_surface_config(&surface);
+    if options.strict {
+        enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
     }
 
     println!("OK");
@@ -1076,23 +1026,14 @@ fn fmt_files(options: &FmtOptions) {
         let ctx = DiagCtx::new(&display_path, source.clone());
         let formatted = match format_source(&source, 0) {
             Ok(formatted) => formatted,
-            Err(FormatError::Lex(error)) => {
-                ctx.error(&error.message, Some(error.span));
-                had_error = true;
-                continue;
-            }
-            Err(FormatError::Parse(error)) => {
-                ctx.error(&error.message, Some(error.span));
-                had_error = true;
-                continue;
-            }
-            Err(FormatError::UnsupportedComment { message, span }) => {
-                ctx.error(&message, Some(span));
-                had_error = true;
-                continue;
-            }
-            Err(FormatError::TreeSitter(message)) => {
-                ctx.error(&message, None);
+            Err(error) => {
+                let (message, span) = match error {
+                    FormatError::Lex(error) => (error.message, Some(error.span)),
+                    FormatError::Parse(error) => (error.message, Some(error.span)),
+                    FormatError::UnsupportedComment { message, span } => (message, Some(span)),
+                    FormatError::TreeSitter(message) => (message, None),
+                };
+                ctx.error(&message, span);
                 had_error = true;
                 continue;
             }
@@ -1146,10 +1087,7 @@ fn collect_fmt_path(
         fs::metadata(path).map_err(|error| format!("cannot access {}: {error}", path.display()))?;
 
     if metadata.is_file() {
-        let canonical = path.to_path_buf();
-        if seen.insert(canonical.clone()) {
-            resolved.push(canonical);
-        }
+        push_unique_path(path, seen, resolved);
         return Ok(());
     }
 
@@ -1173,6 +1111,8 @@ fn collect_fmt_path(
         .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?;
     entries.sort_by_key(|entry| entry.path());
 
+    // `DirEntry::metadata` does not follow symlinks, so symlinked files and
+    // directories below an explicit argument are skipped rather than followed.
     for entry in entries {
         let entry_path = entry.path();
         let entry_metadata = entry
@@ -1180,20 +1120,19 @@ fn collect_fmt_path(
             .map_err(|error| format!("cannot access {}: {error}", entry_path.display()))?;
         if entry_metadata.is_dir() {
             collect_fmt_path(&entry_path, true, seen, resolved)?;
-        } else if entry_metadata.is_file()
-            && entry_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "hml")
+        } else if entry_metadata.is_file() && entry_path.extension().is_some_and(|ext| ext == "hml")
         {
-            let canonical = entry_path.to_path_buf();
-            if seen.insert(canonical.clone()) {
-                resolved.push(canonical);
-            }
+            push_unique_path(&entry_path, seen, resolved);
         }
     }
 
     Ok(())
+}
+
+fn push_unique_path(path: &Path, seen: &mut BTreeSet<PathBuf>, resolved: &mut Vec<PathBuf>) {
+    if seen.insert(path.to_path_buf()) {
+        resolved.push(path.to_path_buf());
+    }
 }
 
 fn build_vm(config_path: &str) {
@@ -1257,10 +1196,10 @@ hiko-vm = "{version}"
 #[cfg(test)]
 mod tests {
     use super::{
-        Compiled, DiagCtx, FmtOptions, ManifestSource, ResolvedPolicy, RuntimeSurface,
-        ScriptOptions, inspect_program_work, parse_check_args, parse_fmt_args,
-        parse_inspect_work_args, parse_run_args, resolve_policy_from_manifest, resolve_run_target,
-        runtime_error_message, strict_message, strict_violations, validate_strict_surface,
+        FmtOptions, ManifestSource, ResolvedPolicy, RuntimeSurface, ScriptOptions,
+        inspect_program_work, parse_check_args, parse_fmt_args, parse_inspect_work_args,
+        parse_run_args, resolve_policy_from_manifest, resolve_run_target, runtime_error_message,
+        strict_message, strict_violations, validate_strict_surface,
     };
     use hiko_builtin_meta::core_builtin_names;
     use hiko_compile::compiler::Compiler;
@@ -1459,6 +1398,32 @@ mod tests {
         assert_eq!(resolved, vec!["one.hml", "sub/two.hml"]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolve_fmt_paths_recurse_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let outside = temp_dir("fmt-symlink-outside");
+        fs::write(outside.join("outside.hml"), "val z=3\n").unwrap();
+        let root = temp_dir("fmt-symlink-root");
+        fs::write(root.join("inside.hml"), "val x=1\n").unwrap();
+        symlink(outside.join("outside.hml"), root.join("linked.hml")).unwrap();
+        symlink(&outside, root.join("linked-dir")).unwrap();
+        symlink(&root, root.join("loop")).unwrap();
+
+        let paths = super::resolve_fmt_paths(&FmtOptions {
+            check: false,
+            recurse: true,
+            paths: vec![root.to_string_lossy().into_owned()],
+        })
+        .expect("directory resolution should succeed");
+
+        assert_eq!(paths, vec![root.join("inside.hml")]);
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
     #[test]
     fn resolve_fmt_paths_rejects_directory_without_recurse() {
         let root = temp_dir("fmt-no-recurse");
@@ -1489,6 +1454,29 @@ mod tests {
                 strict: false,
             }
         );
+    }
+
+    #[test]
+    fn parse_run_args_inline_policy() {
+        let args = vec![
+            "--policy=docs-writer".to_string(),
+            "tools/read.hml".to_string(),
+        ];
+        assert_eq!(
+            parse_run_args(&args),
+            ScriptOptions {
+                config_path: None,
+                policy_name: Some("docs-writer".to_string()),
+                script_path: Some("tools/read.hml".to_string()),
+                strict: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_flag_value_ignores_other_flags() {
+        let args = vec!["--configuration".to_string(), "x".to_string()];
+        assert_eq!(super::parse_flag_value(&args, "--config", 0, "usage"), None);
     }
 
     #[test]
@@ -1571,11 +1559,6 @@ val _ = exec ("echo", [])
     #[test]
     fn strict_validation_uses_run_config_surface() {
         let program = compile_program(r#"val _ = println "ok""#);
-        let compiled = Compiled {
-            program,
-            warnings: Vec::new(),
-            ctx: DiagCtx::new("<test>", String::new()),
-        };
         let config = RunConfig::from_toml(
             r#"
 [capabilities.stdio.println]
@@ -1583,7 +1566,7 @@ enabled = true
 "#,
         )
         .expect("config should parse");
-        assert!(validate_strict_surface(&compiled, Some(&config)).is_ok());
+        assert!(validate_strict_surface(&program, Some(&config)).is_ok());
     }
 
     #[test]
