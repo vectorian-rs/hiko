@@ -904,7 +904,12 @@ fn pretty_pat(buf: &mut String, pat: &Pat, interner: &StringInterner) {
             pretty_atom_pat(buf, payload, interner);
         }
         PatKind::Cons(hd, tl) => {
-            pretty_atom_pat(buf, hd, interner);
+            // `Some x :: xs` needs no parentheses: application binds tighter.
+            if matches!(hd.kind, PatKind::Constructor(_, Some(_))) {
+                pretty_pat(buf, hd, interner);
+            } else {
+                pretty_atom_pat(buf, hd, interner);
+            }
             buf.push_str(" :: ");
             pretty_pat(buf, tl, interner);
         }

@@ -287,6 +287,12 @@ fn rt_pattern_cons() {
 }
 
 #[test]
+fn rt_pattern_cons_of_constructor_applications() {
+    let src = "fun f (Some x :: M.C y :: xs) = x";
+    assert_eq!(roundtrip(src), src);
+}
+
+#[test]
 fn rt_pattern_wildcard() {
     assert_roundtrip("val _ = 42");
 }
