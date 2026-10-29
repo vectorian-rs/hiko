@@ -379,6 +379,12 @@ impl InferCtx {
                 }
             }
         }
+        // An effect's result type is one variable shared by every `perform`
+        // and handler of that effect, so it is part of the environment and
+        // must never be generalized.
+        for (_, result_ty) in self.effect_sigs.values() {
+            vars.extend(self.apply(result_ty).free_vars());
+        }
         vars
     }
 
@@ -515,9 +521,11 @@ impl InferCtx {
             }
             DeclKind::Effect(sym, payload) => {
                 let name = self.interner.resolve(*sym).to_string();
+                // Payload types are closed: a type variable here would be
+                // generalized at each `perform` site while handlers see a
+                // single unknown type.
                 let arg_type = if let Some(ty_expr) = payload {
-                    let mut tyvar_map = HashMap::new();
-                    self.resolve_type_expr(ty_expr, &mut tyvar_map)?
+                    self.resolve_type_expr_strict(ty_expr, &mut HashMap::new())?
                 } else {
                     Type::unit()
                 };
@@ -2120,6 +2128,33 @@ mod tests {
              val xs = collect (fn _ => perform Yield 1)",
         );
         assert_eq!(type_of(&ctx, "xs"), "int list");
+    }
+
+    #[test]
+    fn test_effect_result_type_not_generalized() {
+        // The handler resumes Get with an int, so `f ()` must not also be
+        // usable as a string.
+        let msg = infer_err(
+            "effect Get of unit
+             val f = fn () => perform Get ()
+             val s : string = f ()
+             val r = handle string_length (f ()) with
+                 return x => x
+               | Get _ k => resume k 42",
+        );
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_effect_payload_type_variable_rejected() {
+        let msg = infer_err(
+            "effect Put of 'a
+             val f = fn x => perform Put x
+             val r = handle f \"str\" with
+                 return _ => 0
+               | Put v k => v + 1",
+        );
+        assert!(msg.contains("unbound type variable"), "got: {msg}");
     }
 
     // ── Exhaustiveness checking ──────────────────────────────────────
