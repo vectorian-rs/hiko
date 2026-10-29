@@ -149,8 +149,21 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+/// Maximum nesting of arrays and objects accepted by `json_to_string`.
+///
+/// Serialization recurses on the native stack, so values built in Hiko need
+/// a bound. It matches the recursion limit `serde_json` applies when parsing,
+/// so any value that can be serialized can also be parsed back.
+#[cfg(feature = "builtin-json")]
+const MAX_JSON_DEPTH: usize = 128;
+
 #[cfg(feature = "builtin-json")]
 pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, String> {
+    json_string_at_depth(val, heap, 0)
+}
+
+#[cfg(feature = "builtin-json")]
+fn json_string_at_depth(val: Value, heap: &Heap, depth: usize) -> Result<String, String> {
     match val {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
             HeapObject::Data { tag, fields } => match *tag {
@@ -180,13 +193,16 @@ pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, Str
                     },
                     _ => Err("json_to_string: malformed JStr".into()),
                 },
+                TAG_JARRAY | TAG_JOBJECT if depth >= MAX_JSON_DEPTH => Err(format!(
+                    "json_to_string: nesting exceeds {MAX_JSON_DEPTH} levels"
+                )),
                 TAG_JARRAY => {
                     let list_val = fields.first().copied().unwrap_or(Value::Unit);
                     let elems = collect_list(heap, list_val)?;
                     check_string_vec_capacity(heap, "json_to_string", elems.len())?;
                     let items: Result<Vec<String>, String> = elems
                         .into_iter()
-                        .map(|v| hiko_to_json_string(v, heap))
+                        .map(|v| json_string_at_depth(v, heap, depth + 1))
                         .collect();
                     check_json_output(heap, "json_to_string", format!("[{}]", items?.join(",")))
                 }
@@ -208,7 +224,7 @@ pub(crate) fn hiko_to_json_string(val: Value, heap: &Heap) -> Result<String, Str
                                         }
                                         _ => return Err("json_to_string: bad key".into()),
                                     };
-                                    let val_str = hiko_to_json_string(pair[1], heap)?;
+                                    let val_str = json_string_at_depth(pair[1], heap, depth + 1)?;
                                     entries.push(format!("{key}:{val_str}"));
                                 }
                                 _ => return Err("json_to_string: bad object entry".into()),

@@ -146,6 +146,29 @@ mod tests {
     use super::super::test_helpers::*;
     use super::*;
 
+    fn nested_json_arrays(heap: &mut Heap, depth: usize) -> Value {
+        let data = |heap: &mut Heap, tag, fields| {
+            heap_alloc(heap, HeapObject::Data { tag, fields }).unwrap()
+        };
+        let mut value = data(heap, 0, smallvec::smallvec![]); // JNull
+        for _ in 0..depth {
+            let nil = data(heap, crate::vm::TAG_NIL, smallvec::smallvec![]);
+            let list = data(heap, crate::vm::TAG_CONS, smallvec::smallvec![value, nil]);
+            value = data(heap, 5, smallvec::smallvec![list]); // JArray
+        }
+        value
+    }
+
+    #[test]
+    fn json_to_string_rejects_deep_nesting_without_overflowing() {
+        let mut heap = Heap::new();
+        let shallow = nested_json_arrays(&mut heap, 100);
+        assert!(json_to_string(&[shallow], &mut heap).is_ok());
+        let deep = nested_json_arrays(&mut heap, 100_000);
+        let err = json_to_string(&[deep], &mut heap).unwrap_err();
+        assert!(err.contains("nesting"), "{err}");
+    }
+
     #[test]
     fn json_parse_string() {
         let mut heap = Heap::new();
