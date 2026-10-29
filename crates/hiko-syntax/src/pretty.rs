@@ -852,7 +852,8 @@ fn pretty_pat(buf: &mut String, pat: &Pat, interner: &StringInterner) {
             }
         }
         PatKind::FloatLit(f) => {
-            if *f < 0.0 {
+            // `~0.0` is negative zero, which `< 0.0` does not catch.
+            if f.is_sign_negative() {
                 buf.push('~');
                 pretty_float(buf, -f);
             } else {

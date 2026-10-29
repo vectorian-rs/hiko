@@ -307,6 +307,11 @@ fn rt_pattern_negative_float() {
 }
 
 #[test]
+fn rt_pattern_negative_zero_float() {
+    assert_eq!(roundtrip("fun f ~0.0 = true"), "fun f ~0.0 = true");
+}
+
+#[test]
 fn rt_pattern_char() {
     assert_roundtrip(r#"fun f #"a" = true | f _ = false"#);
 }
