@@ -644,6 +644,9 @@ fn rename_expr(expr: Expr, scope: &ModuleScope, local_values: &HashSet<Symbol>) 
             Box::new(rename_expr(*cont, scope, local_values)),
             Box::new(rename_expr(*arg, scope, local_values)),
         ),
+        ExprKind::Paren(inner) => {
+            ExprKind::Paren(Box::new(rename_expr(*inner, scope, local_values)))
+        }
         other => other,
     };
     Expr { kind, span }
@@ -1098,4 +1101,44 @@ fn desugar_fun_binding(mut binding: FunBinding, interner: &mut StringInterner) -
     }];
 
     binding
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn desugar(src: &str) -> Program {
+        let tokens = Lexer::new(src, 0).tokenize().unwrap();
+        desugar_program(Parser::new(tokens).parse_program().unwrap())
+    }
+
+    fn val_expr<'a>(program: &'a Program, name: &str) -> &'a Expr {
+        program
+            .decls
+            .iter()
+            .find_map(|decl| match &decl.kind {
+                DeclKind::Val(pat, expr) => match pat.kind {
+                    PatKind::Var(sym) if program.interner.resolve(sym) == name => Some(expr),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no val {name}"))
+    }
+
+    fn var_name(program: &Program, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Var(sym) => program.interner.resolve(*sym).to_string(),
+            other => panic!("expected var, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn structure_renames_values_inside_parens() {
+        let program = desugar("structure S = struct val x = 1 val y = (x) end");
+        let y = val_expr(&program, "S.y");
+        assert_eq!(var_name(&program, y), "S.x");
+    }
 }
