@@ -134,6 +134,11 @@ operation : payload_type -> resume_result_type
 The current `of` syntax states the payload type. The resume/result type is
 inferred from use and handlers.
 
+Both types are monomorphic. The payload type cannot contain type variables, and
+the resume/result type is one type shared by every `perform` and handler of
+that effect in the program. A function that performs an effect is therefore not
+generalized over the effect's result type.
+
 ## Current Static Guarantees
 
 The typechecker currently guarantees:

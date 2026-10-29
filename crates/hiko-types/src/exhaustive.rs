@@ -10,7 +10,7 @@
 //! - A match is exhaustive iff the wildcard vector is NOT useful.
 //! - A clause is redundant iff its row is NOT useful against preceding rows.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use hiko_syntax::ast::{Pat, PatKind};
 use hiko_syntax::intern::StringInterner;
@@ -106,37 +106,11 @@ pub struct CheckResult {
     pub redundant_clauses: Vec<usize>,
 }
 
-/// Resolve a constructor name to its canonical (first) name.
-/// If the name is already in datatype_constructors, return it as-is.
-/// Otherwise, find the canonical name with the same tag.
-fn resolve_canonical_name(
-    name: &str,
-    tag: u16,
-    con_tags: &std::collections::HashMap<String, u16>,
-    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
-) -> String {
-    // If the name is already in some datatype's constructor list, it's canonical
-    for cons in dt_constructors.values() {
-        if cons.iter().any(|(n, _)| n == name) {
-            return name.to_string();
-        }
-    }
-    // Find the first canonical constructor with the same tag
-    for cons in dt_constructors.values() {
-        for (canonical_name, _) in cons {
-            if con_tags.get(canonical_name).copied() == Some(tag) {
-                return canonical_name.clone();
-            }
-        }
-    }
-    name.to_string()
-}
-
 /// Convert a surface pattern to a simplified pattern.
 fn simplify_pat(
     pat: &Pat,
-    con_tags: &std::collections::HashMap<String, u16>,
-    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
+    con_tags: &HashMap<String, u16>,
+    con_aliases: &HashMap<String, String>,
     interner: &StringInterner,
 ) -> SPat {
     match &pat.kind {
@@ -154,29 +128,29 @@ fn simplify_pat(
 
         PatKind::Constructor(sym, payload) => {
             let name = interner.resolve(*sym);
-            let tag = con_tags.get(name).copied().unwrap_or(0);
-            // Normalize: resolve aliases to the canonical constructor name
-            // (the first name in any datatype_constructors entry with the same tag)
-            let type_name = resolve_canonical_name(name, tag, con_tags, dt_constructors);
+            // Import aliases are matched as the constructor they name, which
+            // is the name listed in the datatype's constructor table.
+            let canonical = con_aliases.get(name).map_or(name, String::as_str);
+            let tag = con_tags.get(canonical).copied().unwrap_or(0);
             let sub_pats = match payload {
-                Some(p) => vec![simplify_pat(p, con_tags, dt_constructors, interner)],
+                Some(p) => vec![simplify_pat(p, con_tags, con_aliases, interner)],
                 None => vec![],
             };
-            SPat::Con(Constructor::Adt(type_name, tag), sub_pats)
+            SPat::Con(Constructor::Adt(canonical.to_string(), tag), sub_pats)
         }
 
         PatKind::Tuple(pats) => {
             let sub = pats
                 .iter()
-                .map(|p| simplify_pat(p, con_tags, dt_constructors, interner))
+                .map(|p| simplify_pat(p, con_tags, con_aliases, interner))
                 .collect();
             SPat::Con(Constructor::Tuple(pats.len()), sub)
         }
 
         PatKind::Cons(hd, tl) => {
             let sub = vec![
-                simplify_pat(hd, con_tags, dt_constructors, interner),
-                simplify_pat(tl, con_tags, dt_constructors, interner),
+                simplify_pat(hd, con_tags, con_aliases, interner),
+                simplify_pat(tl, con_tags, con_aliases, interner),
             ];
             SPat::Con(Constructor::Cons, sub)
         }
@@ -190,17 +164,15 @@ fn simplify_pat(
                 for p in pats.iter().rev() {
                     result = SPat::Con(
                         Constructor::Cons,
-                        vec![simplify_pat(p, con_tags, dt_constructors, interner), result],
+                        vec![simplify_pat(p, con_tags, con_aliases, interner), result],
                     );
                 }
                 result
             }
         }
 
-        PatKind::As(_, p) => simplify_pat(p, con_tags, dt_constructors, interner),
-        PatKind::Paren(p) | PatKind::Ann(p, _) => {
-            simplify_pat(p, con_tags, dt_constructors, interner)
-        }
+        PatKind::As(_, p) => simplify_pat(p, con_tags, con_aliases, interner),
+        PatKind::Paren(p) | PatKind::Ann(p, _) => simplify_pat(p, con_tags, con_aliases, interner),
     }
 }
 
@@ -210,17 +182,19 @@ type PatternMatrix = Vec<Vec<SPat>>;
 ///
 /// `type_info` describes the constructors of the scrutinee's type.
 /// `con_tags` maps constructor names to their tags.
+/// `con_aliases` maps import aliases to the constructor names they stand for.
 /// `dt_constructors` maps type names to their full constructor lists.
 pub fn check_match(
     patterns: &[&Pat],
     type_info: &TypeInfo,
-    con_tags: &std::collections::HashMap<String, u16>,
-    dt_constructors: &std::collections::HashMap<String, Vec<(String, usize)>>,
+    con_tags: &HashMap<String, u16>,
+    con_aliases: &HashMap<String, String>,
+    dt_constructors: &DtMap,
     interner: &StringInterner,
 ) -> CheckResult {
     let matrix: PatternMatrix = patterns
         .iter()
-        .map(|p| vec![simplify_pat(p, con_tags, dt_constructors, interner)])
+        .map(|p| vec![simplify_pat(p, con_tags, con_aliases, interner)])
         .collect();
 
     let wildcard = vec![SPat::Wild];
@@ -233,9 +207,8 @@ pub fn check_match(
 
     let mut redundant_clauses = Vec::new();
     for i in 0..matrix.len() {
-        let preceding: PatternMatrix = matrix[..i].to_vec();
         if !is_useful(
-            &preceding,
+            &matrix[..i],
             &matrix[i],
             std::slice::from_ref(type_info),
             dt_constructors,
@@ -250,76 +223,64 @@ pub fn check_match(
     }
 }
 
-/// Is the pattern vector `q` useful with respect to the matrix `p`?
-/// Returns true if there exists a value matched by `q` but not by any row of `p`.
-type DtMap = std::collections::HashMap<String, Vec<(String, usize)>>;
+/// Type name -> its constructors with their arities.
+type DtMap = HashMap<String, Vec<(String, usize)>>;
 
-fn is_useful(matrix: &PatternMatrix, q: &[SPat], type_infos: &[TypeInfo], dt: &DtMap) -> bool {
-    let n = q.len();
-
-    if n == 0 {
+/// Is the pattern vector `q` useful with respect to the matrix?
+/// Returns true if there exists a value matched by `q` but not by any row.
+fn is_useful(matrix: &[Vec<SPat>], q: &[SPat], type_infos: &[TypeInfo], dt: &DtMap) -> bool {
+    let Some(head) = q.first() else {
         return matrix.is_empty();
-    }
+    };
 
-    match &q[0] {
+    match head {
         SPat::Con(c, sub_pats) => {
-            let s_matrix = specialize_matrix(matrix, c, sub_pats.len());
-            let mut s_q: Vec<SPat> = sub_pats.clone();
-            s_q.extend_from_slice(&q[1..]);
-
-            let mut s_types = Vec::new();
-            let arity = sub_pats.len();
-            for i in 0..arity {
-                s_types.push(infer_type_info_from_column(&s_matrix, i, dt));
-            }
-            s_types.extend_from_slice(&type_infos[1..]);
-
-            is_useful(&s_matrix, &s_q, &s_types, dt)
+            is_useful_specialized(matrix, c, sub_pats.clone(), q, type_infos, dt)
         }
 
         SPat::Wild => {
             let ti = &type_infos[0];
+            let head_cons = collect_head_constructors(matrix);
+            let all_covered =
+                ti.is_finite && ti.constructors.iter().all(|(c, _)| head_cons.contains(c));
 
-            if ti.is_finite {
-                let head_cons = collect_head_constructors(matrix);
-                let all_covered = ti.constructors.iter().all(|(c, _)| head_cons.contains(c));
-
-                if all_covered {
-                    for (c, arity) in &ti.constructors {
-                        let s_matrix = specialize_matrix(matrix, c, *arity);
-                        let mut s_q: Vec<SPat> = (0..*arity).map(|_| SPat::Wild).collect();
-                        s_q.extend_from_slice(&q[1..]);
-
-                        let mut s_types = Vec::new();
-                        for i in 0..*arity {
-                            s_types.push(infer_type_info_from_column(&s_matrix, i, dt));
-                        }
-                        s_types.extend_from_slice(&type_infos[1..]);
-
-                        if is_useful(&s_matrix, &s_q, &s_types, dt) {
-                            return true;
-                        }
-                    }
-                    false
-                } else {
-                    let d_matrix = default_matrix(matrix);
-                    let d_q: Vec<SPat> = q[1..].to_vec();
-                    let d_types: Vec<TypeInfo> = type_infos[1..].to_vec();
-                    is_useful(&d_matrix, &d_q, &d_types, dt)
-                }
+            if all_covered {
+                ti.constructors.iter().any(|(c, arity)| {
+                    is_useful_specialized(matrix, c, vec![SPat::Wild; *arity], q, type_infos, dt)
+                })
             } else {
-                // Infinite domain: wildcard is useful iff default matrix says so
-                let d_matrix = default_matrix(matrix);
-                let d_q: Vec<SPat> = q[1..].to_vec();
-                let d_types: Vec<TypeInfo> = type_infos[1..].to_vec();
-                is_useful(&d_matrix, &d_q, &d_types, dt)
+                // A constructor is missing from the column, or the domain is
+                // infinite: the wildcard is useful iff the default matrix says so.
+                is_useful(&default_matrix(matrix), &q[1..], &type_infos[1..], dt)
             }
         }
     }
 }
 
+/// Usefulness of `q` after specializing the matrix on head constructor `c`;
+/// `sub_pats` replaces the head of `q`.
+fn is_useful_specialized(
+    matrix: &[Vec<SPat>],
+    c: &Constructor,
+    mut sub_pats: Vec<SPat>,
+    q: &[SPat],
+    type_infos: &[TypeInfo],
+    dt: &DtMap,
+) -> bool {
+    let arity = sub_pats.len();
+    let s_matrix = specialize_matrix(matrix, c, arity);
+    sub_pats.extend_from_slice(&q[1..]);
+
+    let mut s_types: Vec<TypeInfo> = (0..arity)
+        .map(|i| infer_type_info_from_column(&s_matrix, i, dt))
+        .collect();
+    s_types.extend_from_slice(&type_infos[1..]);
+
+    is_useful(&s_matrix, &sub_pats, &s_types, dt)
+}
+
 /// Infer TypeInfo for a column, using the datatype map for full constructor lists.
-fn infer_type_info_from_column(matrix: &PatternMatrix, col: usize, dt: &DtMap) -> TypeInfo {
+fn infer_type_info_from_column(matrix: &[Vec<SPat>], col: usize, dt: &DtMap) -> TypeInfo {
     for row in matrix {
         if let Some(SPat::Con(c, _)) = row.get(col) {
             match c {
@@ -367,7 +328,7 @@ fn infer_type_info_from_column(matrix: &PatternMatrix, col: usize, dt: &DtMap) -
 }
 
 /// Collect all constructors that appear as heads of rows in the matrix.
-fn collect_head_constructors(matrix: &PatternMatrix) -> HashSet<Constructor> {
+fn collect_head_constructors(matrix: &[Vec<SPat>]) -> HashSet<Constructor> {
     let mut result = HashSet::new();
     for row in matrix {
         if let SPat::Con(c, _) = &row[0] {
@@ -382,7 +343,7 @@ fn collect_head_constructors(matrix: &PatternMatrix) -> HashSet<Constructor> {
 ///   - If head is Con(c, sub_pats): replace head with sub_pats
 ///   - If head is Con(c', _) where c' != c: drop the row
 ///   - If head is Wild: replace head with `arity` wildcards
-fn specialize_matrix(matrix: &PatternMatrix, c: &Constructor, arity: usize) -> PatternMatrix {
+fn specialize_matrix(matrix: &[Vec<SPat>], c: &Constructor, arity: usize) -> PatternMatrix {
     let mut result = Vec::new();
     for row in matrix {
         match &row[0] {
@@ -395,7 +356,7 @@ fn specialize_matrix(matrix: &PatternMatrix, c: &Constructor, arity: usize) -> P
                 // Different constructor, skip this row
             }
             SPat::Wild => {
-                let mut new_row: Vec<SPat> = (0..arity).map(|_| SPat::Wild.clone()).collect();
+                let mut new_row: Vec<SPat> = vec![SPat::Wild; arity];
                 new_row.extend_from_slice(&row[1..]);
                 result.push(new_row);
             }
@@ -405,7 +366,7 @@ fn specialize_matrix(matrix: &PatternMatrix, c: &Constructor, arity: usize) -> P
 }
 
 /// Default matrix: rows whose head is a wildcard, with the head removed.
-fn default_matrix(matrix: &PatternMatrix) -> PatternMatrix {
+fn default_matrix(matrix: &[Vec<SPat>]) -> PatternMatrix {
     let mut result = Vec::new();
     for row in matrix {
         if matches!(&row[0], SPat::Wild) {

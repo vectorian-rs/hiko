@@ -7,22 +7,6 @@ use hiko_syntax::span::Span;
 use crate::exhaustive::{self, TypeInfo};
 use crate::ty::{Scheme, Type};
 
-const UPPERCASE_PRIMITIVE_ALIASES: &[(&str, &str)] = &[
-    ("Int", "int"),
-    ("Float", "float"),
-    ("Word", "word"),
-    ("Bool", "bool"),
-    ("String", "string"),
-    ("Char", "char"),
-    ("Unit", "unit"),
-    ("Bytes", "bytes"),
-    ("Rng", "rng"),
-    ("AwsConfig", "aws_config"),
-    ("AwsS3Client", "aws_s3_client"),
-    ("AwsSqsClient", "aws_sqs_client"),
-    ("Pid", "pid"),
-];
-
 // ── Errors ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -48,8 +32,12 @@ pub struct InferCtx {
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     type_aliases: HashMap<String, (Vec<u32>, Type)>,
+    /// Abstract type introduced by signature ascription -> implementation type name
+    abstract_impls: HashMap<String, String>,
     /// Constructor name → tag (for exhaustiveness checking)
     constructor_tags: HashMap<String, u16>,
+    /// Import alias -> constructor name it stands for (for exhaustiveness)
+    constructor_aliases: HashMap<String, String>,
     /// Type name → list of (constructor_name, arity) (for exhaustiveness)
     datatype_constructors: HashMap<String, Vec<(String, usize)>>,
     /// Accumulated warnings (redundant clauses, etc.)
@@ -149,22 +137,7 @@ impl<'a> BuiltinTypeParser<'a> {
             return Ok(Type::Var(var));
         }
         let ident = self.ident()?;
-        match ident.as_str() {
-            "int" => Ok(Type::int()),
-            "float" => Ok(Type::float()),
-            "word" => Ok(Type::word()),
-            "bool" => Ok(Type::bool()),
-            "string" => Ok(Type::string()),
-            "char" => Ok(Type::char()),
-            "unit" => Ok(Type::unit()),
-            "bytes" => Ok(Type::bytes()),
-            "rng" => Ok(Type::rng()),
-            "aws_config" => Ok(Type::aws_config()),
-            "aws_s3_client" => Ok(Type::aws_s3_client()),
-            "aws_sqs_client" => Ok(Type::aws_sqs_client()),
-            "pid" => Ok(Type::pid()),
-            other => Err(format!("unknown type constructor '{other}")),
-        }
+        Type::primitive(&ident).ok_or_else(|| format!("unknown type constructor '{ident}"))
     }
 
     fn ident(&mut self) -> Result<String, String> {
@@ -233,7 +206,9 @@ impl InferCtx {
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             type_aliases: HashMap::new(),
+            abstract_impls: HashMap::new(),
             constructor_tags: HashMap::new(),
+            constructor_aliases: HashMap::new(),
             datatype_constructors: HashMap::new(),
             warnings: Vec::new(),
             effect_sigs: HashMap::new(),
@@ -389,32 +364,9 @@ impl InferCtx {
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
-        let scheme = self.apply_scheme(scheme);
+        let ty = self.apply(&scheme.ty);
         let mapping: HashMap<u32, Type> = scheme.vars.iter().map(|&v| (v, self.fresh())).collect();
-        self.substitute_vars(&scheme.ty, &mapping)
-    }
-
-    fn substitute_vars(&self, ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
-        #![allow(clippy::only_used_in_recursion)]
-        match ty {
-            Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
-            Type::Arrow(a, b) => Type::arrow(
-                self.substitute_vars(a, mapping),
-                self.substitute_vars(b, mapping),
-            ),
-            Type::Tuple(ts) => Type::Tuple(
-                ts.iter()
-                    .map(|t| self.substitute_vars(t, mapping))
-                    .collect(),
-            ),
-            Type::App(n, args) => Type::App(
-                n.clone(),
-                args.iter()
-                    .map(|t| self.substitute_vars(t, mapping))
-                    .collect(),
-            ),
-            Type::Con(_) => ty.clone(),
-        }
+        substitute_vars(&ty, &mapping)
     }
 
     fn free_vars_in_env(&self, exclude_top_scope: bool) -> HashSet<u32> {
@@ -426,14 +378,18 @@ impl InferCtx {
         };
         for scope in &self.scopes[..limit] {
             for scheme in scope.values() {
-                let scheme = self.apply_scheme(scheme);
-                let fv = scheme.ty.free_vars();
-                for v in fv {
+                for v in self.apply(&scheme.ty).free_vars() {
                     if !scheme.vars.contains(&v) {
                         vars.insert(v);
                     }
                 }
             }
+        }
+        // An effect's result type is one variable shared by every `perform`
+        // and handler of that effect, so it is part of the environment and
+        // must never be generalized.
+        for (_, result_ty) in self.effect_sigs.values() {
+            vars.extend(self.apply(result_ty).free_vars());
         }
         vars
     }
@@ -508,7 +464,7 @@ impl InferCtx {
                 self.bind(name, scheme);
                 Ok(())
             }
-            DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings, decl.span),
+            DeclKind::Fun(bindings) => self.infer_fun_bindings(bindings),
             DeclKind::Datatype(dt) => self.register_datatype(dt),
             DeclKind::TypeAlias(ta) => self.register_type_alias(ta),
             DeclKind::AbstractType(dt) => self.register_abstract_type(dt),
@@ -518,22 +474,12 @@ impl InferCtx {
                 ty,
             } => {
                 let internal = self.interner.resolve(*internal_name).to_string();
-                if self.lookup(&internal).is_none() {
-                    return Err(self.err(
-                        &format!(
-                            "unbound variable: {}",
-                            self.interner.resolve(*internal_name)
-                        ),
-                        decl.span,
-                    ));
-                }
+                let Some(internal_scheme) = self.lookup(&internal).cloned() else {
+                    return Err(self.err(&format!("unbound variable: {internal}"), decl.span));
+                };
 
                 let mut tyvar_map = HashMap::new();
                 let export_ty = self.resolve_type_expr(ty, &mut tyvar_map)?;
-                let scheme = Scheme {
-                    vars: export_ty.free_vars(),
-                    ty: export_ty,
-                };
                 let public = self.interner.resolve(*public_name).to_string();
                 if self.constructors.contains_key(&public) {
                     return Err(self.err(
@@ -541,6 +487,17 @@ impl InferCtx {
                         decl.span,
                     ));
                 }
+                self.check_matches_signature(
+                    &public,
+                    &internal_scheme,
+                    &export_ty,
+                    &tyvar_map,
+                    decl.span,
+                )?;
+                let scheme = Scheme {
+                    vars: export_ty.free_vars(),
+                    ty: export_ty,
+                };
                 self.bind(public, scheme);
                 Ok(())
             }
@@ -571,9 +528,11 @@ impl InferCtx {
             }
             DeclKind::Effect(sym, payload) => {
                 let name = self.interner.resolve(*sym).to_string();
+                // Payload types are closed: a type variable here would be
+                // generalized at each `perform` site while handlers see a
+                // single unknown type.
                 let arg_type = if let Some(ty_expr) = payload {
-                    let mut tyvar_map = HashMap::new();
-                    self.resolve_type_expr(ty_expr, &mut tyvar_map)?
+                    self.resolve_type_expr_strict(ty_expr, &mut HashMap::new())?
                 } else {
                     Type::unit()
                 };
@@ -584,7 +543,7 @@ impl InferCtx {
         }
     }
 
-    fn infer_fun_bindings(&mut self, bindings: &[FunBinding], span: Span) -> Result<(), TypeError> {
+    fn infer_fun_bindings(&mut self, bindings: &[FunBinding]) -> Result<(), TypeError> {
         self.push_scope();
 
         // Add monomorphic bindings for all functions (enables mutual recursion)
@@ -619,7 +578,6 @@ impl InferCtx {
         for (name, scheme) in schemes {
             self.bind(name, scheme);
         }
-        let _ = span;
         Ok(())
     }
 
@@ -675,11 +633,26 @@ impl InferCtx {
         Ok(ty)
     }
 
+    /// Reject a user type name that is already declared or that names a
+    /// primitive. Primitives are `Type::Con` values, so a datatype named
+    /// `Int` would otherwise be the same type as `int`.
+    fn check_new_type_name(&self, name: &str, span: Span) -> Result<(), TypeError> {
+        if Type::primitive(name).is_some() || Type::primitive_surface_name(name).is_some() {
+            return Err(self.err(
+                &format!("type name '{name}' is reserved for a primitive type"),
+                span,
+            ));
+        }
+        // Type aliases are also recorded in `type_arities`.
+        if self.type_arities.contains_key(name) {
+            return Err(self.err(&format!("duplicate type name: {name}"), span));
+        }
+        Ok(())
+    }
+
     fn register_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), TypeError> {
         let dt_name = self.interner.resolve(dt.name).to_string();
-        if self.type_arities.contains_key(&dt_name) {
-            return Err(self.err(&format!("duplicate type name: {dt_name}"), dt.span));
-        }
+        self.check_new_type_name(&dt_name, dt.span)?;
         let arity = dt.tyvars.len();
         self.type_arities.insert(dt_name.clone(), arity);
 
@@ -705,6 +678,8 @@ impl InferCtx {
         };
 
         let all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
+        // Strict resolution never adds to the map, so one copy serves all constructors.
+        let mut tyvar_map: HashMap<String, u32> = param_vars.into_iter().collect();
 
         for con in &dt.constructors {
             let con_name = self.interner.resolve(con.name).to_string();
@@ -712,9 +687,7 @@ impl InferCtx {
                 return Err(self.err(&format!("duplicate constructor name: {con_name}"), con.span));
             }
             let con_ty = if let Some(ref payload_texpr) = con.payload {
-                let tyvar_map: HashMap<String, u32> = param_vars.iter().cloned().collect();
-                let payload_ty =
-                    self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map.clone())?;
+                let payload_ty = self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map)?;
                 Type::arrow(payload_ty, result_ty.clone())
             } else {
                 result_ty.clone()
@@ -744,9 +717,7 @@ impl InferCtx {
 
     fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
         let ta_name = self.interner.resolve(ta.name).to_string();
-        if self.type_arities.contains_key(&ta_name) || self.type_aliases.contains_key(&ta_name) {
-            return Err(self.err(&format!("duplicate type name: {ta_name}"), ta.span));
-        }
+        self.check_new_type_name(&ta_name, ta.span)?;
         let mut tyvar_map: HashMap<String, u32> = HashMap::new();
         let mut param_vars = Vec::new();
         for tv in &ta.tyvars {
@@ -764,9 +735,7 @@ impl InferCtx {
 
     fn register_abstract_type(&mut self, dt: &AbstractTypeDecl) -> Result<(), TypeError> {
         let name = self.interner.resolve(dt.name).to_string();
-        if self.type_arities.contains_key(&name) || self.type_aliases.contains_key(&name) {
-            return Err(self.err(&format!("duplicate type name: {name}"), dt.span));
-        }
+        self.check_new_type_name(&name, dt.span)?;
 
         if let Some(implementation) = dt.implementation {
             let impl_name = self.interner.resolve(implementation).to_string();
@@ -784,10 +753,95 @@ impl InferCtx {
                     dt.span,
                 ));
             }
+            self.abstract_impls.insert(name.clone(), impl_name);
         }
 
         self.type_arities.insert(name, dt.tyvars.len());
         Ok(())
+    }
+
+    /// Check that a structure value matches its signature type.
+    ///
+    /// The signature's type variables are rigid: the value's own scheme must
+    /// instantiate to the signature type with each variable held abstract,
+    /// and abstract types are compared through their implementation. This
+    /// rejects `val coerce : 'a -> 'b` implemented by `fun coerce x = x`,
+    /// and a non-generalized value exported at a polymorphic type.
+    fn check_matches_signature(
+        &mut self,
+        name: &str,
+        scheme: &Scheme,
+        spec_ty: &Type,
+        spec_tyvars: &HashMap<String, u32>,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        // Type variable names keep their leading quote, so these constructor
+        // names cannot clash with a declared type.
+        let rigid: HashMap<u32, Type> = spec_tyvars
+            .iter()
+            .map(|(tv, &v)| (v, Type::Con(tv.clone())))
+            .collect();
+        let expected = substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
+        let env_vars = self.free_vars_in_env(false);
+        let actual = self.instantiate(scheme);
+        self.unify(&actual, &expected, span).map_err(|e| {
+            self.err(
+                &format!("value {name} does not match its signature: {}", e.message),
+                span,
+            )
+        })?;
+        // A rigid variable that reached a type in the environment means the
+        // value is not polymorphic in it (for example, a weak type variable).
+        if env_vars
+            .iter()
+            .any(|&v| mentions_rigid_var(&self.apply(&Type::Var(v))))
+        {
+            return Err(self.err(
+                &format!(
+                    "value {name} is less polymorphic than its signature type {}",
+                    substitute_vars(spec_ty, &rigid)
+                ),
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replace abstract types introduced by signature ascription with their
+    /// implementation types.
+    fn reveal_abstract_types(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Con(name) => match self.abstract_impls.get(name) {
+                Some(impl_name) => self.named_type(impl_name, vec![]),
+                None => ty.clone(),
+            },
+            Type::App(name, args) => {
+                let args = args.iter().map(|a| self.reveal_abstract_types(a)).collect();
+                match self.abstract_impls.get(name) {
+                    Some(impl_name) => self.named_type(impl_name, args),
+                    None => Type::App(name.clone(), args),
+                }
+            }
+            Type::Arrow(a, b) => {
+                Type::arrow(self.reveal_abstract_types(a), self.reveal_abstract_types(b))
+            }
+            Type::Tuple(ts) => {
+                Type::Tuple(ts.iter().map(|t| self.reveal_abstract_types(t)).collect())
+            }
+            Type::Var(_) => ty.clone(),
+        }
+    }
+
+    /// The type named `name` applied to `args`, expanding type aliases.
+    fn named_type(&self, name: &str, args: Vec<Type>) -> Type {
+        if let Some((params, body)) = self.type_aliases.get(name) {
+            let mapping: HashMap<u32, Type> = params.iter().copied().zip(args).collect();
+            substitute_vars(body, &mapping)
+        } else if args.is_empty() {
+            Type::Con(name.to_string())
+        } else {
+            Type::App(name.to_string(), args)
+        }
     }
 
     // ── Expression inference ─────────────────────────────────────────
@@ -1009,50 +1063,12 @@ impl InferCtx {
 
             // Generic arithmetic: resolve via unification
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                self.unify(&lhs_ty, &rhs_ty, span)?;
-                let resolved = self.apply(&lhs_ty);
-                let resolved = match &resolved {
-                    Type::Var(_) => {
-                        // Default ambiguous numeric type to int
-                        self.unify(&lhs_ty, &Type::int(), span)?;
-                        Type::int()
-                    }
-                    Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => resolved,
-                    _ => {
-                        return Err(self.err(
-                            &format!(
-                                "arithmetic operators require int, float, or word, found {}",
-                                self.display(&resolved)
-                            ),
-                            span,
-                        ));
-                    }
-                };
-                self.expr_types.insert(span, resolved.clone());
-                return Ok(resolved);
+                return self.resolve_numeric_operands(&lhs_ty, &rhs_ty, "arithmetic", span);
             }
 
             // Generic comparison: resolve via unification, return bool
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                self.unify(&lhs_ty, &rhs_ty, span)?;
-                let resolved = self.apply(&lhs_ty);
-                let resolved = match &resolved {
-                    Type::Var(_) => {
-                        self.unify(&lhs_ty, &Type::int(), span)?;
-                        Type::int()
-                    }
-                    Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => resolved,
-                    _ => {
-                        return Err(self.err(
-                            &format!(
-                                "comparison operators require int, float, or word, found {}",
-                                self.display(&resolved)
-                            ),
-                            span,
-                        ));
-                    }
-                };
-                self.expr_types.insert(span, resolved);
+                self.resolve_numeric_operands(&lhs_ty, &rhs_ty, "comparison", span)?;
                 return Ok(Type::bool());
             }
 
@@ -1095,6 +1111,37 @@ impl InferCtx {
         self.unify(&lhs_ty, &expected_lhs, lhs.span)?;
         self.unify(&rhs_ty, &expected_rhs, rhs.span)?;
         Ok(result)
+    }
+
+    /// Unify the operands of a generic numeric operator and resolve their
+    /// type to int, float, or word. An unconstrained operand type defaults to
+    /// int. The resolved type is recorded for typed codegen and returned.
+    fn resolve_numeric_operands(
+        &mut self,
+        lhs_ty: &Type,
+        rhs_ty: &Type,
+        kind: &str,
+        span: Span,
+    ) -> Result<Type, TypeError> {
+        self.unify(lhs_ty, rhs_ty, span)?;
+        let resolved = match self.apply(lhs_ty) {
+            Type::Var(_) => {
+                self.unify(lhs_ty, &Type::int(), span)?;
+                Type::int()
+            }
+            Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => Type::Con(n),
+            other => {
+                return Err(self.err(
+                    &format!(
+                        "{kind} operators require int, float, or word, found {}",
+                        self.display(&other)
+                    ),
+                    span,
+                ));
+            }
+        };
+        self.expr_types.insert(span, resolved.clone());
+        Ok(resolved)
     }
 
     // ── Pattern inference ────────────────────────────────────────────
@@ -1216,27 +1263,10 @@ impl InferCtx {
         match &ty_expr.kind {
             TypeExprKind::Named(sym) => {
                 let name = self.interner.resolve(*sym);
-                // Check built-in types
-                match name {
-                    "int" => return Ok(Type::int()),
-                    "float" => return Ok(Type::float()),
-                    "word" => return Ok(Type::word()),
-                    "bool" => return Ok(Type::bool()),
-                    "string" => return Ok(Type::string()),
-                    "char" => return Ok(Type::char()),
-                    "unit" => return Ok(Type::unit()),
-                    "bytes" => return Ok(Type::bytes()),
-                    "rng" => return Ok(Type::rng()),
-                    "aws_config" => return Ok(Type::aws_config()),
-                    "aws_s3_client" => return Ok(Type::aws_s3_client()),
-                    "aws_sqs_client" => return Ok(Type::aws_sqs_client()),
-                    "pid" => return Ok(Type::pid()),
-                    _ => {}
+                if let Some(ty) = Type::primitive(name) {
+                    return Ok(ty);
                 }
-                if let Some((_, lowercase)) = UPPERCASE_PRIMITIVE_ALIASES
-                    .iter()
-                    .find(|(uppercase, _)| *uppercase == name)
-                {
+                if let Some(lowercase) = Type::primitive_surface_name(name) {
                     return Err(self.err(
                         &format!(
                             "primitive type '{name}' is no longer supported; use '{lowercase}'"
@@ -1302,7 +1332,7 @@ impl InferCtx {
                         .zip(resolved_args.iter())
                         .map(|(&v, arg)| (v, arg.clone()))
                         .collect();
-                    return Ok(self.substitute_vars(&body, &mapping));
+                    return Ok(substitute_vars(&body, &mapping));
                 }
                 // Check type constructor
                 if let Some(&arity) = self.type_arities.get(&name) {
@@ -1376,6 +1406,7 @@ impl InferCtx {
             pats,
             type_info,
             &self.constructor_tags,
+            &self.constructor_aliases,
             &self.datatype_constructors,
             &self.interner,
         );
@@ -1462,7 +1493,39 @@ impl InferCtx {
         if let Some(&tag) = self.constructor_tags.get(target_name) {
             self.constructor_tags.insert(alias_name.to_string(), tag);
         }
+        let canonical = self
+            .constructor_aliases
+            .get(target_name)
+            .cloned()
+            .unwrap_or_else(|| target_name.to_string());
+        self.constructor_aliases
+            .insert(alias_name.to_string(), canonical);
         Ok(())
+    }
+}
+
+/// Whether `ty` contains a rigid signature type variable, which
+/// `check_matches_signature` represents as a constructor named `'a`.
+fn mentions_rigid_var(ty: &Type) -> bool {
+    match ty {
+        Type::Con(name) => name.starts_with('\''),
+        Type::Var(_) => false,
+        Type::Arrow(a, b) => mentions_rigid_var(a) || mentions_rigid_var(b),
+        Type::Tuple(ts) | Type::App(_, ts) => ts.iter().any(mentions_rigid_var),
+    }
+}
+
+/// Replace type variables according to `mapping`, leaving others untouched.
+fn substitute_vars(ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
+    match ty {
+        Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Arrow(a, b) => Type::arrow(substitute_vars(a, mapping), substitute_vars(b, mapping)),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| substitute_vars(t, mapping)).collect()),
+        Type::App(n, args) => Type::App(
+            n.clone(),
+            args.iter().map(|t| substitute_vars(t, mapping)).collect(),
+        ),
+        Type::Con(_) => ty.clone(),
     }
 }
 
@@ -1715,6 +1778,53 @@ mod tests {
              val bad = Box.Box 1",
         );
         assert!(msg.contains("unknown constructor: Box.Box"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_signature_type_variables_are_rigid() {
+        for ascription in [":", ":>"] {
+            let msg = infer_err(&format!(
+                "signature S = sig
+                   val coerce : 'a -> 'b
+                 end
+                 structure M {ascription} S = struct
+                   fun coerce x = x
+                 end
+                 val s : string = M.coerce 42"
+            ));
+            assert!(msg.contains("does not match its signature"), "got: {msg}");
+        }
+    }
+
+    #[test]
+    fn test_signature_rejects_weak_value_at_polymorphic_type() {
+        let msg = infer_err(
+            "signature S = sig
+               val f : 'a -> 'a
+             end
+             structure M : S = struct
+               val f = (fn x => x) (fn y => y)
+             end",
+        );
+        assert!(msg.contains("less polymorphic"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_signature_accepts_more_general_value() {
+        let ctx = infer(
+            "signature S = sig
+               type 'a box
+               val wrap : 'a -> 'a box
+               val pair : int -> int * int
+             end
+             structure M :> S = struct
+               type 'a box = 'a list
+               fun wrap x = [x]
+               fun pair x = (x, x)
+             end
+             val b = M.wrap true",
+        );
+        assert_eq!(type_of(&ctx, "b"), "bool M.box");
     }
 
     // ── Let-polymorphism ─────────────────────────────────────────────
@@ -2025,6 +2135,20 @@ mod tests {
         assert!(msg.contains("duplicate type"), "got: {msg}");
     }
 
+    #[test]
+    fn test_datatype_cannot_reuse_primitive_name() {
+        // `Int` is the internal name of `int`; a datatype with that name
+        // would make its constructors usable as integers.
+        let msg = infer_err("datatype Int = A val x : int = A val y = x + 1");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+        let msg = infer_err("datatype Bool = X | Y val c = if X then 1 else 2");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+        let msg = infer_err("datatype int = A");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+        let msg = infer_err("type String = int");
+        assert!(msg.contains("reserved for a primitive"), "got: {msg}");
+    }
+
     // ── val rec polymorphism ─────────────────────────────────────────
 
     #[test]
@@ -2190,6 +2314,33 @@ mod tests {
         assert_eq!(type_of(&ctx, "xs"), "int list");
     }
 
+    #[test]
+    fn test_effect_result_type_not_generalized() {
+        // The handler resumes Get with an int, so `f ()` must not also be
+        // usable as a string.
+        let msg = infer_err(
+            "effect Get of unit
+             val f = fn () => perform Get ()
+             val s : string = f ()
+             val r = handle string_length (f ()) with
+                 return x => x
+               | Get _ k => resume k 42",
+        );
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_effect_payload_type_variable_rejected() {
+        let msg = infer_err(
+            "effect Put of 'a
+             val f = fn x => perform Put x
+             val r = handle f \"str\" with
+                 return _ => 0
+               | Put v k => v + 1",
+        );
+        assert!(msg.contains("unbound type variable"), "got: {msg}");
+    }
+
     // ── Exhaustiveness checking ──────────────────────────────────────
 
     #[test]
@@ -2310,6 +2461,32 @@ mod tests {
              datatype t = A of flag | B
              val x = case A Off of A On => 1 | A Off => 2 | B => 0",
         );
+    }
+
+    #[test]
+    fn test_constructor_alias_nested_non_exhaustive() {
+        // `X1`/`X2` alias `A1`/`A2`, as named imports do. `A3` is missing, so
+        // the match must be rejected whichever datatype shares their tags.
+        // Repeat with fresh contexts so HashMap iteration order varies.
+        let src = "datatype a = A1 | A2 | A3
+                   datatype b = B1 | B2
+                   datatype 'x box = Box of 'x
+                   val f = fn v => case v of Box X1 => 1 | Box X2 => 2";
+        for _ in 0..32 {
+            let tokens = Lexer::new(src, 0).tokenize().expect("lex error");
+            let program = Parser::new(tokens).parse_program().expect("parse error");
+            let program = hiko_syntax::desugar::desugar_program(program);
+            let mut ctx = InferCtx::new();
+            ctx.interner = program.interner.clone();
+            let (types, rest) = program.decls.split_at(3);
+            for decl in types {
+                ctx.infer_decl(decl).expect("type error");
+            }
+            ctx.bind_constructor_alias("X1", "A1").unwrap();
+            ctx.bind_constructor_alias("X2", "A2").unwrap();
+            let msg = ctx.infer_decl(&rest[0]).unwrap_err().message;
+            assert!(msg.contains("non-exhaustive"), "got: {msg}");
+        }
     }
 
     // ── fn pattern exhaustiveness ────────────────────────────────────
