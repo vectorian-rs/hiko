@@ -253,6 +253,12 @@ impl<'src> Lexer<'src> {
             let value: f64 = text
                 .parse()
                 .map_err(|_| self.err(&format!("invalid float literal: {text}"), start))?;
+            // Rust parses an out-of-range literal as infinity; the source
+            // clearly meant a finite number, and the formatter cannot print
+            // infinity back.
+            if value.is_infinite() {
+                return Err(self.err(&format!("float literal out of range: {text}"), start));
+            }
             Ok(self.make_token(TokenKind::FloatLit(value), start, self.pos))
         } else {
             let value: i64 = text
@@ -572,6 +578,17 @@ mod tests {
             vec![TokenKind::FloatLit(2.5e-3), TokenKind::Eof]
         );
         assert_eq!(lex("0.0"), vec![TokenKind::FloatLit(0.0), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn test_float_literal_out_of_range() {
+        assert_eq!(lex_err("1e400"), "float literal out of range: 1e400");
+        assert_eq!(lex_err("1.5e309"), "float literal out of range: 1.5e309");
+        // Underflow rounds to zero like any other inexact literal.
+        assert_eq!(
+            lex("1e-400"),
+            vec![TokenKind::FloatLit(0.0), TokenKind::Eof]
+        );
     }
 
     #[test]
