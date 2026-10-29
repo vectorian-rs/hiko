@@ -912,6 +912,13 @@ impl Heap {
     pub fn live_count(&self) -> usize {
         self.objects.iter().filter(|o| o.is_some()).count()
     }
+
+    /// Number of heap slots, live or unreachable but not yet swept, whose
+    /// object matches `pred`.
+    #[cfg(test)]
+    pub(crate) fn count_objects(&self, pred: impl Fn(&HeapObject) -> bool) -> usize {
+        self.objects.iter().flatten().filter(|o| pred(o)).count()
+    }
 }
 
 #[cfg(feature = "builtin-filesystem")]

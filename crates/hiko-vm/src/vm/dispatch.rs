@@ -561,6 +561,25 @@ impl VM {
                     let handler = self.handlers.remove(h_idx);
                     self.handlers.truncate(h_idx);
 
+                    if !clause.resumes {
+                        // The clause never mentions its continuation, so
+                        // nothing can resume it: unwind to the handler frame
+                        // without capturing. Nothing here allocates, so the
+                        // popped payload cannot be collected before it is
+                        // pushed back.
+                        self.stack.truncate(save_from);
+                        self.frames.truncate(handler_frame_idx + 1);
+                        let frame = &mut self.frames[handler_frame_idx];
+                        frame.proto_idx = handler.proto_idx;
+                        frame.captures = handler.captures;
+                        frame.ip = clause_ip;
+                        self.push(payload)?;
+                        // The clause layout keeps a slot for the unused
+                        // continuation variable.
+                        self.push(Value::Unit)?;
+                        continue;
+                    }
+
                     let mut saved_stack = self.stack.split_off(save_from);
                     if handler_locals_count > 0 {
                         let mut combined =
