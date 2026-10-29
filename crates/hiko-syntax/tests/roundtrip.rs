@@ -250,6 +250,20 @@ fn rt_string_concat() {
 }
 
 #[test]
+fn rt_float_magnitudes_keep_exponent_form() {
+    for src in [
+        "val x = 6.02e23",
+        "val x = 1e300",
+        "val x = 1e-7",
+        "val x = 0.5",
+        "val x = 1.0",
+        "val x = 123.25",
+    ] {
+        assert_eq!(roundtrip(src), src);
+    }
+}
+
+#[test]
 fn rt_unary_neg() {
     assert_roundtrip("val x = ~42");
 }

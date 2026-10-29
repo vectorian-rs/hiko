@@ -1067,8 +1067,10 @@ fn pretty_float(buf: &mut String, f: f64) {
         }
         return;
     }
+    // Debug, unlike Display, switches to exponent form for very large and
+    // small magnitudes (`1e300`, not 301 digits), and the lexer reads both.
     let start = buf.len();
-    write!(buf, "{f}").unwrap();
+    write!(buf, "{f:?}").unwrap();
     let written = &buf[start..];
     if !written.contains('.') && !written.contains('e') && !written.contains('E') {
         buf.push_str(".0");
