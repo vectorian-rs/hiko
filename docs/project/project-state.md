@@ -249,10 +249,13 @@ when the handler belongs to the main chunk.
 These are the questions the research track should answer, in rough order:
 
 1. **One-shot or multi-shot.** Local continuations are multi-shot by copy
-   today, which is undocumented. Choose one. One-shot is cheaper (no clone) and
+   today (documented in
+   [`effects.md`](../language/effects.md#current-continuation-semantics) as not
+   stable). Choose one. One-shot is cheaper (no clone) and
    matches OCaml 5. Multi-shot enables backtracking and is closer to Eff/Koka.
-2. **Deep or shallow.** The implementation is deep. The README says shallow in
-   two places. Decide and make docs, tests, and #29/#30 agree.
+2. **Deep or shallow.** The implementation is deep, and the README and
+   `effects.md` now say so. Decide whether to keep it and make tests and
+   #29/#30 agree.
 3. **Effect rows in types.** Function types do not record effects, so
    unhandled effects are runtime errors (#48, #74).
    [`effects-design.md`](../rnd/effects-design.md) lists strategies A to F.
@@ -333,9 +336,6 @@ been taken.
 
 | Doc                                                      | Problem                                                                                                                                  |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `README.md`                                              | Calls effect handlers "shallow" (lines 99 and 254). The implementation and `effects.md` say deep.                                        |
-| `README.md`                                              | Builtin table lists `http_get : string -> string`. The real builtin returns a status, headers, and body tuple.                           |
-| `docs/architecture/runtime.md`                           | Describes one-shot continuations for I/O only. Local continuations are multi-shot, which is not documented anywhere.                     |
 | `docs/language/imports.md`                               | "What Is Next" lists a configurable cache location. Check against the current loader before keeping it.                                  |
 | `docs/verification/verification-status-20260428.md`      | Six months old. Several items it lists as gaps (local-slot checks) are now done per `verification.md`.                                   |
 | `docs/rnd/`, `docs/prompts/`, `docs/builtins/parquet.md` | Agent and proposal material. Out of focus.                                                                                               |
