@@ -371,7 +371,7 @@ struct UpvalueDesc {
 struct FuncCtx {
     chunk: Chunk,
     locals: Vec<Local>,
-    max_locals: u16,
+    max_locals: usize,
     upvalues: Vec<UpvalueDesc>,
     scope_depth: u32,
     arity: u8,
@@ -678,7 +678,7 @@ impl Compiler {
         Ok((
             CompiledProgram {
                 main: Arc::new(main.chunk),
-                main_n_locals: main.max_locals,
+                main_n_locals: checked_u16(main.max_locals, "local slots")?,
                 functions: Arc::<[FunctionProto]>::from(c.functions),
                 effects: Arc::<[crate::chunk::EffectMeta]>::from(
                     c.effect_tags
@@ -821,15 +821,24 @@ impl Compiler {
         }
     }
 
-    fn emit_get_field(&mut self, idx: u8) {
+    fn emit_get_field(&mut self, idx: usize) -> Result<(), CompileError> {
         match idx {
             0 => self.emit(Op::GetField0),
             1 => self.emit(Op::GetField1),
             _ => {
+                let idx = checked_u8(idx, "tuple fields")?;
                 self.emit(Op::GetField);
                 self.emit_u8(idx);
             }
         }
+        Ok(())
+    }
+
+    fn emit_make_tuple(&mut self, len: usize) -> Result<(), CompileError> {
+        let len = checked_u8(len, "tuple elements")?;
+        self.emit(Op::MakeTuple);
+        self.emit_u8(len);
+        Ok(())
     }
 
     fn emit_get_var(&mut self, name: &str) -> Result<(), CompileError> {
@@ -857,7 +866,7 @@ impl Compiler {
         let depth = self.ctx().scope_depth;
         self.ctx_mut().locals.push(Local { name, depth });
         let len = self.ctx().locals.len();
-        self.ctx_mut().max_locals = self.ctx().max_locals.max(len as u16);
+        self.ctx_mut().max_locals = self.ctx().max_locals.max(len);
     }
 
     fn begin_scope(&mut self) {
@@ -891,11 +900,11 @@ impl Compiler {
     }
 
     /// Emit GetLocal slot + GetField idx, add as temp local, return new slot.
-    fn emit_field_extract(&mut self, slot: u16, idx: u8) -> u16 {
+    fn emit_field_extract(&mut self, slot: u16, idx: usize) -> Result<u16, CompileError> {
         self.emit_get_local(slot);
-        self.emit_get_field(idx);
+        self.emit_get_field(idx)?;
         self.add_local("_tmp".to_string());
-        (self.ctx().locals.len() - 1) as u16
+        Ok((self.ctx().locals.len() - 1) as u16)
     }
 
     /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
@@ -1450,7 +1459,7 @@ impl Compiler {
                 let tup_slot = (self.ctx().locals.len() - 1) as u16;
                 for (i, p) in pats.iter().enumerate() {
                     self.emit_get_local(tup_slot);
-                    self.emit_get_field(i as u8);
+                    self.emit_get_field(i)?;
                     self.compile_binding_pattern(p)?;
                 }
                 Ok(())
@@ -1466,7 +1475,7 @@ impl Compiler {
     fn compile_datatype(&mut self, dt: &DatatypeDecl) -> Result<(), CompileError> {
         for (i, con) in dt.constructors.iter().enumerate() {
             let con_name = self.interner.resolve(con.name).to_string();
-            let tag = i as u16;
+            let tag = checked_u16(i, "datatype constructors")?;
             let has_payload = con.payload.is_some();
             self.constructor_tags.insert(con_name.clone(), tag);
             self.constructor_arities
@@ -1541,8 +1550,7 @@ impl Compiler {
                 for i in 0..arity {
                     self.emit_get_var(&format!("_arg{i}"))?;
                 }
-                self.emit(Op::MakeTuple);
-                self.emit_u8(arity as u8);
+                self.emit_make_tuple(arity)?;
                 self.add_local("_scrut".to_string());
                 let scrut_slot = (self.ctx().locals.len() - 1) as u16;
                 let tuple_pats: Vec<Pat> = clauses
@@ -1607,16 +1615,16 @@ impl Compiler {
 
     fn finish_function(&mut self) -> Result<(), CompileError> {
         let func_ctx = self.func_stack.pop().unwrap();
-        let n_captures = func_ctx.upvalues.len() as u8;
+        let n_captures = checked_u8(func_ctx.upvalues.len(), "closure captures")?;
         let fn_name = func_ctx.name.clone();
         let proto = FunctionProto {
             name: func_ctx.name,
             arity: func_ctx.arity,
             n_captures,
-            n_locals: func_ctx.max_locals,
+            n_locals: checked_u16(func_ctx.max_locals, "local slots")?,
             chunk: func_ctx.chunk,
         };
-        let proto_idx = self.functions.len() as u16;
+        let proto_idx = checked_u16(self.functions.len(), "functions")?;
         self.functions.push(proto);
         // Register for direct calls if this is a top-level function with no captures
         if n_captures == 0
@@ -1754,7 +1762,7 @@ impl Compiler {
 
             PatKind::Tuple(pats) => {
                 for (i, p) in pats.iter().enumerate() {
-                    self.emit_field_extract_test(slot, i as u8, p, fail_jumps)?;
+                    self.emit_field_extract_test(slot, i, p, fail_jumps)?;
                 }
             }
 
@@ -1786,7 +1794,7 @@ impl Compiler {
     fn emit_field_extract_test(
         &mut self,
         slot: u16,
-        field_idx: u8,
+        field_idx: usize,
         sub_pat: &Pat,
         fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
@@ -1794,7 +1802,7 @@ impl Compiler {
             return Ok(()); // wildcard/var: nothing to test
         }
         // Push field value as temp local for sub-pattern testing
-        let field_slot = self.emit_field_extract(slot, field_idx);
+        let field_slot = self.emit_field_extract(slot, field_idx)?;
         self.compile_pattern_test(field_slot, sub_pat, fail_jumps)?;
         // Pop the temp local (we'll re-extract during bind phase)
         self.ctx_mut().locals.pop();
@@ -1820,21 +1828,21 @@ impl Compiler {
 
             PatKind::Constructor(_, None) => {}
             PatKind::Constructor(_, Some(sub_pat)) => {
-                let field_slot = self.emit_field_extract(slot, 0);
+                let field_slot = self.emit_field_extract(slot, 0)?;
                 self.compile_pattern_bind(field_slot, sub_pat)?;
             }
 
             PatKind::Tuple(pats) => {
                 for (i, p) in pats.iter().enumerate() {
-                    let field_slot = self.emit_field_extract(slot, i as u8);
+                    let field_slot = self.emit_field_extract(slot, i)?;
                     self.compile_pattern_bind(field_slot, p)?;
                 }
             }
 
             PatKind::Cons(hd, tl) => {
-                let hd_slot = self.emit_field_extract(slot, 0);
+                let hd_slot = self.emit_field_extract(slot, 0)?;
                 self.compile_pattern_bind(hd_slot, hd)?;
-                let tl_slot = self.emit_field_extract(slot, 1);
+                let tl_slot = self.emit_field_extract(slot, 1)?;
                 self.compile_pattern_bind(tl_slot, tl)?;
             }
 
@@ -1924,8 +1932,7 @@ impl Compiler {
                 for e in elems {
                     self.compile_expr(e)?;
                 }
-                self.emit(Op::MakeTuple);
-                self.emit_u8(elems.len() as u8);
+                self.emit_make_tuple(elems.len())?;
             }
             ExprKind::List(elems) => {
                 assert!(
@@ -2125,6 +2132,28 @@ impl Compiler {
         }
         Ok(())
     }
+}
+
+/// Convert a count or index to a `u8` bytecode operand, failing instead of
+/// silently truncating.
+fn checked_u8(value: usize, what: &str) -> Result<u8, CompileError> {
+    u8::try_from(value).map_err(|_| {
+        CompileError::codegen(format!(
+            "too many {what}: {value} exceeds the bytecode limit of {}",
+            u8::MAX
+        ))
+    })
+}
+
+/// Convert a count or index to a `u16` bytecode operand, failing instead of
+/// silently truncating.
+fn checked_u16(value: usize, what: &str) -> Result<u16, CompileError> {
+    u16::try_from(value).map_err(|_| {
+        CompileError::codegen(format!(
+            "too many {what}: {value} exceeds the bytecode limit of {}",
+            u16::MAX
+        ))
+    })
 }
 
 fn simple_pat_name(pat: &Pat, interner: &StringInterner) -> String {
@@ -2955,5 +2984,43 @@ Filesystem = "blake3:deadbeef"
         source.push_str("val y = if b then 1 else 2\n");
         let (compiled, _) = Compiler::compile(parse_program(&source)).expect("compile");
         assert!(compiled.main.code.len() > i16::MAX as usize);
+    }
+
+    #[test]
+    fn tuple_with_more_than_255_elements_is_rejected() {
+        let elems = (0..256).map(|i| i.to_string()).collect::<Vec<_>>();
+        let source = format!("val t = ({})\n", elems.join(", "));
+        match Compiler::compile(parse_program(&source)) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("tuple"), "unexpected error: {message}");
+            }
+            other => panic!("expected codegen error for 256-element tuple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closure_with_more_than_255_captures_is_rejected() {
+        let mut source = String::from("val f = let\n");
+        for i in 0..256 {
+            source.push_str(&format!("  val c{i} = {i}\n"));
+        }
+        // Group the captures into small tuples to keep the expression shallow.
+        let groups = (0..16)
+            .map(|g| {
+                let names = (0..16)
+                    .map(|i| format!("c{}", g * 16 + i))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({names})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        source.push_str(&format!("in fn x => (x, {groups}) end\n"));
+        match Compiler::compile(parse_program(&source)) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("capture"), "unexpected error: {message}");
+            }
+            other => panic!("expected codegen error for 256 captures, got {other:?}"),
+        }
     }
 }
