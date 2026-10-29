@@ -9,8 +9,7 @@ Implemented:
 - top-level `signature`
 - top-level `structure`
 - opaque ascription `:>`
-- ascription with `:`, which is parsed but currently behaves exactly like `:>`
-  (see [Ascription Semantics](#ascription-semantics))
+- transparent ascription `:` (see [Ascription Semantics](#ascription-semantics))
 - qualified names like `Box.make` and `Json.JObject`
 
 Not implemented:
@@ -21,7 +20,6 @@ Not implemented:
 - sharing constraints
 - first-class modules
 - nested modules inside `struct ... end`
-- transparent ascription (`:` does not keep type definitions visible)
 
 This is deliberate. Hiko currently treats modules as a **single top-level namespace layer**, not as a full recursive module language.
 
@@ -98,8 +96,8 @@ structure List : LIST = struct
 end
 ```
 
-In SML this is transparent ascription. In Hiko it currently seals the
-structure the same way `:>` does. See [Ascription Semantics](#ascription-semantics).
+This is transparent ascription: the signature filters the structure's names,
+but its type definitions stay visible. See [Ascription Semantics](#ascription-semantics).
 
 ### Opaque Ascription
 
@@ -137,13 +135,15 @@ Ascribing a signature to a structure does two things:
 - **filtering**: names that the signature does not list are hidden outside the
   structure
 
-Both `:` and `:>` do this. Both also make every `type t` in the signature
-**abstract** outside the structure: the definition of `t` is hidden.
+Both `:` and `:>` do this. They differ, as in SML, in what a `type t` in the
+signature means outside the structure:
 
-In SML, `:` is transparent and keeps the definition visible. Hiko does not
-implement that difference. The parser records which form was used, but
-signature elaboration ignores it (`signature_assertions` in
-`crates/hiko-syntax/src/desugar.rs`). For example:
+- **opaque** (`:>`): `t` is **abstract**; its definition is hidden.
+- **transparent** (`:`): `t` stands for the structure's own definition, so
+  equalities such as `t = int` stay visible.
+
+Elaboration is in `signature_assertions` in
+`crates/hiko-syntax/src/desugar.rs`. For example:
 
 ```sml
 signature COUNTER = sig
@@ -156,11 +156,11 @@ structure C : COUNTER = struct
   val zero = 0
 end
 
-val n = C.zero + 1   (* type error in Hiko today; accepted in SML *)
+val n = C.zero + 1   (* accepted: C.t = int is visible *)
 ```
 
-Until this is resolved, write `:>` when sealing is intended. Treat `:` as
-unstable: it may become transparent or be removed from the language.
+With `structure C :> COUNTER`, the same `C.zero + 1` is a type error, because
+`C.t` is abstract.
 
 ## Deliberate Limits
 

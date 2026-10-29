@@ -1262,11 +1262,7 @@ mod tests {
     }
 
     fn compile_file(path: &Path) -> CompiledProgram {
-        let source = std::fs::read_to_string(path).expect("read source");
-        let tokens = Lexer::new(&source, 0).tokenize().unwrap();
-        let program = Parser::new(tokens).parse_program().unwrap();
-        let (compiled, _) = Compiler::compile_file(program, path).unwrap();
-        compiled
+        crate::test_support::compile_file_hermetic(path)
     }
 
     fn temp_path(name: &str) -> PathBuf {
@@ -1849,6 +1845,58 @@ mod tests {
         assert_eq!(output, vec!["rooted\n"]);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_http_timeout_does_not_block_other_processes() {
+        // A server that accepts the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            drop(stream);
+        });
+
+        // With one VM worker, the second process can only run before the
+        // HTTP timeout if the pending request does not occupy that worker.
+        let program = compile(&format!(
+            "val t0 = monotonic_ms ()\n\
+             val slow = spawn (fn () => http_get \"http://{addr}/\")\n\
+             val counter = spawn (fn () => monotonic_ms ())\n\
+             val t_counter = await_process counter\n\
+             val _ = println (int_to_string (t_counter - t0))\n\
+             val _ = await_process slow"
+        ));
+        let vm = crate::builder::VMBuilder::new(program)
+            .with_core()
+            .register_builtin_name("spawn")
+            .register_builtin_name("await_process")
+            .allow_http_builtin("http_get", vec!["127.0.0.1".to_string()])
+            .http_timeout_ms(1000)
+            .build();
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root_vm(vm);
+
+        let started = std::time::Instant::now();
+        runtime.run_to_completion().unwrap();
+        let elapsed = started.elapsed();
+
+        let failure = runtime
+            .failure(pid)
+            .expect("root fails when http_get times out");
+        let failure = format!("{failure:?}");
+        assert!(failure.contains("http_get: http: timeout"), "{failure}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900)
+                && elapsed <= std::time::Duration::from_secs(2),
+            "timeout took {elapsed:?}"
+        );
+        let output = runtime.table.get_output(pid);
+        let counter_ms: u64 = output[0].trim().parse().unwrap();
+        assert!(counter_ms < 900, "second process ran after {counter_ms}ms");
+        server.join().unwrap();
     }
 
     #[test]

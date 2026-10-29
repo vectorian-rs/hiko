@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
-use hiko_compile::op::Op;
+use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
 
 #[derive(Debug, Clone)]
 pub struct VerificationError {
@@ -136,6 +136,7 @@ fn decode_chunk(
     Ok(decoded)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_instruction(
     chunk: &Chunk,
     n_locals: usize,
@@ -491,6 +492,12 @@ fn decode_instruction(
             for _ in 0..n_clauses {
                 let effect_tag = read_u16(chunk, ip, "InstallHandler clause")?;
                 validate_effect_tag(effect_tag, effect_tags, "InstallHandler clause")?;
+                let flags = read_u8(chunk, ip, "InstallHandler clause")?;
+                if flags & !HANDLER_CLAUSE_RESUMES != 0 {
+                    return Err(format!(
+                        "InstallHandler at offset {start} has clause with invalid flags {flags:#04x}"
+                    ));
+                }
                 let offset = read_i16(chunk, ip, "InstallHandler clause")?;
                 let target = read_relative_target(*ip, offset, "InstallHandler clause")?;
                 handler_clause_targets.push(target);
@@ -605,6 +612,9 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
             pending.push_back((*target, successor_depth));
         }
         if !inst.handler_clause_targets.is_empty() {
+            // Every clause enters with the payload and a continuation slot.
+            // For a clause without HANDLER_CLAUSE_RESUMES the slot holds a
+            // Unit placeholder instead of a captured continuation.
             let clause_depth = successor_depth.checked_add(2).ok_or_else(|| {
                 format!(
                     "{:?} at offset {} overflows stack depth for handler clause entry",
@@ -641,7 +651,7 @@ fn apply_delta(inst: &DecodedInst, depth: usize, delta: isize) -> Result<usize, 
 mod tests {
     use super::verify_program;
     use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
-    use hiko_compile::op::Op;
+    use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
     use std::sync::Arc;
 
     fn empty_program(code: Vec<u8>) -> CompiledProgram {
@@ -760,6 +770,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_set_local_out_of_bounds_in_main() {
+        let cases = [
+            (vec![Op::Unit as u8, Op::SetLocal3 as u8, Op::Halt as u8], 3),
+            (
+                vec![Op::Unit as u8, Op::SetLocal as u8, 2, 0, Op::Halt as u8],
+                2,
+            ),
+        ];
+        for (code, slot) in cases {
+            let program = program_with_effects(code, slot, Vec::new());
+            let err = verify_program(&program).expect_err("program should fail verification");
+            assert!(err.message().contains("SetLocal"), "{}", err.message());
+            assert!(
+                err.message().contains(&format!("local slot {slot}")),
+                "{}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
     fn rejects_function_get_local_out_of_bounds() {
         let function = proto(vec![Op::GetLocal as u8, 1, 0, Op::Return as u8], 0, 0, 1);
         let program = CompiledProgram {
@@ -856,12 +887,69 @@ mod tests {
             0,
             7,
             0,
+            HANDLER_CLAUSE_RESUMES,
             0,
             0,
             Op::Halt as u8,
         ]);
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("unknown effect tag 7"));
+    }
+
+    /// One-clause handler for effect tag 0 whose clause pops `clause_pops`
+    /// values and halts. The clause starts at offset 10.
+    fn one_clause_handler(flags: u8, clause_pops: usize) -> CompiledProgram {
+        let mut code = vec![
+            Op::InstallHandler as u8,
+            1,
+            0,
+            0,
+            0,
+            flags,
+            2,
+            0,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ];
+        code.extend(std::iter::repeat_n(Op::Pop as u8, clause_pops));
+        code.push(Op::Halt as u8);
+        program_with_effects(code, 0, vec![effect_zero()])
+    }
+
+    #[test]
+    fn accepts_install_handler_clause_flags() {
+        for flags in [0, HANDLER_CLAUSE_RESUMES] {
+            verify_program(&one_clause_handler(flags, 2))
+                .unwrap_or_else(|err| panic!("flags {flags}: {err}"));
+        }
+    }
+
+    #[test]
+    fn rejects_install_handler_invalid_clause_flags() {
+        for flags in [0x02, 0x80, 0xff] {
+            let err = verify_program(&one_clause_handler(flags, 2))
+                .expect_err("program should fail verification");
+            assert!(
+                err.message().contains("invalid flags"),
+                "flags {flags}: {}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
+    fn handler_clause_entry_has_payload_and_continuation_slots() {
+        // Both kinds of clause enter with two values: the payload and either
+        // the continuation or a placeholder.
+        for flags in [0, HANDLER_CLAUSE_RESUMES] {
+            let err = verify_program(&one_clause_handler(flags, 3))
+                .expect_err("program should fail verification");
+            assert!(
+                err.message().contains("Pop at offset 12"),
+                "flags {flags}: {}",
+                err.message()
+            );
+        }
     }
 
     #[test]

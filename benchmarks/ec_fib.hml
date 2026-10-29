@@ -4,7 +4,7 @@
  * Input: 25 => 75025
  *)
 
-effect Ret of Int
+effect Ret of int
 
 fun callec f =
   handle f ()

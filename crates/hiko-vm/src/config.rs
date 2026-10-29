@@ -42,6 +42,58 @@ pub struct Limits {
     pub max_host_resources: Option<usize>,
     #[serde(default)]
     pub host_resources: HashMap<String, usize>,
+    /// Per-operation I/O limits. Unset keys use the defaults in
+    /// `crate::io_limits`.
+    pub http_timeout_ms: Option<u64>,
+    pub http_connect_timeout_ms: Option<u64>,
+    pub exec_timeout_ms: Option<u64>,
+    pub max_http_response_bytes: Option<u64>,
+    pub max_file_read_bytes: Option<u64>,
+    pub max_exec_output_bytes: Option<u64>,
+}
+
+type BuilderLimitSetter = fn(VMBuilder, u64) -> VMBuilder;
+
+impl Limits {
+    /// Per-operation I/O limits that are set, as (builder method name, value,
+    /// setter). The name is also the policy key.
+    fn io_limit_settings(&self) -> Vec<(&'static str, u64, BuilderLimitSetter)> {
+        let all: [(&'static str, Option<u64>, BuilderLimitSetter); 6] = [
+            (
+                "http_timeout_ms",
+                self.http_timeout_ms,
+                VMBuilder::http_timeout_ms,
+            ),
+            (
+                "http_connect_timeout_ms",
+                self.http_connect_timeout_ms,
+                VMBuilder::http_connect_timeout_ms,
+            ),
+            (
+                "exec_timeout_ms",
+                self.exec_timeout_ms,
+                VMBuilder::exec_timeout_ms,
+            ),
+            (
+                "max_http_response_bytes",
+                self.max_http_response_bytes,
+                VMBuilder::max_http_response_bytes,
+            ),
+            (
+                "max_file_read_bytes",
+                self.max_file_read_bytes,
+                VMBuilder::max_file_read_bytes,
+            ),
+            (
+                "max_exec_output_bytes",
+                self.max_exec_output_bytes,
+                VMBuilder::max_exec_output_bytes,
+            ),
+        ];
+        all.into_iter()
+            .filter_map(|(name, value, setter)| value.map(|value| (name, value, setter)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -79,29 +131,14 @@ struct AwsSsoProfileLeaf {
     allowed_profiles: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// The `exec` timeout is `[limits] exec_timeout_ms`.
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ExecLeaf {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
     allowed_commands: Vec<String>,
-    #[serde(default = "default_exec_timeout")]
-    timeout: u64,
-}
-
-impl Default for ExecLeaf {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            allowed_commands: Vec::new(),
-            timeout: default_exec_timeout(),
-        }
-    }
-}
-
-fn default_exec_timeout() -> u64 {
-    30
 }
 
 macro_rules! enabled_family {
@@ -479,7 +516,6 @@ impl ExecCapabilities {
             {
                 return builder.with_exec(VmExecPolicy {
                     allowed: leaf.allowed_commands.clone(),
-                    timeout: leaf.timeout,
                 });
             }
         }
@@ -493,10 +529,8 @@ impl ExecCapabilities {
             out.push_str(&format!(
                 "            .with_exec(hiko_vm::builder::ExecPolicy {{\n\
                  \x20               allowed: vec![{}],\n\
-                 \x20               timeout: {},\n\
                  \x20           }})\n",
                 rust_string_vec(&leaf.allowed_commands),
-                leaf.timeout
             ));
         }
     }
@@ -1141,6 +1175,9 @@ impl RunConfig {
         if !self.limits.host_resources.is_empty() {
             builder = builder.host_resource_limits(self.limits.host_resources.clone());
         }
+        for (_, value, setter) in self.limits.io_limit_settings() {
+            builder = setter(builder, value);
+        }
 
         builder
     }
@@ -1221,7 +1258,7 @@ impl RunConfig {
         }
         if !self.limits.host_resources.is_empty() {
             let mut limits: Vec<_> = self.limits.host_resources.iter().collect();
-            limits.sort_by(|(left, _), (right, _)| left.cmp(right));
+            limits.sort_by_key(|(left, _)| *left);
             s.push_str("            .host_resource_limits(std::collections::HashMap::from([\n");
             for (kind, limit) in limits {
                 let kind = kind.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1230,6 +1267,9 @@ impl RunConfig {
                 ));
             }
             s.push_str("            ]))\n");
+        }
+        for (name, value, _) in self.limits.io_limit_settings() {
+            s.push_str(&format!("            .{name}({value})\n"));
         }
         s.push_str("            ;\n");
         s.push_str("        builder.build()\n");

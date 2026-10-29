@@ -44,7 +44,7 @@ fn collect_signatures(decls: &[Decl]) -> HashMap<Symbol, SignatureDecl> {
     signatures
 }
 
-pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
+fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
     let span = decl.span;
     let kind = match decl.kind {
         DeclKind::Val(pat, expr) => DeclKind::Val(desugar_pat(pat), desugar_expr(expr, interner)),
@@ -56,8 +56,6 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
                 .collect();
             DeclKind::Fun(bindings)
         }
-        DeclKind::Datatype(dt) => DeclKind::Datatype(dt),
-        DeclKind::TypeAlias(ta) => DeclKind::TypeAlias(ta),
         DeclKind::Local(locals, body) => DeclKind::Local(
             locals
                 .into_iter()
@@ -67,24 +65,19 @@ pub fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
                 .map(|decl| desugar_decl(decl, interner))
                 .collect(),
         ),
-        DeclKind::Import(name) => DeclKind::Import(name),
-        DeclKind::ImportWithNames(name, names) => DeclKind::ImportWithNames(name, names),
-        DeclKind::Use(path) => DeclKind::Use(path),
         DeclKind::Signature(_) => unreachable!("signatures are removed before decl desugaring"),
         DeclKind::Structure { .. } => {
             unreachable!("structures are flattened before decl desugaring")
         }
-        DeclKind::AbstractType(dt) => DeclKind::AbstractType(dt),
-        DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        } => DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty: rename_type_expr(ty, &ModuleScope::default()),
-        },
-        DeclKind::Effect(name, ty) => DeclKind::Effect(name, ty),
+        // No expressions or patterns inside.
+        kind @ (DeclKind::Datatype(_)
+        | DeclKind::TypeAlias(_)
+        | DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::AbstractType(_)
+        | DeclKind::ExportVal { .. }
+        | DeclKind::Effect(_, _)) => kind,
     };
     Decl { kind, span }
 }
@@ -197,13 +190,13 @@ fn collect_decl_exports(
                 collect_decl_exports(decl, scope, module_path, interner, hide_exports);
             }
         }
-        DeclKind::Signature(_) => {}
-        DeclKind::Import(_) => {}
-        DeclKind::ImportWithNames(_, _) => {}
-        DeclKind::Use(_) => {}
-        DeclKind::Structure { .. } => {}
-        DeclKind::AbstractType(_) => {}
-        DeclKind::ExportVal { .. } => {}
+        DeclKind::Signature(_)
+        | DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::Structure { .. }
+        | DeclKind::AbstractType(_)
+        | DeclKind::ExportVal { .. } => {}
         DeclKind::Effect(sym, _) => {
             scope.effects.insert(
                 *sym,
@@ -234,31 +227,58 @@ fn signature_assertions(
     signature: &SignatureDecl,
     scope: &ModuleScope,
     module_path: &[String],
-    _opaque: bool,
+    opaque: bool,
     interner: &mut StringInterner,
 ) -> Vec<Decl> {
     let mut out = Vec::new();
-    let type_specs: HashMap<_, _> = signature
-        .specs
-        .iter()
-        .filter_map(|spec| match spec {
-            SignatureSpec::Type { tyvars, name, span } => Some((*name, (tyvars.clone(), *span))),
-            SignatureSpec::Val { .. } => None,
-        })
-        .collect();
-
-    for (name, (tyvars, span)) in &type_specs {
+    // Walk the specs in source order (not a hash map) so the generated
+    // declarations, and everything compiled from them, are deterministic.
+    let mut type_specs = HashSet::new();
+    for spec in &signature.specs {
+        let SignatureSpec::Type { tyvars, name, span } = spec else {
+            continue;
+        };
+        if !type_specs.insert(*name) {
+            continue;
+        }
         let public_sym = mangle_symbol(module_path, *name, interner, false);
         let hidden_sym = mangle_symbol(module_path, *name, interner, true);
-        out.push(Decl {
-            kind: DeclKind::AbstractType(AbstractTypeDecl {
+        let kind = if opaque {
+            // `:>` seals the type: only its name is visible outside.
+            DeclKind::AbstractType(AbstractTypeDecl {
                 tyvars: tyvars.clone(),
                 name: public_sym,
                 implementation: Some(hidden_sym),
                 span: *span,
-            }),
-            span: *span,
-        });
+            })
+        } else {
+            // `:` is transparent: the public name is an alias of the
+            // structure's own definition, so its equations stay visible.
+            let ty_kind = if tyvars.is_empty() {
+                TypeExprKind::Named(hidden_sym)
+            } else {
+                TypeExprKind::App(
+                    hidden_sym,
+                    tyvars
+                        .iter()
+                        .map(|&tv| TypeExpr {
+                            kind: TypeExprKind::Var(tv),
+                            span: *span,
+                        })
+                        .collect(),
+                )
+            };
+            DeclKind::TypeAlias(TypeAliasDecl {
+                tyvars: tyvars.clone(),
+                name: public_sym,
+                ty: TypeExpr {
+                    kind: ty_kind,
+                    span: *span,
+                },
+                span: *span,
+            })
+        };
+        out.push(Decl { kind, span: *span });
     }
 
     for spec in &signature.specs {
@@ -418,35 +438,15 @@ fn rename_module_decl(
                 span: decl.span,
             }]
         }
-        DeclKind::Import(name) => vec![Decl {
-            kind: DeclKind::Import(name),
-            span: decl.span,
-        }],
-        DeclKind::ImportWithNames(name, names) => vec![Decl {
-            kind: DeclKind::ImportWithNames(name, names),
-            span: decl.span,
-        }],
-        DeclKind::Use(path) => vec![Decl {
-            kind: DeclKind::Use(path),
+        kind @ (DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::AbstractType(_)
+        | DeclKind::ExportVal { .. }) => vec![Decl {
+            kind,
             span: decl.span,
         }],
         DeclKind::Signature(_) => vec![],
-        DeclKind::AbstractType(dt) => vec![Decl {
-            kind: DeclKind::AbstractType(dt),
-            span: decl.span,
-        }],
-        DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        } => vec![Decl {
-            kind: DeclKind::ExportVal {
-                public_name,
-                internal_name,
-                ty,
-            },
-            span: decl.span,
-        }],
         DeclKind::Effect(sym, ty) => vec![Decl {
             kind: DeclKind::Effect(
                 if export_names || module_hidden {
@@ -644,6 +644,9 @@ fn rename_expr(expr: Expr, scope: &ModuleScope, local_values: &HashSet<Symbol>) 
             Box::new(rename_expr(*cont, scope, local_values)),
             Box::new(rename_expr(*arg, scope, local_values)),
         ),
+        ExprKind::Paren(inner) => {
+            ExprKind::Paren(Box::new(rename_expr(*inner, scope, local_values)))
+        }
         other => other,
     };
     Expr { kind, span }
@@ -664,7 +667,7 @@ fn rename_pat(pat: Pat, scope: &ModuleScope, export_names: bool) -> Pat {
         ),
         PatKind::Constructor(sym, payload) => PatKind::Constructor(
             *scope.constructors.get(&sym).unwrap_or(&sym),
-            payload.map(|payload| Box::new(rename_pat(*payload, scope, false))),
+            payload.map(|payload| Box::new(rename_pat(*payload, scope, export_names))),
         ),
         PatKind::Cons(hd, tl) => PatKind::Cons(
             Box::new(rename_pat(*hd, scope, export_names)),
@@ -803,7 +806,7 @@ fn remap_signature_type_expr(
     module_path: &[String],
     interner: &mut StringInterner,
     mode: RemapMode,
-    type_specs: &HashMap<Symbol, (Vec<Symbol>, Span)>,
+    type_specs: &HashSet<Symbol>,
 ) -> TypeExpr {
     let span = ty.span;
     let kind = match ty.kind {
@@ -861,9 +864,9 @@ fn remap_signature_type_name(
     module_path: &[String],
     interner: &mut StringInterner,
     mode: RemapMode,
-    type_specs: &HashMap<Symbol, (Vec<Symbol>, Span)>,
+    type_specs: &HashSet<Symbol>,
 ) -> Symbol {
-    if type_specs.contains_key(&sym) {
+    if type_specs.contains(&sym) {
         match mode {
             RemapMode::Public => mangle_symbol(module_path, sym, interner, false),
             RemapMode::Hidden => mangle_symbol(module_path, sym, interner, true),
@@ -877,19 +880,14 @@ fn desugar_expr(expr: Expr, interner: &mut StringInterner) -> Expr {
     let span = expr.span;
     let kind = match expr.kind {
         ExprKind::Paren(e) => return desugar_expr(*e, interner),
-        ExprKind::List(elems) if !elems.is_empty() => {
-            let mut result = Expr {
-                kind: ExprKind::List(vec![]),
-                span,
-            };
-            for elem in elems.into_iter().rev() {
-                result = Expr {
-                    kind: ExprKind::Cons(Box::new(desugar_expr(elem, interner)), Box::new(result)),
-                    span,
-                };
-            }
-            return result;
-        }
+        // List literals stay flat: as nested `Cons` cells, a long literal
+        // would drive every later recursive pass one frame deeper per element.
+        ExprKind::List(elems) => ExprKind::List(
+            elems
+                .into_iter()
+                .map(|expr| desugar_expr(expr, interner))
+                .collect(),
+        ),
         ExprKind::BinOp(BinOp::Andalso, lhs, rhs) => ExprKind::If(
             Box::new(desugar_expr(*lhs, interner)),
             Box::new(desugar_expr(*rhs, interner)),
@@ -1038,8 +1036,10 @@ fn desugar_fun_binding(mut binding: FunBinding, interner: &mut StringInterner) -
 
     let span = binding.span;
     let arity = binding.clauses[0].pats.len();
+    // `$` cannot appear in a source identifier, so these parameters can
+    // never capture a user variable referenced from a clause body.
     let arg_names: Vec<_> = (0..arity)
-        .map(|i| interner.intern(&format!("_arg{i}")))
+        .map(|i| interner.intern(&format!("$arg{i}")))
         .collect();
 
     let arms: Vec<(Pat, Expr)> = binding
@@ -1098,4 +1098,107 @@ fn desugar_fun_binding(mut binding: FunBinding, interner: &mut StringInterner) -
     }];
 
     binding
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn desugar(src: &str) -> Program {
+        let tokens = Lexer::new(src, 0).tokenize().unwrap();
+        desugar_program(Parser::new(tokens).parse_program().unwrap())
+    }
+
+    fn val_expr<'a>(program: &'a Program, name: &str) -> &'a Expr {
+        program
+            .decls
+            .iter()
+            .find_map(|decl| match &decl.kind {
+                DeclKind::Val(pat, expr) => match pat.kind {
+                    PatKind::Var(sym) if program.interner.resolve(sym) == name => Some(expr),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no val {name}"))
+    }
+
+    fn var_name(program: &Program, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Var(sym) => program.interner.resolve(*sym).to_string(),
+            other => panic!("expected var, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn structure_renames_values_inside_parens() {
+        let program = desugar("structure S = struct val x = 1 val y = (x) end");
+        let y = val_expr(&program, "S.y");
+        assert_eq!(var_name(&program, y), "S.x");
+    }
+
+    #[test]
+    fn structure_exports_names_bound_under_constructor_patterns() {
+        let program = desugar(
+            "datatype t = Box of int \
+             structure S = struct val Box x = Box 1 val y = x end",
+        );
+        let bound = program
+            .decls
+            .iter()
+            .find_map(|decl| match &decl.kind {
+                DeclKind::Val(pat, _) => match &pat.kind {
+                    PatKind::Constructor(_, Some(payload)) => Some(payload),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("constructor pattern val");
+        assert!(
+            matches!(bound.kind, PatKind::Var(sym) if program.interner.resolve(sym) == "S.x"),
+            "payload binder not exported: {bound:?}"
+        );
+        let y = val_expr(&program, "S.y");
+        assert_eq!(var_name(&program, y), "S.x");
+    }
+
+    #[test]
+    fn signature_abstract_types_follow_spec_order() {
+        let program = desugar(
+            "signature S = sig type d type a type c type b end \
+             structure M :> S = struct type a = int type b = int type c = int type d = int end",
+        );
+        let names: Vec<_> = program
+            .decls
+            .iter()
+            .filter_map(|decl| match &decl.kind {
+                DeclKind::AbstractType(dt) => Some(program.interner.resolve(dt.name)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["M.d", "M.a", "M.c", "M.b"]);
+    }
+
+    #[test]
+    fn clausal_fun_parameters_do_not_capture_user_names() {
+        let program = desugar("val _arg0 = 100 fun f 0 = _arg0 | f n = n");
+        let DeclKind::Fun(bindings) = &program.decls[1].kind else {
+            panic!("expected fun");
+        };
+        let clause = &bindings[0].clauses[0];
+        let PatKind::Var(param) = clause.pats[0].kind else {
+            panic!("expected synthesized parameter");
+        };
+        assert_ne!(program.interner.resolve(param), "_arg0");
+        let ExprKind::Case(scrutinee, arms) = &clause.body.kind else {
+            panic!("expected case");
+        };
+        assert_eq!(
+            var_name(&program, scrutinee),
+            program.interner.resolve(param)
+        );
+        assert_eq!(var_name(&program, &arms[0].1), "_arg0");
+    }
 }

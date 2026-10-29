@@ -83,8 +83,8 @@ The following operations do not yield in the middle of their Rust implementation
 | --- | --- | --- |
 | One opcode dispatch | `max_work` / slice reductions | Dispatch checks fuel between opcodes, not inside an opcode. |
 | Native sync builtins | `max_host_work`, `max_io_bytes`, `max_memory_bytes` where applicable | JSON, regex, random, string, bytes, hash, HTTP/file, and process-boundary paths have first-pass accounting. |
-| Synchronous HTTP/file/exec reads | `max_io_bytes` | Bounded readers reject oversized results before allocating/returning them. |
-| Async I/O worker execution | request carries remaining `max_io_bytes`; completion is charged on delivery | The process is suspended while the worker runs. The worker itself is not preempted by VM reductions. |
+| Synchronous HTTP/file/exec reads | per-operation byte limits and `max_io_bytes`; HTTP and exec timeouts | Bounded readers stop one byte past the limit, so an oversized result is never buffered in full. See [Per-operation I/O limits](#per-operation-io-limits). |
+| Async I/O worker execution | request carries the per-operation byte limit and HTTP timeouts; completion is charged on delivery | The process is suspended while the worker runs. The worker itself is not preempted by VM reductions. |
 | Process-boundary serialization/deserialization | `max_host_work`, heap/memory limits | Used for spawn captures and child results. |
 | GC collection | heap/memory thresholds and limits | Mark/sweep is local to one VM and runs to completion. |
 | Output formatting/display | `max_io_bytes` for stdout bytes; heap/memory for generated strings | Large display work is not preempted mid-format. |
@@ -148,10 +148,51 @@ cooperative collection point, not a preemptive collector.
 | `run_slice(reductions)` | one scheduling slice's opcode dispatch budget | Native builtin, GC, or sync host-call duration once entered |
 | `max_host_work` | approximate CPU-bound builtin/host work units | Wall-clock time exactly |
 | `max_io_bytes` | stdin/stdout, HTTP/file/exec payload bytes, async completion bytes | Number of requests unless separate capability policy denies them |
+| `max_http_response_bytes`, `max_file_read_bytes`, `max_exec_output_bytes` | bytes read by one HTTP response, file read, or exec stream | Cumulative bytes across calls (that is `max_io_bytes`) |
+| `http_timeout_ms`, `http_connect_timeout_ms` | wall-clock duration of one HTTP call, including the body | Total time spent across many calls |
+| `exec_timeout_ms` | wall-clock duration of one `exec` call | Processes that detach from the child's process group |
 | `max_memory_bytes` | accounted heap bytes | Native resources held behind host handles |
 | `max_host_resources` / `limits.host_resources` | total and per-kind live opaque native host handles | Size of the native object behind each handle |
 | `max_heap` | live heap object count | Object byte size |
 | Stack/frame constants | value stack and call-frame depth | Heap or host resource size |
+
+## Per-operation I/O limits
+
+These `[limits]` keys bound a single builtin call. A policy that omits a key
+gets the default.
+
+| Key | Default | Applies to |
+| --- | --- | --- |
+| `http_timeout_ms` | 30000 | Whole HTTP call, including reading the body: `http_get`, `http`, `http_json`, `http_msgpack`, `http_bytes` |
+| `http_connect_timeout_ms` | 10000 | Establishing the HTTP connection |
+| `exec_timeout_ms` | 30000 | Wall clock of one `exec` call |
+| `max_http_response_bytes` | 67108864 (64 MiB) | One HTTP response body |
+| `max_file_read_bytes` | 67108864 (64 MiB) | One `read_file`, `read_file_bytes`, `read_file_tagged`, or `edit_file_tagged` read |
+| `max_exec_output_bytes` | 16777216 (16 MiB) | Each of `exec`'s stdout and stderr |
+
+Rules:
+
+- Each byte limit is combined with the remaining `max_io_bytes` budget; the
+  smaller one wins, and the error names the limit that was hit, for example
+  `read_file: result exceeds max_file_read_bytes (1024 bytes)`.
+- Reads stream and stop one byte past the limit. A response, file, or command
+  that produces more is never buffered in full, and nothing is charged to
+  `max_io_bytes` for a rejected read.
+- Both runtimes apply the same limits. In the threaded runtime, the HTTP
+  request runs on an I/O pool thread while the process is suspended, so other
+  processes keep running until the request completes or times out.
+- `exec` runs the child in its own process group. On timeout, or when an output
+  stream exceeds `max_exec_output_bytes`, the whole group is killed, including
+  grandchildren, and the call fails without waiting for the timeout.
+- Exceeding any of these limits is a controlled runtime error, not an `Err`
+  value. The raw builtins return plain tuples, so there is no `Result` to put
+  the error in. In the threaded runtime, `Std.Fiber.join` reports a child's
+  failure as `Result.Err`, which is how a script recovers from one.
+- Spawned child processes inherit the parent's per-operation limits.
+
+Module fetching (`import` of remote modules and `hiko lock verify`) does not
+follow redirects, and accepts plain `http://` only for loopback hosts
+(`localhost`, `127.0.0.0/8`, `::1`). Other hosts must use `https://`.
 
 ## Embedder guidance
 
@@ -160,7 +201,9 @@ For latency-sensitive use:
 1. Prefer `run_slice` over `run`.
 2. Set both a persistent `max_work` and a per-slice `reductions` budget.
 3. Set `max_host_work` for JSON/regex/hash/string/bytes/random-heavy scripts.
-4. Set `max_io_bytes` for scripts that can read, write, fetch, print, or exec.
+4. Set `max_io_bytes` for scripts that can read, write, fetch, print, or exec,
+   and tighten the per-operation limits (`http_timeout_ms`, `exec_timeout_ms`,
+   `max_*_bytes`) below their defaults where scripts only need small payloads.
 5. Set `max_memory_bytes` and, where useful, `max_heap`.
 6. Set `max_host_resources` and per-kind `limits.host_resources` caps when scripts can create native handles such as AWS clients.
 7. Use the runtime-managed async I/O path for operations that may block.
@@ -177,6 +220,11 @@ max_io_bytes = 67_108_864
 max_memory_bytes = 268_435_456
 max_host_resources = 32
 max_heap = 500_000
+http_timeout_ms = 10_000
+exec_timeout_ms = 30_000
+max_http_response_bytes = 8_388_608
+max_file_read_bytes = 8_388_608
+max_exec_output_bytes = 1_048_576
 
 [limits.host_resources]
 aws_config = 8
@@ -196,9 +244,10 @@ Hiko does not currently provide:
 - OS-level preemption of a running VM thread;
 - preemption inside a Rust builtin;
 - preemption inside GC marking/sweeping;
-- exact wall-clock accounting for host work;
-- per-operation byte knobs such as `max_http_response_bytes` separate from the
-  global `max_io_bytes`.
+- exact wall-clock accounting for host work (only HTTP and `exec` have
+  wall-clock timeouts);
+- a dedicated I/O thread per request: async requests share a fixed I/O pool,
+  so a slow request occupies one pool thread until it completes or times out.
 
 These are explicit boundaries of the current runtime contract, not accidental
 omissions.

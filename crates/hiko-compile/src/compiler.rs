@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,7 +20,23 @@ use hiko_types::ty::Type;
 use serde::Deserialize;
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
-use crate::op::Op;
+use crate::op::{HANDLER_CLAUSE_RESUMES, Op};
+
+/// Overrides for resolving named imports listed in `hiko.lock.toml`.
+///
+/// The defaults match the CLI: modules come from `~/.hiko/lib-cache` or are
+/// downloaded from the lockfile `base_url`. Whatever the source, a module is
+/// only accepted if its BLAKE3 hash matches the lockfile entry.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleLoaderOptions {
+    /// Module cache directory. `None` uses `$HOME/.hiko/lib-cache`.
+    pub cache_dir: Option<PathBuf>,
+    /// Local package directory checked before the cache and the network.
+    /// A module `Pkg.Mod` locked at version `V` is read from
+    /// `<root>/Pkg-vV/modules/Mod.hml` if that file exists (the layout of the
+    /// repository's `libraries/` directory). A hash mismatch is an error.
+    pub local_package_root: Option<PathBuf>,
+}
 
 #[derive(Debug)]
 pub enum CompileError {
@@ -357,6 +374,9 @@ fn normalize_blake3(hash: &str) -> String {
 struct Local {
     name: String,
     depth: u32,
+    /// Set when a variable reference resolves to this local, either directly
+    /// or as an upvalue of a nested function.
+    used: Cell<bool>,
 }
 
 struct UpvalueDesc {
@@ -632,6 +652,16 @@ pub struct Compiler {
         allow(dead_code)
     )]
     module_cache_dir: Option<PathBuf>,
+    /// Caller-supplied overrides for named-import resolution.
+    #[cfg_attr(
+        not(all(
+            feature = "loader-named-imports",
+            feature = "loader-http",
+            feature = "loader-integrity-blake3"
+        )),
+        allow(dead_code)
+    )]
+    loader_options: ModuleLoaderOptions,
     /// Global name -> proto_idx of the capture-free function it is currently
     /// bound to, for `CallDirect`. Every global rebinding clears the entry.
     global_protos: HashMap<String, u16>,
@@ -648,19 +678,36 @@ impl Compiler {
         program: Program,
         file_path: &Path,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        Self::compile_file_with_options(program, file_path, ModuleLoaderOptions::default())
+    }
+
+    /// Like [`Compiler::compile_file`], with overrides for how named imports
+    /// listed in `hiko.lock.toml` are resolved. Every module is still
+    /// verified against its lockfile BLAKE3 hash.
+    pub fn compile_file_with_options(
+        program: Program,
+        file_path: &Path,
+        loader_options: ModuleLoaderOptions,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
         let mut loading = HashSet::new();
         loading.insert(ImportKey::File(canonical.clone()));
-        Self::compile_with_ctx(program, base_dir, Some(canonical), loading)
+        Self::compile_with_ctx(program, base_dir, Some(canonical), loading, loader_options)
     }
 
     /// Compile a program without a file context (e.g., from a string).
     pub fn compile(
         program: Program,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        Self::compile_with_ctx(program, PathBuf::from("."), None, HashSet::new())
+        Self::compile_with_ctx(
+            program,
+            PathBuf::from("."),
+            None,
+            HashSet::new(),
+            ModuleLoaderOptions::default(),
+        )
     }
 
     fn compile_with_ctx(
@@ -668,6 +715,7 @@ impl Compiler {
         base_dir: PathBuf,
         entry_file: Option<PathBuf>,
         loading_imports: HashSet<ImportKey>,
+        loader_options: ModuleLoaderOptions,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         // Desugar and constant-fold
         let program = hiko_syntax::desugar::desugar_program(program);
@@ -691,6 +739,7 @@ impl Compiler {
             imported_programs: HashMap::new(),
             import_lockfile: None,
             module_cache_dir: None,
+            loader_options,
             global_protos: HashMap::new(),
             infer_ctx: InferCtx::new(),
             interner,
@@ -804,6 +853,7 @@ impl Compiler {
     fn resolve_local(&self, name: &str) -> Option<u16> {
         for (i, local) in self.ctx().locals.iter().enumerate().rev() {
             if local.name == name {
+                local.used.set(true);
                 return Some(i as u16);
             }
         }
@@ -826,6 +876,7 @@ impl Compiler {
             .rev()
         {
             if local.name == name {
+                local.used.set(true);
                 return Some(self.add_upvalue(func_idx, true, i as u16));
             }
         }
@@ -952,7 +1003,11 @@ impl Compiler {
     fn add_local(&mut self, name: String) -> u16 {
         let ctx = self.ctx_mut();
         let depth = ctx.scope_depth;
-        ctx.locals.push(Local { name, depth });
+        ctx.locals.push(Local {
+            name,
+            depth,
+            used: Cell::new(false),
+        });
         ctx.max_locals = ctx.max_locals.max(ctx.locals.len());
         (ctx.locals.len() - 1) as u16
     }
@@ -1203,6 +1258,7 @@ impl Compiler {
         package_name: &str,
         leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
+        let local_package_root = self.loader_options.local_package_root.clone();
         let (lockfile, cache_dir) = self.ensure_import_loader(module_name)?;
         let package = lockfile.packages.get(package_name).ok_or_else(|| {
             CompileError::codegen(format!(
@@ -1214,6 +1270,37 @@ impl Compiler {
                 "module '{leaf_module}' in package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
             ))
         })?;
+        let expected_hash = normalize_blake3(expected_hash);
+
+        if let Some(root) = &local_package_root {
+            let local_path = root
+                .join(format!("{package_name}-v{}", package.version))
+                .join("modules")
+                .join(format!("{leaf_module}.hml"));
+            if local_path.is_file() {
+                let source = std::fs::read_to_string(&local_path).map_err(|e| {
+                    CompileError::codegen(format!(
+                        "cannot read local module '{}': {e}",
+                        local_path.display()
+                    ))
+                })?;
+                verify_blake3(
+                    source.as_bytes(),
+                    &expected_hash,
+                    &format!(
+                        "local named import '{module_name}' ({})",
+                        local_path.display()
+                    ),
+                )?;
+                let canonical = std::fs::canonicalize(&local_path).unwrap_or(local_path);
+                return Ok(ResolvedImport::VerifiedFile {
+                    canonical,
+                    display_name: module_name.to_string(),
+                    source,
+                });
+            }
+        }
+
         std::fs::create_dir_all(cache_dir).map_err(|e| {
             CompileError::codegen(format!(
                 "cannot create module cache '{}': {e}",
@@ -1225,7 +1312,6 @@ impl Compiler {
             package.base_url.trim_end_matches('/')
         );
         let url_hash = blake3_hex(module_url.as_bytes());
-        let expected_hash = normalize_blake3(expected_hash);
         let cache_path = cache_dir.join(format!("{url_hash}-{expected_hash}.hml"));
 
         if cache_path.exists() {
@@ -1319,7 +1405,10 @@ impl Compiler {
             validate_lockfile(&lockfile, lockfile_path)?;
             validate_lockfile_against_manifest(&lockfile, lockfile_path, &loader_config)?;
             self.import_lockfile = Some(lockfile);
-            self.module_cache_dir = Some(default_module_cache_dir()?);
+            self.module_cache_dir = match &self.loader_options.cache_dir {
+                Some(dir) => Some(dir.clone()),
+                None => Some(default_module_cache_dir()?),
+            };
         }
         let lockfile = self.import_lockfile.as_ref().unwrap();
         let cache_dir = self.module_cache_dir.as_ref().unwrap();
@@ -2004,11 +2093,12 @@ impl Compiler {
         handlers: &[EffectHandler],
     ) -> Result<(), CompileError> {
         // Emit InstallHandler: u16 n_clauses, then per clause:
-        //   u16 effect_tag, i16 offset (placeholder)
+        //   u16 effect_tag, u8 flags (placeholder), i16 offset (placeholder)
         self.emit(Op::InstallHandler);
         let n_clauses = handlers.len() as u16;
         self.emit_u16(n_clauses);
-        // Record positions of clause offset placeholders
+        // Record positions of clause flag and offset placeholders
+        let mut clause_flag_positions = Vec::new();
         let mut clause_offset_positions = Vec::new();
         for handler in handlers {
             let eff_name = self.interner.resolve(handler.effect_name).to_string();
@@ -2017,6 +2107,8 @@ impl Compiler {
                 .get(&eff_name)
                 .ok_or_else(|| CompileError::codegen(format!("unknown effect: {eff_name}")))?;
             self.emit_u16(tag);
+            clause_flag_positions.push(self.chunk().code.len());
+            self.emit_u8(0); // placeholder flags
             let pos = self.chunk().code.len();
             self.emit_u16(0); // placeholder offset
             clause_offset_positions.push(pos);
@@ -2033,8 +2125,15 @@ impl Compiler {
             let payload_name = self.interner.resolve(handler.payload_var).to_string();
             let cont_name = self.interner.resolve(handler.cont_var).to_string();
             self.add_local(payload_name);
-            self.add_local(cont_name);
+            let cont_slot = self.add_local(cont_name);
             self.compile_expr_inner(&handler.body, false)?;
+            // The clause resumes only if its body refers to the continuation
+            // variable. Resolution is scope-aware, so a shadowed `k` or a `_`
+            // pattern leaves the slot unused and Perform can skip the capture.
+            if self.ctx().locals[cont_slot as usize].used.get() {
+                let pos = clause_flag_positions[i];
+                self.chunk().code[pos] = HANDLER_CLAUSE_RESUMES;
+            }
             self.end_scope_keep_result();
             clause_end_jumps.push(self.emit_jump(Op::Jump));
         }
@@ -2111,13 +2210,21 @@ impl Compiler {
                 self.emit_make_tuple(elems.len())?;
             }
             ExprKind::List(elems) => {
-                assert!(
-                    elems.is_empty(),
-                    "non-empty list should be desugared to Cons"
-                );
+                // Same code as the nested `e1 :: (e2 :: ... :: [])`: the
+                // elements left to right, then Nil, then one MakeCons each.
+                let locals_before = self.ctx().locals.len();
+                for elem in elems {
+                    self.compile_expr(elem)?;
+                    // An empty name never resolves as a variable.
+                    self.add_local(String::new());
+                }
+                self.ctx_mut().locals.truncate(locals_before);
                 self.emit(Op::MakeData);
                 self.emit_u16(0); // Nil
                 self.emit_u8(0);
+                for _ in elems {
+                    self.emit(Op::MakeCons);
+                }
             }
             ExprKind::Cons(head, tail) => {
                 self.compile_operands(&[head, tail])?;
@@ -2400,10 +2507,17 @@ mod tests {
         );
     }
 
-    fn cached_module_path(url: &str, hash: &str) -> PathBuf {
-        default_module_cache_dir()
-            .expect("default cache dir")
-            .join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
+    /// Per-test module cache next to the entry file, so tests never touch
+    /// the user's `~/.hiko/lib-cache`.
+    fn test_cache_dir(entry_path: &Path) -> PathBuf {
+        entry_path
+            .parent()
+            .expect("entry file has a parent directory")
+            .join(".test-lib-cache")
+    }
+
+    fn cached_module_path(entry_path: &Path, url: &str, hash: &str) -> PathBuf {
+        test_cache_dir(entry_path).join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
     }
 
     fn spawn_response_server(
@@ -2454,7 +2568,11 @@ mod tests {
         path: &Path,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let source = std::fs::read_to_string(path).expect("read source");
-        Compiler::compile_file(parse_program(&source), path)
+        let options = ModuleLoaderOptions {
+            cache_dir: Some(test_cache_dir(path)),
+            local_package_root: None,
+        };
+        Compiler::compile_file_with_options(parse_program(&source), path, options)
     }
 
     #[test]
@@ -2471,6 +2589,80 @@ mod tests {
         let program = parse_program("val xs = 1 :: []\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
         assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
+    }
+
+    /// Long chains and deep nesting must end in a parse error or a compiled
+    /// program, never a stack overflow, on a thread with the 8 MiB stack a
+    /// main thread gets (`hiko check` runs there).
+    #[test]
+    fn deep_and_long_sources_do_not_overflow_the_stack() {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(|| {
+                let parse_error = |src: &str| {
+                    let tokens = Lexer::new(src, 0).tokenize().expect("lex");
+                    Parser::new(tokens).parse_program().unwrap_err().message
+                };
+                let n = 5_000;
+                for src in [
+                    format!("val x = 1{}", " + 1".repeat(n)),
+                    format!("val x = {}[]", "1 :: ".repeat(n)),
+                    format!("fun f x = x\nval x = 1{}", " |> f".repeat(n)),
+                    format!("val x = \"a\"{}", " ^ \"a\"".repeat(n)),
+                    format!("val x = true{}", " andalso true".repeat(n)),
+                    format!("fun f x = f\nval x = f{}", " 1".repeat(n)),
+                    format!("fun f ({}[]) = 1", "x :: ".repeat(n)),
+                    format!("fun f [{}_] = 1", "_, ".repeat(n)),
+                    format!("val f : int{} = 1", " -> int".repeat(n)),
+                    format!("val xs : int{} = []", " list".repeat(n)),
+                ] {
+                    assert_eq!(parse_error(&src), "nesting limit exceeded");
+                }
+
+                // List literals stay flat, so a long one is fine.
+                let src = format!("val xs = [{}1]", "1, ".repeat(50_000));
+                Compiler::compile(parse_program(&src)).expect("compile long list literal");
+
+                // Just under the limit, every pass still fits the stack.
+                let m = 250;
+                for src in [
+                    format!("val x = 1{}", " + 1".repeat(m)),
+                    format!("val x = {}[]", "1 :: ".repeat(m)),
+                    format!("fun f x = x\nval x = 1{}", " |> f".repeat(m)),
+                    format!("val x = \"a\"{}", " ^ \"a\"".repeat(m)),
+                    format!("val x = true{}", " andalso true".repeat(m)),
+                    format!("val x = {}1{}", "(".repeat(m), ")".repeat(m)),
+                    format!("val x = {}1", "fn x => ".repeat(m)),
+                    format!("val x = {}1", "if true then 1 else ".repeat(m)),
+                    format!("val x = {}1", "case 1 of _ => ".repeat(m)),
+                    format!(
+                        "val x = {}1{}",
+                        "let val y = 1 in ".repeat(m),
+                        " end".repeat(m)
+                    ),
+                    format!("val x = {}1{}", "[".repeat(m), "]".repeat(m)),
+                    format!("val xs : int{} = []", " list".repeat(m)),
+                    format!("val f : (int{}) -> int = fn _ => 1", " -> int".repeat(m)),
+                ] {
+                    Compiler::compile(parse_program(&src))
+                        .unwrap_or_else(|e| panic!("{src:.40}...: {e:?}"));
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn list_literal_compiles_like_the_cons_chain_it_stands_for() {
+        let code = |src: &str| {
+            let (compiled, _) = Compiler::compile(parse_program(src)).expect("compile");
+            compiled.main.code.clone()
+        };
+        assert_eq!(
+            code("val xs = [print \"a\", print \"b\", ()]\n"),
+            code("val xs = print \"a\" :: print \"b\" :: () :: []\n")
+        );
     }
 
     #[test]
@@ -2578,7 +2770,11 @@ val result = Box.get (Box.make 41)
         let module_hash = blake3_hex(module_source.as_bytes());
         let (list_url, server) = spawn_single_response_server("/modules/List.hml", module_source);
         let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
-        let cache_path = cached_module_path(&format!("{base_url}/modules/List.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/List.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2601,7 +2797,7 @@ val result = Box.get (Box.make 41)
         assert!(second.is_ok(), "second compile should reuse cached module");
         assert!(
             cache_path.is_file(),
-            "expected fetched module in default cache"
+            "expected fetched module in the test cache"
         );
 
         let _ = std::fs::remove_file(&cache_path);
@@ -2620,8 +2816,11 @@ val result = Box.get (Box.make 41)
         let base_url = result_url
             .trim_end_matches("/modules/Result.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Result.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Result.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2660,8 +2859,11 @@ val result = Box.get (Box.make 41)
         let base_url = result_url
             .trim_end_matches("/modules/Result.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Result.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Result.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2820,8 +3022,11 @@ Answer = "blake3:deadbeef"
         let base_url = answer_url
             .trim_end_matches("/modules/Answer.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2861,8 +3066,11 @@ Answer = "blake3:deadbeef"
         let base_url = answer_url
             .trim_end_matches("/modules/Answer.hml")
             .to_string();
-        let cache_path =
-            cached_module_path(&format!("{base_url}/modules/Answer.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2902,7 +3110,11 @@ Answer = "blake3:deadbeef"
         let base_url = answer_url
             .trim_end_matches("/modules/Answer.hml")
             .to_string();
-        let cache_path = cached_module_path(&format!("{base_url}/modules/Answer.hml"), "deadbeef");
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            "deadbeef",
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -2925,6 +3137,77 @@ Answer = "blake3:deadbeef"
             other => panic!("expected BLAKE3 verification failure, got {other:?}"),
         }
         let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    fn write_local_package_project(module_source: &str, locked_hash: &str) -> (PathBuf, PathBuf) {
+        let project_dir = unique_temp_dir("named-import-local-root");
+        write_project_manifest(&project_dir);
+        write_file(
+            &project_dir.join("libraries/Test-v0.1.0/modules/Answer.hml"),
+            module_source,
+        );
+        // Nothing listens on the discard port; a fetch attempt would fail.
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:9/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{locked_hash}\"\n"
+            ),
+        );
+        let entry_path = project_dir.join("main.hml");
+        write_file(
+            &entry_path,
+            "import Test.Answer\nval result = Answer.value\n",
+        );
+        (project_dir, entry_path)
+    }
+
+    fn compile_with_local_root(
+        project_dir: &Path,
+        entry_path: &Path,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        let source = std::fs::read_to_string(entry_path).expect("read source");
+        let options = ModuleLoaderOptions {
+            cache_dir: Some(project_dir.join(".test-lib-cache")),
+            local_package_root: Some(project_dir.join("libraries")),
+        };
+        Compiler::compile_file_with_options(parse_program(&source), entry_path, options)
+    }
+
+    #[test]
+    fn named_import_reads_verified_module_from_local_package_root() {
+        let module_source = "structure Answer = struct\n  val value = 42\nend\n";
+        let (project_dir, entry_path) =
+            write_local_package_project(module_source, &blake3_hex(module_source.as_bytes()));
+
+        let result = compile_with_local_root(&project_dir, &entry_path);
+        assert!(
+            result.is_ok(),
+            "expected local module to load, got {result:?}"
+        );
+        assert!(
+            !project_dir.join(".test-lib-cache").exists(),
+            "local package modules must not be copied into the cache"
+        );
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn named_import_rejects_local_package_module_with_bad_blake3() {
+        let module_source = "structure Answer = struct\n  val value = 42\nend\n";
+        let (project_dir, entry_path) = write_local_package_project(module_source, "deadbeef");
+
+        match compile_with_local_root(&project_dir, &entry_path) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(
+                    message.contains("failed BLAKE3 verification"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected BLAKE3 verification failure, got {other:?}"),
+        }
+
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
@@ -2957,7 +3240,11 @@ Answer = "blake3:deadbeef"
         let (cache_url, server) =
             spawn_response_server("/modules/Cache.hml", module_source.clone(), 2);
         let base_url = cache_url.trim_end_matches("/modules/Cache.hml").to_string();
-        let cache_path = cached_module_path(&format!("{base_url}/modules/Cache.hml"), &module_hash);
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Cache.hml"),
+            &module_hash,
+        );
 
         write_file(
             &project_dir.join("hiko.lock.toml"),
@@ -3226,6 +3513,54 @@ Filesystem = "blake3:deadbeef"
             }
             other => panic!("expected codegen error for 256-element tuple, got {other:?}"),
         }
+    }
+
+    /// Flags of the clauses of the first `InstallHandler` that starts a
+    /// function chunk. A non-tail `handle` compiles to a thunk whose body
+    /// starts with `InstallHandler`.
+    fn handler_clause_flags(source: &str) -> Vec<u8> {
+        let (program, _) = Compiler::compile(parse_program(source)).expect("compile");
+        let code = &program
+            .functions
+            .iter()
+            .find(|f| f.chunk.code.first() == Some(&(Op::InstallHandler as u8)))
+            .expect("a function chunk starting with InstallHandler")
+            .chunk
+            .code;
+        let n_clauses = u16::from_le_bytes([code[1], code[2]]) as usize;
+        (0..n_clauses)
+            .map(|i| code[3 + i * crate::op::HANDLER_CLAUSE_BYTES + 2])
+            .collect()
+    }
+
+    #[test]
+    fn handler_clause_resumes_flag_tracks_continuation_use() {
+        let effects = "effect A of int\neffect B of int\neffect C of int\neffect D of int\n";
+        let flags = handler_clause_flags(&format!(
+            "{effects}val r = 1 + (handle perform A 1\n\
+             with return x => x\n\
+                | A n _ => n\n\
+                | B n k => n\n\
+                | C n k => resume k n\n\
+                | D n k => (fn u => resume k u) n)"
+        ));
+        assert_eq!(
+            flags,
+            vec![0, 0, HANDLER_CLAUSE_RESUMES, HANDLER_CLAUSE_RESUMES]
+        );
+    }
+
+    #[test]
+    fn handler_clause_with_shadowed_continuation_does_not_resume() {
+        // The inner `k` is a new binding, so the clause never refers to the
+        // continuation.
+        let flags = handler_clause_flags(
+            "effect A of int\n\
+             val r = 1 + (handle perform A 1\n\
+             with return x => x\n\
+                | A n k => let val k = n + 1 in k end)",
+        );
+        assert_eq!(flags, vec![0]);
     }
 
     #[test]

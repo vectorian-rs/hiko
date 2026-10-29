@@ -30,7 +30,6 @@ fn fold_decl(decl: Decl) -> Decl {
             locals.into_iter().map(fold_decl).collect(),
             body.into_iter().map(fold_decl).collect(),
         ),
-        DeclKind::Signature(sig) => DeclKind::Signature(sig),
         DeclKind::Structure {
             name,
             signature,
@@ -42,16 +41,7 @@ fn fold_decl(decl: Decl) -> Decl {
             opaque,
             decls: decls.into_iter().map(fold_decl).collect(),
         },
-        DeclKind::AbstractType(dt) => DeclKind::AbstractType(dt),
-        DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        } => DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        },
+        // No expressions inside.
         other => other,
     };
     Decl { kind, span }
@@ -60,17 +50,14 @@ fn fold_decl(decl: Decl) -> Decl {
 fn fold_expr(expr: Expr) -> Expr {
     let span = expr.span;
     let kind = match expr.kind {
-        // Constant fold: if true/false
-        ExprKind::If(cond, then_br, else_br) => {
-            let cond = fold_expr(*cond);
-            let then_br = fold_expr(*then_br);
-            let else_br = fold_expr(*else_br);
-            match &cond.kind {
-                ExprKind::BoolLit(true) => return then_br,
-                ExprKind::BoolLit(false) => return else_br,
-                _ => ExprKind::If(Box::new(cond), Box::new(then_br), Box::new(else_br)),
-            }
-        }
+        // Folding runs before type inference, so both branches must stay in
+        // the tree even when the condition is a literal: dropping the dead
+        // branch would let ill-typed or unbound code through the checker.
+        ExprKind::If(cond, then_br, else_br) => ExprKind::If(
+            Box::new(fold_expr(*cond)),
+            Box::new(fold_expr(*then_br)),
+            Box::new(fold_expr(*else_br)),
+        ),
 
         // Constant fold: integer arithmetic
         ExprKind::BinOp(op, lhs, rhs) => {
@@ -109,6 +96,7 @@ fn fold_expr(expr: Expr) -> Expr {
                 .collect(),
         ),
         ExprKind::Tuple(elems) => ExprKind::Tuple(elems.into_iter().map(fold_expr).collect()),
+        ExprKind::List(elems) => ExprKind::List(elems.into_iter().map(fold_expr).collect()),
         ExprKind::Cons(hd, tl) => {
             ExprKind::Cons(Box::new(fold_expr(*hd)), Box::new(fold_expr(*tl)))
         }
@@ -233,5 +221,43 @@ fn try_fold_binop(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<ExprKind> {
         (BinOp::Ge, ExprKind::WordLit(a), ExprKind::WordLit(b)) => Some(ExprKind::BoolLit(a >= b)),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn fold_val_expr(src: &str) -> ExprKind {
+        let tokens = Lexer::new(src, 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let program = fold_program(crate::desugar::desugar_program(program));
+        match program.decls.into_iter().next().unwrap().kind {
+            DeclKind::Val(_, expr) => expr.kind,
+            other => panic!("expected val, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_if_keeps_both_branches_for_type_checking() {
+        let kind = fold_val_expr("val x = if true then 1 else \"dead\"");
+        let ExprKind::If(cond, then_br, else_br) = kind else {
+            panic!("expected if to survive folding, got {kind:?}");
+        };
+        assert_eq!(cond.kind, ExprKind::BoolLit(true));
+        assert_eq!(then_br.kind, ExprKind::IntLit(1));
+        assert_eq!(else_br.kind, ExprKind::StringLit("dead".into()));
+    }
+
+    #[test]
+    fn folds_branches_of_literal_if() {
+        let kind = fold_val_expr("val x = if 1 < 2 then 1 + 2 else 3");
+        let ExprKind::If(cond, then_br, _) = kind else {
+            panic!("expected if, got {kind:?}");
+        };
+        assert_eq!(cond.kind, ExprKind::BoolLit(true));
+        assert_eq!(then_br.kind, ExprKind::IntLit(3));
     }
 }

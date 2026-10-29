@@ -881,11 +881,19 @@ impl InferCtx {
                 Ok(Type::Tuple(tys))
             }
             ExprKind::List(elems) => {
-                assert!(
-                    elems.is_empty(),
-                    "non-empty list should be desugared to Cons"
-                );
-                Ok(Type::list(self.fresh()))
+                // Same inference and unification order as the nested
+                // `e1 :: (e2 :: ... :: [])` this literal stands for.
+                let elem_tys: Vec<Type> = elems
+                    .iter()
+                    .map(|e| self.infer_expr(e))
+                    .collect::<Result<_, _>>()?;
+                let mut list_ty = Type::list(self.fresh());
+                for elem_ty in elem_tys.into_iter().rev() {
+                    let cons_ty = Type::list(elem_ty);
+                    self.unify(&list_ty, &cons_ty, expr.span)?;
+                    list_ty = cons_ty;
+                }
+                Ok(list_ty)
             }
             ExprKind::Cons(hd, tl) => {
                 let hd_ty = self.infer_expr(hd)?;
@@ -1541,8 +1549,7 @@ fn is_syntactic_value(expr: &Expr) -> bool {
         | ExprKind::Var(_)
         | ExprKind::Constructor(_)
         | ExprKind::Fn(_, _) => true,
-        ExprKind::Tuple(elems) => elems.iter().all(is_syntactic_value),
-        ExprKind::List(elems) => elems.is_empty(),
+        ExprKind::Tuple(elems) | ExprKind::List(elems) => elems.iter().all(is_syntactic_value),
         ExprKind::Cons(hd, tl) => is_syntactic_value(hd) && is_syntactic_value(tl),
         ExprKind::App(func, arg) => {
             matches!(&func.kind, ExprKind::Constructor(_)) && is_syntactic_value(arg)
@@ -1765,6 +1772,58 @@ mod tests {
     }
 
     #[test]
+    fn test_transparent_ascription_keeps_type_equalities() {
+        let ctx = infer(
+            "signature COUNTER = sig
+               type t
+               type 'a box
+               val zero : t
+               val wrap : 'a -> 'a box
+             end
+             structure C : COUNTER = struct
+               type t = int
+               type 'a box = 'a list
+               val zero = 0
+               fun wrap x = [x]
+               val hidden = 1
+             end
+             val n = C.zero + 1
+             val xs : int list = C.wrap 1
+             val z : C.t = 5",
+        );
+        assert_eq!(type_of(&ctx, "n"), "int");
+        assert_eq!(type_of(&ctx, "xs"), "int list");
+        // Transparency only reveals types; unlisted values stay hidden.
+        let msg = infer_err(
+            "signature S = sig type t val zero : t end
+             structure C : S = struct type t = int val zero = 0 val hidden = 1 end
+             val h = C.hidden",
+        );
+        assert!(msg.contains("unbound variable: C.hidden"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_opaque_ascription_hides_type_equalities() {
+        for use_site in ["val n = C.zero + 1", "val z : C.t = 5"] {
+            let msg = infer_err(&format!(
+                "signature COUNTER = sig type t val zero : t end
+                 structure C :> COUNTER = struct type t = int val zero = 0 end
+                 {use_site}"
+            ));
+            assert!(msg.contains("type mismatch"), "{use_site}: got: {msg}");
+        }
+    }
+
+    #[test]
+    fn test_transparent_ascription_checks_type_specs() {
+        let msg = infer_err(
+            "signature S = sig type t val x : t end
+             structure M : S = struct val x = 1 end",
+        );
+        assert!(msg.contains("unknown type"), "got: {msg}");
+    }
+
+    #[test]
     fn test_opaque_ascription_hides_constructors() {
         let msg = infer_err(
             "signature BOX = sig
@@ -1884,6 +1943,22 @@ mod tests {
     fn test_list_literal() {
         let ctx = infer("val xs = [1, 2, 3]");
         assert_eq!(type_of(&ctx, "xs"), "int list");
+    }
+
+    #[test]
+    fn test_list_literal_elements_must_agree() {
+        assert_eq!(
+            infer_err("val xs = [1, 2, \"a\"]"),
+            "type mismatch: expected string, found int"
+        );
+        let ctx = infer("val xss = [[], [1], [2, 3]]");
+        assert_eq!(type_of(&ctx, "xss"), "(int list) list");
+    }
+
+    #[test]
+    fn test_list_literal_of_values_is_generalized() {
+        let ctx = infer("val xs = [[], []]");
+        assert_eq!(ctx.lookup_type("xs").unwrap().vars.len(), 1);
     }
 
     #[test]

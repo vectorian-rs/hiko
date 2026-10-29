@@ -238,7 +238,8 @@ impl VM {
                     })?;
                 Some(crate::io_backend::IoRequest::HttpGet {
                     url,
-                    max_response_bytes: self.heap.remaining_io_bytes(),
+                    max_response: self.heap.http_response_limit(),
+                    timeouts: self.heap.io_limits().http_timeouts(),
                 })
             } else if let Some(format) = self.match_http_builtin(builtin_id) {
                 let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
@@ -262,7 +263,8 @@ impl VM {
                     headers,
                     body,
                     format,
-                    max_response_bytes: self.heap.remaining_io_bytes(),
+                    max_response: self.heap.http_response_limit(),
+                    timeouts: self.heap.io_limits().http_timeouts(),
                 })
             } else if self.read_file_builtin_id == Some(builtin_id) {
                 let path = crate::builtins::extract_string_arg(
@@ -283,12 +285,12 @@ impl VM {
                         Some(crate::io_backend::IoRequest::CapReadFile {
                             candidates,
                             path,
-                            max_bytes: self.heap.remaining_io_bytes(),
+                            max_bytes: self.heap.file_read_limit(),
                         })
                     } else {
                         Some(crate::io_backend::IoRequest::ReadFile {
                             path,
-                            max_bytes: self.heap.remaining_io_bytes(),
+                            max_bytes: self.heap.file_read_limit(),
                         })
                     }
                 }

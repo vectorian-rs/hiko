@@ -3,12 +3,15 @@ pub mod builtins;
 pub mod config;
 pub mod heap;
 pub mod io_backend;
+pub mod io_limits;
 pub mod process;
 pub mod runtime;
 pub mod runtime_ops;
 pub mod scheduler;
 pub mod sendable;
 pub mod shape_check;
+#[cfg(test)]
+mod test_support;
 pub mod threaded;
 pub mod value;
 pub mod verify;

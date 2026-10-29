@@ -1,3 +1,4 @@
+use crate::io_limits::{IoLimits, ReadLimit};
 use crate::value::{GcRef, HeapObject, HostHandleId, HostHandleKind, HostResource, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,7 @@ pub struct Heap {
     next_host_handle_id: u64,
     io_bytes_used: u64,
     max_io_bytes: Option<u64>,
+    io_limits: IoLimits,
     host_work_used: u64,
     max_host_work: Option<u64>,
     /// Count of host resources by kind.
@@ -163,6 +165,7 @@ impl Heap {
             next_host_handle_id: 1,
             io_bytes_used: 0,
             max_io_bytes: None,
+            io_limits: IoLimits::default(),
             host_work_used: 0,
             max_host_work: None,
             host_resources_by_kind: HashMap::new(),
@@ -513,6 +516,41 @@ impl Heap {
             .map(|max| max.saturating_sub(self.io_bytes_used))
     }
 
+    pub fn set_io_limits(&mut self, limits: IoLimits) {
+        self.io_limits = limits;
+    }
+
+    pub fn io_limits(&self) -> IoLimits {
+        self.io_limits
+    }
+
+    /// Limit for reading one HTTP response body.
+    pub fn http_response_limit(&self) -> ReadLimit {
+        ReadLimit::new(
+            self.io_limits.max_http_response_bytes,
+            "max_http_response_bytes",
+            self.remaining_io_bytes(),
+        )
+    }
+
+    /// Limit for reading one file.
+    pub fn file_read_limit(&self) -> ReadLimit {
+        ReadLimit::new(
+            self.io_limits.max_file_read_bytes,
+            "max_file_read_bytes",
+            self.remaining_io_bytes(),
+        )
+    }
+
+    /// Limit for reading each of one `exec` call's stdout and stderr.
+    pub fn exec_output_limit(&self) -> ReadLimit {
+        ReadLimit::new(
+            self.io_limits.max_exec_output_bytes,
+            "max_exec_output_bytes",
+            self.remaining_io_bytes(),
+        )
+    }
+
     pub fn charge_io_bytes(&mut self, bytes: u64) -> Result<(), IoLimitExceeded> {
         let next = self.io_bytes_used.saturating_add(bytes);
         if let Some(limit_bytes) = self.max_io_bytes
@@ -610,14 +648,14 @@ impl Heap {
         let kind = resource.kind();
 
         // Check total host resources limit.
-        if let Some(max) = self.max_host_resources {
-            if self.host_resources.len() >= max {
-                return Err(HeapLimitExceeded::HostResources {
-                    kind: None,
-                    live: self.host_resources.len(),
-                    limit: max,
-                });
-            }
+        if let Some(max) = self.max_host_resources
+            && self.host_resources.len() >= max
+        {
+            return Err(HeapLimitExceeded::HostResources {
+                kind: None,
+                live: self.host_resources.len(),
+                limit: max,
+            });
         }
 
         // Check per-kind host resource limits.
@@ -887,14 +925,14 @@ impl Heap {
         self.free_list.clear();
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
-                if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref() {
-                    if self.host_resources.remove(id).is_some() {
-                        // Decrement the per-kind count. Peak counters are monotonic.
-                        let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
-                        *count = count.saturating_sub(1);
-                        if *count == 0 {
-                            self.host_resources_by_kind.remove(kind);
-                        }
+                if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref()
+                    && self.host_resources.remove(id).is_some()
+                {
+                    // Decrement the per-kind count. Peak counters are monotonic.
+                    let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.host_resources_by_kind.remove(kind);
                     }
                 }
                 self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);
@@ -911,6 +949,13 @@ impl Heap {
 
     pub fn live_count(&self) -> usize {
         self.objects.iter().filter(|o| o.is_some()).count()
+    }
+
+    /// Number of heap slots, live or unreachable but not yet swept, whose
+    /// object matches `pred`.
+    #[cfg(test)]
+    pub(crate) fn count_objects(&self, pred: impl Fn(&HeapObject) -> bool) -> usize {
+        self.objects.iter().flatten().filter(|o| pred(o)).count()
     }
 }
 

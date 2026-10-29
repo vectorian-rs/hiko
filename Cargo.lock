@@ -1410,8 +1410,6 @@ dependencies = [
  "criterion",
  "insta",
  "proptest",
- "tree-sitter",
- "tree-sitter-hiko",
 ]
 
 [[package]]
@@ -1442,6 +1440,7 @@ dependencies = [
  "proptest",
  "regex",
  "rmp-serde",
+ "rustix",
  "serde",
  "serde_json",
  "smallvec",

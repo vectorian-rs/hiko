@@ -1,7 +1,7 @@
 use crate::ast::{Decl, DeclKind, Program};
 use crate::lexer::{LexError, Lexer};
 use crate::parser::{ParseError, Parser};
-use crate::pretty::{Comment, pretty_program_with_comments};
+use crate::pretty::{Comment, line_for_offset, local_comment_split, pretty_program_with_comments};
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -9,7 +9,6 @@ pub enum FormatError {
     Lex(LexError),
     Parse(ParseError),
     UnsupportedComment { message: String, span: Span },
-    TreeSitter(String),
 }
 
 impl From<LexError> for FormatError {
@@ -48,14 +47,6 @@ fn line_offsets(source: &str) -> Vec<usize> {
     offsets
 }
 
-fn line_for_offsets(line_offsets: &[usize], byte: usize) -> usize {
-    match line_offsets.binary_search(&byte) {
-        Ok(line) => line,
-        Err(0) => 0,
-        Err(line) => line - 1,
-    }
-}
-
 fn collect_comments(source: &str, line_offsets: &[usize]) -> Vec<Comment> {
     let bytes = source.as_bytes();
     let mut comments = Vec::new();
@@ -85,8 +76,8 @@ fn collect_comments(source: &str, line_offsets: &[usize]) -> Vec<Comment> {
                     text: source[start..end].to_string(),
                     start: start as u32,
                     end: end as u32,
-                    start_line: line_for_offsets(line_offsets, start),
-                    end_line: line_for_offsets(line_offsets, end),
+                    start_line: line_for_offset(line_offsets, start),
+                    end_line: line_for_offset(line_offsets, end),
                 });
             }
             _ => pos += 1,
@@ -144,8 +135,7 @@ fn validate_comment_convention(
         &mut allowed,
     );
 
-    if let Some((idx, comment)) = comments.iter().enumerate().find(|(idx, _)| !allowed[*idx]) {
-        let _ = idx;
+    if let Some((comment, _)) = comments.iter().zip(&allowed).find(|(_, ok)| !**ok) {
         return Err(FormatError::UnsupportedComment {
             message: "formatter only supports declaration-leading comments and short trailing declaration comments; move this comment before the declaration it describes".into(),
             span: Span::new(file_id, comment.start, comment.end),
@@ -201,22 +191,16 @@ fn mark_nested_decl_comments(
             allowed,
         ),
         DeclKind::Local(locals, body) => {
+            let split = local_comment_split(decl, locals, body, line_offsets);
             mark_allowed_decl_comments(
                 locals,
                 decl.span.start,
-                decl.span.end,
+                split,
                 comments,
                 line_offsets,
                 allowed,
             );
-            mark_allowed_decl_comments(
-                body,
-                decl.span.start,
-                decl.span.end,
-                comments,
-                line_offsets,
-                allowed,
-            );
+            mark_allowed_decl_comments(body, split, decl.span.end, comments, line_offsets, allowed);
         }
         _ => {}
     }
@@ -237,7 +221,7 @@ fn mark_trailing_decl_comments(
     line_offsets: &[usize],
     allowed: &mut [bool],
 ) {
-    let decl_end_line = line_for_offsets(line_offsets, decl_end as usize);
+    let decl_end_line = line_for_offset(line_offsets, decl_end as usize);
     for (idx, comment) in comments.iter().enumerate() {
         if comment.start >= decl_end
             && comment.start < next_start
@@ -279,6 +263,15 @@ mod tests {
         let source = "fun f x =\n  case x of\n      [] => 0\n    | y :: ys => (* branch *) y\n";
         let err = format_source(source, 0).expect_err("expression comment should be rejected");
         assert!(matches!(err, super::FormatError::UnsupportedComment { .. }));
+    }
+
+    #[test]
+    fn keeps_comment_after_import_with_names() {
+        let source = "import Std.List (map, filter)\n(* about x *)\nval x = 1\n";
+        assert_eq!(
+            fmt(source),
+            "import Std.List (map, filter)\n\n(* about x *)\nval x = 1\n"
+        );
     }
 
     #[test]
@@ -357,5 +350,38 @@ mod tests {
             fmt(source),
             "fun walk dir =\n  let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries =\n  case entries of\n      [] => ()\n    | name :: rest => walk_entries dir rest\n"
         );
+    }
+
+    #[test]
+    fn local_comments_are_printed_once_in_their_own_section() {
+        for source in [
+            "local\n  (* c1 *)\n  val a = 1  (* t1 *)\nin\n  (* c2 *)\n  val b = 2\nend\n",
+            "local\n  val a = 1\nin\n  val b = 2\n\n  (* tail *)\nend\n",
+        ] {
+            assert_eq!(fmt(source), source);
+        }
+    }
+
+    #[test]
+    fn rejects_comments_inside_local_body_expressions() {
+        let source = "local\n  val a = 1\nin\n  val b = (* inner *) 2\nend\n";
+        let err = format_source(source, 0).expect_err("expression comment should be rejected");
+        assert!(matches!(err, super::FormatError::UnsupportedComment { .. }));
+    }
+
+    #[test]
+    fn empty_sections_keep_keywords_on_separate_lines() {
+        for (source, expected) in [
+            ("structure S = struct end\n", "structure S = struct\nend\n"),
+            ("local in val b = 2 end\n", "local\nin\n  val b = 2\nend\n"),
+            ("local val a = 1 in end\n", "local\n  val a = 1\nin\nend\n"),
+            (
+                "structure S = struct\n  (* only a comment *)\nend\n",
+                "structure S = struct\n  (* only a comment *)\nend\n",
+            ),
+        ] {
+            assert_eq!(fmt(source), expected, "{source:?}");
+            assert_eq!(fmt(expected), expected, "not idempotent: {expected:?}");
+        }
     }
 }

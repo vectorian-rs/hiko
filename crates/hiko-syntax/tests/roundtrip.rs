@@ -1,3 +1,5 @@
+mod common;
+
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::pretty::pretty_program;
@@ -14,6 +16,11 @@ fn assert_roundtrip(input: &str) {
     assert_eq!(
         first, second,
         "round-trip failed:\n  input:  {input}\n  first:  {first}\n  second: {second}"
+    );
+    assert_eq!(
+        common::normalized_ast(input),
+        common::normalized_ast(&first),
+        "printing changed the AST:\n  input:  {input}\n  first:  {first}"
     );
 }
 
@@ -164,6 +171,19 @@ fn rt_string_escape() {
     assert_roundtrip(r#"val s = "hello\tworld\n""#);
 }
 
+#[test]
+fn rt_control_chars_stay_escaped() {
+    let src = r#"val s = "a\r\0\x01\x7fb" val c = #"\r""#;
+    let printed = roundtrip(src);
+    assert!(
+        !printed.chars().any(|c| c.is_ascii_control() && c != '\n'),
+        "raw control character in output: {printed:?}"
+    );
+    assert!(printed.contains(r#""a\r\0\x01\x7fb""#), "{printed}");
+    assert!(printed.contains(r##"#"\r""##), "{printed}");
+    assert_roundtrip(src);
+}
+
 // ── Operators and precedence ─────────────────────────────────────────
 
 #[test]
@@ -237,6 +257,20 @@ fn rt_string_concat() {
 }
 
 #[test]
+fn rt_float_magnitudes_keep_exponent_form() {
+    for src in [
+        "val x = 6.02e23",
+        "val x = 1e300",
+        "val x = 1e-7",
+        "val x = 0.5",
+        "val x = 1.0",
+        "val x = 123.25",
+    ] {
+        assert_eq!(roundtrip(src), src);
+    }
+}
+
+#[test]
 fn rt_unary_neg() {
     assert_roundtrip("val x = ~42");
 }
@@ -274,6 +308,12 @@ fn rt_pattern_cons() {
 }
 
 #[test]
+fn rt_pattern_cons_of_constructor_applications() {
+    let src = "fun f (Some x :: M.C y :: xs) = x";
+    assert_eq!(roundtrip(src), src);
+}
+
+#[test]
 fn rt_pattern_wildcard() {
     assert_roundtrip("val _ = 42");
 }
@@ -291,6 +331,11 @@ fn rt_pattern_negative() {
 #[test]
 fn rt_pattern_negative_float() {
     assert_roundtrip("fun f ~1.0 = true\n  | f _ = false");
+}
+
+#[test]
+fn rt_pattern_negative_zero_float() {
+    assert_eq!(roundtrip("fun f ~0.0 = true"), "fun f ~0.0 = true");
 }
 
 #[test]
@@ -404,6 +449,38 @@ fn rt_app_unary_neg() {
 #[test]
 fn rt_app_not() {
     assert_roundtrip("val x = f not true");
+}
+
+#[test]
+fn rt_unary_operands_stay_unparenthesized() {
+    for src in [
+        "val x = ~ ~1",
+        "val x = not not true",
+        "val x = ~f x",
+        "val x = not f x",
+        "val x = f ~1",
+        "val x = f not true",
+        "val x = f ~(g x)",
+        "val x = ~fn y => y",
+        "val x = not if a then b else c",
+        "val x = ~(a + b)",
+    ] {
+        let expected = src.replace("~ ~", "~~");
+        assert_eq!(roundtrip(src), expected, "{src}");
+    }
+}
+
+#[test]
+fn rt_application_heads_stay_unparenthesized() {
+    for src in [
+        "val x = 0 1",
+        "val x = [f] 1",
+        "val x = (f, g) 1",
+        "val x = perform E x y",
+        "val x = resume k v w",
+    ] {
+        assert_eq!(roundtrip(src), src);
+    }
 }
 
 #[test]

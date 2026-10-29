@@ -203,7 +203,7 @@ impl VM {
         child.exec_allowed = self.exec_allowed.clone();
         child.exec_allowed_paths = self.exec_allowed_paths.clone();
         child.exec_allowed_resolution_errors = self.exec_allowed_resolution_errors.clone();
-        child.exec_timeout = self.exec_timeout;
+        child.set_io_limits(self.heap.io_limits());
         child.set_fs_root(self.heap.fs_root().to_string());
         child.set_fs_builtin_folders(self.heap.fs_builtin_folders().clone());
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());

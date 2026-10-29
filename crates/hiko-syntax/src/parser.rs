@@ -9,11 +9,45 @@ pub struct ParseError {
     pub span: Span,
 }
 
+/// Maximum depth of the AST a program may produce, counting every
+/// declaration, expression, pattern and type node on the path from a
+/// top-level declaration. Every pass after the parser recurses over the
+/// tree, so this bounds their stack use too. The parser's own recursion is
+/// held to the same limit.
+const MAX_NESTING_DEPTH: u32 = 256;
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Number of `nested` parse steps currently open.
     depth: u32,
+    /// Deepest level reached since the innermost open operator chain
+    /// started, including the levels that finished chains add below their
+    /// operands. See `Chain`.
+    peak: u32,
+    /// Set after an `fn`, `if`, `case` or `handle` expression. These extend
+    /// as far right as they can, so nothing may follow one as an operand:
+    /// no operator and no argument, until the enclosing `parse_expr` ends.
+    closed: bool,
     interner: StringInterner,
+}
+
+/// An operator chain being parsed, such as `a + b + c` or `f x y`.
+///
+/// Chains are parsed in a loop, but each link puts the operands one AST level
+/// deeper: in `a + b + c` the operand `a` sits two levels below the chain. To
+/// keep `(... (x + 1 + ... + 1) ...)` from building a tree hundreds of times
+/// deeper than the parser recursed, each chain records how deep its operands
+/// went (`Parser::peak`) and adds the levels its links put above them.
+struct Chain {
+    /// Left-associative chains put the earliest operands deepest,
+    /// right-associative ones the latest.
+    left_assoc: bool,
+    links: u32,
+    /// Deepest operand so far, as levels below the chain, minus the link
+    /// count for a left-associative chain (see `end_operand`).
+    height: i64,
+    outer_peak: u32,
 }
 
 impl Parser {
@@ -22,6 +56,8 @@ impl Parser {
             tokens,
             pos: 0,
             depth: 0,
+            peak: 0,
+            closed: false,
             interner: StringInterner::new(),
         }
     }
@@ -31,6 +67,8 @@ impl Parser {
             tokens,
             pos: 0,
             depth: 0,
+            peak: 0,
+            closed: false,
             interner,
         }
     }
@@ -51,8 +89,13 @@ impl Parser {
         }
     }
 
+    /// Whether the current token is of the same kind as `kind`, ignoring payloads.
+    fn at(&self, kind: &TokenKind) -> bool {
+        std::mem::discriminant(self.peek()) == std::mem::discriminant(kind)
+    }
+
     fn eat(&mut self, kind: &TokenKind) -> Option<Span> {
-        if std::mem::discriminant(self.peek()) == std::mem::discriminant(kind) {
+        if self.at(kind) {
             let span = self.span();
             self.advance();
             Some(span)
@@ -166,17 +209,70 @@ impl Parser {
         }
     }
 
-    fn guard_depth(&mut self) -> Result<(), ParseError> {
+    /// Run a recursive parse step under the nesting limit, so deeply nested
+    /// input fails with a parse error instead of overflowing the stack.
+    fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(self.err("nesting limit exceeded"));
+        }
         self.depth += 1;
-        if self.depth > 256 {
-            Err(self.err("expression nesting limit exceeded"))
-        } else {
-            Ok(())
+        self.peak = self.peak.max(self.depth);
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+
+    fn begin_chain(&mut self, left_assoc: bool) -> Chain {
+        Chain {
+            left_assoc,
+            links: 0,
+            height: 0,
+            outer_peak: std::mem::replace(&mut self.peak, self.depth),
         }
     }
 
-    fn unguard_depth(&mut self) {
-        self.depth -= 1;
+    /// Record the operand just parsed. With `n` links in all, operand `k`
+    /// ends up at least `n - k` levels below a left-associative chain and
+    /// `k` levels below a right-associative one (one less than exact for
+    /// all but the extreme operand, which is enough to bound the tree).
+    fn end_operand(&mut self, chain: &mut Chain) {
+        let below = i64::from(self.peak - self.depth);
+        let links = i64::from(chain.links);
+        let height = if chain.left_assoc {
+            below - links
+        } else {
+            below + links
+        };
+        chain.height = chain.height.max(height);
+        self.peak = self.depth;
+    }
+
+    /// Count one more link. A chain of `MAX_NESTING_DEPTH` links is over the
+    /// limit whatever its operands are, so stop before building more.
+    fn chain_link(&self, chain: &mut Chain) -> Result<(), ParseError> {
+        chain.links += 1;
+        if chain.links >= MAX_NESTING_DEPTH {
+            return Err(self.err("nesting limit exceeded"));
+        }
+        Ok(())
+    }
+
+    fn end_chain(&mut self, chain: Chain) -> Result<(), ParseError> {
+        let height = if chain.left_assoc {
+            chain.height + i64::from(chain.links)
+        } else {
+            chain.height
+        };
+        let peak = i64::from(self.depth) + height;
+        if peak > i64::from(MAX_NESTING_DEPTH) {
+            return Err(self.err("nesting limit exceeded"));
+        }
+        // `peak` is at least `self.depth`: every operand height is >= 0.
+        self.peak = chain.outer_peak.max(peak as u32);
+        Ok(())
     }
 
     fn can_start_app_arg(&self) -> bool {
@@ -259,7 +355,15 @@ impl Parser {
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut decls = Vec::new();
         while !matches!(self.peek(), TokenKind::Eof) {
-            decls.push(self.parse_decl()?);
+            let decl = match self.peek() {
+                TokenKind::Signature => self.parse_signature_decl()?,
+                TokenKind::Structure => self.parse_structure_decl()?,
+                _ => self.parse_decl()?,
+            };
+            decls.push(decl);
+        }
+        for decl in &decls {
+            check_decl_nesting(decl, 1)?;
         }
         Ok(Program {
             decls,
@@ -269,17 +373,21 @@ impl Parser {
 
     // ── Declarations ─────────────────────────────────────────────────
 
+    /// Parse a declaration in any position. `signature` and `structure` are
+    /// handled by `parse_program` because modules are a single top-level
+    /// layer; desugaring has no representation for nested ones.
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
         match self.peek() {
             TokenKind::Val => self.parse_val_decl(),
             TokenKind::Fun => self.parse_fun_decl(),
             TokenKind::Datatype => self.parse_datatype_decl(),
             TokenKind::Type => self.parse_type_alias_decl(),
-            TokenKind::Local => self.parse_local_decl(),
+            TokenKind::Local => self.nested(Self::parse_local_decl),
             TokenKind::Import => self.parse_import_decl(),
             TokenKind::Use => self.parse_use_decl(),
-            TokenKind::Signature => self.parse_signature_decl(),
-            TokenKind::Structure => self.parse_structure_decl(),
+            TokenKind::Signature | TokenKind::Structure => Err(self.err(
+                "signature and structure declarations are only allowed at top level",
+            )),
             TokenKind::Effect => self.parse_effect_decl(),
             _ => {
                 Err(self
@@ -336,7 +444,7 @@ impl Parser {
 
     fn parse_fun_binding(&mut self) -> Result<FunBinding, ParseError> {
         let (name, name_span) = self.expect_ident()?;
-        let mut clauses = Vec::new();
+        let mut clauses: Vec<FunClause> = Vec::new();
 
         loop {
             let clause_start = self.span();
@@ -346,6 +454,20 @@ impl Parser {
             }
             if pats.is_empty() {
                 return Err(self.err("expected at least one parameter pattern"));
+            }
+            // Desugaring matches all clauses against one tuple of arguments.
+            if let Some(first) = clauses.first()
+                && first.pats.len() != pats.len()
+            {
+                return Err(ParseError {
+                    message: format!(
+                        "clauses of '{}' take different numbers of arguments: {} and {}",
+                        self.interner.resolve(name),
+                        first.pats.len(),
+                        pats.len()
+                    ),
+                    span: clause_start.merge(pats.last().unwrap().span),
+                });
             }
             self.expect(&TokenKind::Eq, "=")?;
             let body = self.parse_expr()?;
@@ -515,8 +637,7 @@ impl Parser {
                 let (n, _) = self.expect_exposed_import_name()?;
                 names.push(n);
             }
-            self.expect(&TokenKind::RParen, ")")?;
-            end = self.span();
+            end = self.expect(&TokenKind::RParen, ")")?;
             return Ok(Decl {
                 kind: DeclKind::ImportWithNames(name, names),
                 span: start.merge(end),
@@ -641,10 +762,9 @@ impl Parser {
     // ── Expressions (lowest to highest precedence) ───────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.guard_depth()?;
-        let result = self.parse_expr_inner();
-        self.unguard_depth();
-        result
+        let expr = self.nested(Self::parse_expr_inner);
+        self.closed = false;
+        expr
     }
 
     fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
@@ -662,48 +782,22 @@ impl Parser {
     }
 
     fn parse_pipe(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_orelse()?;
-        while self.eat(&TokenKind::PipeGt).is_some() {
-            let rhs = self.parse_orelse()?;
-            let span = lhs.span.merge(rhs.span);
-            lhs = Expr {
-                kind: ExprKind::BinOp(BinOp::Pipe, Box::new(lhs), Box::new(rhs)),
-                span,
-            };
-        }
-        Ok(lhs)
+        self.parse_left_chain(Self::parse_orelse, |token| match token {
+            TokenKind::PipeGt => Some(BinOp::Pipe),
+            _ => None,
+        })
     }
 
     fn parse_orelse(&mut self) -> Result<Expr, ParseError> {
-        let mut elems = vec![self.parse_andalso()?];
-        while self.eat(&TokenKind::Orelse).is_some() {
-            elems.push(self.parse_andalso()?);
-        }
-        let mut result = elems.pop().unwrap();
-        while let Some(lhs) = elems.pop() {
-            let span = lhs.span.merge(result.span);
-            result = Expr {
-                kind: ExprKind::BinOp(BinOp::Orelse, Box::new(lhs), Box::new(result)),
-                span,
-            };
-        }
-        Ok(result)
+        self.parse_right_chain(Self::parse_andalso, &TokenKind::Orelse, |lhs, rhs| {
+            ExprKind::BinOp(BinOp::Orelse, lhs, rhs)
+        })
     }
 
     fn parse_andalso(&mut self) -> Result<Expr, ParseError> {
-        let mut elems = vec![self.parse_comp()?];
-        while self.eat(&TokenKind::Andalso).is_some() {
-            elems.push(self.parse_comp()?);
-        }
-        let mut result = elems.pop().unwrap();
-        while let Some(lhs) = elems.pop() {
-            let span = lhs.span.merge(result.span);
-            result = Expr {
-                kind: ExprKind::BinOp(BinOp::Andalso, Box::new(lhs), Box::new(result)),
-                span,
-            };
-        }
-        Ok(result)
+        self.parse_right_chain(Self::parse_comp, &TokenKind::Andalso, |lhs, rhs| {
+            ExprKind::BinOp(BinOp::Andalso, lhs, rhs)
+        })
     }
 
     fn parse_comp(&mut self) -> Result<Expr, ParseError> {
@@ -717,7 +811,7 @@ impl Parser {
             TokenKind::Ge => Some(BinOp::Ge),
             _ => None,
         };
-        if let Some(op) = op {
+        if let Some(op) = op.filter(|_| !self.closed) {
             self.advance();
             let rhs = self.parse_cons()?;
             let span = lhs.span.merge(rhs.span);
@@ -731,103 +825,114 @@ impl Parser {
     }
 
     fn parse_cons(&mut self) -> Result<Expr, ParseError> {
-        let mut elems = vec![self.parse_add()?];
-        while self.eat(&TokenKind::ColonColon).is_some() {
-            elems.push(self.parse_add()?);
+        self.parse_right_chain(Self::parse_add, &TokenKind::ColonColon, ExprKind::Cons)
+    }
+
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
+        self.parse_left_chain(Self::parse_mul, |token| match token {
+            TokenKind::Plus => Some(BinOp::Add),
+            TokenKind::Minus => Some(BinOp::Sub),
+            TokenKind::Caret => Some(BinOp::ConcatStr),
+            _ => None,
+        })
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
+        self.parse_left_chain(Self::parse_unary, |token| match token {
+            TokenKind::Star => Some(BinOp::Mul),
+            TokenKind::Slash => Some(BinOp::Div),
+            TokenKind::Mod => Some(BinOp::Mod),
+            _ => None,
+        })
+    }
+
+    /// Parse `operand (op operand)*` into a left-associative tree, where `op`
+    /// says which tokens are operators of this precedence level.
+    fn parse_left_chain(
+        &mut self,
+        operand: fn(&mut Self) -> Result<Expr, ParseError>,
+        op: fn(&TokenKind) -> Option<BinOp>,
+    ) -> Result<Expr, ParseError> {
+        let mut chain = self.begin_chain(true);
+        let mut lhs = operand(self)?;
+        self.end_operand(&mut chain);
+        while !self.closed
+            && let Some(op) = op(self.peek())
+        {
+            self.chain_link(&mut chain)?;
+            self.advance();
+            let rhs = operand(self)?;
+            self.end_operand(&mut chain);
+            let span = lhs.span.merge(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::BinOp(op, Box::new(lhs), Box::new(rhs)),
+                span,
+            };
         }
+        self.end_chain(chain)?;
+        Ok(lhs)
+    }
+
+    /// Parse `operand (sep operand)*` into a right-associative tree whose
+    /// nodes are built by `node`.
+    fn parse_right_chain(
+        &mut self,
+        operand: fn(&mut Self) -> Result<Expr, ParseError>,
+        sep: &TokenKind,
+        node: fn(Box<Expr>, Box<Expr>) -> ExprKind,
+    ) -> Result<Expr, ParseError> {
+        let mut chain = self.begin_chain(false);
+        let mut elems = vec![operand(self)?];
+        self.end_operand(&mut chain);
+        while !self.closed && self.at(sep) {
+            self.chain_link(&mut chain)?;
+            self.advance();
+            elems.push(operand(self)?);
+            self.end_operand(&mut chain);
+        }
+        self.end_chain(chain)?;
         let mut result = elems.pop().unwrap();
         while let Some(lhs) = elems.pop() {
             let span = lhs.span.merge(result.span);
             result = Expr {
-                kind: ExprKind::Cons(Box::new(lhs), Box::new(result)),
+                kind: node(Box::new(lhs), Box::new(result)),
                 span,
             };
         }
         Ok(result)
     }
 
-    fn parse_add(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_mul()?;
-        loop {
-            let op = match self.peek() {
-                TokenKind::Plus => Some(BinOp::Add),
-                TokenKind::Minus => Some(BinOp::Sub),
-                TokenKind::Caret => Some(BinOp::ConcatStr),
-                _ => None,
-            };
-            if let Some(op) = op {
-                self.advance();
-                let rhs = self.parse_mul()?;
-                let span = lhs.span.merge(rhs.span);
-                lhs = Expr {
-                    kind: ExprKind::BinOp(op, Box::new(lhs), Box::new(rhs)),
-                    span,
-                };
-            } else {
-                break;
-            }
-        }
-        Ok(lhs)
-    }
-
-    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_unary()?;
-        loop {
-            let op = match self.peek() {
-                TokenKind::Star => Some(BinOp::Mul),
-                TokenKind::Slash => Some(BinOp::Div),
-                TokenKind::Mod => Some(BinOp::Mod),
-                _ => None,
-            };
-            if let Some(op) = op {
-                self.advance();
-                let rhs = self.parse_unary()?;
-                let span = lhs.span.merge(rhs.span);
-                lhs = Expr {
-                    kind: ExprKind::BinOp(op, Box::new(lhs), Box::new(rhs)),
-                    span,
-                };
-            } else {
-                break;
-            }
-        }
-        Ok(lhs)
-    }
-
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        if matches!(self.peek(), TokenKind::Tilde) {
-            let start = self.span();
-            self.advance();
-            let operand = self.parse_unary()?;
-            let span = start.merge(operand.span);
-            return Ok(Expr {
-                kind: ExprKind::UnaryNeg(Box::new(operand)),
-                span,
-            });
-        }
-        if matches!(self.peek(), TokenKind::Not) {
-            let start = self.span();
-            self.advance();
-            let operand = self.parse_unary()?;
-            let span = start.merge(operand.span);
-            return Ok(Expr {
-                kind: ExprKind::Not(Box::new(operand)),
-                span,
-            });
-        }
-        self.parse_app()
+        let wrap: fn(Box<Expr>) -> ExprKind = match self.peek() {
+            TokenKind::Tilde => ExprKind::UnaryNeg,
+            TokenKind::Not => ExprKind::Not,
+            _ => return self.parse_app(),
+        };
+        let start = self.span();
+        self.advance();
+        let operand = self.nested(Self::parse_unary)?;
+        let span = start.merge(operand.span);
+        Ok(Expr {
+            kind: wrap(Box::new(operand)),
+            span,
+        })
     }
 
     fn parse_app(&mut self) -> Result<Expr, ParseError> {
+        let mut chain = self.begin_chain(true);
         let mut lhs = self.parse_atom_expr()?;
-        while self.can_start_app_arg() {
+        self.end_operand(&mut chain);
+        while !self.closed && self.can_start_app_arg() {
+            self.chain_link(&mut chain)?;
             let arg = self.parse_app_arg()?;
+            self.end_operand(&mut chain);
             let span = lhs.span.merge(arg.span);
             lhs = Expr {
                 kind: ExprKind::App(Box::new(lhs), Box::new(arg)),
                 span,
             };
         }
+        self.end_chain(chain)?;
         Ok(lhs)
     }
 
@@ -986,15 +1091,30 @@ impl Parser {
                     span,
                 })
             }
-            TokenKind::If => self.parse_if_expr(),
+            TokenKind::If => self.parse_open_ended(Self::parse_if_expr),
             TokenKind::Let => self.parse_let_expr(),
-            TokenKind::Case => self.parse_case_expr(),
-            TokenKind::Fn => self.parse_fn_expr(),
-            TokenKind::Handle => self.parse_handle_expr(),
+            TokenKind::Case => self.parse_open_ended(Self::parse_case_expr),
+            TokenKind::Fn => self.parse_open_ended(Self::parse_fn_expr),
+            TokenKind::Handle => self.parse_open_ended(Self::parse_handle_expr),
             TokenKind::Perform => self.parse_perform_expr(),
             TokenKind::Resume => self.parse_resume_expr(),
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    /// Parse an expression that ends in a sub-expression (`fn ... => e`,
+    /// `if ... else e`, ...). That tail takes every operator and argument
+    /// it can, so anything an enclosing chain could still see was left by a
+    /// tail that stopped early, as in `fn x => x : int (2)` or
+    /// `if a then b else c < d < e`. Those are errors, as in SML, not an
+    /// application of the `fn` or a comparison of the `if`.
+    fn parse_open_ended(
+        &mut self,
+        parse: fn(&mut Self) -> Result<Expr, ParseError>,
+    ) -> Result<Expr, ParseError> {
+        let expr = parse(self)?;
+        self.closed = true;
+        Ok(expr)
     }
 
     fn parse_handle_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1132,10 +1252,7 @@ impl Parser {
     // ── Patterns ─────────────────────────────────────────────────────
 
     fn parse_pat(&mut self) -> Result<Pat, ParseError> {
-        self.guard_depth()?;
-        let result = self.parse_pat_inner_dispatch();
-        self.unguard_depth();
-        result
+        self.nested(Self::parse_pat_inner_dispatch)
     }
 
     fn parse_pat_inner_dispatch(&mut self) -> Result<Pat, ParseError> {
@@ -1155,16 +1272,20 @@ impl Parser {
     fn parse_as_pat(&mut self) -> Result<Pat, ParseError> {
         // Collect `ident as ident as ... as pat` iteratively
         let mut names: Vec<(Symbol, Span)> = Vec::new();
+        let mut chain = self.begin_chain(false);
         while matches!(self.peek(), TokenKind::Ident(_))
             && self.pos + 1 < self.tokens.len()
             && matches!(self.tokens[self.pos + 1].kind, TokenKind::As)
         {
+            self.chain_link(&mut chain)?;
             let start = self.span();
             let name = self.take_symbol(); // consume ident
             self.advance(); // consume `as`
             names.push((name, start));
         }
         let mut result = self.parse_cons_pat()?;
+        self.end_operand(&mut chain);
+        self.end_chain(chain)?;
         while let Some((name, start)) = names.pop() {
             let span = start.merge(result.span);
             result = Pat {
@@ -1176,10 +1297,16 @@ impl Parser {
     }
 
     fn parse_cons_pat(&mut self) -> Result<Pat, ParseError> {
+        let mut chain = self.begin_chain(false);
         let mut elems = vec![self.parse_app_pat()?];
-        while self.eat(&TokenKind::ColonColon).is_some() {
+        self.end_operand(&mut chain);
+        while self.at(&TokenKind::ColonColon) {
+            self.chain_link(&mut chain)?;
+            self.advance();
             elems.push(self.parse_app_pat()?);
+            self.end_operand(&mut chain);
         }
+        self.end_chain(chain)?;
         let mut result = elems.pop().unwrap();
         while let Some(lhs) = elems.pop() {
             let span = lhs.span.merge(result.span);
@@ -1381,10 +1508,17 @@ impl Parser {
                         span: start.merge(self.tokens[self.pos - 1].span),
                     });
                 }
+                // Desugared to one `::` per element, so each comma is a link.
+                let mut chain = self.begin_chain(false);
                 let mut elems = vec![self.parse_pat()?];
-                while self.eat(&TokenKind::Comma).is_some() {
+                self.end_operand(&mut chain);
+                while self.at(&TokenKind::Comma) {
+                    self.chain_link(&mut chain)?;
+                    self.advance();
                     elems.push(self.parse_pat()?);
+                    self.end_operand(&mut chain);
                 }
+                self.end_chain(chain)?;
                 let end = self.expect(&TokenKind::RBracket, "]")?;
                 let span = start.merge(end);
                 Ok(Pat {
@@ -1399,17 +1533,20 @@ impl Parser {
     // ── Type expressions ─────────────────────────────────────────────
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
-        self.guard_depth()?;
-        let result = self.parse_arrow_type();
-        self.unguard_depth();
-        result
+        self.nested(Self::parse_arrow_type)
     }
 
     fn parse_arrow_type(&mut self) -> Result<TypeExpr, ParseError> {
+        let mut chain = self.begin_chain(false);
         let mut elems = vec![self.parse_tuple_type()?];
-        while self.eat(&TokenKind::ThinArrow).is_some() {
+        self.end_operand(&mut chain);
+        while self.at(&TokenKind::ThinArrow) {
+            self.chain_link(&mut chain)?;
+            self.advance();
             elems.push(self.parse_tuple_type()?);
+            self.end_operand(&mut chain);
         }
+        self.end_chain(chain)?;
         let mut result = elems.pop().unwrap();
         while let Some(lhs) = elems.pop() {
             let span = lhs.span.merge(result.span);
@@ -1439,10 +1576,13 @@ impl Parser {
     }
 
     fn parse_app_type(&mut self) -> Result<TypeExpr, ParseError> {
+        let mut chain = self.begin_chain(true);
         let mut ty = self.parse_atom_type()?;
+        self.end_operand(&mut chain);
         while matches!(self.peek(), TokenKind::Ident(_) | TokenKind::UpperIdent(_))
             || self.can_start_qualified_path()
         {
+            self.chain_link(&mut chain)?;
             let (name, end) = if self.can_start_qualified_path() {
                 let (name, _, span) = self.parse_qualified_symbol()?;
                 (name, span)
@@ -1463,6 +1603,15 @@ impl Parser {
                 kind: TypeExprKind::App(name, args),
                 span,
             };
+        }
+        self.end_chain(chain)?;
+        // A bare `Tuple` here is a `(t1, t2, ...)` argument list that was never
+        // applied to a type constructor; `t1 * t2` tuples are built above us.
+        if matches!(ty.kind, TypeExprKind::Tuple(_)) {
+            return Err(ParseError {
+                message: "expected type constructor after type argument list".into(),
+                span: ty.span,
+            });
         }
         Ok(ty)
     }
@@ -1521,6 +1670,184 @@ impl Parser {
     }
 }
 
+// ── Nesting check ────────────────────────────────────────────────────
+//
+// Operator chains and application are parsed in loops, so the parser's
+// recursion depth says little about the depth of the tree it builds:
+// `1 + 1 + ... + 1` is one parse level but one AST level per `+`. These
+// functions walk the finished tree and reject any node deeper than
+// `MAX_NESTING_DEPTH`. They stop at the limit, so their own recursion is
+// bounded by it.
+
+fn enter(depth: u32, span: Span) -> Result<u32, ParseError> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(ParseError {
+            message: "nesting limit exceeded".into(),
+            span,
+        });
+    }
+    Ok(depth + 1)
+}
+
+fn check_decl_nesting(decl: &Decl, depth: u32) -> Result<(), ParseError> {
+    let inner = enter(depth, decl.span)?;
+    match &decl.kind {
+        DeclKind::Val(pat, expr) => {
+            check_pat_nesting(pat, inner)?;
+            check_expr_nesting(expr, inner)
+        }
+        DeclKind::ValRec(_, expr) => check_expr_nesting(expr, inner),
+        DeclKind::Fun(bindings) => {
+            for clause in bindings.iter().flat_map(|binding| &binding.clauses) {
+                for pat in &clause.pats {
+                    check_pat_nesting(pat, inner)?;
+                }
+                check_expr_nesting(&clause.body, inner)?;
+            }
+            Ok(())
+        }
+        DeclKind::Datatype(dt) => dt
+            .constructors
+            .iter()
+            .filter_map(|con| con.payload.as_ref())
+            .try_for_each(|ty| check_type_nesting(ty, inner)),
+        DeclKind::TypeAlias(ta) => check_type_nesting(&ta.ty, inner),
+        DeclKind::Local(locals, body) => locals
+            .iter()
+            .chain(body)
+            .try_for_each(|decl| check_decl_nesting(decl, inner)),
+        DeclKind::Signature(sig) => sig.specs.iter().try_for_each(|spec| match spec {
+            SignatureSpec::Val { ty, .. } => check_type_nesting(ty, inner),
+            SignatureSpec::Type { .. } => Ok(()),
+        }),
+        DeclKind::Structure { decls, .. } => decls
+            .iter()
+            .try_for_each(|decl| check_decl_nesting(decl, inner)),
+        DeclKind::ExportVal { ty, .. } => check_type_nesting(ty, inner),
+        DeclKind::Effect(_, ty) => ty.iter().try_for_each(|ty| check_type_nesting(ty, inner)),
+        DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::AbstractType(_) => Ok(()),
+    }
+}
+
+fn check_expr_nesting(expr: &Expr, depth: u32) -> Result<(), ParseError> {
+    let inner = enter(depth, expr.span)?;
+    match &expr.kind {
+        ExprKind::IntLit(_)
+        | ExprKind::FloatLit(_)
+        | ExprKind::WordLit(_)
+        | ExprKind::StringLit(_)
+        | ExprKind::CharLit(_)
+        | ExprKind::BoolLit(_)
+        | ExprKind::Unit
+        | ExprKind::Var(_)
+        | ExprKind::Constructor(_) => Ok(()),
+        ExprKind::Tuple(elems) | ExprKind::List(elems) => elems
+            .iter()
+            .try_for_each(|elem| check_expr_nesting(elem, inner)),
+        ExprKind::Cons(lhs, rhs)
+        | ExprKind::BinOp(_, lhs, rhs)
+        | ExprKind::App(lhs, rhs)
+        | ExprKind::Resume(lhs, rhs) => {
+            check_expr_nesting(lhs, inner)?;
+            check_expr_nesting(rhs, inner)
+        }
+        ExprKind::UnaryNeg(e) | ExprKind::Not(e) | ExprKind::Paren(e) | ExprKind::Perform(_, e) => {
+            check_expr_nesting(e, inner)
+        }
+        ExprKind::Fn(pat, body) => {
+            check_pat_nesting(pat, inner)?;
+            check_expr_nesting(body, inner)
+        }
+        ExprKind::If(cond, then_br, else_br) => {
+            check_expr_nesting(cond, inner)?;
+            check_expr_nesting(then_br, inner)?;
+            check_expr_nesting(else_br, inner)
+        }
+        ExprKind::Let(decls, body) => {
+            for decl in decls {
+                check_decl_nesting(decl, inner)?;
+            }
+            check_expr_nesting(body, inner)
+        }
+        ExprKind::Case(scrutinee, arms) => {
+            check_expr_nesting(scrutinee, inner)?;
+            for (pat, body) in arms {
+                check_pat_nesting(pat, inner)?;
+                check_expr_nesting(body, inner)?;
+            }
+            Ok(())
+        }
+        ExprKind::Ann(e, ty) => {
+            check_expr_nesting(e, inner)?;
+            check_type_nesting(ty, inner)
+        }
+        ExprKind::Handle {
+            body,
+            return_body,
+            handlers,
+            ..
+        } => {
+            check_expr_nesting(body, inner)?;
+            check_expr_nesting(return_body, inner)?;
+            handlers
+                .iter()
+                .try_for_each(|handler| check_expr_nesting(&handler.body, inner))
+        }
+    }
+}
+
+fn check_pat_nesting(pat: &Pat, depth: u32) -> Result<(), ParseError> {
+    let inner = enter(depth, pat.span)?;
+    match &pat.kind {
+        PatKind::Wildcard
+        | PatKind::Var(_)
+        | PatKind::IntLit(_)
+        | PatKind::FloatLit(_)
+        | PatKind::WordLit(_)
+        | PatKind::StringLit(_)
+        | PatKind::CharLit(_)
+        | PatKind::BoolLit(_)
+        | PatKind::Unit
+        | PatKind::Constructor(_, None) => Ok(()),
+        PatKind::Tuple(pats) => pats
+            .iter()
+            .try_for_each(|pat| check_pat_nesting(pat, inner)),
+        // Desugared to `p1 :: (p2 :: ... :: [])`: element i sits i levels deeper.
+        PatKind::List(pats) => (inner..)
+            .zip(pats)
+            .try_for_each(|(depth, pat)| check_pat_nesting(pat, depth)),
+        PatKind::Cons(hd, tl) => {
+            check_pat_nesting(hd, inner)?;
+            check_pat_nesting(tl, inner)
+        }
+        PatKind::Constructor(_, Some(p)) | PatKind::As(_, p) | PatKind::Paren(p) => {
+            check_pat_nesting(p, inner)
+        }
+        PatKind::Ann(p, ty) => {
+            check_pat_nesting(p, inner)?;
+            check_type_nesting(ty, inner)
+        }
+    }
+}
+
+fn check_type_nesting(ty: &TypeExpr, depth: u32) -> Result<(), ParseError> {
+    let inner = enter(depth, ty.span)?;
+    match &ty.kind {
+        TypeExprKind::Named(_) | TypeExprKind::Var(_) => Ok(()),
+        TypeExprKind::App(_, args) | TypeExprKind::Tuple(args) => args
+            .iter()
+            .try_for_each(|arg| check_type_nesting(arg, inner)),
+        TypeExprKind::Arrow(lhs, rhs) => {
+            check_type_nesting(lhs, inner)?;
+            check_type_nesting(rhs, inner)
+        }
+        TypeExprKind::Paren(inner_ty) => check_type_nesting(inner_ty, inner),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,7 +1860,6 @@ mod tests {
         parser.parse_program().expect("parse error")
     }
 
-    #[allow(dead_code)]
     fn parse_err(input: &str) -> String {
         let mut lexer = Lexer::new(input, 0);
         let tokens = lexer.tokenize().expect("lex error");
@@ -1622,6 +1948,18 @@ mod tests {
         } else {
             panic!("expected fun");
         }
+    }
+
+    #[test]
+    fn test_fun_clauses_must_agree_on_arity() {
+        assert_eq!(
+            parse_err("fun f 0 = 1 | f n _ = n"),
+            "clauses of 'f' take different numbers of arguments: 1 and 2"
+        );
+        assert_eq!(
+            parse_err("fun f 0 0 = 1 | f n = n"),
+            "clauses of 'f' take different numbers of arguments: 2 and 1"
+        );
     }
 
     #[test]
@@ -2030,6 +2368,27 @@ mod tests {
     }
 
     #[test]
+    fn test_type_arg_list_requires_constructor() {
+        assert_eq!(
+            parse_err("val x : (int, string) = (1, \"a\")"),
+            "expected type constructor after type argument list"
+        );
+        assert_eq!(
+            parse_err("type t = (int, string) -> int"),
+            "expected type constructor after type argument list"
+        );
+        let prog = parse("type t = (int, string) either * (int * string)");
+        let DeclKind::TypeAlias(ref ta) = prog.decls[0].kind else {
+            panic!("expected type alias");
+        };
+        let TypeExprKind::Tuple(elems) = &ta.ty.kind else {
+            panic!("expected tuple type");
+        };
+        assert!(matches!(&elems[0].kind, TypeExprKind::App(_, args) if args.len() == 2));
+        assert!(matches!(&elems[1].kind, TypeExprKind::Paren(_)));
+    }
+
+    #[test]
     fn test_local_decl() {
         let prog = parse("local val x = 1 in val y = x end");
         assert!(matches!(&prog.decls[0].kind, DeclKind::Local(_, _)));
@@ -2159,6 +2518,39 @@ mod tests {
     }
 
     #[test]
+    fn test_open_ended_forms_are_not_applied() {
+        for src in [
+            "val f = fn x => x : int (2)",
+            "val f = if a then b else c : int 2",
+            "val f = case a of _ => b : int [1]",
+            "val f = handle a with return x => x : int ~1",
+            "val f = fn x => x : int + 1",
+            "val f = if a then b else c < d < e",
+            "val f = 1 + fn x => x : int - 2",
+            "val f = g ~if a then b else c : int 1",
+        ] {
+            assert_eq!(
+                parse_err(src),
+                "expected declaration (val, fun, datatype, type, local, import, use, signature, structure, or effect)",
+                "{src}"
+            );
+        }
+        parse("val f = (fn x => x : int) (2)");
+        parse("val f = let in g end 2");
+    }
+
+    #[test]
+    fn test_import_span_ends_at_its_last_token() {
+        let src = "import Std.List (map, filter)\nval x = 1";
+        let prog = parse(src);
+        let span = prog.decls[0].span;
+        assert_eq!(
+            &src[span.start as usize..span.end as usize],
+            "import Std.List (map, filter)"
+        );
+    }
+
+    #[test]
     fn test_complex_program() {
         // A realistic multi-declaration program
         let src = r#"
@@ -2173,5 +2565,218 @@ mod tests {
         "#;
         let prog = parse(src);
         assert_eq!(prog.decls.len(), 3);
+    }
+
+    #[test]
+    fn test_modules_rejected_below_top_level() {
+        let msg = "signature and structure declarations are only allowed at top level";
+        for src in [
+            "structure S = struct structure T = struct val x = 1 end end",
+            "structure S = struct signature T = sig end end",
+            "local structure T = struct val x = 1 end in end",
+            "local in signature T = sig end end",
+            "val z = let structure T = struct val x = 1 end in 1 end",
+        ] {
+            assert_eq!(parse_err(src), msg, "{src}");
+        }
+    }
+
+    /// Run `f` on a thread with the 8 MiB stack a main thread gets: reaching
+    /// the nesting limit in an unoptimized build needs more than the 2 MiB
+    /// default test-thread stack.
+    fn with_main_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Exact AST depth, counting the top-level declaration as 1.
+    fn ast_depth(prog: &Program) -> u32 {
+        fn decl(d: &Decl) -> u32 {
+            1 + match &d.kind {
+                DeclKind::Val(p, e) => pat(p).max(expr(e)),
+                DeclKind::Fun(bs) => bs
+                    .iter()
+                    .flat_map(|b| &b.clauses)
+                    .map(|c| c.pats.iter().map(pat).max().unwrap_or(0).max(expr(&c.body)))
+                    .max()
+                    .unwrap_or(0),
+                DeclKind::TypeAlias(ta) => ty(&ta.ty),
+                _ => 0,
+            }
+        }
+        fn expr(e: &Expr) -> u32 {
+            1 + match &e.kind {
+                ExprKind::Tuple(es) | ExprKind::List(es) => es.iter().map(expr).max().unwrap_or(0),
+                ExprKind::Cons(a, b) | ExprKind::BinOp(_, a, b) | ExprKind::App(a, b) => {
+                    expr(a).max(expr(b))
+                }
+                ExprKind::UnaryNeg(a) | ExprKind::Not(a) | ExprKind::Paren(a) => expr(a),
+                ExprKind::Fn(p, b) => pat(p).max(expr(b)),
+                _ => 0,
+            }
+        }
+        fn pat(p: &Pat) -> u32 {
+            1 + match &p.kind {
+                PatKind::Tuple(ps) => ps.iter().map(pat).max().unwrap_or(0),
+                PatKind::List(ps) => ps
+                    .iter()
+                    .zip(0..)
+                    .map(|(p, i)| pat(p) + i)
+                    .max()
+                    .unwrap_or(0),
+                PatKind::Cons(a, b) => pat(a).max(pat(b)),
+                PatKind::As(_, a) | PatKind::Paren(a) | PatKind::Constructor(_, Some(a)) => pat(a),
+                _ => 0,
+            }
+        }
+        fn ty(t: &TypeExpr) -> u32 {
+            1 + match &t.kind {
+                TypeExprKind::App(_, ts) | TypeExprKind::Tuple(ts) => {
+                    ts.iter().map(ty).max().unwrap_or(0)
+                }
+                TypeExprKind::Arrow(a, b) => ty(a).max(ty(b)),
+                TypeExprKind::Paren(a) => ty(a),
+                _ => 0,
+            }
+        }
+        prog.decls.iter().map(decl).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn test_ast_depth_limit_is_exact() {
+        // Each source has AST depth `extra + n + c` for the given constant.
+        // At the limit it must parse; one level more must not, whether the
+        // depth comes from parentheses or from an operator chain.
+        type Shape = (&'static str, fn(usize, usize) -> String);
+        let shapes: [Shape; 8] = [
+            ("left chain, deep first operand", |m, k| {
+                format!(
+                    "val x = {}1{}{}",
+                    "(".repeat(k),
+                    ")".repeat(k),
+                    " + 1".repeat(m)
+                )
+            }),
+            ("right chain, deep last operand", |m, k| {
+                format!(
+                    "val x = {}{}[]{}",
+                    "1 :: ".repeat(m),
+                    "(".repeat(k),
+                    ")".repeat(k)
+                )
+            }),
+            ("pipe", |m, k| {
+                format!(
+                    "val x = {}1{}{}",
+                    "(".repeat(k),
+                    ")".repeat(k),
+                    " |> f".repeat(m)
+                )
+            }),
+            ("application", |m, k| {
+                format!(
+                    "val x = {}f{}{}",
+                    "(".repeat(k),
+                    ")".repeat(k),
+                    " 1".repeat(m)
+                )
+            }),
+            ("orelse", |m, k| {
+                format!(
+                    "val x = {}{}b{}",
+                    "b orelse ".repeat(m),
+                    "(".repeat(k),
+                    ")".repeat(k)
+                )
+            }),
+            ("as pattern", |m, k| {
+                let names: String = (0..m).map(|i| format!("x{i} as ")).collect();
+                format!("val {names}{}y{} = 1", "(".repeat(k), ")".repeat(k))
+            }),
+            ("list pattern", |m, k| {
+                format!(
+                    "val [{}{}y{}] = 1",
+                    "_, ".repeat(m),
+                    "(".repeat(k),
+                    ")".repeat(k)
+                )
+            }),
+            ("type application", |m, k| {
+                format!(
+                    "type t = {}int{}{}",
+                    "(".repeat(k),
+                    ")".repeat(k),
+                    " list".repeat(m)
+                )
+            }),
+        ];
+        with_main_stack(move || {
+            for (name, shape) in shapes {
+                for m in [0, 1, 100, 250] {
+                    // Find the deepest `k` that parses and check its depth.
+                    let k = (0..300)
+                        .take_while(|&k| {
+                            let src = shape(m, k);
+                            let tokens = Lexer::new(&src, 0).tokenize().expect("lex error");
+                            Parser::new(tokens).parse_program().is_ok()
+                        })
+                        .last()
+                        .unwrap_or_else(|| panic!("{name}, m={m}: nothing parses"));
+                    let depth = ast_depth(&parse(&shape(m, k)));
+                    assert_eq!(depth, MAX_NESTING_DEPTH, "{name}, m={m}, k={k}");
+                    assert_eq!(parse_err(&shape(m, k + 1)), "nesting limit exceeded");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_deep_nesting_is_a_parse_error() {
+        with_main_stack(|| {
+            let n = 100_000;
+            for src in [
+                format!("val x = {}1", "~ ".repeat(n)),
+                format!("val x = {}true", "not ".repeat(n)),
+                format!("{}{}", "local ".repeat(n), "in end ".repeat(n)),
+                format!("val x = {}1{}", "(".repeat(n), ")".repeat(n)),
+                // Chains are parsed in a loop but nest the AST.
+                format!("val x = 1{}", " + 1".repeat(n)),
+                format!("val x = {}[]", "1 :: ".repeat(n)),
+                format!("val x = 1{}", " |> f".repeat(n)),
+                format!("val x = \"\"{}", " ^ \"\"".repeat(n)),
+                format!("val x = f{}", " 1".repeat(n)),
+                format!("val x = {}true", "true andalso ".repeat(n)),
+                format!("val {}y = 1", "x as ".repeat(n)),
+                format!("val ({}[]) = 1", "x :: ".repeat(n)),
+                format!("val [{}y] = 1", "x, ".repeat(n)),
+                format!("type t = int{}", " -> int".repeat(n)),
+                format!("type t = int{}", " list".repeat(n)),
+                // Each chain is under the limit, but nesting them is not;
+                // this must fail without building (and dropping) a tree
+                // tens of thousands of levels deep.
+                format!(
+                    "val x = {}1{}",
+                    "(".repeat(250),
+                    format!("{})", " + 1".repeat(250)).repeat(250)
+                ),
+                format!(
+                    "val x = {}[]{}",
+                    format!("{}(", "1 :: ".repeat(250)).repeat(250),
+                    ")".repeat(250)
+                ),
+            ] {
+                assert_eq!(parse_err(&src), "nesting limit exceeded");
+            }
+            parse(&format!("val x = {}1", "~ ".repeat(100)));
+            parse(&format!(
+                "{}{}",
+                "local ".repeat(100),
+                "in end ".repeat(100)
+            ));
+        });
     }
 }

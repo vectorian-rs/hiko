@@ -1,0 +1,25 @@
+(* Early exit through an abortive effect handler.
+ * Each attempt recurses 1,000 calls deep, then performs Fail.
+ * The handler ignores the continuation, so the VM can unwind
+ * without capturing it.
+ * Input: 5,000 attempts => 5,000 (kept under the 100M default fuel cap)
+ *)
+
+effect Fail of int
+
+fun dive n =
+  if n = 0 then perform Fail 1
+  else 1 + dive (n - 1)
+
+fun attempt depth =
+  handle dive depth
+  with return x => x
+     | Fail v _ => v
+
+fun loop i acc =
+  if i = 0 then acc
+  else loop (i - 1) (acc + attempt 1000)
+
+val result = loop 5000 0
+val _ = assert_eq (result, 5000, "early_exit")
+val _ = println ("early_exit = " ^ int_to_string result)
