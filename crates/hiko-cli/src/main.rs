@@ -1031,7 +1031,6 @@ fn fmt_files(options: &FmtOptions) {
                     FormatError::Lex(error) => (error.message, Some(error.span)),
                     FormatError::Parse(error) => (error.message, Some(error.span)),
                     FormatError::UnsupportedComment { message, span } => (message, Some(span)),
-                    FormatError::TreeSitter(message) => (message, None),
                 };
                 ctx.error(&message, span);
                 had_error = true;

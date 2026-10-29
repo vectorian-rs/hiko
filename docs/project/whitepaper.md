@@ -39,8 +39,7 @@ language as an experiment with open questions, not as a stable surface.
 
 **Language**
 
-- Decide on records, mutable state (`ref`), and whether `:` ascription becomes
-  transparent or is removed.
+- Decide on records and mutable state (`ref`).
 - Write a complete formal definition (static and dynamic semantics).
 
 **Bytecode and VM**

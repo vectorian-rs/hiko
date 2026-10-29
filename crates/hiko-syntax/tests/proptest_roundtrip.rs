@@ -1,3 +1,5 @@
+mod common;
+
 use proptest::prelude::*;
 
 use hiko_syntax::lexer::Lexer;
@@ -70,7 +72,8 @@ fn roundtrip_stable(input: &str) -> bool {
         Err(_) => return false,
     };
     let pretty2 = pretty_program(&ast2);
-    pretty1 == pretty2
+    // Printing must also keep the tree, not just reach a fixed point.
+    pretty1 == pretty2 && common::normalized_ast(input) == common::normalized_ast(&pretty1)
 }
 
 // ── Strategies ──────────────────────────────────────────────────────
@@ -192,9 +195,47 @@ fn expr_strategy(depth: u32) -> BoxedStrategy<String> {
             // List (0-3 elements)
             1 => prop::collection::vec(inner.clone(), 0..=3)
                 .prop_map(|elems| format!("[{}]", elems.join(", "))),
+            // Unparenthesized operators, so precedence and associativity
+            // decide the tree (sources that do not parse are skipped)
+            2 => (inner.clone(), binop_strategy(), inner.clone())
+                .prop_map(|(a, op, b)| format!("{a} {op} {b}")),
+            1 => (prop_oneof![Just("~"), Just("~ "), Just("not ")], inner.clone())
+                .prop_map(|(op, a)| format!("{op}{a}")),
+            1 => (inner.clone(), inner.clone()).prop_map(|(f, a)| format!("{f} {a}")),
+            1 => (inner.clone(), pat_strategy(), inner.clone(), inner.clone())
+                .prop_map(|(e, p, a, b)| format!("case {e} of {p} => {a} | _ => {b}")),
+            1 => inner.clone().prop_map(|e| format!("{e} : int")),
         ]
         .boxed()
     }
+}
+
+fn binop_strategy() -> impl Strategy<Value = &'static str> {
+    prop::sample::select(vec![
+        "+", "-", "*", "/", "mod", "^", "::", "=", "<>", "<", "<=", "andalso", "orelse", "|>",
+    ])
+}
+
+fn pat_strategy() -> BoxedStrategy<String> {
+    let leaf = prop_oneof![
+        ident_strategy(),
+        Just("_".to_string()),
+        Just("~1".to_string()),
+        Just("~0.0".to_string()),
+        Just("None".to_string()),
+    ];
+    leaf.prop_recursive(2, 8, 3, |inner| {
+        prop_oneof![
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("{a} :: {b}")),
+            inner.clone().prop_map(|a| format!("Some {a}")),
+            inner.clone().prop_map(|a| format!("({a})")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a}, {b})")),
+            inner.clone().prop_map(|a| format!("[{a}]")),
+            (ident_strategy(), inner.clone()).prop_map(|(x, a)| format!("{x} as {a}")),
+            inner.clone().prop_map(|a| format!("{a} : int")),
+        ]
+    })
+    .boxed()
 }
 
 /// Generate a Hiko val declaration.
@@ -232,7 +273,7 @@ fn program_strategy() -> impl Strategy<Value = String> {
 // ── Property tests ──────────────────────────────────────────────────
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(2048))]
 
     #[test]
     fn roundtrip_generated_programs(prog in program_strategy()) {

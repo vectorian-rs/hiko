@@ -71,12 +71,12 @@ fn pretty_decl_list(
             }
         }
 
-        if let Some(ctx) = ctx {
-            if let Some(first) = leading.first() {
-                if i > 0 && first.start_line > line_for(ctx, cursor) + 1 {
-                    ensure_blank_line(buf);
-                }
-            }
+        if let Some(ctx) = ctx
+            && let Some(first) = leading.first()
+            && i > 0
+            && first.start_line > line_for(ctx, cursor) + 1
+        {
+            ensure_blank_line(buf);
         }
         write_comment_sequence(buf, &leading, indent);
 
@@ -98,10 +98,11 @@ fn pretty_decl_list(
     if let Some(ctx) = ctx {
         let trailing =
             leading_comments(ctx, cursor, container_end, container_end).collect::<Vec<_>>();
-        if let Some(first) = trailing.first() {
-            if !buf.is_empty() && first.start_line > line_for(ctx, cursor) + 1 {
-                ensure_blank_line(buf);
-            }
+        if let Some(first) = trailing.first()
+            && !buf.is_empty()
+            && first.start_line > line_for(ctx, cursor) + 1
+        {
+            ensure_blank_line(buf);
         }
         write_comment_sequence(buf, &trailing, indent);
         trim_trailing_newlines(buf);
@@ -159,8 +160,33 @@ fn trailing_comments<'a>(
 }
 
 fn line_for(ctx: &CommentCtx<'_>, byte: u32) -> usize {
-    let byte = byte as usize;
-    match ctx.line_offsets.binary_search(&byte) {
+    line_for_offset(ctx.line_offsets, byte as usize)
+}
+
+/// Offset that divides the comments of `local <locals> in <body> end` between
+/// its two halves, so each comment is owned by exactly one of them. The AST
+/// does not record where `in` is: a comment on the last local's final line
+/// trails that declaration, and anything after that line leads the body.
+pub(crate) fn local_comment_split(
+    decl: &Decl,
+    locals: &[Decl],
+    body: &[Decl],
+    line_offsets: &[usize],
+) -> u32 {
+    let Some(last) = locals.last() else {
+        return decl.span.start;
+    };
+    let body_start = body.first().map_or(decl.span.end, |d| d.span.start);
+    let next_line = line_for_offset(line_offsets, last.span.end as usize) + 1;
+    line_offsets
+        .get(next_line)
+        .map_or(body_start, |&offset| offset as u32)
+        .min(body_start)
+}
+
+/// Zero-based line containing `byte`, given the start offset of every line.
+pub(crate) fn line_for_offset(line_offsets: &[usize], byte: usize) -> usize {
+    match line_offsets.binary_search(&byte) {
         Ok(line) => line,
         Err(0) => 0,
         Err(line) => line - 1,
@@ -265,6 +291,9 @@ fn pretty_decl(
             pretty_type(buf, &ta.ty, interner);
         }
         DeclKind::Local(locals, body) => {
+            let split = ctx.map_or(decl.span.end, |ctx| {
+                local_comment_split(decl, locals, body, ctx.line_offsets)
+            });
             write_indent(buf, indent);
             buf.push_str("local\n");
             pretty_decl_list(
@@ -274,23 +303,15 @@ fn pretty_decl(
                 interner,
                 ctx,
                 decl.span.start,
-                decl.span.end,
+                split,
             );
-            if !locals.is_empty() {
+            if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
             buf.push_str("in\n");
-            pretty_decl_list(
-                buf,
-                body,
-                indent + 2,
-                interner,
-                ctx,
-                decl.span.start,
-                decl.span.end,
-            );
-            if !body.is_empty() {
+            pretty_decl_list(buf, body, indent + 2, interner, ctx, split, decl.span.end);
+            if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -309,7 +330,7 @@ fn pretty_decl(
                 }
                 buf.push_str(interner.resolve(*sym));
             }
-            buf.push_str(")");
+            buf.push(')');
         }
         DeclKind::Use(path) => {
             write_indent(buf, indent);
@@ -362,7 +383,7 @@ fn pretty_decl(
                 decl.span.start,
                 decl.span.end,
             );
-            if !decls.is_empty() {
+            if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -532,16 +553,16 @@ fn pretty_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringIn
         }
         ExprKind::UnaryNeg(e) => {
             buf.push('~');
-            pretty_atom_expr(buf, e, indent, interner);
+            pretty_unary_operand(buf, e, indent, interner);
         }
         ExprKind::Not(e) => {
             buf.push_str("not ");
-            pretty_atom_expr(buf, e, indent, interner);
+            pretty_unary_operand(buf, e, indent, interner);
         }
         ExprKind::App(func, arg) => {
             pretty_app_func(buf, func, indent, interner);
             buf.push(' ');
-            pretty_atom_expr(buf, arg, indent, interner);
+            pretty_app_arg(buf, arg, indent, interner);
         }
         ExprKind::Fn(pat, body) => {
             buf.push_str("fn ");
@@ -658,6 +679,48 @@ fn pretty_atom_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &Str
     }
 }
 
+/// A prefix `~` or `not` takes another prefix operator, an application or
+/// any atom, including `if`, `case` and `fn` (`~ ~x`, `not f x`,
+/// `~case x of ...`), so only infix forms need parentheses.
+fn pretty_unary_operand(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
+    if matches!(
+        &expr.kind,
+        ExprKind::BinOp(_, _, _) | ExprKind::Cons(_, _) | ExprKind::Ann(_, _)
+    ) {
+        buf.push('(');
+        pretty_expr(buf, expr, indent, interner);
+        buf.push(')');
+    } else {
+        pretty_expr(buf, expr, indent, interner);
+    }
+}
+
+/// An argument is an atom, or `~`/`not` applied to what the parser reads as
+/// an atom there, which includes the keyword forms (`f ~1`, `f ~fn x => x`).
+fn pretty_app_arg(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
+    let bare_prefix = match &expr.kind {
+        ExprKind::UnaryNeg(operand) | ExprKind::Not(operand) => {
+            !needs_parens_as_atom(operand)
+                || matches!(
+                    &operand.kind,
+                    ExprKind::If(..)
+                        | ExprKind::Let(..)
+                        | ExprKind::Case(..)
+                        | ExprKind::Fn(..)
+                        | ExprKind::Handle { .. }
+                        | ExprKind::Perform(..)
+                        | ExprKind::Resume(..)
+                )
+        }
+        _ => false,
+    };
+    if bare_prefix {
+        pretty_expr(buf, expr, indent, interner);
+    } else {
+        pretty_atom_expr(buf, expr, indent, interner);
+    }
+}
+
 fn pretty_pipe_expr(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
     let mut parts = Vec::new();
     collect_pipe_parts(expr, &mut parts);
@@ -683,16 +746,25 @@ fn collect_pipe_parts<'a>(expr: &'a Expr, parts: &mut Vec<&'a Expr>) {
     }
 }
 
+/// The function in an application. Atoms and the forms that end in a
+/// closing keyword or an atom (`let ... end`, `perform E x`, `resume k x`)
+/// print bare; anything whose last part would absorb the arguments
+/// (`fn`, `if`, `case`, `handle`, operators) needs parentheses.
 fn pretty_app_func(buf: &mut String, expr: &Expr, indent: usize, interner: &StringInterner) {
-    match &expr.kind {
-        ExprKind::App(_, _) | ExprKind::Var(_) | ExprKind::Constructor(_) | ExprKind::Paren(_) => {
-            pretty_expr(buf, expr, indent, interner)
-        }
-        _ => {
-            buf.push('(');
-            pretty_expr(buf, expr, indent, interner);
-            buf.push(')');
-        }
+    let bare = !needs_parens_as_atom(expr)
+        || matches!(
+            &expr.kind,
+            ExprKind::App(_, _)
+                | ExprKind::Let(_, _)
+                | ExprKind::Perform(_, _)
+                | ExprKind::Resume(_, _)
+        );
+    if bare {
+        pretty_expr(buf, expr, indent, interner);
+    } else {
+        buf.push('(');
+        pretty_expr(buf, expr, indent, interner);
+        buf.push(')');
     }
 }
 
@@ -831,7 +903,8 @@ fn pretty_pat(buf: &mut String, pat: &Pat, interner: &StringInterner) {
             }
         }
         PatKind::FloatLit(f) => {
-            if *f < 0.0 {
+            // `~0.0` is negative zero, which `< 0.0` does not catch.
+            if f.is_sign_negative() {
                 buf.push('~');
                 pretty_float(buf, -f);
             } else {
@@ -861,7 +934,12 @@ fn pretty_pat(buf: &mut String, pat: &Pat, interner: &StringInterner) {
             pretty_atom_pat(buf, payload, interner);
         }
         PatKind::Cons(hd, tl) => {
-            pretty_atom_pat(buf, hd, interner);
+            // `Some x :: xs` needs no parentheses: application binds tighter.
+            if matches!(hd.kind, PatKind::Constructor(_, Some(_))) {
+                pretty_pat(buf, hd, interner);
+            } else {
+                pretty_atom_pat(buf, hd, interner);
+            }
             buf.push_str(" :: ");
             pretty_pat(buf, tl, interner);
         }
@@ -982,8 +1060,11 @@ fn write_escaped(buf: &mut String, c: char) {
     match c {
         '\n' => buf.push_str("\\n"),
         '\t' => buf.push_str("\\t"),
+        '\r' => buf.push_str("\\r"),
+        '\0' => buf.push_str("\\0"),
         '\\' => buf.push_str("\\\\"),
         '"' => buf.push_str("\\\""),
+        c if c.is_ascii_control() => write!(buf, "\\x{:02x}", c as u32).unwrap(),
         c => buf.push(c),
     }
 }
@@ -1016,8 +1097,10 @@ fn pretty_float(buf: &mut String, f: f64) {
         }
         return;
     }
+    // Debug, unlike Display, switches to exponent form for very large and
+    // small magnitudes (`1e300`, not 301 digits), and the lexer reads both.
     let start = buf.len();
-    write!(buf, "{f}").unwrap();
+    write!(buf, "{f:?}").unwrap();
     let written = &buf[start..];
     if !written.contains('.') && !written.contains('e') && !written.contains('E') {
         buf.push_str(".0");

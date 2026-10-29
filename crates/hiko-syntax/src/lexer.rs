@@ -170,10 +170,11 @@ impl<'src> Lexer<'src> {
                 self.pos += 2; // skip the two hex digits (main +1 below)
                 val as char
             }
-            other => {
+            _ => {
+                let other = self.char_at(self.pos);
                 return Err(LexError {
-                    message: format!("unknown escape sequence: \\{}", other as char),
-                    span: self.span(self.pos - 1, self.pos + 1),
+                    message: format!("unknown escape sequence: \\{other}"),
+                    span: self.span(self.pos - 1, self.pos + other.len_utf8()),
                 });
             }
         };
@@ -252,6 +253,12 @@ impl<'src> Lexer<'src> {
             let value: f64 = text
                 .parse()
                 .map_err(|_| self.err(&format!("invalid float literal: {text}"), start))?;
+            // Rust parses an out-of-range literal as infinity; the source
+            // clearly meant a finite number, and the formatter cannot print
+            // infinity back.
+            if value.is_infinite() {
+                return Err(self.err(&format!("float literal out of range: {text}"), start));
+            }
             Ok(self.make_token(TokenKind::FloatLit(value), start, self.pos))
         } else {
             let value: i64 = text
@@ -420,9 +427,10 @@ impl<'src> Lexer<'src> {
             }
 
             _ => {
-                self.pos += 1;
+                let c = self.char_at(start);
+                self.pos += c.len_utf8();
                 return Err(LexError {
-                    message: format!("unexpected character: '{}'", ch as char),
+                    message: format!("unexpected character: '{c}'"),
                     span: self.span(start, self.pos),
                 });
             }
@@ -502,6 +510,14 @@ impl<'src> Lexer<'src> {
         self.bytes.get(self.pos + offset).copied()
     }
 
+    /// The full (possibly multi-byte) character starting at byte `pos`.
+    fn char_at(&self, pos: usize) -> char {
+        self.source
+            .get(pos..)
+            .and_then(|rest| rest.chars().next())
+            .unwrap_or(char::REPLACEMENT_CHARACTER)
+    }
+
     fn span(&self, start: usize, end: usize) -> Span {
         Span::new(self.file_id, start as u32, end as u32)
     }
@@ -562,6 +578,17 @@ mod tests {
             vec![TokenKind::FloatLit(2.5e-3), TokenKind::Eof]
         );
         assert_eq!(lex("0.0"), vec![TokenKind::FloatLit(0.0), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn test_float_literal_out_of_range() {
+        assert_eq!(lex_err("1e400"), "float literal out of range: 1e400");
+        assert_eq!(lex_err("1.5e309"), "float literal out of range: 1.5e309");
+        // Underflow rounds to zero like any other inexact literal.
+        assert_eq!(
+            lex("1e-400"),
+            vec![TokenKind::FloatLit(0.0), TokenKind::Eof]
+        );
     }
 
     #[test]
@@ -754,6 +781,17 @@ mod tests {
     #[test]
     fn test_unexpected_char() {
         assert_eq!(lex_err("@"), "unexpected character: '@'");
+    }
+
+    #[test]
+    fn test_non_ascii_errors_report_whole_character() {
+        let err = Lexer::new("x é", 0).tokenize().unwrap_err();
+        assert_eq!(err.message, "unexpected character: 'é'");
+        assert_eq!((err.span.start, err.span.end), (2, 4));
+
+        let err = Lexer::new("\"\\é\"", 0).tokenize().unwrap_err();
+        assert_eq!(err.message, "unknown escape sequence: \\é");
+        assert_eq!((err.span.start, err.span.end), (1, 4));
     }
 
     #[test]
