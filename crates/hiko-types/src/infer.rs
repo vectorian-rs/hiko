@@ -32,6 +32,8 @@ pub struct InferCtx {
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     type_aliases: HashMap<String, (Vec<u32>, Type)>,
+    /// Abstract type introduced by signature ascription -> implementation type name
+    abstract_impls: HashMap<String, String>,
     /// Constructor name → tag (for exhaustiveness checking)
     constructor_tags: HashMap<String, u16>,
     /// Type name → list of (constructor_name, arity) (for exhaustiveness)
@@ -202,6 +204,7 @@ impl InferCtx {
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             type_aliases: HashMap::new(),
+            abstract_impls: HashMap::new(),
             constructor_tags: HashMap::new(),
             datatype_constructors: HashMap::new(),
             warnings: Vec::new(),
@@ -468,22 +471,12 @@ impl InferCtx {
                 ty,
             } => {
                 let internal = self.interner.resolve(*internal_name).to_string();
-                if self.lookup(&internal).is_none() {
-                    return Err(self.err(
-                        &format!(
-                            "unbound variable: {}",
-                            self.interner.resolve(*internal_name)
-                        ),
-                        decl.span,
-                    ));
-                }
+                let Some(internal_scheme) = self.lookup(&internal).cloned() else {
+                    return Err(self.err(&format!("unbound variable: {internal}"), decl.span));
+                };
 
                 let mut tyvar_map = HashMap::new();
                 let export_ty = self.resolve_type_expr(ty, &mut tyvar_map)?;
-                let scheme = Scheme {
-                    vars: export_ty.free_vars(),
-                    ty: export_ty,
-                };
                 let public = self.interner.resolve(*public_name).to_string();
                 if self.constructors.contains_key(&public) {
                     return Err(self.err(
@@ -491,6 +484,17 @@ impl InferCtx {
                         decl.span,
                     ));
                 }
+                self.check_matches_signature(
+                    &public,
+                    &internal_scheme,
+                    &export_ty,
+                    &tyvar_map,
+                    decl.span,
+                )?;
+                let scheme = Scheme {
+                    vars: export_ty.free_vars(),
+                    ty: export_ty,
+                };
                 self.bind(public, scheme);
                 Ok(())
             }
@@ -746,10 +750,95 @@ impl InferCtx {
                     dt.span,
                 ));
             }
+            self.abstract_impls.insert(name.clone(), impl_name);
         }
 
         self.type_arities.insert(name, dt.tyvars.len());
         Ok(())
+    }
+
+    /// Check that a structure value matches its signature type.
+    ///
+    /// The signature's type variables are rigid: the value's own scheme must
+    /// instantiate to the signature type with each variable held abstract,
+    /// and abstract types are compared through their implementation. This
+    /// rejects `val coerce : 'a -> 'b` implemented by `fun coerce x = x`,
+    /// and a non-generalized value exported at a polymorphic type.
+    fn check_matches_signature(
+        &mut self,
+        name: &str,
+        scheme: &Scheme,
+        spec_ty: &Type,
+        spec_tyvars: &HashMap<String, u32>,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        // Type variable names keep their leading quote, so these constructor
+        // names cannot clash with a declared type.
+        let rigid: HashMap<u32, Type> = spec_tyvars
+            .iter()
+            .map(|(tv, &v)| (v, Type::Con(tv.clone())))
+            .collect();
+        let expected = substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
+        let env_vars = self.free_vars_in_env(false);
+        let actual = self.instantiate(scheme);
+        self.unify(&actual, &expected, span).map_err(|e| {
+            self.err(
+                &format!("value {name} does not match its signature: {}", e.message),
+                span,
+            )
+        })?;
+        // A rigid variable that reached a type in the environment means the
+        // value is not polymorphic in it (for example, a weak type variable).
+        if env_vars
+            .iter()
+            .any(|&v| mentions_rigid_var(&self.apply(&Type::Var(v))))
+        {
+            return Err(self.err(
+                &format!(
+                    "value {name} is less polymorphic than its signature type {}",
+                    substitute_vars(spec_ty, &rigid)
+                ),
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replace abstract types introduced by signature ascription with their
+    /// implementation types.
+    fn reveal_abstract_types(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Con(name) => match self.abstract_impls.get(name) {
+                Some(impl_name) => self.named_type(impl_name, vec![]),
+                None => ty.clone(),
+            },
+            Type::App(name, args) => {
+                let args = args.iter().map(|a| self.reveal_abstract_types(a)).collect();
+                match self.abstract_impls.get(name) {
+                    Some(impl_name) => self.named_type(impl_name, args),
+                    None => Type::App(name.clone(), args),
+                }
+            }
+            Type::Arrow(a, b) => {
+                Type::arrow(self.reveal_abstract_types(a), self.reveal_abstract_types(b))
+            }
+            Type::Tuple(ts) => {
+                Type::Tuple(ts.iter().map(|t| self.reveal_abstract_types(t)).collect())
+            }
+            Type::Var(_) => ty.clone(),
+        }
+    }
+
+    /// The type named `name` applied to `args`, expanding type aliases.
+    fn named_type(&self, name: &str, args: Vec<Type>) -> Type {
+        if let Some((params, body)) = self.type_aliases.get(name) {
+            let mapping: HashMap<u32, Type> = params.iter().copied().zip(args).collect();
+            substitute_vars(body, &mapping)
+        } else if args.is_empty() {
+            Type::Con(name.to_string())
+        } else {
+            Type::App(name.to_string(), args)
+        }
     }
 
     // ── Expression inference ─────────────────────────────────────────
@@ -1404,6 +1493,17 @@ impl InferCtx {
     }
 }
 
+/// Whether `ty` contains a rigid signature type variable, which
+/// `check_matches_signature` represents as a constructor named `'a`.
+fn mentions_rigid_var(ty: &Type) -> bool {
+    match ty {
+        Type::Con(name) => name.starts_with('\''),
+        Type::Var(_) => false,
+        Type::Arrow(a, b) => mentions_rigid_var(a) || mentions_rigid_var(b),
+        Type::Tuple(ts) | Type::App(_, ts) => ts.iter().any(mentions_rigid_var),
+    }
+}
+
 /// Replace type variables according to `mapping`, leaving others untouched.
 fn substitute_vars(ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
     match ty {
@@ -1641,6 +1741,53 @@ mod tests {
              val bad = Box.Box 1",
         );
         assert!(msg.contains("unknown constructor: Box.Box"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_signature_type_variables_are_rigid() {
+        for ascription in [":", ":>"] {
+            let msg = infer_err(&format!(
+                "signature S = sig
+                   val coerce : 'a -> 'b
+                 end
+                 structure M {ascription} S = struct
+                   fun coerce x = x
+                 end
+                 val s : string = M.coerce 42"
+            ));
+            assert!(msg.contains("does not match its signature"), "got: {msg}");
+        }
+    }
+
+    #[test]
+    fn test_signature_rejects_weak_value_at_polymorphic_type() {
+        let msg = infer_err(
+            "signature S = sig
+               val f : 'a -> 'a
+             end
+             structure M : S = struct
+               val f = (fn x => x) (fn y => y)
+             end",
+        );
+        assert!(msg.contains("less polymorphic"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_signature_accepts_more_general_value() {
+        let ctx = infer(
+            "signature S = sig
+               type 'a box
+               val wrap : 'a -> 'a box
+               val pair : int -> int * int
+             end
+             structure M :> S = struct
+               type 'a box = 'a list
+               fun wrap x = [x]
+               fun pair x = (x, x)
+             end
+             val b = M.wrap true",
+        );
+        assert_eq!(type_of(&ctx, "b"), "bool M.box");
     }
 
     // ── Let-polymorphism ─────────────────────────────────────────────
