@@ -444,7 +444,7 @@ impl Parser {
 
     fn parse_fun_binding(&mut self) -> Result<FunBinding, ParseError> {
         let (name, name_span) = self.expect_ident()?;
-        let mut clauses = Vec::new();
+        let mut clauses: Vec<FunClause> = Vec::new();
 
         loop {
             let clause_start = self.span();
@@ -454,6 +454,20 @@ impl Parser {
             }
             if pats.is_empty() {
                 return Err(self.err("expected at least one parameter pattern"));
+            }
+            // Desugaring matches all clauses against one tuple of arguments.
+            if let Some(first) = clauses.first()
+                && first.pats.len() != pats.len()
+            {
+                return Err(ParseError {
+                    message: format!(
+                        "clauses of '{}' take different numbers of arguments: {} and {}",
+                        self.interner.resolve(name),
+                        first.pats.len(),
+                        pats.len()
+                    ),
+                    span: clause_start.merge(pats.last().unwrap().span),
+                });
             }
             self.expect(&TokenKind::Eq, "=")?;
             let body = self.parse_expr()?;
@@ -1934,6 +1948,18 @@ mod tests {
         } else {
             panic!("expected fun");
         }
+    }
+
+    #[test]
+    fn test_fun_clauses_must_agree_on_arity() {
+        assert_eq!(
+            parse_err("fun f 0 = 1 | f n _ = n"),
+            "clauses of 'f' take different numbers of arguments: 1 and 2"
+        );
+        assert_eq!(
+            parse_err("fun f 0 0 = 1 | f n = n"),
+            "clauses of 'f' take different numbers of arguments: 2 and 1"
+        );
     }
 
     #[test]
