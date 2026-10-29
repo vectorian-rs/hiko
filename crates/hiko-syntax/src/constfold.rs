@@ -30,7 +30,6 @@ fn fold_decl(decl: Decl) -> Decl {
             locals.into_iter().map(fold_decl).collect(),
             body.into_iter().map(fold_decl).collect(),
         ),
-        DeclKind::Signature(sig) => DeclKind::Signature(sig),
         DeclKind::Structure {
             name,
             signature,
@@ -42,16 +41,7 @@ fn fold_decl(decl: Decl) -> Decl {
             opaque,
             decls: decls.into_iter().map(fold_decl).collect(),
         },
-        DeclKind::AbstractType(dt) => DeclKind::AbstractType(dt),
-        DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        } => DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        },
+        // No expressions inside.
         other => other,
     };
     Decl { kind, span }

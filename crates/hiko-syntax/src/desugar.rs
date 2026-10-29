@@ -197,13 +197,13 @@ fn collect_decl_exports(
                 collect_decl_exports(decl, scope, module_path, interner, hide_exports);
             }
         }
-        DeclKind::Signature(_) => {}
-        DeclKind::Import(_) => {}
-        DeclKind::ImportWithNames(_, _) => {}
-        DeclKind::Use(_) => {}
-        DeclKind::Structure { .. } => {}
-        DeclKind::AbstractType(_) => {}
-        DeclKind::ExportVal { .. } => {}
+        DeclKind::Signature(_)
+        | DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::Structure { .. }
+        | DeclKind::AbstractType(_)
+        | DeclKind::ExportVal { .. } => {}
         DeclKind::Effect(sym, _) => {
             scope.effects.insert(
                 *sym,
@@ -418,35 +418,15 @@ fn rename_module_decl(
                 span: decl.span,
             }]
         }
-        DeclKind::Import(name) => vec![Decl {
-            kind: DeclKind::Import(name),
-            span: decl.span,
-        }],
-        DeclKind::ImportWithNames(name, names) => vec![Decl {
-            kind: DeclKind::ImportWithNames(name, names),
-            span: decl.span,
-        }],
-        DeclKind::Use(path) => vec![Decl {
-            kind: DeclKind::Use(path),
+        kind @ (DeclKind::Import(_)
+        | DeclKind::ImportWithNames(_, _)
+        | DeclKind::Use(_)
+        | DeclKind::AbstractType(_)
+        | DeclKind::ExportVal { .. }) => vec![Decl {
+            kind,
             span: decl.span,
         }],
         DeclKind::Signature(_) => vec![],
-        DeclKind::AbstractType(dt) => vec![Decl {
-            kind: DeclKind::AbstractType(dt),
-            span: decl.span,
-        }],
-        DeclKind::ExportVal {
-            public_name,
-            internal_name,
-            ty,
-        } => vec![Decl {
-            kind: DeclKind::ExportVal {
-                public_name,
-                internal_name,
-                ty,
-            },
-            span: decl.span,
-        }],
         DeclKind::Effect(sym, ty) => vec![Decl {
             kind: DeclKind::Effect(
                 if export_names || module_hidden {

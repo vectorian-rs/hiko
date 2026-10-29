@@ -1537,7 +1537,6 @@ mod tests {
         parser.parse_program().expect("parse error")
     }
 
-    #[allow(dead_code)]
     fn parse_err(input: &str) -> String {
         let mut lexer = Lexer::new(input, 0);
         let tokens = lexer.tokenize().expect("lex error");
