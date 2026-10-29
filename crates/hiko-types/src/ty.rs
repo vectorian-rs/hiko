@@ -9,6 +9,26 @@ pub enum Type {
     Tuple(Vec<Type>),
 }
 
+/// Primitive types as `(surface name, internal constructor name)`.
+///
+/// Source programs spell primitives in lowercase; the type checker
+/// represents them as `Type::Con` with the capitalized internal name.
+pub const PRIMITIVE_TYPES: &[(&str, &str)] = &[
+    ("int", "Int"),
+    ("float", "Float"),
+    ("word", "Word"),
+    ("bool", "Bool"),
+    ("string", "String"),
+    ("char", "Char"),
+    ("unit", "Unit"),
+    ("bytes", "Bytes"),
+    ("rng", "Rng"),
+    ("aws_config", "AwsConfig"),
+    ("aws_s3_client", "AwsS3Client"),
+    ("aws_sqs_client", "AwsSqsClient"),
+    ("pid", "Pid"),
+];
+
 #[derive(Debug, Clone)]
 pub struct Scheme {
     pub vars: Vec<u32>,
@@ -59,6 +79,22 @@ impl Type {
         Type::App("list".into(), vec![elem])
     }
 
+    /// Resolve a primitive type by its surface (lowercase) name.
+    pub fn primitive(surface_name: &str) -> Option<Type> {
+        PRIMITIVE_TYPES
+            .iter()
+            .find(|(surface, _)| *surface == surface_name)
+            .map(|(_, internal)| Type::Con((*internal).into()))
+    }
+
+    /// The surface name of a primitive, given its internal constructor name.
+    pub fn primitive_surface_name(internal_name: &str) -> Option<&'static str> {
+        PRIMITIVE_TYPES
+            .iter()
+            .find(|(_, internal)| *internal == internal_name)
+            .map(|(surface, _)| *surface)
+    }
+
     pub fn arrow(from: Type, to: Type) -> Type {
         Type::Arrow(Box::new(from), Box::new(to))
     }
@@ -82,22 +118,7 @@ impl Type {
     }
 
     fn display_name(name: &str) -> &str {
-        match name {
-            "Int" => "int",
-            "Float" => "float",
-            "Word" => "word",
-            "Bool" => "bool",
-            "String" => "string",
-            "Char" => "char",
-            "Unit" => "unit",
-            "Bytes" => "bytes",
-            "Rng" => "rng",
-            "AwsConfig" => "aws_config",
-            "AwsS3Client" => "aws_s3_client",
-            "AwsSqsClient" => "aws_sqs_client",
-            "Pid" => "pid",
-            _ => name,
-        }
+        Type::primitive_surface_name(name).unwrap_or(name)
     }
 
     fn collect_free_vars(&self, vars: &mut Vec<u32>) {

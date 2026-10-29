@@ -7,22 +7,6 @@ use hiko_syntax::span::Span;
 use crate::exhaustive::{self, TypeInfo};
 use crate::ty::{Scheme, Type};
 
-const UPPERCASE_PRIMITIVE_ALIASES: &[(&str, &str)] = &[
-    ("Int", "int"),
-    ("Float", "float"),
-    ("Word", "word"),
-    ("Bool", "bool"),
-    ("String", "string"),
-    ("Char", "char"),
-    ("Unit", "unit"),
-    ("Bytes", "bytes"),
-    ("Rng", "rng"),
-    ("AwsConfig", "aws_config"),
-    ("AwsS3Client", "aws_s3_client"),
-    ("AwsSqsClient", "aws_sqs_client"),
-    ("Pid", "pid"),
-];
-
 // ── Errors ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -149,22 +133,7 @@ impl<'a> BuiltinTypeParser<'a> {
             return Ok(Type::Var(var));
         }
         let ident = self.ident()?;
-        match ident.as_str() {
-            "int" => Ok(Type::int()),
-            "float" => Ok(Type::float()),
-            "word" => Ok(Type::word()),
-            "bool" => Ok(Type::bool()),
-            "string" => Ok(Type::string()),
-            "char" => Ok(Type::char()),
-            "unit" => Ok(Type::unit()),
-            "bytes" => Ok(Type::bytes()),
-            "rng" => Ok(Type::rng()),
-            "aws_config" => Ok(Type::aws_config()),
-            "aws_s3_client" => Ok(Type::aws_s3_client()),
-            "aws_sqs_client" => Ok(Type::aws_sqs_client()),
-            "pid" => Ok(Type::pid()),
-            other => Err(format!("unknown type constructor '{other}")),
-        }
+        Type::primitive(&ident).ok_or_else(|| format!("unknown type constructor '{ident}"))
     }
 
     fn ident(&mut self) -> Result<String, String> {
@@ -1216,27 +1185,10 @@ impl InferCtx {
         match &ty_expr.kind {
             TypeExprKind::Named(sym) => {
                 let name = self.interner.resolve(*sym);
-                // Check built-in types
-                match name {
-                    "int" => return Ok(Type::int()),
-                    "float" => return Ok(Type::float()),
-                    "word" => return Ok(Type::word()),
-                    "bool" => return Ok(Type::bool()),
-                    "string" => return Ok(Type::string()),
-                    "char" => return Ok(Type::char()),
-                    "unit" => return Ok(Type::unit()),
-                    "bytes" => return Ok(Type::bytes()),
-                    "rng" => return Ok(Type::rng()),
-                    "aws_config" => return Ok(Type::aws_config()),
-                    "aws_s3_client" => return Ok(Type::aws_s3_client()),
-                    "aws_sqs_client" => return Ok(Type::aws_sqs_client()),
-                    "pid" => return Ok(Type::pid()),
-                    _ => {}
+                if let Some(ty) = Type::primitive(name) {
+                    return Ok(ty);
                 }
-                if let Some((_, lowercase)) = UPPERCASE_PRIMITIVE_ALIASES
-                    .iter()
-                    .find(|(uppercase, _)| *uppercase == name)
-                {
+                if let Some(lowercase) = Type::primitive_surface_name(name) {
                     return Err(self.err(
                         &format!(
                             "primitive type '{name}' is no longer supported; use '{lowercase}'"
