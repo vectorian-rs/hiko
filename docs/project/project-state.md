@@ -336,7 +336,6 @@ been taken.
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `README.md`                                              | Calls effect handlers "shallow" (lines 99 and 254). The implementation and `effects.md` say deep.                                        |
 | `README.md`                                              | Builtin table lists `http_get : string -> string`. The real builtin returns a status, headers, and body tuple.                           |
-| `docs/architecture/system.md`                            | Headings say "Opcodes (57)" and "Builtins (74)". There are 71 opcodes. Marked as a non-authoritative snapshot, but the counts are stale. |
 | `docs/architecture/runtime.md`                           | Describes one-shot continuations for I/O only. Local continuations are multi-shot, which is not documented anywhere.                     |
 | `docs/language/modules.md`                               | "What Is Next" lists a configurable cache location. Check against the current loader before keeping it.                                  |
 | `docs/verification/verification-status-20260428.md`      | Six months old. Several items it lists as gaps (local-slot checks) are now done per `verification.md`.                                   |
@@ -374,6 +373,6 @@ been taken.
 5. Decide on the threaded runtime and structured concurrency.
 6. Make `json`, `regex`, `hash`, and `date` non-default features.
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.
-8. Fix the README and `system.md` inconsistencies listed above.
+8. Fix the README inconsistencies listed above.
 9. Add fuzz targets for the parser, type checker, verifier, and policy parser.
 10. Start the effects research track with question 1 (one-shot or multi-shot).

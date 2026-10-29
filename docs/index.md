@@ -48,8 +48,7 @@ Review snapshot: 2026-05-26.
 1. [architecture/runtime.md](architecture/runtime.md)
 2. [architecture/vm.md](architecture/vm.md)
 3. [architecture/rust-memory-layout.md](architecture/rust-memory-layout.md) for hot data structures
-4. [verification/verification.md](verification/verification.md)
-5. [verification/verification-tla.md](verification/verification-tla.md) for formal-model detail
+4. [verification/verification.md](verification/verification.md) for verifier and formal-model detail
 
 ### Builtin, capability, or run-config work
 
@@ -64,13 +63,11 @@ Review snapshot: 2026-05-26.
 1. [verification/verification.md](verification/verification.md)
 2. [architecture/runtime.md](architecture/runtime.md)
 3. [architecture/vm.md](architecture/vm.md)
-4. [verification/verification-tla.md](verification/verification-tla.md)
-5. Formal models under [`../specs/`](../specs/) when implementation behavior and prose disagree
+4. Formal models under [`../specs/`](../specs/) when implementation behavior and prose disagree
 
 ## Current documentation gaps
 
 - There is no complete formal language definition yet. [`language/definition.md`](language/definition.md) is the short first draft and entry point; see [project/how-to-document-hiko.md](project/how-to-document-hiko.md) for the documentation strategy.
-- [architecture/system.md](architecture/system.md) is a useful architecture snapshot, but its exact counts should be treated as non-authoritative.
 - [project/bootstrap.md](project/bootstrap.md), [architecture/structured-concurrency.md](architecture/structured-concurrency.md), and dated verification snapshots are historical context, not primary implementation contracts.
 - [builtins/parquet.md](builtins/parquet.md) and [`rnd/`](rnd/index.md) are proposal/R&D material unless implementation work explicitly says otherwise.
 

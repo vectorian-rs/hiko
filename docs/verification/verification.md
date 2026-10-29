@@ -131,6 +131,12 @@ Current TLA+ files:
     deadlock detection.
   - This is the current formal source of truth for user-visible process
     lifecycle semantics.
+  - `ProcessLifecycleLive.cfg` checks `CancelRequestedEventuallySettles` and
+    `IoEventuallyCompletes`.
+  - Terminal children stay in `procs` with explicit join state instead of
+    mirroring the runtime's tombstones: the model describes what a parent can
+    observe, not how the runtime stores it. Mailbox send/receive is not
+    modeled; that surface no longer exists.
 
 - [`specs/tla/ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla)
   with [`ThreadedSchedulerImpl.cfg`](../../specs/tla/ThreadedSchedulerImpl.cfg)
@@ -138,9 +144,14 @@ Current TLA+ files:
   - Lower-level worker/scheduler implementation model.
   - Covers queue behavior, worker ownership, stale queue entries, join waiters,
     I/O waiters, and shutdown/deadlock structure.
-  - This is still a partial model of the current threaded runtime. Recent Rust
-    hardening around stale `wait_any`, join, and I/O waiter registrations should
-    eventually be reflected more directly here.
+  - This is still a partial model of the current threaded runtime. It does not
+    model `wait_any`, `AwaitKind::Result`, scope cancellation details,
+    `child_parents`, `pending_cancels`, tombstones, or the publish/recheck
+    TOCTOU mitigation in `threaded.rs`. Recent Rust hardening around stale
+    `wait_any`, join, and I/O waiter registrations should eventually be
+    reflected here.
+  - Liveness runs depend on the checker: not every local `tla` CLI supports
+    the `WF`-based path of `ThreadedSchedulerImplLive.cfg` the same way.
 
 - [`specs/tla/CancelIoRace.tla`](../../specs/tla/CancelIoRace.tla) with
   [`CancelIoRace.cfg`](../../specs/tla/CancelIoRace.cfg) and
@@ -163,6 +174,8 @@ Current TLA+ files:
   - Covers bounded Int32/Word32 conversion decisions, add variant invariants,
     wrapping/saturating boundary values, and symbolic Float32 rounding
     invariants.
+  - Does not execute Rust's `checked_*`, `wrapping_*`, `saturating_*`, or
+    IEEE 754 operations; Rust unit tests cover those against the real code.
 
 - [`specs/tla/broken/WaitAnyNotifierBroken.tla`](../../specs/tla/broken/WaitAnyNotifierBroken.tla)
   with [`WaitAnyNotifierBroken.cfg`](../../specs/tla/broken/WaitAnyNotifierBroken.cfg)
@@ -201,6 +214,12 @@ order:
 2. maintained docs in `docs/`,
 3. TLA+ specs in `specs/tla`,
 4. Quint ports in `specs/quint`.
+
+Reading order for runtime semantics: `ProcessLifecycle.tla` for meaning, then
+`ThreadedSchedulerImpl.tla` for worker/scheduler structure, then
+[`runtime.rs`](../../crates/hiko-vm/src/runtime.rs) and
+[`threaded.rs`](../../crates/hiko-vm/src/threaded.rs) for what the models do
+not cover yet.
 
 ## What is covered today
 
