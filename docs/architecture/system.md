@@ -15,7 +15,7 @@ stale.
 | `hiko-vm` | Bytecode verifier, stack VM, GC, builtins, `VMBuilder`, run config, single-threaded and threaded runtimes |
 | `hiko-builtin-meta` | Builtin names, type signatures, and domain metadata shared by the type checker, compiler, and VM |
 | `hiko-common` | Shared raw helpers (hashing, HTTP, and similar) used by the VM and CLI |
-| `hiko-cli` | `hiko` command: `run`, `check`, `build-vm`, `inspect-work`, `lock` |
+| `hiko-cli` | `hiko` command: `run`, `check`, `fmt`, `lock`, `hash`, `inspect-work`, `build-vm` |
 | `hiko-docgen` | Static documentation generator for published Hiko libraries |
 | `hiko-harness` | Agentic coding tool; runs `tools/*.hml` scripts through `hiko-cli` under a policy |
 | `tree-sitter-hiko` | Tree-sitter grammar for editors |

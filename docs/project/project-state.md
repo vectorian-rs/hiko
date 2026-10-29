@@ -303,7 +303,7 @@ been taken.
 | ------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------- |
 | Single-threaded runtime                                       | Core            |                                                                                                      |
 | Threaded runtime (`threaded.rs`, about 2,100 lines)           | Decision needed | Most of the TLA+ work targets it. It is valuable for the isolation story but large for a minimal VM. |
-| Structured concurrency (`spawn`, `await`, `wait_any`, cancel) | Decision needed | Tied to the whitepaper thesis.                                                                       |
+| Structured concurrency (`spawn`, `await`, `wait_any`, cancel) | Decision needed | Core of the isolated-process design.                                                                 |
 
 ### Libraries (`libraries/`)
 
