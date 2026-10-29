@@ -348,4 +348,20 @@ mod tests {
             "fun walk dir =\n  let\n    val entries = list_dir dir\n  in\n    walk_entries dir entries\n  end\nand walk_entries dir entries =\n  case entries of\n      [] => ()\n    | name :: rest => walk_entries dir rest\n"
         );
     }
+
+    #[test]
+    fn empty_sections_keep_keywords_on_separate_lines() {
+        for (source, expected) in [
+            ("structure S = struct end\n", "structure S = struct\nend\n"),
+            ("local in val b = 2 end\n", "local\nin\n  val b = 2\nend\n"),
+            ("local val a = 1 in end\n", "local\n  val a = 1\nin\nend\n"),
+            (
+                "structure S = struct\n  (* only a comment *)\nend\n",
+                "structure S = struct\n  (* only a comment *)\nend\n",
+            ),
+        ] {
+            assert_eq!(fmt(source), expected, "{source:?}");
+            assert_eq!(fmt(expected), expected, "not idempotent: {expected:?}");
+        }
+    }
 }

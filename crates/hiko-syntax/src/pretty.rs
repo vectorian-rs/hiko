@@ -280,7 +280,7 @@ fn pretty_decl(
                 decl.span.start,
                 decl.span.end,
             );
-            if !locals.is_empty() {
+            if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -294,7 +294,7 @@ fn pretty_decl(
                 decl.span.start,
                 decl.span.end,
             );
-            if !body.is_empty() {
+            if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
@@ -366,7 +366,7 @@ fn pretty_decl(
                 decl.span.start,
                 decl.span.end,
             );
-            if !decls.is_empty() {
+            if !buf.ends_with('\n') {
                 buf.push('\n');
             }
             write_indent(buf, indent);
