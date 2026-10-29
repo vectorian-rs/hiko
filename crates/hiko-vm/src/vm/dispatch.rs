@@ -40,18 +40,21 @@ impl VM {
                         .chunk_for_checked(proto_idx)?
                         .constants
                         .get(idx)
-                        .cloned()
                         .ok_or_else(|| RuntimeError {
                             message: format!("Const: constant index {idx} out of bounds"),
                         })?;
                     let val = match constant {
-                        Constant::Int(n) => Value::Int(n),
-                        Constant::Float(f) => Value::Float(f),
+                        Constant::Int(n) => Value::Int(*n),
+                        Constant::Float(f) => Value::Float(*f),
+                        Constant::Char(c) => Value::Char(*c),
+                        Constant::Word(w) => Value::Word(*w),
                         Constant::String(s) => {
                             let key = (proto_idx, idx);
                             if let Some(&cached) = self.string_cache.get(&key) {
                                 Value::Heap(cached)
                             } else {
+                                // Only clone the constant on the first load.
+                                let s = s.clone();
                                 let v = self.alloc_string(s)?;
                                 if let Value::Heap(r) = v {
                                     self.string_cache.insert(key, r);
@@ -59,8 +62,6 @@ impl VM {
                                 v
                             }
                         }
-                        Constant::Char(c) => Value::Char(c),
-                        Constant::Word(w) => Value::Word(w),
                     };
                     self.push(val)?;
                 }
