@@ -1,4 +1,4 @@
-ww# Hiko Runtime: Direct-Style Async with Isolated Processes
+# Hiko Runtime: Direct-Style Async with Isolated Processes
 
 ## Overview
 

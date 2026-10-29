@@ -23,8 +23,8 @@ The intended rule is:
 Algebraic effects should not replace this model for ordinary recoverable
 failures. The preferred direction is: effects express required capabilities or
 host/provider operations, while those operations return `Result` when failure is
-an expected outcome. See [`effects.md`](effects.md) for the capability-oriented
-effect design direction.
+an expected outcome. See [`effects-design.md`](../rnd/effects-design.md) for the
+capability-oriented effect design direction.
 
 ## Library-Owned Error Types
 

@@ -160,7 +160,7 @@ stable domains.
 Recommended ownership:
 
 | Public Hiko domain | Category | Notes |
-| | - | - |
+|---|---|---|
 | `Std.String` | pure core | String processing and formatting helpers. |
 | `Std.Bytes` | pure core | Byte buffers and UTF-8 conversion. |
 | `Std.Json` | pure core | JSON ADT helpers, parse, serialize, object/array helpers. |
@@ -404,12 +404,14 @@ cargo clippy -p hiko-vm --no-default-features -- -D warnings
 
 ## Directory Move Plan
 
-The next directory hierarchy refactor should be mechanical:
+Status: partly done.
 
-1. Create `builtins/std/` for standard-library domains.
-2. Move pure std and host std domains under `builtins/std/` according to this
-   document.
-3. Create algorithm/provider directories only when needed, such as
-   `builtins/hash/blake3.rs` or `builtins/aws/s3.rs`.
-4. Preserve existing feature names unless a new API requires a split.
-5. Keep root registration behavior unchanged except for module path updates.
+- Done: provider and algorithm directories exist for `hash/` (`blake3.rs`),
+  `http/` (`client.rs`), and `aws/` (`config.rs`, `s3.rs`, `sqs.rs`).
+- Not done: `builtins/std/` does not exist. Standard-library domains such as
+  `string.rs`, `bytes.rs`, `json.rs`, `time.rs`, and `filesystem.rs` still sit
+  directly under `builtins/`.
+
+The remaining move is mechanical: create `builtins/std/`, move the std domains
+into it, keep feature names, and change only module paths in root
+registration.
