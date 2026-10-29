@@ -482,6 +482,14 @@ impl VM {
                     let mut clauses = Vec::with_capacity(n_clauses);
                     for _ in 0..n_clauses {
                         let effect_tag = self.read_u16()?;
+                        let flags = self.read_u8()?;
+                        if flags & !HANDLER_CLAUSE_RESUMES != 0 {
+                            return Err(RuntimeError {
+                                message: format!(
+                                    "InstallHandler clause: invalid flags {flags:#04x}"
+                                ),
+                            });
+                        }
                         let offset = self.read_i16()?;
                         let abs_ip = self.checked_relative_ip(
                             self.frames[fi].proto_idx,
@@ -489,7 +497,11 @@ impl VM {
                             offset,
                             "InstallHandler clause",
                         )?;
-                        clauses.push((effect_tag, abs_ip));
+                        clauses.push(HandlerClause {
+                            effect_tag,
+                            ip: abs_ip,
+                            resumes: flags & HANDLER_CLAUSE_RESUMES != 0,
+                        });
                     }
                     self.handlers.push(HandlerFrame {
                         call_frame_idx: fi,
@@ -512,13 +524,14 @@ impl VM {
                         self.handlers.iter().enumerate().rev().find_map(|(hi, h)| {
                             h.clauses
                                 .iter()
-                                .find(|(t, _)| *t == effect_tag)
-                                .map(|(_, ip)| (hi, *ip))
+                                .find(|c| c.effect_tag == effect_tag)
+                                .map(|c| (hi, *c))
                         });
 
-                    let (h_idx, clause_ip) = user_handler.ok_or_else(|| RuntimeError {
+                    let (h_idx, clause) = user_handler.ok_or_else(|| RuntimeError {
                         message: format!("unhandled effect (tag {effect_tag})"),
                     })?;
+                    let clause_ip = clause.ip;
 
                     // The verifier does not prove handler install/remove
                     // balance, so a handler may outlive the frame or stack

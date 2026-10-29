@@ -15,12 +15,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
-use hiko_compile::op::Op;
+use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op};
 
 use crate::heap::Heap;
 use crate::process::ProcessFailure;
 use crate::value::{
-    BuiltinEntry, ContinuationData, Fields, GcRef, HeapObject, SavedFrame, SavedHandler, Value,
+    BuiltinEntry, ContinuationData, Fields, GcRef, HandlerClause, HeapObject, SavedFrame,
+    SavedHandler, Value,
 };
 use crate::verify::{VerificationError, verify_program};
 
@@ -80,7 +81,7 @@ struct CallFrame {
 struct HandlerFrame {
     call_frame_idx: usize,
     stack_base: usize,
-    clauses: Vec<(u16, usize)>, // (effect_tag, absolute_ip)
+    clauses: Vec<HandlerClause>,
     proto_idx: usize,
     captures: Arc<[Value]>,
 }
@@ -1150,6 +1151,7 @@ mod tests {
                     0,
                     0,
                     0,
+                    HANDLER_CLAUSE_RESUMES,
                     0,
                     0,
                     Op::Unit as u8,

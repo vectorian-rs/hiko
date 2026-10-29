@@ -15,7 +15,7 @@ use hiko_builtin_meta::{BuiltinSurface, builtin_meta, core_builtin_names};
 use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
 use hiko_compile::compiler::{CompileError, Compiler};
-use hiko_compile::op::Op;
+use hiko_compile::op::{HANDLER_CLAUSE_BYTES, Op};
 use hiko_syntax::format::{FormatError, format_source};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
@@ -628,7 +628,7 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         }
         Op::InstallHandler => {
             let n_clauses = read_u16(code, ip)? as usize;
-            skip_bytes(code, ip, n_clauses * 4)?;
+            skip_bytes(code, ip, n_clauses * HANDLER_CLAUSE_BYTES)?;
         }
         Op::Unit
         | Op::True
