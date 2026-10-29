@@ -351,65 +351,62 @@ fn child_failing_during_io_is_observed_by_awaiters() {
     }
 }
 
+/// Spawn and await 100,000 children in sequence, alternating raw and
+/// Result awaits.
 const SPAWN_AWAIT_LOOP: &str = "\
-    import __Builtin.Process\n\
     fun loop n =\n\
       if n = 0 then ()\n\
       else\n\
         let\n\
           val c = spawn (fn () => n)\n\
-          val _ =\n\
-            if n mod 2 = 0 then await_process c\n\
-            else (case BuiltinProcess.await_result_raw c of BuiltinProcess.Ok v => v | _ => 0)\n\
+          val _ = if n mod 2 = 0 then await_process c else let val _ = await_process_result c in 0 end\n\
         in\n\
           loop (n - 1)\n\
         end\n\
     val _ = loop 100000\n\
     val _ = println \"done\"\n";
 
+/// A VM with only the builtins `SPAWN_AWAIT_LOOP` uses. Spawning copies the
+/// parent's builtin table, so this keeps 100,000 spawns cheap in debug builds.
+fn spawn_await_loop_vm() -> crate::vm::VM {
+    crate::builder::VMBuilder::new(compile(SPAWN_AWAIT_LOOP))
+        .register_builtin_name("println")
+        .register_builtin_name("spawn")
+        .register_builtin_name("await_process")
+        .register_builtin_name("await_process_result")
+        .build()
+}
+
+fn assert_spawn_await_loop_report(report: &Report, max_tombstones: usize, label: &str) {
+    assert_eq!(report.output, vec!["done\n"], "{label}: {report:?}");
+    assert_eq!(report.status, "Done", "{label}");
+    assert!(report.leftovers.is_empty(), "{label}: {report:?}");
+    assert!(
+        max_tombstones < 10,
+        "{label}: max tombstones {max_tombstones}"
+    );
+}
+
 #[test]
 fn spawn_await_loop_keeps_tombstones_bounded_single_threaded() {
     let mut runtime = Runtime::new();
-    let pid = runtime.spawn_root(compile(SPAWN_AWAIT_LOOP));
+    let pid = runtime.spawn_root_vm(spawn_await_loop_vm());
     let max_tombstones = runtime.run_tracking_max_tombstones().unwrap();
     let report = runtime.lifecycle_report(pid);
-    assert_eq!(report.output, vec!["done\n"]);
-    assert_eq!(report.status, "Done");
-    assert!(report.leftovers.is_empty(), "{report:?}");
-    assert!(max_tombstones < 10, "max tombstones {max_tombstones}");
+    assert_spawn_await_loop_report(&report, max_tombstones, "single-threaded");
 }
 
 #[test]
 fn spawn_await_loop_keeps_tombstones_bounded_threaded() {
     for workers in [1, 4] {
         let runtime = ThreadedRuntime::new(workers);
-        let pid = runtime.spawn_root(compile(SPAWN_AWAIT_LOOP));
-        // Sample the tombstone count while the loop runs. Sampling can only
-        // under-report the true maximum; the final count is exact.
-        let probe = runtime.tombstone_probe();
-        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let sampler = {
-            let done = Arc::clone(&done);
-            std::thread::spawn(move || {
-                let mut max = 0;
-                while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    max = max.max(probe());
-                    std::thread::yield_now();
-                }
-                max
-            })
-        };
+        let pid = runtime.spawn_root_vm(spawn_await_loop_vm());
         runtime.run_to_completion().unwrap();
-        done.store(true, std::sync::atomic::Ordering::Relaxed);
-        let max_tombstones = sampler.join().unwrap();
-
         let report = runtime.lifecycle_report(pid);
-        assert_eq!(report.output, vec!["done\n"]);
-        assert_eq!(report.status, "Done");
-        assert!(report.leftovers.is_empty(), "{report:?}");
-        assert!(
-            max_tombstones < 10,
-            "{workers} worker(s): max tombstones {max_tombstones}"
+        assert_spawn_await_loop_report(
+            &report,
+            runtime.max_tombstones(),
+            &format!("{workers} worker(s)"),
         );
     }
 }

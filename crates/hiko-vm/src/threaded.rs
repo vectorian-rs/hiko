@@ -69,6 +69,9 @@ struct ProcessTable {
     #[allow(dead_code)] // scaffolding for structured concurrency
     scopes: DashMap<ScopeId, Scope>,
     next_pid: AtomicU64,
+    /// Largest tombstone count ever observed after a tombstone insert.
+    #[cfg(test)]
+    max_tombstones: AtomicUsize,
 }
 
 impl ProcessTable {
@@ -83,6 +86,8 @@ impl ProcessTable {
             io_waiters: DashMap::new(),
             scopes: DashMap::new(),
             next_pid: AtomicU64::new(1),
+            #[cfg(test)]
+            max_tombstones: AtomicUsize::new(0),
         }
     }
 
@@ -503,11 +508,9 @@ impl ThreadedRuntime {
         }
     }
 
-    /// A probe that reads the tombstone count from another thread while the
-    /// runtime runs.
-    pub(crate) fn tombstone_probe(&self) -> impl Fn() -> usize + Send + 'static {
-        let table = Arc::clone(&self.table);
-        move || table.tombstones.len()
+    /// The largest number of tombstones held at any point so far.
+    pub(crate) fn max_tombstones(&self) -> usize {
+        self.table.max_tombstones.load(Ordering::SeqCst)
     }
 }
 
@@ -594,6 +597,10 @@ fn finish_process(
             cx.table
                 .tombstones
                 .insert(pid, ChildRecord { parent, outcome });
+            #[cfg(test)]
+            cx.table
+                .max_tombstones
+                .fetch_max(cx.table.tombstones.len(), Ordering::SeqCst);
             if !cx.table.live.contains(&parent) {
                 cx.table.tombstones.remove(&pid);
             }
