@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use hiko_syntax::ast::*;
@@ -29,6 +30,11 @@ pub struct InferCtx {
     subst: HashMap<u32, Type>,
     next_var: u32,
     scopes: Vec<HashMap<String, Scheme>>,
+    /// Per scope, the bindings whose type may still have free variables
+    /// other than its own quantified ones. Once a binding's type has none,
+    /// substitution cannot change it, so `free_vars_in_env` drops it from
+    /// this set and never walks it again.
+    open: RefCell<Vec<HashSet<String>>>,
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     type_aliases: HashMap<String, (Vec<u32>, Type)>,
@@ -48,7 +54,16 @@ pub struct InferCtx {
     pub expr_types: HashMap<hiko_syntax::span::Span, Type>,
     /// String interner for resolving symbols in the AST.
     pub interner: StringInterner,
+    /// Type nodes visited so far. See [`DEFAULT_MAX_TYPE_WORK`].
+    work: Cell<u64>,
+    max_work: u64,
 }
+
+/// Default for the number of type nodes inference may visit while checking
+/// one compilation. Type sizes can grow exponentially in program size
+/// (`val x1 = (x0, x0) val x2 = (x1, x1) ...`), so without a bound a small
+/// source file can stall the compiler.
+pub const DEFAULT_MAX_TYPE_WORK: u64 = 10_000_000;
 
 struct BuiltinTypeParser<'a> {
     chars: Vec<char>,
@@ -203,6 +218,7 @@ impl InferCtx {
             subst: HashMap::new(),
             next_var: 0,
             scopes: vec![HashMap::new()],
+            open: RefCell::new(vec![HashSet::new()]),
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -214,6 +230,8 @@ impl InferCtx {
             effect_sigs: HashMap::new(),
             expr_types: HashMap::new(),
             interner: StringInterner::new(),
+            work: Cell::new(0),
+            max_work: DEFAULT_MAX_TYPE_WORK,
         };
         ctx.type_arities.insert("list".into(), 1);
         ctx.bind_builtin_type_signatures();
@@ -257,9 +275,36 @@ impl InferCtx {
         Type::Var(v)
     }
 
+    // ── Work limit ───────────────────────────────────────────────────
+
+    pub fn set_max_type_work(&mut self, max_work: u64) {
+        self.max_work = max_work;
+    }
+
+    pub fn type_work(&self) -> u64 {
+        self.work.get()
+    }
+
+    fn work_exhausted(&self) -> bool {
+        self.work.get() > self.max_work
+    }
+
+    /// Count one visited type node. Returns false once the limit is passed;
+    /// callers then stop walking and return a placeholder. `infer_decl`
+    /// turns the exhausted budget into an error, so a placeholder never
+    /// reaches a successful result.
+    fn charge(&self) -> bool {
+        let used = self.work.get() + 1;
+        self.work.set(used);
+        used <= self.max_work
+    }
+
     // ── Substitution ─────────────────────────────────────────────────
 
     fn apply(&self, ty: &Type) -> Type {
+        if !self.charge() {
+            return Type::unit();
+        }
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.subst.get(v) {
@@ -273,6 +318,32 @@ impl InferCtx {
             Type::App(n, args) => {
                 Type::App(n.clone(), args.iter().map(|t| self.apply(t)).collect())
             }
+            Type::Con(_) => ty.clone(),
+        }
+    }
+
+    /// Replace type variables according to `mapping`, leaving others untouched.
+    fn substitute_vars(&self, ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
+        if !self.charge() {
+            return Type::unit();
+        }
+        match ty {
+            Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Arrow(a, b) => Type::arrow(
+                self.substitute_vars(a, mapping),
+                self.substitute_vars(b, mapping),
+            ),
+            Type::Tuple(ts) => Type::Tuple(
+                ts.iter()
+                    .map(|t| self.substitute_vars(t, mapping))
+                    .collect(),
+            ),
+            Type::App(n, args) => Type::App(
+                n.clone(),
+                args.iter()
+                    .map(|t| self.substitute_vars(t, mapping))
+                    .collect(),
+            ),
             Type::Con(_) => ty.clone(),
         }
     }
@@ -336,6 +407,9 @@ impl InferCtx {
     }
 
     fn occurs(&self, v: u32, ty: &Type) -> bool {
+        if !self.charge() {
+            return false;
+        }
         match ty {
             Type::Var(u) => {
                 if let Some(t) = self.subst.get(u) {
@@ -366,7 +440,7 @@ impl InferCtx {
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
         let ty = self.apply(&scheme.ty);
         let mapping: HashMap<u32, Type> = scheme.vars.iter().map(|&v| (v, self.fresh())).collect();
-        substitute_vars(&ty, &mapping)
+        self.substitute_vars(&ty, &mapping)
     }
 
     fn free_vars_in_env(&self, exclude_top_scope: bool) -> HashSet<u32> {
@@ -376,14 +450,19 @@ impl InferCtx {
         } else {
             self.scopes.len()
         };
-        for scope in &self.scopes[..limit] {
-            for scheme in scope.values() {
+        let mut open = self.open.borrow_mut();
+        for (scope, open) in self.scopes[..limit].iter().zip(open.iter_mut()) {
+            open.retain(|name| {
+                let scheme = &scope[name];
+                let mut has_free = false;
                 for v in self.apply(&scheme.ty).free_vars() {
                     if !scheme.vars.contains(&v) {
                         vars.insert(v);
+                        has_free = true;
                     }
                 }
-            }
+                has_free
+            });
         }
         // An effect's result type is one variable shared by every `perform`
         // and handler of that effect, so it is part of the environment and
@@ -406,15 +485,18 @@ impl InferCtx {
     }
 
     fn bind(&mut self, name: String, scheme: Scheme) {
+        self.open.get_mut().last_mut().unwrap().insert(name.clone());
         self.scopes.last_mut().unwrap().insert(name, scheme);
     }
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.open.get_mut().push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.open.get_mut().pop();
     }
 
     // ── Program inference ────────────────────────────────────────────
@@ -429,6 +511,21 @@ impl InferCtx {
     // ── Declaration inference ────────────────────────────────────────
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
+        let result = self.infer_decl_inner(decl);
+        if self.work_exhausted() {
+            return Err(self.err(
+                &format!(
+                    "type checking exceeded its work limit: max_type_work ({}); \
+                     the types in this declaration are too large",
+                    self.max_work
+                ),
+                decl.span,
+            ));
+        }
+        result
+    }
+
+    fn infer_decl_inner(&mut self, decl: &Decl) -> Result<(), TypeError> {
         match &decl.kind {
             DeclKind::Val(pat, expr) => {
                 let expr_ty = self.infer_expr(expr)?;
@@ -514,6 +611,7 @@ impl InferCtx {
                     self.infer_decl(d)?;
                 }
                 let exported = self.scopes.pop().unwrap();
+                self.open.get_mut().pop();
                 self.pop_scope(); // pop the locals scope
                 // re-bind exported names in the enclosing scope
                 for (name, scheme) in exported {
@@ -781,7 +879,7 @@ impl InferCtx {
             .iter()
             .map(|(tv, &v)| (v, Type::Con(tv.clone())))
             .collect();
-        let expected = substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
+        let expected = self.substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
         let env_vars = self.free_vars_in_env(false);
         let actual = self.instantiate(scheme);
         self.unify(&actual, &expected, span).map_err(|e| {
@@ -799,7 +897,7 @@ impl InferCtx {
             return Err(self.err(
                 &format!(
                     "value {name} is less polymorphic than its signature type {}",
-                    substitute_vars(spec_ty, &rigid)
+                    self.substitute_vars(spec_ty, &rigid)
                 ),
                 span,
             ));
@@ -836,7 +934,7 @@ impl InferCtx {
     fn named_type(&self, name: &str, args: Vec<Type>) -> Type {
         if let Some((params, body)) = self.type_aliases.get(name) {
             let mapping: HashMap<u32, Type> = params.iter().copied().zip(args).collect();
-            substitute_vars(body, &mapping)
+            self.substitute_vars(body, &mapping)
         } else if args.is_empty() {
             Type::Con(name.to_string())
         } else {
@@ -1340,7 +1438,7 @@ impl InferCtx {
                         .zip(resolved_args.iter())
                         .map(|(&v, arg)| (v, arg.clone()))
                         .collect();
-                    return Ok(substitute_vars(&body, &mapping));
+                    return Ok(self.substitute_vars(&body, &mapping));
                 }
                 // Check type constructor
                 if let Some(&arity) = self.type_arities.get(&name) {
@@ -1523,20 +1621,6 @@ fn mentions_rigid_var(ty: &Type) -> bool {
     }
 }
 
-/// Replace type variables according to `mapping`, leaving others untouched.
-fn substitute_vars(ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
-    match ty {
-        Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
-        Type::Arrow(a, b) => Type::arrow(substitute_vars(a, mapping), substitute_vars(b, mapping)),
-        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| substitute_vars(t, mapping)).collect()),
-        Type::App(n, args) => Type::App(
-            n.clone(),
-            args.iter().map(|t| substitute_vars(t, mapping)).collect(),
-        ),
-        Type::Con(_) => ty.clone(),
-    }
-}
-
 fn is_syntactic_value(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::IntLit(_)
@@ -1583,6 +1667,70 @@ mod tests {
         let mut ctx = InferCtx::new();
         ctx.interner = program.interner.clone();
         ctx.infer_program(&program).unwrap_err().message
+    }
+
+    /// `val x0 = 0 val x1 = (x0, x0) ...`: the type of `xn` has 2^n leaves.
+    fn doubling_tuples(n: usize) -> String {
+        let mut src = String::from("val x0 = 0\n");
+        for i in 1..=n {
+            src.push_str(&format!("val x{i} = (x{}, x{})\n", i - 1, i - 1));
+        }
+        src
+    }
+
+    #[test]
+    fn test_exponential_type_hits_the_work_limit() {
+        let start = std::time::Instant::now();
+        let msg = infer_err(&doubling_tuples(30));
+        assert!(
+            msg.contains("type checking exceeded its work limit: max_type_work (10000000)"),
+            "{msg}"
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_exponential_let_polymorphism_hits_the_work_limit() {
+        let mut src = String::from("fun f0 x = (x, x)\n");
+        for i in 1..10 {
+            src.push_str(&format!("fun f{i} x = f{} (f{} x)\n", i - 1, i - 1));
+        }
+        let msg = infer_err(&src);
+        assert!(msg.contains("exceeded its work limit"), "{msg}");
+    }
+
+    #[test]
+    fn test_type_work_limit_is_configurable() {
+        let tokens = Lexer::new(&doubling_tuples(8), 0)
+            .tokenize()
+            .expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let program = hiko_syntax::desugar::desugar_program(program);
+
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
+        ctx.infer_program(&program).expect("type error");
+        let used = ctx.type_work();
+
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
+        ctx.set_max_type_work(used - 1);
+        let msg = ctx.infer_program(&program).unwrap_err().message;
+        assert!(
+            msg.contains(&format!("max_type_work ({})", used - 1)),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn test_many_declarations_do_not_rescan_closed_bindings() {
+        // Generalizing used to walk every binding in scope, so work grew with
+        // the square of the number of declarations.
+        let src: String = (0..2000)
+            .map(|i| format!("fun f{i} x = (x, {i})\nval v{i} = f{i} \"s\"\n"))
+            .collect();
+        let ctx = infer(&src);
+        assert!(ctx.type_work() < 2_000_000, "{}", ctx.type_work());
     }
 
     #[test]
