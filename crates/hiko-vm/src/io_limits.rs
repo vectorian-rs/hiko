@@ -14,6 +14,7 @@ pub const DEFAULT_EXEC_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_MAX_HTTP_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_FILE_READ_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_EXEC_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+pub const DEFAULT_MAX_CONCURRENT_IO: u64 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IoLimits {
@@ -29,6 +30,10 @@ pub struct IoLimits {
     pub max_file_read_bytes: u64,
     /// Maximum bytes read from each of `exec`'s stdout and stderr.
     pub max_exec_output_bytes: u64,
+    /// Maximum async I/O requests one process tree (a root process and the
+    /// processes it spawns) has running at once. Further requests wait in the
+    /// queue, and their deadlines keep running.
+    pub max_concurrent_io: u64,
 }
 
 impl Default for IoLimits {
@@ -40,6 +45,7 @@ impl Default for IoLimits {
             max_http_response_bytes: DEFAULT_MAX_HTTP_RESPONSE_BYTES,
             max_file_read_bytes: DEFAULT_MAX_FILE_READ_BYTES,
             max_exec_output_bytes: DEFAULT_MAX_EXEC_OUTPUT_BYTES,
+            max_concurrent_io: DEFAULT_MAX_CONCURRENT_IO,
         }
     }
 }

@@ -31,6 +31,7 @@ exec_timeout_ms = 30_000                # wall clock; kills the process group
 max_http_response_bytes = 67_108_864    # one response body
 max_file_read_bytes = 67_108_864        # one file read
 max_exec_output_bytes = 16_777_216      # each of stdout and stderr
+max_concurrent_io = 32                  # async I/O running at once per process tree
 
 # Opaque native Rust resources, such as AWS SDK config/client handles.
 [limits.host_resources]
