@@ -1251,6 +1251,10 @@ fn remove_waiter(waiters: &DashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: P
     });
 }
 
+#[cfg(all(test, loom))]
+#[path = "threaded_loom.rs"]
+mod loom_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
