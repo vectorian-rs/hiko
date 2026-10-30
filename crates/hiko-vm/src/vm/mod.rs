@@ -28,6 +28,7 @@ use crate::value::{
 use crate::verify::{VerificationError, verify_program};
 
 mod builtins;
+mod child_globals;
 mod dispatch;
 mod gc;
 mod host;
@@ -103,6 +104,12 @@ pub struct VM {
     frames: Vec<CallFrame>,
     globals: Vec<Value>,
     global_names: HashMap<String, usize>,
+    /// Globals this VM defined with `SetGlobal`, by slot.
+    defined_globals: HashMap<usize, child_globals::DefinedGlobal>,
+    /// Globals inherited from the parent process, loaded on first use.
+    inherited_globals: Option<Arc<child_globals::GlobalSnapshot>>,
+    /// Snapshot for the next spawned child; cleared when a global is defined.
+    spawn_snapshot: Option<Arc<child_globals::GlobalSnapshot>>,
     protos: Arc<[FunctionProto]>,
     main_chunk: Arc<Chunk>,
     main_n_locals: u16,
@@ -263,6 +270,9 @@ impl VM {
             frames: Vec::with_capacity(16),
             globals: Vec::with_capacity(program.main.constants.len()),
             global_names: HashMap::new(),
+            defined_globals: HashMap::new(),
+            inherited_globals: None,
+            spawn_snapshot: None,
             effect_metadata: program.effects,
             protos: program.functions,
             main_n_locals: program.main_n_locals,

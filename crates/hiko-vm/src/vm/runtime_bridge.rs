@@ -184,6 +184,9 @@ impl VM {
     /// - `O(b)` builtin/global registration where `b = builtins.len()`
     /// - `O(e + f + h)` capability cloning for exec/fs/http allowlists
     /// - `O(1)` for fresh execution state (`Heap`, stack, frames, handlers)
+    /// - `O(1)` to share the parent's top-level snapshot (built by the spawn
+    ///   builtin; see `child_globals`), plus `O(r)` for the `r` top-level
+    ///   bindings that rebind a builtin name
     /// - no Hiko heap objects are allocated here; heap objects appear later
     ///   when captures are deserialized and the closure call is installed
     ///
@@ -197,6 +200,7 @@ impl VM {
         for entry in &self.builtins {
             child.register_builtin(entry.name.clone(), entry.func);
         }
+        child.inherit_globals(self.spawn_snapshot.clone());
         // `exec` permissions are immutable capability data, so a child can
         // inherit the parent's resolved allowlist directly instead of
         // re-resolving every command through PATH on each spawn.

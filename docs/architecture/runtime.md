@@ -78,12 +78,41 @@ enum SendableValue {
     Tuple(Vec<SendableValue>),
     List(Vec<SendableValue>),
     Data { tag: u16, fields: Vec<SendableValue> },
+    Closure { proto_idx: usize, captures: Vec<SendableValue> },
+    Builtin(u16),
 }
 ```
 
 Rule:
 
 > **Copy the shape, share immutable leaves**
+
+A closure is sent as its function index and its captures. Every process runs
+the same compiled program and registers the same builtins in the same order,
+so the index means the same function in the child. Continuations, `Rng`
+values and host handles (other than AWS configs) cannot be sent; trying to
+send one is a runtime error that names the kind of value.
+
+### What a child process can see
+
+A child runs one closure and never runs the main chunk. It can use:
+
+- its captures, copied as above;
+- every builtin;
+- every top-level binding (functions, constructors, structure members and
+  values) that the parent had defined when it called `spawn`.
+
+At `spawn`, the parent gives the child a snapshot of its top-level bindings
+as `SendableValue`s. The child deserializes a binding the first time it reads
+it, so it pays only for what it uses. The parent serializes each binding once
+and shares the snapshot between children (and their children) until it
+defines another top-level binding. Bindings are immutable, so a child sees the
+same values the parent sees.
+
+A binding that cannot be sent is recorded with the reason. A child that reads
+it fails with `top-level `name` cannot be used in a child process: <reason>`.
+A child that never reads it is not affected. This is a runtime check, not a
+compile-time one.
 
 ---
 
