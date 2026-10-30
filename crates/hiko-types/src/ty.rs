@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,9 +112,10 @@ impl Type {
         }
     }
 
+    /// The type variables in `self`, in order of first occurrence.
     pub fn free_vars(&self) -> Vec<u32> {
         let mut vars = Vec::new();
-        self.collect_free_vars(&mut vars);
+        self.collect_free_vars(&mut vars, &mut HashSet::new());
         vars
     }
 
@@ -121,20 +123,20 @@ impl Type {
         Type::primitive_surface_name(name).unwrap_or(name)
     }
 
-    fn collect_free_vars(&self, vars: &mut Vec<u32>) {
+    fn collect_free_vars(&self, vars: &mut Vec<u32>, seen: &mut HashSet<u32>) {
         match self {
             Type::Var(v) => {
-                if !vars.contains(v) {
+                if seen.insert(*v) {
                     vars.push(*v);
                 }
             }
             Type::Arrow(a, b) => {
-                a.collect_free_vars(vars);
-                b.collect_free_vars(vars);
+                a.collect_free_vars(vars, seen);
+                b.collect_free_vars(vars, seen);
             }
             Type::Tuple(ts) | Type::App(_, ts) => {
                 for t in ts {
-                    t.collect_free_vars(vars);
+                    t.collect_free_vars(vars, seen);
                 }
             }
             Type::Con(_) => {}
