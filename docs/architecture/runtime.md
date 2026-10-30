@@ -93,6 +93,9 @@ so the index means the same function in the child. Continuations, `Rng`
 values and host handles (other than AWS configs) cannot be sent; trying to
 send one is a runtime error that names the kind of value.
 
+Copying is iterative and bounded by `max_message_bytes` and a depth limit. See
+[Budgets across process boundaries](execution-bounds.md#budgets-across-process-boundaries).
+
 ### What a child process can see
 
 A child runs one closure and never runs the main chunk. It can use:
