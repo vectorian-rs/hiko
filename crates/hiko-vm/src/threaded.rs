@@ -33,9 +33,9 @@
 //! (see [`park`]) or when a worker next dequeues it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use dashmap::{DashMap, DashSet};
+use crate::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::sync::{DashMap, DashSet};
 
 use crate::io_backend::{IoBackend, IoContext, IoResult, IoToken, ThreadPoolIoBackend};
 use crate::process::{

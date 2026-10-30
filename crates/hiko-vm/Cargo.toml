@@ -136,6 +136,13 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 sortedvec = "0.5"
 
+# Model checking of the threaded runtime: RUSTFLAGS="--cfg loom".
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+
 [[bench]]
 name = "vm_bench"
 harness = false
