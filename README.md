@@ -119,7 +119,7 @@ State is passed along as an argument and returned (see `examples/state.hml`).
 
 Effects are a research feature, isolated from the core language. Two uses are
 supported: a **provider** answers a request and resumes at once, and an
-**abort** handler ignores the continuation to exit early. Recoverable errors
+**abort** handler ignores `k` to exit early. Recoverable errors
 use `Std.Result`. See [docs/language/effects.md](docs/language/effects.md):
 
 ```sml
@@ -262,7 +262,7 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 **Garbage Collector.** Mark-and-sweep with worklist-based marking (avoids stack overflow on deep object graphs), free-list reuse, and adaptive collection threshold.
 
-**Effect Handlers (research).** `perform` finds the nearest matching handler. A clause that ignores its continuation unwinds to the handler without capturing anything. A clause that uses `k` gets a copied delimited continuation, and `resume` copies it back. The supported uses are provider clauses (`resume k v` at once) and abort clauses; the general continuation machinery is planned to shrink to those two forms (#121). See [docs/language/effects.md](docs/language/effects.md#current-continuation-semantics).
+**Effect Handlers (research).** `perform` finds the nearest matching handler. A provider clause, whose every path ends in `resume k e`, is compiled to a closure that runs at the perform site with its handler hidden; nothing is copied or allocated per request. An abort clause, which does not use `k`, unwinds to the handler. Continuations are not values. See [docs/language/effects.md](docs/language/effects.md).
 
 **Tail-Call Optimization.** The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
 

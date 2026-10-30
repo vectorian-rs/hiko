@@ -109,7 +109,7 @@ Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 | Data      | `MakeTuple`, `GetField`, `GetField0-1`, `MakeData`, `GetTag`, `MakeCons`                               |
 | Control   | `Jump`, `JumpIfFalse`, `Panic`, `Halt`                                                                 |
 | Calls     | `MakeClosure`, `MakeRecClosures`, `Call`, `TailCall`, `CallDirect`, `TailCallDirect`, `Return` |
-| Effects   | `InstallHandler`, `Perform`, `Resume`, `RemoveHandler`                                                 |
+| Effects   | `InstallHandler`, `Perform`, `RemoveHandler`                                                           |
 
 ### Bytecode observations
 
@@ -135,12 +135,13 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   `Char`, `Unit`, `Heap(GcRef(u32))`, `Builtin(u16)`.
 - Heap objects: `String`, `Tuple`, `Data { tag, fields }`,
   `Closure { proto_idx, captures: Arc<[Value]> }`, `Bytes`, `HostHandle`,
-  `Rng`, `Continuation`.
+  `Rng`.
 - Dispatch is a `match` loop in `vm/dispatch.rs`. All operand reads are
   bounds-checked. Truncated bytecode is a runtime error, not a panic. Call
   frames and handler frames have fixed caps.
 - GC: per-process mark-and-sweep, worklist marking, free-list reuse, adaptive
-  threshold. Roots are stack, frames, handlers, and a blocked continuation.
+  threshold. Roots are stack, frames, handlers (including hidden ones), globals,
+  and the string cache.
 - Execution: `run()` (unbounded unless fuel is set) and `run_slice(reductions)`,
   which returns at `Done`, `Failed`, `Cancelled`, `Yielded`, `Spawn`, `Await`,
   `WaitAny`, or `Io`.
@@ -153,10 +154,6 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   script, mostly in system time (#81, #82). The opcode-density half of #82 is
   done. The filesystem half (per-file `canonicalize` plus `cap_std` checks) is
   not re-measured.
-- `Resume` copies the captured frames and stack back onto the VM stack
-  (`vm/dispatch.rs`, `Op::Resume`), so every resume costs time proportional to
-  the captured stack depth. #121 plans to remove continuation capture for
-  provider clauses.
 - `HeapObject::String(String)` copies on transfer. #12 (`Arc<str>`) is open.
 - Spawn cost is dominated by rebuilding builtin and global tables per child.
 - There is no continuous benchmark baseline. `benchmarks/` has six classic
@@ -204,50 +201,47 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
 
 - `effect E of t`, `perform E v`,
   `handle e with return x => ... | E x k => ...`, `resume k v`.
-- Static checks: declared effects only, payload types match, continuation type
-  is `effect-result -> handled-body-result`, handler arms agree on result
-  type.
-- Runtime: `Perform` captures frames and stack up to the nearest matching
-  handler into a `Continuation`. It also saves that handler and the handlers
-  inside it. A direct `resume` reinstalls all of them (deep); a resume inside
-  a handler the clause installed itself does not reinstall the catching one
-  (shallow). See
-  [`effects.md`](../language/effects.md#current-continuation-semantics).
-- `Resume` copies the continuation, so the same `k` can be resumed more than
-  once (**multi-shot**). Verified: inside a function,
-  `Choose _ k => resume k true + resume k false` returns 11 for
-  `if perform Choose () then 1 else 10`.
-- Runtime-handled effects (I/O, spawn, await) use a separate one-shot blocked
-  continuation owned by the scheduler.
+- Static checks: declared effects only, payload types match, `k` has type
+  `effect-result -> handled-body-result`, handler arms agree on result type.
+- Two clause forms (#121), described in
+  [`effects.md`](../language/effects.md):
+  - **Provider:** every path ends in `resume k e`. The clause is a closure that
+    runs at the perform site with its handler hidden; its value is the result
+    of `perform`. No allocation per request, constant stack.
+  - **Abort:** the clause does not use `k`. `perform` unwinds to the handler.
+- `k` is not a value. Any other use is a compile error with a source location.
+- The threaded runtime's I/O suspension is a separate mechanism and does not
+  use effect handlers.
 
 ### Decided
 
-- **Scope (2026-10-30).** Effects keep two uses: providers (the clause resumes
-  at once) and aborts (the clause ignores `k`). Generators and state use
-  closures and ordinary arguments; the examples and docs were converted.
-  Measured on a debug build: summing a 100,000-item effect generator
-  overflowed the stack after 25.8s, the closure version took 1.6s.
-- **Next step.** #121 plans to remove first-class continuations: a provider
-  clause runs in place at the `perform` site, and an abort clause unwinds.
+- **Scope (2026-10-30).** Effects keep two uses: providers and aborts.
+  Generators and state use closures and ordinary arguments; the examples and
+  docs were converted. Measured on a debug build: summing a 100,000-item
+  effect generator overflowed the stack after 25.8s, the closure version took
+  1.6s.
+- **First-class continuations removed (#121).** `Resume`, `Continuation` and
+  the deep/shallow rule from #119 are gone. Release build, main vs #121: a
+  provider loop overflowed the stack between 10,000 and 30,000 requests on
+  main and runs 1,000,000 requests in 0.29s with #121. A request performed 200
+  frames deep, 20,000 times: 0.63s on main, 0.48s with #121. Abort benchmarks
+  are unchanged.
 
 ### Open research questions
 
 These are the questions the research track should answer, in rough order:
 
-1. **One-shot or multi-shot.** Answered by the scope decision above: neither.
-   With only provider and abort clauses, `k` is not a value. #121 implements
-   it.
-2. **Deep or shallow.** Answered the same way: a provider handler stays
-   installed for later requests (deep), and nothing resumes under a new
-   handler. #121 removes the mixed rule from #119.
+1. **One-shot or multi-shot.** Answered (#121): neither. `k` is not a value.
+2. **Deep or shallow.** Answered (#121): a provider stays installed for later
+   requests (deep) and runs with its handler hidden.
 3. **Effect rows in types.** Function types do not record effects, so
    unhandled effects are runtime errors (#48, #74).
    [`effects-design.md`](../rnd/effects-design.md) lists strategies A to F.
 4. **Effects and capabilities.** Whether host capabilities become effects
    handled by the runtime, so a policy is a top-level handler. This is the
    point where the research track meets the security focus.
-5. **Resume cost.** Answered by #121: a provider clause runs in place, so
-   there is nothing to copy, and it uses constant stack (#29).
+5. **Resume cost.** Answered (#121): a provider clause runs at the perform
+   site, so nothing is copied, and it uses constant stack (#29).
 6. **Verifier support.** The verifier checks effect tags and stack depth only.
    A protocol-level check is still open.
 
@@ -339,7 +333,7 @@ been taken.
 | #47 Work-stealing scheduler                  | VM            | Open. Depends on keeping the threaded runtime.               |
 | #25 Loom tests                               | Security      | Open. Depends on keeping the threaded runtime.               |
 | #48, #74 Effect typing                       | Research      | Open.                                                        |
-| #29, #30 Tail-resume, deep resume            | Research      | Open.                                                        |
+| #29, #30 Tail-resume, deep resume            | Research      | Done in #121.                                                |
 | #10 Isolated-process runtime with effects    | Research      | Tracking issue.                                              |
 | #59 Bundle modules and policy into artifacts | Security      | Open.                                                        |
 | #53, #56, #57, #85 Harness and agent runtime | Out of focus  | Close or move with the harness.                              |
@@ -347,8 +341,7 @@ been taken.
 ## Suggested cleanup order
 
 1. Fix the tests so they do not need a local HTTP server.
-2. Fix the top-level `resume` bug and add regression tests for deep and
-   multi-shot behavior.
+2. Done: effects reduced to provider and abort clauses (#121).
 3. Close the finished issues (#80, #54, #55) and the out-of-focus ones.
 4. Move `hiko-harness`, AWS, GitHub, Hashline, `SYSTEM.md`, and their
    policies, examples, and libraries out of the
@@ -358,4 +351,4 @@ been taken.
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.
 8. Fix the README inconsistencies listed above.
 9. Add fuzz targets for the parser, type checker, verifier, and policy parser.
-10. Start the effects research track with question 1 (one-shot or multi-shot).
+10. Continue the effects research track with question 3 (effect rows).

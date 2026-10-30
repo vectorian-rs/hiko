@@ -1,19 +1,17 @@
 # Algebraic Effects
 
 Hiko has local algebraic effects: `effect`, `perform`, `handle`, and `resume`.
-This page describes what is implemented today. Effects are the research track
-of the language (see [project-state.md](../project/project-state.md)); design
-proposals and comparisons with other languages live in
+Effects are a small, isolated research feature, not part of the core language
+(see [project-state.md](../project/project-state.md)). Design proposals and
+comparisons with other languages live in
 [rnd/effects-design.md](../rnd/effects-design.md).
 
-Effects are a small, isolated research feature, not part of the core
-language. Two uses are supported:
+A handler clause has one of two forms:
 
-- **Provider:** a handler answers a request and resumes at once
-  (`| Op x k => resume k answer`). The code that performs the request does not
-  know which provider is installed, so a test can install a mock. See
-  [Supported Uses](#supported-uses).
-- **Abort:** a handler ignores the continuation and returns a value for the
+- **Provider:** the clause answers the request (`| Op x k => resume k answer`).
+  The code that performs the request does not know which provider is
+  installed, so a test can install a mock.
+- **Abort:** the clause does not use `k`. Its value becomes the value of the
   whole `handle` expression (early exit).
 
 Other things are not effects:
@@ -24,17 +22,10 @@ Other things are not effects:
 - Generators and state use closures and ordinary arguments. See
   [Generators and State Without Effects](#generators-and-state-without-effects).
 
-Effects can do more than these two uses today: a handler can store `k`,
-resume it later, resume it twice, or resume it inside another handler. That
-behavior is described under
-[Current Continuation Semantics](#current-continuation-semantics), but it is
-not supported. The plan is to remove first-class continuations and keep only
-the two forms above (PR #121).
-
 ## Mental Model
 
-An algebraic effect operation is a named request made by ordinary code and
-interpreted by surrounding code.
+An effect operation is a named request made by ordinary code and answered by
+surrounding code.
 
 ```hiko
 effect AskName of unit
@@ -48,18 +39,15 @@ val message =
      | AskName _ k => resume k "alice"
 ```
 
-`perform AskName ()` pauses the current computation and sends a request to the
-nearest matching handler. The handler receives:
+`perform AskName ()` sends a request to the nearest matching handler. The
+clause receives the payload, here `()`, and the name `k` for the request.
+`resume k "alice"` answers it: `perform AskName ()` returns `"alice"` and
+`greet` continues. `k` is not a value. It can only be used as `resume k e` at
+the end of a clause.
 
-- the request payload, here `()`;
-- a continuation `k`, representing the rest of the suspended computation.
+## Syntax
 
-`resume k "alice"` continues from the `perform` site, using `"alice"` as the
-result of `perform AskName ()`.
-
-## Current Hiko Syntax
-
-Current Hiko declares only the payload side of an effect:
+An effect declaration states the payload type:
 
 ```hiko
 effect Ask of unit
@@ -85,39 +73,26 @@ fun with_settings limit f = handle
   | Log msg k => let val _ = println msg in resume k () end
 ```
 
-In current syntax, `effect Fail of string` means:
+`effect Fail of string` means that the payload of `Fail` is a `string`. It does
+**not** say what `perform Fail ...` returns. An effect operation has two types:
 
 ```text
-Fail's payload type is string
+operation : payload_type -> result_type
 ```
 
-It does **not** mean:
-
-```text
-perform Fail ... always returns string
-```
-
-There are two types involved in an effect operation:
-
-```text
-operation : payload_type -> resume_result_type
-```
-
-The current `of` syntax states the payload type. The resume/result type is
-inferred from use and handlers.
+The result type is inferred from the `perform` sites and the `resume`
+arguments.
 
 Both types are monomorphic. The payload type cannot contain type variables, and
-the resume/result type is one type shared by every `perform` and handler of
-that effect in the program. A function that performs an effect is therefore not
+the result type is one type shared by every `perform` and handler of that
+effect in the program. A function that performs an effect is therefore not
 generalized over the effect's result type.
 
-## Supported Uses
+## Provider Clauses
 
-### Provider
-
-The handler answers each request and resumes at once. Because `resume`
-reinstalls the handler, the same provider also answers every later request
-from the resumed code.
+A clause is a provider when every path through its body ends in `resume k e`.
+The paths go through `let` bodies, both branches of `if`, and every branch of
+`case`.
 
 ```hiko
 effect Log of string
@@ -134,15 +109,58 @@ fun with_console_log f =
     end
 ```
 
+The rules:
+
+- **The clause runs at the perform site.** Its value `e` becomes the result of
+  `perform`. Nothing is copied or allocated per request, and a loop of
+  requests runs in constant stack.
+- **The handler stays installed.** Every later `perform` in the handled code
+  reaches the same provider.
+- **The clause runs outside its handler.** While it runs, its handler and every
+  handler installed inside it are hidden, so a `perform` in the clause goes to
+  an outer handler:
+
+  ```hiko
+  effect Ask of int
+
+  val result =
+    handle
+      (handle perform Ask 1
+       with return x => x
+          | Ask n k => resume k (perform Ask (n + 1) * 10))
+    with return x => x
+       | Ask n k => resume k (n + 100)
+
+  (* result = 1020: the inner clause asks the outer handler for 2 *)
+  ```
+
+- **Handlers installed inside stay in place.** A handler between the provider
+  and the `perform` site still handles its effects after the provider answers:
+
+  ```hiko
+  effect Ask of int
+  effect Fail of int
+
+  fun body () =
+    let val a = perform Ask 1 val _ = perform Fail (a + 5) in 1000 end
+
+  val result =
+    handle 1 + (handle body () with return x => x | Fail n _ => n + 100)
+    with return x => x | Ask n k => resume k (n * 10)
+
+  (* result = 116: Ask is answered with 10, the inner handler catches Fail 15 *)
+  ```
+
 `examples/http_effect_wrapper_test.hml` runs the same code against a mock HTTP
-provider and a real one. `Std.Filesystem` and `Std.Hashline` are written as
-providers over their builtins.
+provider and a real one. `Std.Filesystem` and `Std.Hashline` are providers over
+their builtins.
 
-### Abort
+## Abort Clauses
 
-The clause does not use `k`, so the computation stops and the clause's value
-becomes the value of the `handle` expression. The VM unwinds without capturing
-a continuation (see [Abortive Handler Clauses](#abortive-handler-clauses)).
+Any clause that is not a provider aborts. The clause must not use `k`.
+`perform` unwinds the stack, call frames and handlers back to the handler,
+then runs the clause in the frame that installed the handler. The clause's
+value is the value of the `handle` expression.
 
 ```hiko
 effect Found of int
@@ -161,6 +179,24 @@ fun first_negative xs =
 
 (* first_negative [1, ~2, ~3] = ~2 *)
 ```
+
+## What Is Rejected
+
+`k` is not a value. The compiler rejects, with the source location:
+
+- reading `k` anywhere except as the first operand of `resume`: storing it,
+  passing it to a function, or capturing it in a closure;
+- `resume` that is not at the end of the clause, as in `1 + resume k n` or
+  `resume k (resume k n)`;
+- a clause where only some paths end in `resume k e`;
+- `resume` inside a nested `handle` or `fn` in the clause.
+
+```text
+error: `resume k e` is supported only at the end of a handler clause, with
+every path of the clause ending in `resume k e`
+```
+
+A clause can bind a new variable named `k`; that variable is an ordinary value.
 
 ## Generators and State Without Effects
 
@@ -184,46 +220,31 @@ State is an argument that a function takes and returns, usually as an
 accumulator or a `(result, new_state)` pair. See `examples/generator.hml` and
 `examples/state.hml`.
 
-The effect-based versions (`perform Yield` with a handler that re-handles
-around `resume`, and `Get`/`Put` handlers) are not supported. They depend on
-the unsupported continuation behavior below. They are also slower: summing a
-100,000-item effect generator overflowed the stack after 25 seconds in a debug
-build, while the closure version finished in 1.6 seconds.
+Effect-based generators and state, which wrap `resume` in a new handler call,
+do not compile.
 
-## Current Static Guarantees
+## Static Guarantees
 
-The typechecker currently guarantees:
+The typechecker guarantees:
 
 - `perform Effect payload` refers to a declared effect.
-- `perform` payload type matches the effect declaration.
-- The result type of a `perform` is the type expected by resumptions of that
-  effect in handlers.
+- The `perform` payload type matches the effect declaration.
+- The result type of a `perform` is the type of the `resume` arguments in that
+  effect's clauses.
 - Handler clauses refer to declared effects.
 - Handler payload variables have the declared effect payload type.
-- Handler continuation variables have type:
-
-  ```text
-  effect-result-type -> handled-body-result-type
-  ```
-
-  The continuation resumes the interrupted body, not the handler's `return` arm
-  directly. This supports generator-style handlers that wrap `resume` in another
-  handler invocation.
-
-- `resume k value` typechecks like applying `k` to `value`.
-- Handler clause bodies must return the same type as the handler `return` arm.
+- `resume k value` typechecks like applying `k`, of type
+  `result_type -> handled-body-type`, to `value`.
+- Handler clause bodies have the same type as the handler `return` arm.
 - The `return` arm parameter has the type of the normally returned handled body.
 
-These checks catch common protocol errors: wrong payload types, undeclared
-effects, resuming with the wrong value type, and handler branches returning
-incompatible values.
+The compiler then enforces the clause forms above.
 
-## Current Non-Guarantees
+## Non-Guarantees
 
-Hiko does not yet put effect sets in function types. A function that may perform
-`Aws.S3.list_buckets` currently does not have a type that records that fact.
-
-For example, Hiko currently has no function type like:
+Hiko does not put effect sets in function types. A function that may perform
+`Aws.S3.list_buckets` does not have a type that records that fact. Hiko has no
+function type like:
 
 ```text
 Aws.Config -> Result Error Report ! { Clock.now, Aws.S3.list_buckets }
@@ -231,150 +252,43 @@ Aws.Config -> Result Error Report ! { Clock.now, Aws.S3.list_buckets }
 
 This means:
 
-- escaping/unhandled effects are not statically rejected by effect rows;
+- unhandled effects are not rejected statically;
 - function signatures do not advertise which effects they may request;
-- the typechecker does not prove every call site has installed or been granted
-  all required handlers.
+- the typechecker does not prove that every call site has a handler for every
+  effect it may perform.
 
 Unhandled effects are controlled runtime errors, not host panics.
 
-The bytecode verifier checks structural protocol pieces visible after
-compilation:
+The bytecode verifier checks the structural pieces visible after compilation:
 
 - `Perform` and `InstallHandler` reference declared effect tags;
 - `Perform` has enough stack depth for a payload;
-- `Resume` has enough stack depth for a continuation and argument;
-- handler clause targets are instruction boundaries with valid stack depth;
-- handler clause flags use only the defined `resumes` bit.
+- a provider clause's closure slot is below the stack depth at the
+  `InstallHandler`;
+- abort clause targets are instruction boundaries with valid stack depth;
+- handler clause flags use only the defined `provider` bit.
 
-The verifier still does not prove the full high-level source effect protocol for
-arbitrary hand-written bytecode. Runtime checks must continue to reject invalid
-continuation values and malformed resume attempts with controlled errors.
+The verifier does not prove the source-level protocol for hand-written
+bytecode, such as balanced install and remove. The VM rejects a handler whose
+frame has returned, or a provider slot that is not a closure, with a controlled
+error.
 
-## Abortive Handler Clauses
+## Implementation
 
-A clause whose body never refers to its continuation, for example
-`Fail msg _ => Err msg`, cannot resume. The compiler marks each clause with a
-`resumes` flag, set only when the clause body refers to the continuation
-variable (a shadowed `k` does not count). For a clause without the flag,
-`perform` unwinds the stack, call frames and handlers back to the handler and
-runs the clause directly. It does not copy the frames and stack between the
-`perform` site and the handler, and it does not allocate a continuation. The
-continuation slot of such a clause holds a placeholder that the clause never
-reads.
+- **Provider clause.** It compiles to a closure taking the payload and a `Unit`
+  slot for `k`. The closure is kept on the stack as a hidden local of the
+  function that installs the handler, so it lives as long as the handler.
+  `InstallHandler` records its slot.
+- **Perform on a provider.** `perform` moves the handler and the handlers
+  inside it to a hidden list, then calls the closure. When the clause frame
+  returns, `Return` reinstalls them. An abort that unwinds past the clause
+  frame discards them.
+- **Perform on an abort clause.** `perform` truncates the stack and call frames
+  to the handler and jumps to the clause body in the handler's frame.
 
-## Current Continuation Semantics
+The code is in `ExprKind::Handle` and `ExprKind::Resume` in
+`crates/hiko-compile/src/compiler.rs`, and in `Op::InstallHandler`,
+`Op::Perform` and `Op::Return` in `crates/hiko-vm/src/vm/dispatch.rs`.
 
-This section describes what the VM does today. It is implemented, but it is
-not a stable guarantee. Only the provider and abort forms in
-[Supported Uses](#supported-uses) are supported. The rest of this section
-describes behavior that PR #121 plans to remove.
-
-**Handlers are deep when the clause resumes directly.** `perform` removes the
-matching handler, and every handler installed inside it, and stores them in the
-continuation (`ContinuationData::saved_handlers` in
-`crates/hiko-vm/src/value.rs`). When a clause calls `resume k v` directly,
-`resume` reinstalls all of them. A second `perform` of the same effect inside
-the resumed computation therefore reaches the same handler:
-
-```hiko
-effect Tick of unit
-
-fun two () =
-  let
-    val _ = perform Tick ()
-    val _ = perform Tick ()
-  in
-    0
-  end
-
-fun count () =
-  handle
-    two ()
-  with
-    return x => x
-  | Tick _ k => 1 + resume k ()
-
-(* count () = 2 *)
-```
-
-**Inner handlers are part of the continuation.** A handler installed between
-the catching handler and the `perform` site is always reinstalled by `resume`,
-so effects it handles still reach it after the resume:
-
-```hiko
-effect Ask of int
-effect Fail of int
-
-fun body () =
-  let val a = perform Ask 1 val _ = perform Fail (a + 5) in 1000 end
-
-val result =
-  handle 1 + (handle body () with return x => x | Fail n _ => n + 100)
-  with return x => x | Ask n k => resume k (n * 10)
-
-(* result = 116: Ask resumes with 10, the inner handler catches Fail 15 *)
-```
-
-**Exception: resuming under a new handler is shallow.** If the clause resumes
-inside a handler it installed itself, as in the generator pattern below, the
-catching handler is not reinstalled; the new handler takes its place.
-`resume` reinstalls the catching handler only when fewer handlers are
-installed at the resume point than when the effect was caught
-(`ContinuationData::catching_handler_depth`). Inner handlers are reinstalled
-in both cases.
-
-```hiko
-effect Yield of int
-
-fun run_gen f =
-  handle f ()
-  with return _ => 0
-     | Yield n k => n + run_gen (fn _ => resume k ())
-
-fun gen () =
-  let val _ = perform Yield 1 val _ = perform Yield 2 in () end
-
-(* run_gen gen = 3. With fully deep handlers (as in OCaml or Koka) the
-   original handler would also be reinstalled, catch Yield 2, and the result
-   would be 1. *)
-```
-
-This mixed rule is what the VM does today; it is not a designed semantics.
-Choosing between deep, shallow, or an explicit choice per handler is part of
-the open research questions below.
-
-**A continuation runs to the end of its `handle` expression.** The captured
-continuation starts at the `perform` site and ends where the `handle`
-expression ends. After the resumed computation finishes, control returns to
-the handler clause that called `resume`. This holds for a `handle` at the top
-level of a script and for a `handle` nested inside a larger expression, such
-as `(handle ... ) + 100`. The compiler puts a `handle` that is not in function
-tail position into its own zero-argument function, so the `handle` always ends
-its own call frame (`ExprKind::Handle` in `crates/hiko-compile/src/compiler.rs`).
-
-**Local continuations are multi-shot by copy.** `resume` copies the saved stack
-slice and frames back onto the VM stack and does not consume the continuation.
-The same `k` can be resumed more than once:
-
-```hiko
-effect Choose of unit
-
-fun body () = if perform Choose () then 10 else 20
-
-fun both () =
-  handle
-    body ()
-  with
-    return x => x
-  | Choose _ k => resume k true + resume k false
-
-(* both () = 30 *)
-```
-
-**Direction.** First-class continuations are planned to go away (PR #121).
-A provider clause will run in place at the `perform` site, and an abort clause
-will unwind as it does now. Storing `k`, resuming it twice, or resuming it
-inside another handler will no longer be possible, so do not rely on them. The
-threaded runtime's I/O suspensions are a separate mechanism and are always
-one-shot (see [`../architecture/runtime.md`](../architecture/runtime.md)).
+The threaded runtime's I/O suspensions are a separate mechanism. They do not
+use effect handlers (see [`../architecture/runtime.md`](../architecture/runtime.md)).

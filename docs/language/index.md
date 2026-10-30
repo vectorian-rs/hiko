@@ -8,7 +8,7 @@ Language semantics, source syntax, public surface conventions, and deliberate di
 | [`modules.md`](modules.md) | Current source of truth | Module-system status, syntax, ascription semantics, and explicit non-goals. |
 | [`imports.md`](imports.md) | Current source of truth | `use` vs `import`, package layout, `hiko.toml`/lockfile resolution, cache, and BLAKE3 verification. |
 | [`formatting.md`](formatting.md) | Current source of truth | Formatter behavior, comment placement convention, and unsupported expression-level comment policy. |
-| [`effects.md`](effects.md) | Current behavior (research track) | Effect syntax, static guarantees, non-guarantees, and undecided behavior. Design proposals live in [`../rnd/effects-design.md`](../rnd/effects-design.md). |
+| [`effects.md`](effects.md) | Current behavior (research track) | Effect syntax, the two clause forms (provider and abort), what is rejected, static guarantees, and non-guarantees. Design proposals live in [`../rnd/effects-design.md`](../rnd/effects-design.md). |
 | [`error-handling.md`](error-handling.md) | Current source of truth | Recoverable error policy, library-owned error types, wrapping, rendering, `Result` combinators, fiber joins, and cancellation. |
 | [`numerics.md`](numerics.md) | Current source of truth | Numeric representation, operators, width-specific stdlib module policy, conversions, arithmetic semantics, and verification expectations. |
 | [`sml-deltas.md`](sml-deltas.md) | Current migration policy | Hiko-vs-SML divergence policy and known SML defect clusters Hiko avoids or must guard against. |

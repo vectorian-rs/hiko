@@ -60,9 +60,8 @@ and aborts (early exit). Generators and state use closures instead.
 
 **Effects (research)**
 
-- Shrink effects to provider and abort clauses, with no first-class
-  continuations (#121).
-- Explore effect rows in types, and capabilities as runtime-handled effects.
+- Explore effect rows in types, and capabilities as runtime-handled effects,
+  for the two clause forms that remain: provider and abort.
 
 **Scope**
 

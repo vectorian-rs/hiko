@@ -8,8 +8,8 @@ possible staging plan. Nothing here is implemented unless
 **Scope decision (2026-10-30).** Effects stay a small, isolated research
 feature with two supported uses: providers (a handler answers a request and
 resumes at once) and aborts (a handler ignores the continuation). Generators
-and state use closures. The next step, PR #121, removes first-class
-continuations. The provider-style sugar in
+and state use closures. PR #121 removed first-class continuations: a
+provider clause runs at the perform site and an abort clause unwinds. The provider-style sugar in
 [Stage 6](#stage-6-add-provider-style-handler-sugar) matches that scope. The
 multi-shot and deep-versus-shallow questions below are kept for reference.
 
