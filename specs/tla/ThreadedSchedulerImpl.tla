@@ -4,631 +4,830 @@
 \* ## Why this spec exists
 \*
 \* ProcessLifecycle.tla defines the user-visible process semantics. The threaded
-\* runtime has an additional implementation problem: multiple workers take
-\* processes out of the table, execute them, publish terminal state, wake blocked
-\* parents, and race with the monitor thread that completes I/O. This spec models
-\* those implementation-level ownership and wakeup rules so we can check that the
-\* threaded data structures can preserve the semantic contract.
+\* runtime (crates/hiko-vm/src/threaded.rs) implements them with workers that
+\* take processes out of a shared table, run them, and race with each other and
+\* with the I/O monitor when they register waiters, park processes, publish
+\* tombstones, cancel children and wake waiters. This spec models that protocol
+\* one table operation at a time, so the checker explores the same races the
+\* code has.
 \*
 \* ## What we model
 \*
-\* This model focuses on the structure of crates/hiko-vm/src/threaded.rs:
+\* Each step below is one operation on the shared table (one DashMap call in
+\* the code), or a change to a process its actor owns. The names in comments
+\* are the Rust functions they follow.
 \*
-\*   - explicit worker ownership of running processes
-\*   - scheduler queue entries, including stale entries
-\*   - process take/return ownership via Running vs table-resident states
-\*   - await waiters and wait_any waiters as runtime data structures
-\*   - deterministic wait_any delivery from the original ordered PID list
-\*   - I/O waiter registration and monitor-driven completion/failure
-\*   - deadlock shutdown when no worker, queue, or I/O can make progress
+\*   - Ownership: a process is in the table, owned by one actor (a worker or
+\*     the I/O monitor), or gone (a terminated child, dropped).
+\*   - Slice results: yield, spawn, done, fail, cancelled, await (raw and
+\*     result), cancel, wait_any, I/O.
+\*   - The wake protocol: register, park, recheck (block_on_child,
+\*     handle_wait_any), and take_waiter's in-flight and stale cases.
+\*   - finish_process: tombstone, parent-gone reaping, `live`, pending
+\*     cancels, scope exit (cancel live children, reap tombstones), then
+\*     wake wait_any and await waiters.
+\*   - cancel_pid / try_cancel_in_table, `pending_cancels` observed by park
+\*     and by the worker that dequeues the process, the VM cancel flag.
+\*   - I/O: register, park, backend registration, monitor completion,
+\*     cancellation of a blocked request, late completions.
 \*
 \* ## What we intentionally abstract
 \*
-\* The model abstracts away bytecode execution, VM stacks, heap objects, actual
-\* DashMap locking, and concrete OS threads. A worker transition represents one
-\* runtime-visible VM slice result such as yield, spawn, await, wait_any, I/O, or
-\* terminal completion. This keeps the state space small enough to model-check
-\* while preserving the race patterns that matter for runtime safety.
+\* Bytecode, heaps and values are abstracted: a slice result is chosen
+\* nondeterministically and outcomes are "ok", "err" or "cancelled". The
+\* scheduler queue is a set: duplicate entries name the same process, and a
+\* dequeue takes it only if it is runnable in the table. The leftmost-winner
+\* rule of wait_any is checked in WaitAnyLeftmost.tla; here any terminated
+\* listed child may be delivered. A process that ends up owned by an actor is
+\* handled by that actor, in any order (the code uses a stack). Taking a
+\* blocked process and removing its registration are one step. Spawn, awaiting
+\* a pid that is not a child, and other errors that fail the caller at once
+\* are left out; they do not touch shared state.
 \*
-\* ## Why this is a good idea
+\* ## What we check
 \*
-\* The hardest bugs in the threaded runtime are not type errors; they are lost
-\* wakeups, double deliveries, stale waiter registrations, and cancellation/I/O
-\* races. These are exactly the cases where tests can be flaky or miss rare
-\* interleavings. A lower-level TLA+ model complements Rust tests by exploring
-\* interleavings systematically and by documenting which implementation
-\* invariants must stay true as the runtime evolves.
+\* - NoLostWakeup: once nothing can run (no actor busy, nothing queued, no I/O
+\*   in flight), every process has terminated.
+\* - CleanAtQuiescence: then no waiter, tombstone, I/O waiter or cancel
+\*   request is left behind.
+\* - NoResurrection: a terminated process is never in the table as runnable
+\*   or blocked, and never owned.
+\* - BoundedTombstones: a tombstone exists only for a child of a live parent,
+\*   or in the short windows where a terminating parent or child is about to
+\*   reap it.
+\* - PendingCancelsConsistent, RegistrationsConsistent.
+\* - Liveness (ThreadedSchedulerImplLive.cfg): a process blocked on a child
+\*   that has terminated is eventually woken.
+\*
+\* The broken configurations under specs/tla/broken/ turn off the recheck
+\* after parking (RecheckAfterPark) or the scope-exit reaping of tombstones
+\* (ReapTombstones); the checker must reject both.
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     MaxProcesses,
-    MaxSteps,
-    MaxIoOps,
-    Workers
+    MaxIo,
+    Workers,
+    RecheckAfterPark,
+    ReapTombstones
+
+Pids == 1..MaxProcesses
+Toks == 1..MaxIo
+Mon == "mon"
+Actors == Workers \union {Mon}
+BlockedStates == {"await", "any", "io"}
 
 VARIABLES
-    procs,
-    queue,
-    workers,
-    waiters,
-    any_waiters,
-    tombstones,
-    pending_cancels,
-    io_waiters,
+    loc,        \* pid -> "none" (not spawned), "table", "gone", or the owning actor
+    st,         \* pid -> "runnable", "await", "any", "io", "done", "failed"
+    target,     \* pid -> child awaited
+    akind,      \* pid -> "raw" or "result"
+    targets,    \* pid -> children in wait_any
+    tok,        \* pid -> I/O token blocked on
+    par,        \* pid -> parent (0 for the root)
+    kids,       \* pid -> children not yet consumed (Process::children)
+    live,
+    tomb,       \* pid -> "none", "ok", "err", "cancelled"
+    waiters,    \* child -> processes registered in await
+    anyw,       \* child -> processes registered in wait_any
+    iow,        \* token -> pid (0: none)
+    backend,    \* tokens with a completion still to come
+    pcancel,    \* pending_cancels
+    creq,       \* VM cancel flag set (request_cancellation)
+    queued,
     next_pid,
-    next_token,
-    shutdown,
-    step
+    next_tok,
+    wk          \* actor -> its program state
 
-vars == <<procs, queue, workers, waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown, step>>
+vars == <<loc, st, target, akind, targets, tok, par, kids, live, tomb, waiters,
+          anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok, wk>>
 
-Runnable       == "runnable"
-Running        == "running"
-BlockedAwait   == "blocked_await"
-BlockedIo      == "blocked_io"
-BlockedAny     == "blocked_any"
-Done           == "done"
-Failed         == "failed"
-
-TombNone     == "tomb_none"
-TombReady    == "tomb_ready"
-TombConsumed == "tomb_consumed"
-
-EmptyProc(parent) ==
-    [status |-> Runnable,
-     parent |-> parent,
-     target |-> 0,
-     targets |-> <<>>,
-     delivered_pid |-> 0]
+\* An actor's state. pc is the next step; stack holds return labels. p is the
+\* process whose slice it handles, c the awaited child, s the wait_any list, t
+\* the I/O token, x the target of a cancel, pk the process to park, q and out
+\* the process being terminated, ktodo and k its scope-exit loop, fin the
+\* process whose waiters are woken, wtodo and cur that loop, ok the result of
+\* try_cancel_in_table, term the processes this actor has to terminate.
+Fresh ==
+    [pc |-> "idle", stack |-> <<>>, p |-> 0, c |-> 0, s |-> {}, t |-> 0,
+     x |-> 0, pk |-> 0, q |-> 0, out |-> "ok", ktodo |-> {}, k |-> 0,
+     fin |-> 0, wtodo |-> {}, cur |-> 0, ok |-> FALSE, term |-> {}]
 
 Init ==
-    /\ procs = 1 :> EmptyProc(0)
-    /\ queue = <<1>>
-    /\ workers = [w \in Workers |-> 0]
-    /\ waiters = 1 :> {}
-    /\ any_waiters = 1 :> {}
-    /\ tombstones = 1 :> TombNone
-    /\ pending_cancels = {}
-    /\ io_waiters = {}
+    /\ loc = [p \in Pids |-> IF p = 1 THEN "table" ELSE "none"]
+    /\ st = [p \in Pids |-> "runnable"]
+    /\ target = [p \in Pids |-> 0]
+    /\ akind = [p \in Pids |-> "raw"]
+    /\ targets = [p \in Pids |-> {}]
+    /\ tok = [p \in Pids |-> 0]
+    /\ par = [p \in Pids |-> 0]
+    /\ kids = [p \in Pids |-> {}]
+    /\ live = {1}
+    /\ tomb = [p \in Pids |-> "none"]
+    /\ waiters = [p \in Pids |-> {}]
+    /\ anyw = [p \in Pids |-> {}]
+    /\ iow = [t \in Toks |-> 0]
+    /\ backend = {}
+    /\ pcancel = {}
+    /\ creq = {}
+    /\ queued = {1}
     /\ next_pid = 2
-    /\ next_token = 1
-    /\ shutdown = FALSE
-    /\ step = 0
+    /\ next_tok = 1
+    /\ wk = [a \in Actors |-> Fresh]
 
+\* ---------------------------------------------------------------------------
 \* Helpers
-AtHead(pid) == queue # <<>> /\ Head(queue) = pid
-Idle(w) == workers[w] = 0
-StepOK == step < MaxSteps
-KnownPid(pid) == pid \in DOMAIN procs
 
-SeqSet(seq) == {seq[i] : i \in 1..Len(seq)}
+Return(r) ==
+    IF r.stack = <<>>
+    THEN Fresh
+    ELSE [r EXCEPT !.pc = Head(r.stack), !.stack = Tail(r.stack)]
 
-WaitAnyInputs == UNION {[1..n -> 1..MaxProcesses] : n \in 1..MaxProcesses}
+Call(r, proc, ret) == [r EXCEPT !.pc = proc, !.stack = <<ret>> \o r.stack]
 
-TerminalStatus(status) == status \in {Done, Failed}
+RemoveEverywhere(m, pid) == [y \in Pids |-> m[y] \ {pid}]
 
-IsTerminalAfter(done_pid, pid) == pid = done_pid \/ TerminalStatus(procs[pid].status)
+\* resume(): back in the table as runnable, and queued.
+ResumeLoc(p) == [loc EXCEPT ![p] = "table"]
+ResumeSt(p) == [st EXCEPT ![p] = "runnable"]
 
-LeftmostTerminalAfter(done_pid, children) ==
-    CHOOSE child \in SeqSet(children) :
-        /\ IsTerminalAfter(done_pid, child)
-        /\ \E i \in 1..Len(children) :
-            /\ children[i] = child
-            /\ \A j \in 1..(i - 1) : ~IsTerminalAfter(done_pid, children[j])
+Outcome(o) == [pid : Pids, out : {o}]
 
-AnyWaiter(child) ==
-    IF any_waiters[child] = {} THEN 0 ELSE CHOOSE parent \in any_waiters[child] : TRUE
+\* ---------------------------------------------------------------------------
+\* Workers: dequeue and slice results (worker_loop, handle_slice_result)
 
-ClearAnyWaiterRegistrations(parent, targets) ==
-    [child \in DOMAIN any_waiters |->
-        IF child \in SeqSet(targets)
-        THEN any_waiters[child] \ {parent}
-        ELSE any_waiters[child]]
+Dequeue(a, p) ==
+    /\ a \in Workers
+    /\ wk[a].pc = "idle"
+    /\ p \in queued
+    /\ queued' = queued \ {p}
+    /\ IF loc[p] = "table" /\ st[p] = "runnable"
+       THEN /\ loc' = [loc EXCEPT ![p] = a]
+            /\ pcancel' = pcancel \ {p}
+            /\ creq' = IF p \in pcancel THEN creq \union {p} ELSE creq
+            /\ wk' = [wk EXCEPT ![a] = [Fresh EXCEPT !.pc = "slice", !.p = p]]
+       ELSE UNCHANGED <<loc, pcancel, creq, wk>>
+    /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, next_pid, next_tok>>
 
-HeldBy(pid) == {w \in Workers : workers[w] = pid}
-IsHeld(pid) == HeldBy(pid) # {}
+InSlice(a) == wk[a].pc = "slice" /\ wk[a].p \notin creq
 
-StuckPids ==
-    {p \in DOMAIN procs :
-        /\ procs[p].status = BlockedAwait
-        /\ procs[p].target \in DOMAIN procs
-        /\ procs[procs[p].target].status \in {BlockedAwait, Failed}}
+SliceCancelled(a) ==
+    LET p == wk[a].p IN
+    /\ wk[a].pc = "slice"
+    /\ p \in creq
+    /\ creq' = creq \ {p}
+    /\ wk' = [wk EXCEPT ![a].pc = "drain",
+                        ![a].term = {[pid |-> p, out |-> "cancelled"]}]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, queued, next_pid, next_tok>>
 
-\* Rebuild waiters for deadlock cleanup.
-FilteredWaiters(dead) ==
-    [child \in DOMAIN procs |->
-        {parent \in DOMAIN procs :
-            /\ parent \notin dead
-            /\ procs[parent].status = BlockedAwait
-            /\ procs[parent].target = child}]
+SliceYield(a) ==
+    LET p == wk[a].p IN
+    /\ InSlice(a)
+    /\ loc' = ResumeLoc(p)
+    /\ st' = ResumeSt(p)
+    /\ queued' = queued \union {p}
+    /\ wk' = [wk EXCEPT ![a] = Fresh]
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, next_pid, next_tok>>
 
-\* Queue / worker actions
-DequeueRunnable(w, pid) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ Idle(w)
-    /\ KnownPid(pid)
-    /\ AtHead(pid)
-    /\ procs[pid].status = Runnable
-    /\ procs' = [procs EXCEPT ![pid].status = Running]
-    /\ queue' = Tail(queue)
-    /\ workers' = [workers EXCEPT ![w] = pid]
-    /\ step' = step + 1
-    /\ UNCHANGED <<waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
-
-\* Scheduler entries can become stale relative to the process table/worker ownership.
-DequeueStale(w, pid) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ Idle(w)
-    /\ KnownPid(pid)
-    /\ AtHead(pid)
-    /\ procs[pid].status # Runnable
-    /\ queue' = Tail(queue)
-    /\ step' = step + 1
-    /\ UNCHANGED <<procs, workers, waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
-
-WorkerYield(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ LET pid == workers[w] IN
-        /\ procs[pid].status = Running
-        /\ procs' = [procs EXCEPT ![pid].status = Runnable]
-        /\ queue' = Append(queue, pid)
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
-
-WorkerSpawn(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
+SliceSpawn(a) ==
+    LET p == wk[a].p
+        c == next_pid
+    IN
+    /\ InSlice(a)
     /\ next_pid <= MaxProcesses
-    /\ LET pid == workers[w]
-           child == next_pid
-       IN /\ procs[pid].status = Running
-          /\ procs' = [procs EXCEPT ![pid].status = Runnable] @@ (child :> EmptyProc(pid))
-          /\ queue' = queue \o <<child, pid>>
-          /\ workers' = [workers EXCEPT ![w] = 0]
-          /\ waiters' = waiters @@ (child :> {})
-          /\ any_waiters' = any_waiters @@ (child :> {})
-          /\ tombstones' = tombstones @@ (child :> TombNone)
-          /\ pending_cancels' = pending_cancels
-          /\ next_pid' = next_pid + 1
-          /\ step' = step + 1
-          /\ UNCHANGED <<tombstones, pending_cancels, io_waiters, next_token, shutdown>>
+    /\ loc' = [loc EXCEPT ![c] = "table", ![p] = "table"]
+    /\ st' = [st EXCEPT ![c] = "runnable", ![p] = "runnable"]
+    /\ par' = [par EXCEPT ![c] = p]
+    /\ kids' = [kids EXCEPT ![p] = @ \union {c}]
+    /\ live' = live \union {c}
+    /\ queued' = queued \union {c, p}
+    /\ next_pid' = next_pid + 1
+    /\ wk' = [wk EXCEPT ![a] = Fresh]
+    /\ UNCHANGED <<target, akind, targets, tok, tomb, waiters, anyw, iow,
+                   backend, pcancel, creq, next_tok>>
 
-WorkerAwaitBlock(w, child) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ KnownPid(child)
-    /\ LET parent == workers[w] IN
-        /\ procs[parent].status = Running
-        /\ procs[child].parent = parent
-        /\ procs[child].status \in {Runnable, Running, BlockedAwait, BlockedIo}
-        /\ procs' = [procs EXCEPT ![parent].status = BlockedAwait,
-                                   ![parent].target = child]
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ waiters' = [waiters EXCEPT ![child] = @ \union {parent}]
-        /\ step' = step + 1
-        /\ UNCHANGED <<queue, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
+SliceFinish(a, o) ==
+    LET p == wk[a].p IN
+    /\ InSlice(a)
+    /\ wk' = [wk EXCEPT ![a].pc = "drain",
+                        ![a].term = {[pid |-> p, out |-> o]}]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
 
-WorkerAwaitReadyTombstone(w, child) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ KnownPid(child)
-    /\ tombstones[child] = TombReady
-    /\ LET parent == workers[w] IN
-        /\ procs[parent].status = Running
-        /\ procs[child].parent = parent
-        /\ procs' = [procs EXCEPT ![parent].status = Runnable,
-                                   ![parent].target = 0]
-        /\ queue' = Append(queue, parent)
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ tombstones' = [tombstones EXCEPT ![child] = TombConsumed]
-        /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
+\* handle_await. A live child: register, then park, then recheck
+\* (block_on_child). A terminated child: consume its tombstone at once.
+SliceAwait(a, c, kind) ==
+    LET p == wk[a].p IN
+    /\ InSlice(a)
+    /\ c \in kids[p]
+    /\ IF c \in live
+       THEN /\ st' = [st EXCEPT ![p] = "await"]
+            /\ target' = [target EXCEPT ![p] = c]
+            /\ akind' = [akind EXCEPT ![p] = kind]
+            /\ waiters' = [waiters EXCEPT ![c] = @ \union {p}]
+            /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].c = c,
+                                ![a].stack = <<"await_recheck">>]
+            /\ UNCHANGED <<loc, kids, tomb, queued>>
+       ELSE \* "not live" implies "tombstone recorded" while the parent lives;
+            \* a missing one is reported as already joined.
+            LET fails == kind = "raw" /\ tomb[c] # "ok" IN
+            /\ tomb' = [tomb EXCEPT ![c] = "none"]
+            /\ kids' = [kids EXCEPT ![p] = @ \ {c}]
+            /\ IF fails
+               THEN /\ wk' = [wk EXCEPT ![a].pc = "drain",
+                                        ![a].term = {[pid |-> p, out |-> "err"]}]
+                    /\ UNCHANGED <<loc, st, queued>>
+               ELSE /\ loc' = ResumeLoc(p)
+                    /\ st' = ResumeSt(p)
+                    /\ queued' = queued \union {p}
+                    /\ wk' = [wk EXCEPT ![a] = Fresh]
+            /\ UNCHANGED <<target, akind, waiters>>
+    /\ UNCHANGED <<targets, tok, par, live, anyw, iow, backend, pcancel, creq,
+                   next_pid, next_tok>>
 
-WorkerWaitAnyReady(w, children) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ children \in WaitAnyInputs
-    /\ LET parent == workers[w] IN
-        /\ procs[parent].status = Running
-        /\ \A i \in 1..Len(children) :
-            /\ KnownPid(children[i])
-            /\ procs[children[i]].parent = parent
-        /\ \E i \in 1..Len(children) : TerminalStatus(procs[children[i]].status)
-        /\ procs' = [procs EXCEPT ![parent].status = Runnable,
-                                   ![parent].delivered_pid = LeftmostTerminalAfter(0, children)]
-        /\ queue' = Append(queue, parent)
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
+\* handle_cancel: cancel a live child, finish it, then resume the parent.
+SliceCancel(a, c) ==
+    LET p == wk[a].p IN
+    /\ InSlice(a)
+    /\ c \in kids[p]
+    /\ IF c \in live
+       THEN /\ wk' = [wk EXCEPT ![a].pc = "cp", ![a].x = c,
+                                ![a].stack = <<"drain", "cancel_resume">>]
+            /\ UNCHANGED <<loc, st, queued>>
+       ELSE /\ loc' = ResumeLoc(p)
+            /\ st' = ResumeSt(p)
+            /\ queued' = queued \union {p}
+            /\ wk' = [wk EXCEPT ![a] = Fresh]
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, next_pid, next_tok>>
 
-WorkerWaitAnyBlock(w, children) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ children \in WaitAnyInputs
-    /\ LET parent == workers[w] IN
-        /\ procs[parent].status = Running
-        /\ \A i \in 1..Len(children) :
-            /\ KnownPid(children[i])
-            /\ procs[children[i]].parent = parent
-            /\ ~TerminalStatus(procs[children[i]].status)
-        /\ procs' = [procs EXCEPT ![parent].status = BlockedAny,
-                                   ![parent].targets = children,
-                                   ![parent].target = 0]
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ any_waiters' = [child \in DOMAIN any_waiters |->
-            IF child \in SeqSet(children)
-            THEN any_waiters[child] \union {parent}
-            ELSE any_waiters[child]]
-        /\ step' = step + 1
-        /\ UNCHANGED <<queue, waiters, tombstones, pending_cancels, io_waiters, next_pid, next_token, shutdown>>
+CancelResume(a) ==
+    LET p == wk[a].p IN
+    /\ wk[a].pc = "cancel_resume"
+    /\ loc' = ResumeLoc(p)
+    /\ st' = ResumeSt(p)
+    /\ queued' = queued \union {p}
+    /\ wk' = [wk EXCEPT ![a] = Fresh]
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, next_pid, next_tok>>
 
-WorkerCancelRunningChild(w, child) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ KnownPid(child)
-    /\ procs[child].status = Running
-    /\ LET parent == workers[w] IN
-        /\ procs[parent].status = Running
-        /\ procs[child].parent = parent
-        /\ procs' = [procs EXCEPT ![parent].status = Runnable]
-        /\ queue' = Append(queue, parent)
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ pending_cancels' = pending_cancels \union {child}
-        /\ step' = step + 1
-        /\ UNCHANGED <<waiters, any_waiters, tombstones, io_waiters, next_pid, next_token, shutdown>>
+\* handle_wait_any. A terminated listed child: deliver at once. Otherwise
+\* register with every listed child, park, then recheck.
+SliceWaitAny(a, s) ==
+    LET p == wk[a].p IN
+    /\ InSlice(a)
+    /\ s # {}
+    /\ s \subseteq kids[p]
+    /\ IF \E y \in s : y \notin live
+       THEN /\ loc' = ResumeLoc(p)
+            /\ st' = ResumeSt(p)
+            /\ queued' = queued \union {p}
+            /\ wk' = [wk EXCEPT ![a] = Fresh]
+            /\ UNCHANGED <<targets, anyw>>
+       ELSE /\ st' = [st EXCEPT ![p] = "any"]
+            /\ targets' = [targets EXCEPT ![p] = s]
+            /\ anyw' = [y \in Pids |-> IF y \in s THEN anyw[y] \union {p} ELSE anyw[y]]
+            /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].s = s,
+                                ![a].stack = <<"any_recheck">>]
+            /\ UNCHANGED <<loc, queued>>
+    /\ UNCHANGED <<target, akind, tok, par, kids, live, tomb, waiters, iow,
+                   backend, pcancel, creq, next_pid, next_tok>>
 
-WorkerObservePendingCancel(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ LET pid == workers[w]
-           any_parent == AnyWaiter(pid)
+\* RunResult::Io: register and park before handing the request to the backend.
+SliceIo(a) ==
+    LET p == wk[a].p
+        t == next_tok
+    IN
+    /\ InSlice(a)
+    /\ next_tok <= MaxIo
+    /\ st' = [st EXCEPT ![p] = "io"]
+    /\ tok' = [tok EXCEPT ![p] = t]
+    /\ iow' = [iow EXCEPT ![t] = p]
+    /\ next_tok' = next_tok + 1
+    /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].t = t,
+                        ![a].stack = <<"drain", "io_register">>]
+    /\ UNCHANGED <<loc, target, akind, targets, par, kids, live, tomb, waiters,
+                   anyw, backend, pcancel, creq, queued, next_pid>>
+
+\* Cancelled while parking: never start the request.
+IoRegister(a) ==
+    LET t == wk[a].t IN
+    /\ wk[a].pc = "io_register"
+    /\ backend' = IF iow[t] # 0 THEN backend \union {t} ELSE backend
+    /\ wk' = [wk EXCEPT ![a] = Fresh]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, pcancel, creq, queued, next_pid, next_tok>>
+
+AwaitRecheck(a) ==
+    LET c == wk[a].c IN
+    /\ wk[a].pc = "await_recheck"
+    /\ IF RecheckAfterPark /\ c \notin live
+       THEN wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = c], "wj0", "drain")]
+       ELSE wk' = [wk EXCEPT ![a].pc = "drain"]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+AnyRecheck(a) ==
+    /\ wk[a].pc = "any_recheck"
+    /\ IF RecheckAfterPark /\ \E y \in wk[a].s : y \notin live
+       THEN \E y \in wk[a].s :
+                /\ y \notin live
+                /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = y], "wa0", "drain")]
+       ELSE wk' = [wk EXCEPT ![a].pc = "drain"]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* ---------------------------------------------------------------------------
+\* park: return an owned blocked process to the table, then observe a
+\* cancellation requested while it was owned.
+
+Park(a) ==
+    LET pk == wk[a].pk IN
+    /\ wk[a].pc = "park"
+    /\ loc' = [loc EXCEPT ![pk] = "table"]
+    /\ wk' = [wk EXCEPT ![a].pc = "park2"]
+    /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+Park2(a) ==
+    LET pk == wk[a].pk IN
+    /\ wk[a].pc = "park2"
+    /\ IF pk \in pcancel
+       THEN /\ pcancel' = pcancel \ {pk}
+            /\ wk' = [wk EXCEPT ![a].pc = "tc", ![a].x = pk]
+       ELSE /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ UNCHANGED pcancel
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, creq, queued, next_pid, next_tok>>
+
+\* ---------------------------------------------------------------------------
+\* try_cancel_in_table(x). A blocked process is taken, its registration
+\* removed, and its termination queued; a runnable one gets the VM cancel
+\* flag; a process out of the table is reported as not found.
+
+TryCancel(a) ==
+    LET x == wk[a].x IN
+    /\ wk[a].pc = "tc"
+    /\ IF loc[x] = "table" /\ st[x] \in BlockedStates
+       THEN /\ loc' = [loc EXCEPT ![x] = a]
+            /\ waiters' = IF st[x] = "await"
+                          THEN [waiters EXCEPT ![target[x]] = @ \ {x}]
+                          ELSE waiters
+            /\ anyw' = IF st[x] = "any"
+                       THEN [y \in Pids |-> IF y \in targets[x] THEN anyw[y] \ {x} ELSE anyw[y]]
+                       ELSE anyw
+            /\ iow' = IF st[x] = "io" THEN [iow EXCEPT ![tok[x]] = 0] ELSE iow
+            /\ wk' = [wk EXCEPT ![a] = Return([@ EXCEPT !.ok = TRUE,
+                                !.term = @ \union {[pid |-> x, out |-> "cancelled"]}])]
+            /\ UNCHANGED creq
+       ELSE /\ creq' = IF loc[x] = "table" /\ st[x] = "runnable"
+                       THEN creq \union {x} ELSE creq
+            /\ wk' = [wk EXCEPT ![a] = Return([@ EXCEPT !.ok = (loc[x] = "table")])]
+            /\ UNCHANGED <<loc, waiters, anyw, iow>>
+    /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb,
+                   backend, pcancel, queued, next_pid, next_tok>>
+
+\* cancel_pid(x)
+CancelPid(a) ==
+    /\ wk[a].pc = "cp"
+    /\ wk' = [wk EXCEPT ![a] = Call(@, "tc", "cp2")]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* Out of the table: leave a request for its owner.
+CancelPid2(a) ==
+    /\ wk[a].pc = "cp2"
+    /\ IF wk[a].ok
+       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ UNCHANGED pcancel
+       ELSE /\ pcancel' = pcancel \union {wk[a].x}
+            /\ wk' = [wk EXCEPT ![a].pc = "cp3"]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, creq, queued, next_pid, next_tok>>
+
+\* Terminated meanwhile: drop the request. Otherwise the owner may have
+\* parked it before seeing the request: try again.
+CancelPid3(a) ==
+    LET x == wk[a].x IN
+    /\ wk[a].pc = "cp3"
+    /\ IF x \notin live
+       THEN /\ pcancel' = pcancel \ {x}
+            /\ wk' = [wk EXCEPT ![a] = Return(@)]
+       ELSE /\ wk' = [wk EXCEPT ![a].pc = "tc"]
+            /\ UNCHANGED pcancel
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, creq, queued, next_pid, next_tok>>
+
+\* ---------------------------------------------------------------------------
+\* drain_terminations and finish_process
+
+Drain(a) ==
+    /\ wk[a].pc = "drain"
+    /\ IF wk[a].term = {}
+       THEN wk' = [wk EXCEPT ![a] = Return(@)]
+       ELSE \E e \in wk[a].term :
+                wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.q = e.pid, !.out = e.out,
+                                                       !.term = @ \ {e}], "f1", "drain")]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* 1. Record the outcome: a tombstone for a child, a terminal status for the root.
+Finish1(a) ==
+    LET q == wk[a].q IN
+    /\ wk[a].pc = "f1"
+    /\ queued' = queued \ {q}
+    /\ IF par[q] # 0
+       THEN /\ loc' = [loc EXCEPT ![q] = "gone"]
+            /\ tomb' = [tomb EXCEPT ![q] = wk[a].out]
+            /\ UNCHANGED st
+       ELSE /\ loc' = [loc EXCEPT ![q] = "table"]
+            /\ st' = [st EXCEPT ![q] = IF wk[a].out = "ok" THEN "done" ELSE "failed"]
+            /\ UNCHANGED tomb
+    /\ wk' = [wk EXCEPT ![a].pc = "f2"]
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, waiters, anyw,
+                   iow, backend, pcancel, creq, next_pid, next_tok>>
+
+\* A child whose parent is gone reaps its own tombstone.
+Finish2(a) ==
+    LET q == wk[a].q IN
+    /\ wk[a].pc = "f2"
+    /\ tomb' = IF par[q] # 0 /\ par[q] \notin live
+               THEN [tomb EXCEPT ![q] = "none"] ELSE tomb
+    /\ wk' = [wk EXCEPT ![a].pc = "f3"]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, waiters,
+                   anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* 2. Stop being live.
+Finish3(a) ==
+    /\ wk[a].pc = "f3"
+    /\ live' = live \ {wk[a].q}
+    /\ wk' = [wk EXCEPT ![a].pc = "f4"]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+Finish4(a) ==
+    LET q == wk[a].q IN
+    /\ wk[a].pc = "f4"
+    /\ pcancel' = pcancel \ {q}
+    /\ kids' = [kids EXCEPT ![q] = {}]
+    /\ wk' = [wk EXCEPT ![a].pc = "f5", ![a].ktodo = kids[q]]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, live, tomb, waiters,
+                   anyw, iow, backend, creq, queued, next_pid, next_tok>>
+
+\* 3. Scope exit: cancel live children, then remove their tombstones.
+Finish5(a) ==
+    /\ wk[a].pc = "f5"
+    /\ IF wk[a].ktodo = {}
+       THEN wk' = [wk EXCEPT ![a].pc = "f6"]
+       ELSE \E k \in wk[a].ktodo :
+                LET r == [wk[a] EXCEPT !.ktodo = @ \ {k}, !.k = k] IN
+                wk' = [wk EXCEPT ![a] =
+                          IF k \in live
+                          THEN Call([r EXCEPT !.x = k], "cp", "f5b")
+                          ELSE [r EXCEPT !.pc = "f5b"]]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+Finish5b(a) ==
+    /\ wk[a].pc = "f5b"
+    /\ tomb' = IF ReapTombstones THEN [tomb EXCEPT ![wk[a].k] = "none"] ELSE tomb
+    /\ wk' = [wk EXCEPT ![a].pc = "f5"]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, waiters,
+                   anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* 4. Wake wait_any waiters, then await waiters.
+Finish6(a) ==
+    /\ wk[a].pc = "f6"
+    /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = wk[a].q], "wa0", "f7")]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+Finish7(a) ==
+    /\ wk[a].pc = "f7"
+    /\ wk' = [wk EXCEPT ![a].pc = "wj0", ![a].fin = wk[a].q]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* ---------------------------------------------------------------------------
+\* wake_any_waiters(fin)
+
+WakeAny0(a) ==
+    LET fin == wk[a].fin IN
+    /\ wk[a].pc = "wa0"
+    /\ wk' = [wk EXCEPT ![a] =
+                 IF anyw[fin] = {} THEN Return(@)
+                 ELSE [@ EXCEPT !.pc = "wa1", !.wtodo = anyw[fin]]]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* take_waiter: take it if it is parked waiting for fin; skip it if it is in
+\* flight (live, out of the table); drop a stale registration otherwise.
+WakeAny1(a) ==
+    LET fin == wk[a].fin IN
+    /\ wk[a].pc = "wa1"
+    /\ IF wk[a].wtodo = {}
+       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ UNCHANGED <<loc, anyw>>
+       ELSE \E w2 \in wk[a].wtodo :
+            LET r == [wk[a] EXCEPT !.wtodo = @ \ {w2}, !.cur = w2] IN
+            IF loc[w2] = "table" /\ st[w2] = "any" /\ fin \in targets[w2]
+            THEN /\ loc' = [loc EXCEPT ![w2] = a]
+                 /\ wk' = [wk EXCEPT ![a] = [r EXCEPT !.pc = "wa2"]]
+                 /\ UNCHANGED anyw
+            ELSE /\ anyw' = IF loc[w2] = "table" /\ w2 \in live
+                            THEN [anyw EXCEPT ![fin] = @ \ {w2}]
+                            ELSE IF w2 \in live
+                                 THEN anyw
+                                 ELSE RemoveEverywhere(anyw, w2)
+                 /\ wk' = [wk EXCEPT ![a] = r]
+                 /\ UNCHANGED loc
+    /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* Deliver a terminated listed child, or park the waiter again.
+WakeAny2(a) ==
+    LET cur == wk[a].cur IN
+    /\ wk[a].pc = "wa2"
+    /\ IF \E y \in targets[cur] : y \notin live
+       THEN /\ anyw' = [y \in Pids |-> IF y \in targets[cur] THEN anyw[y] \ {cur} ELSE anyw[y]]
+            /\ wk' = [wk EXCEPT ![a].pc = "wa3"]
+       ELSE /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.pk = cur], "park", "wa1")]
+            /\ UNCHANGED anyw
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+WakeAny3(a) ==
+    LET cur == wk[a].cur IN
+    /\ wk[a].pc = "wa3"
+    /\ loc' = ResumeLoc(cur)
+    /\ st' = ResumeSt(cur)
+    /\ queued' = queued \union {cur}
+    /\ wk' = [wk EXCEPT ![a].pc = "wa1"]
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, next_pid, next_tok>>
+
+\* ---------------------------------------------------------------------------
+\* wake_join_waiters(fin)
+
+WakeJoin0(a) ==
+    LET fin == wk[a].fin IN
+    /\ wk[a].pc = "wj0"
+    /\ IF waiters[fin] = {}
+       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ UNCHANGED waiters
+       ELSE IF tomb[fin] = "none"
+            THEN \* Reaped: its parent is gone, so nobody can still be waiting.
+                 /\ waiters' = [waiters EXCEPT ![fin] = {}]
+                 /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            ELSE /\ wk' = [wk EXCEPT ![a].pc = "wj1", ![a].wtodo = waiters[fin]]
+                 /\ UNCHANGED waiters
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+WakeJoin1(a) ==
+    LET fin == wk[a].fin IN
+    /\ wk[a].pc = "wj1"
+    /\ IF wk[a].wtodo = {}
+       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ UNCHANGED <<loc, waiters>>
+       ELSE \E w2 \in wk[a].wtodo :
+            LET r == [wk[a] EXCEPT !.wtodo = @ \ {w2}, !.cur = w2] IN
+            IF loc[w2] = "table" /\ st[w2] = "await" /\ target[w2] = fin
+            THEN /\ loc' = [loc EXCEPT ![w2] = a]
+                 /\ wk' = [wk EXCEPT ![a] = [r EXCEPT !.pc = "wj2"]]
+                 /\ UNCHANGED waiters
+            ELSE /\ waiters' = IF loc[w2] = "table" /\ w2 \in live
+                               THEN [waiters EXCEPT ![fin] = @ \ {w2}]
+                               ELSE IF w2 \in live
+                                    THEN waiters
+                                    ELSE RemoveEverywhere(waiters, w2)
+                 /\ wk' = [wk EXCEPT ![a] = r]
+                 /\ UNCHANGED loc
+    /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb, anyw,
+                   iow, backend, pcancel, creq, queued, next_pid, next_tok>>
+
+\* Deliver: consume the tombstone (only the parent awaits a child). A raw
+\* await of a failed child, or of a child already joined, fails the waiter.
+WakeJoin2(a) ==
+    /\ wk[a].pc = "wj2"
+    /\ LET fin == wk[a].fin
+           cur == wk[a].cur
+           fails == akind[cur] = "raw" /\ tomb[fin] # "ok"
        IN
-        /\ pid \in pending_cancels
-        /\ procs[pid].status = Running
-        /\ IF any_parent # 0
-           THEN /\ procs' = [procs EXCEPT ![pid].status = Failed,
-                                          ![any_parent].status = Runnable,
-                                          ![any_parent].targets = <<>>,
-                                          ![any_parent].delivered_pid = LeftmostTerminalAfter(pid, procs[any_parent].targets)]
-                /\ queue' = Append(queue, any_parent)
-                /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
-           ELSE /\ procs' = [procs EXCEPT ![pid].status = Failed]
-                /\ queue' = queue
-                /\ any_waiters' = any_waiters
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
-        /\ pending_cancels' = pending_cancels \ {pid}
-        /\ step' = step + 1
-        /\ UNCHANGED <<waiters, io_waiters, next_pid, next_token, shutdown>>
+       /\ waiters' = [waiters EXCEPT ![fin] = @ \ {cur}]
+       /\ tomb' = [tomb EXCEPT ![fin] = "none"]
+       /\ kids' = [kids EXCEPT ![cur] = @ \ {fin}]
+       /\ wk' = [wk EXCEPT ![a] =
+                    IF fails
+                    THEN [@ EXCEPT !.pc = "wj1", !.term = @ \union {[pid |-> cur, out |-> "err"]}]
+                    ELSE [@ EXCEPT !.pc = "wj3"]]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, live, anyw, iow,
+                   backend, pcancel, creq, queued, next_pid, next_tok>>
 
-WorkerRequestIo(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ next_token <= MaxIoOps
-    /\ LET pid == workers[w]
-           tok == next_token
-       IN /\ procs[pid].status = Running
-          /\ procs' = [procs EXCEPT ![pid].status = BlockedIo,
-                                     ![pid].target = tok]
-          /\ workers' = [workers EXCEPT ![w] = 0]
-          /\ io_waiters' = io_waiters \union {[pid |-> pid, token |-> tok]}
-          /\ next_token' = next_token + 1
-          /\ step' = step + 1
-          /\ UNCHANGED <<queue, waiters, any_waiters, tombstones, pending_cancels, next_pid, shutdown>>
+WakeJoin3(a) ==
+    LET cur == wk[a].cur IN
+    /\ wk[a].pc = "wj3"
+    /\ loc' = ResumeLoc(cur)
+    /\ st' = ResumeSt(cur)
+    /\ queued' = queued \union {cur}
+    /\ wk' = [wk EXCEPT ![a].pc = "wj1"]
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, next_pid, next_tok>>
 
-WorkerDone(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ LET pid == workers[w]
-           any_parent == AnyWaiter(pid)
-       IN
-        /\ procs[pid].status = Running
-        /\ IF waiters[pid] # {}
-           THEN LET parent == CHOOSE p \in waiters[pid] : TRUE IN
-                /\ procs' = [procs EXCEPT ![pid].status = Done,
-                                           ![parent].status = Runnable,
-                                           ![parent].target = 0]
-                /\ queue' = Append(queue, parent)
-                /\ waiters' = [waiters EXCEPT ![pid] = {}]
-                /\ any_waiters' = any_waiters
-                /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombConsumed]
-           ELSE IF any_parent # 0
-                THEN /\ procs' = [procs EXCEPT ![pid].status = Done,
-                                               ![any_parent].status = Runnable,
-                                               ![any_parent].targets = <<>>,
-                                               ![any_parent].delivered_pid = LeftmostTerminalAfter(pid, procs[any_parent].targets)]
-                     /\ queue' = Append(queue, any_parent)
-                     /\ waiters' = waiters
-                     /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
-                     /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
-                ELSE /\ procs' = [procs EXCEPT ![pid].status = Done]
-                     /\ queue' = queue
-                     /\ waiters' = waiters
-                     /\ any_waiters' = any_waiters
-                     /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ pending_cancels' = pending_cancels
-        /\ step' = step + 1
-        /\ UNCHANGED <<io_waiters, next_pid, next_token, shutdown>>
+\* ---------------------------------------------------------------------------
+\* I/O monitor: handle_io_completion. The backend may report a completion for
+\* a token that was cancelled; the runtime drops it.
 
-WorkerFail(w) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ workers[w] # 0
-    /\ LET pid == workers[w]
-           any_parent == AnyWaiter(pid)
-       IN
-        /\ procs[pid].status = Running
-        /\ IF waiters[pid] # {}
-           THEN LET parent == CHOOSE p \in waiters[pid] : TRUE IN
-                /\ procs' = [procs EXCEPT ![pid].status = Failed,
-                                           ![parent].status = Failed,
-                                           ![parent].target = 0]
-                /\ waiters' = [waiters EXCEPT ![pid] = {}]
-                /\ any_waiters' = any_waiters
-                /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombConsumed]
-           ELSE IF any_parent # 0
-                THEN /\ procs' = [procs EXCEPT ![pid].status = Failed,
-                                               ![any_parent].status = Runnable,
-                                               ![any_parent].targets = <<>>,
-                                               ![any_parent].delivered_pid = LeftmostTerminalAfter(pid, procs[any_parent].targets)]
-                     /\ queue' = Append(queue, any_parent)
-                     /\ waiters' = waiters
-                     /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
-                     /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
-                ELSE /\ procs' = [procs EXCEPT ![pid].status = Failed]
-                     /\ queue' = queue
-                     /\ waiters' = waiters
-                     /\ any_waiters' = any_waiters
-                     /\ tombstones' = [tombstones EXCEPT ![pid] = IF procs[pid].parent = 0 THEN TombNone ELSE TombReady]
-        /\ workers' = [workers EXCEPT ![w] = 0]
-        /\ pending_cancels' = pending_cancels
-        /\ step' = step + 1
-        /\ UNCHANGED <<queue, io_waiters, next_pid, next_token, shutdown>>
+MonitorPoll(t) ==
+    /\ wk[Mon].pc = "idle"
+    /\ t \in backend
+    /\ backend' = backend \ {t}
+    /\ IF iow[t] = 0
+       THEN UNCHANGED <<iow, wk>>
+       ELSE /\ iow' = [iow EXCEPT ![t] = 0]
+            /\ wk' = [wk EXCEPT ![Mon] = [Fresh EXCEPT !.pc = "m1", !.cur = iow[t], !.t = t]]
+    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
+                   waiters, anyw, pcancel, creq, queued, next_pid, next_tok>>
 
-\* Monitor actions
-MonitorIoComplete(entry) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ entry \in io_waiters
-    /\ KnownPid(entry.pid)
-    /\ procs[entry.pid].status = BlockedIo
-    /\ procs[entry.pid].target = entry.token
-    /\ procs' = [procs EXCEPT ![entry.pid].status = Runnable,
-                               ![entry.pid].target = 0]
-    /\ queue' = Append(queue, entry.pid)
-    /\ io_waiters' = io_waiters \ {entry}
-    /\ step' = step + 1
-    /\ UNCHANGED <<workers, waiters, any_waiters, tombstones, pending_cancels, next_pid, next_token, shutdown>>
+MonitorTake ==
+    LET cur == wk[Mon].cur IN
+    /\ wk[Mon].pc = "m1"
+    /\ IF loc[cur] = "table" /\ st[cur] = "io" /\ tok[cur] = wk[Mon].t
+       THEN /\ loc' = [loc EXCEPT ![cur] = Mon]
+            /\ wk' = [wk EXCEPT ![Mon].pc = "m2"]
+            /\ UNCHANGED iow
+       ELSE \* Defensive: a registration for a process not waiting on it.
+            /\ iow' = [t \in Toks |-> IF iow[t] = cur THEN 0 ELSE iow[t]]
+            /\ wk' = [wk EXCEPT ![Mon] = Fresh]
+            /\ UNCHANGED loc
+    /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, backend, pcancel, creq, queued, next_pid, next_tok>>
 
-MonitorIoFail(entry) ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ entry \in io_waiters
-    /\ KnownPid(entry.pid)
-    /\ procs[entry.pid].status = BlockedIo
-    /\ procs[entry.pid].target = entry.token
-    /\ LET any_parent == AnyWaiter(entry.pid) IN
-        /\ IF waiters[entry.pid] # {}
-           THEN LET parent == CHOOSE p \in waiters[entry.pid] : TRUE IN
-                /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
-                                           ![entry.pid].target = 0,
-                                           ![parent].status = Failed,
-                                           ![parent].target = 0]
-                /\ queue' = queue
-                /\ waiters' = [waiters EXCEPT ![entry.pid] = {}]
-                /\ any_waiters' = any_waiters
-                /\ tombstones' = [tombstones EXCEPT ![entry.pid] = IF procs[entry.pid].parent = 0 THEN TombNone ELSE TombConsumed]
-           ELSE IF any_parent # 0
-                THEN /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
-                                               ![entry.pid].target = 0,
-                                               ![any_parent].status = Runnable,
-                                               ![any_parent].targets = <<>>,
-                                               ![any_parent].delivered_pid = LeftmostTerminalAfter(entry.pid, procs[any_parent].targets)]
-                     /\ queue' = Append(queue, any_parent)
-                     /\ waiters' = waiters
-                     /\ any_waiters' = ClearAnyWaiterRegistrations(any_parent, procs[any_parent].targets)
-                     /\ tombstones' = [tombstones EXCEPT ![entry.pid] = IF procs[entry.pid].parent = 0 THEN TombNone ELSE TombReady]
-                ELSE /\ procs' = [procs EXCEPT ![entry.pid].status = Failed,
-                                                ![entry.pid].target = 0]
-                     /\ queue' = queue
-                     /\ waiters' = waiters
-                     /\ any_waiters' = any_waiters
-                     /\ tombstones' = [tombstones EXCEPT ![entry.pid] = IF procs[entry.pid].parent = 0 THEN TombNone ELSE TombReady]
-    /\ io_waiters' = io_waiters \ {entry}
-    /\ pending_cancels' = pending_cancels \ {entry.pid}
-    /\ step' = step + 1
-    /\ UNCHANGED <<workers, next_pid, next_token, shutdown>>
+MonitorDeliver(ok) ==
+    LET cur == wk[Mon].cur IN
+    /\ wk[Mon].pc = "m2"
+    /\ IF ok
+       THEN /\ loc' = ResumeLoc(cur)
+            /\ st' = ResumeSt(cur)
+            /\ queued' = queued \union {cur}
+            /\ wk' = [wk EXCEPT ![Mon] = Fresh]
+       ELSE /\ wk' = [wk EXCEPT ![Mon].pc = "drain",
+                                ![Mon].term = {[pid |-> cur, out |-> "err"]}]
+            /\ UNCHANGED <<loc, st, queued>>
+    /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
+                   anyw, iow, backend, pcancel, creq, next_pid, next_tok>>
 
-MonitorDetectDeadlock ==
-    /\ StepOK
-    /\ ~shutdown
-    /\ queue = <<>>
-    /\ io_waiters = {}
-    /\ \A w \in Workers : Idle(w)
-    /\ StuckPids # {}
-    /\ procs' = [p \in DOMAIN procs |->
-        IF p \in StuckPids
-        THEN [procs[p] EXCEPT !.status = Failed, !.target = 0]
-        ELSE procs[p]]
-    /\ waiters' = [child \in DOMAIN procs |->
-        {parent \in DOMAIN procs :
-            /\ parent \notin StuckPids
-            /\ procs[parent].status = BlockedAwait
-            /\ procs[parent].target = child}]
-    /\ any_waiters' = any_waiters
-    /\ shutdown' = TRUE
-    /\ step' = step + 1
-    /\ UNCHANGED <<queue, workers, tombstones, pending_cancels, io_waiters, next_pid, next_token>>
+\* ---------------------------------------------------------------------------
 
+\* Steps that continue work an actor has started. Used for fairness; Next
+\* lists them again, written out (see the note on Next).
+Busy(a) ==
+    \/ Park(a) \/ Park2(a)
+    \/ TryCancel(a) \/ CancelPid(a) \/ CancelPid2(a) \/ CancelPid3(a)
+    \/ Drain(a)
+    \/ Finish1(a) \/ Finish2(a) \/ Finish3(a) \/ Finish4(a) \/ Finish5(a)
+    \/ Finish5b(a) \/ Finish6(a) \/ Finish7(a)
+    \/ WakeAny0(a) \/ WakeAny1(a) \/ WakeAny2(a) \/ WakeAny3(a)
+    \/ WakeJoin0(a) \/ WakeJoin1(a) \/ WakeJoin2(a) \/ WakeJoin3(a)
+    \/ AwaitRecheck(a) \/ AnyRecheck(a) \/ IoRegister(a) \/ CancelResume(a)
+
+\* Every action is its own disjunct of Next. With tla-checker, grouping actions
+\* in an operator made exploration far slower or stall, and a CASE dispatch on
+\* pc produced successor states the actions do not allow.
 Next ==
-    \/ \E w \in Workers :
-        \/ \E pid \in DOMAIN procs : DequeueRunnable(w, pid)
-        \/ \E pid \in DOMAIN procs : DequeueStale(w, pid)
-        \/ WorkerYield(w)
-        \/ WorkerSpawn(w)
-        \/ WorkerRequestIo(w)
-        \/ WorkerObservePendingCancel(w)
-        \/ WorkerDone(w)
-        \/ WorkerFail(w)
-        \/ \E child \in DOMAIN procs : WorkerAwaitBlock(w, child)
-        \/ \E child \in DOMAIN procs : WorkerAwaitReadyTombstone(w, child)
-        \/ \E child \in DOMAIN procs : WorkerCancelRunningChild(w, child)
-        \/ \E children \in WaitAnyInputs :
-            \/ WorkerWaitAnyReady(w, children)
-            \/ WorkerWaitAnyBlock(w, children)
-    \/ \E entry \in io_waiters :
-        \/ MonitorIoComplete(entry)
-        \/ MonitorIoFail(entry)
-    \/ MonitorDetectDeadlock
-
-\* Invariants
-TypeOK ==
-    /\ next_pid \in Nat
-    /\ next_token \in Nat
-    /\ step \in Nat
-    /\ shutdown \in BOOLEAN
-    /\ \A p \in DOMAIN procs :
-        /\ procs[p].status \in {Runnable, Running, BlockedAwait, BlockedAny, BlockedIo, Done, Failed}
-        /\ procs[p].parent \in (DOMAIN procs) \union {0}
-        /\ procs[p].target \in Nat \union {0}
-        /\ IF procs[p].status = BlockedAny
-           THEN procs[p].targets \in WaitAnyInputs
-           ELSE procs[p].targets \in {<<>>} \union WaitAnyInputs
-        /\ procs[p].delivered_pid \in Nat \union {0}
-    /\ DOMAIN tombstones = DOMAIN procs
-    /\ \A p \in DOMAIN tombstones : tombstones[p] \in {TombNone, TombReady, TombConsumed}
-    /\ pending_cancels \subseteq DOMAIN procs
-    /\ \A child \in DOMAIN any_waiters : any_waiters[child] \subseteq DOMAIN procs
-    /\ \A w \in Workers : workers[w] \in (DOMAIN procs) \union {0}
-
-QueueKnownPids ==
-    \A i \in 1..Len(queue) : queue[i] \in DOMAIN procs
-
-RunningHeldByExactlyOneWorker ==
-    \A p \in DOMAIN procs :
-        (procs[p].status = Running) => Cardinality(HeldBy(p)) = 1
-
-OnlyHeldProcessesAreRunning ==
-    \A w \in Workers :
-        workers[w] # 0 => procs[workers[w]].status = Running
-
-BlockedNeverHeld ==
-    \A p \in DOMAIN procs :
-        (procs[p].status \in {BlockedAwait, BlockedAny, BlockedIo, Done, Failed}) =>
-            ~IsHeld(p)
-
-AtMostOneWaiterPerChild ==
-    \A child \in DOMAIN waiters :
-        Cardinality(waiters[child]) <= 1
-
-WaitersConsistent ==
-    \A child \in DOMAIN waiters :
-        \A parent \in waiters[child] :
-            /\ parent \in DOMAIN procs
-            /\ procs[parent].status = BlockedAwait
-            /\ procs[parent].target = child
-
-AnyWaitersConsistent ==
-    \A child \in DOMAIN any_waiters :
-        \A parent \in any_waiters[child] :
-            /\ parent \in DOMAIN procs
-            /\ procs[parent].status = BlockedAny
-            /\ child \in SeqSet(procs[parent].targets)
-            /\ procs[child].parent = parent
-
-PendingCancelsConsistent ==
-    \A p \in pending_cancels :
-        /\ procs[p].status = Running
-        /\ procs[p].parent # 0
-
-TombstonesConsistent ==
-    \A p \in DOMAIN procs :
-        /\ procs[p].parent = 0 => tombstones[p] = TombNone
-        /\ tombstones[p] \in {TombReady, TombConsumed} =>
-            /\ procs[p].parent # 0
-            /\ TerminalStatus(procs[p].status)
-
-IoWaitersConsistent ==
-    \A entry \in io_waiters :
-        /\ entry.pid \in DOMAIN procs
-        /\ procs[entry.pid].status = BlockedIo
-        /\ procs[entry.pid].target = entry.token
-
-ShutdownImpliesNoRunnableOrRunning ==
-    shutdown =>
-        /\ queue = <<>>
-        /\ io_waiters = {}
-        /\ \A w \in Workers : Idle(w)
-        /\ \A p \in DOMAIN procs :
-            procs[p].status \notin {Runnable, Running}
-
-SafetyInvariant ==
-    /\ TypeOK
-    /\ QueueKnownPids
-    /\ RunningHeldByExactlyOneWorker
-    /\ OnlyHeldProcessesAreRunning
-    /\ BlockedNeverHeld
-    /\ AtMostOneWaiterPerChild
-    /\ WaitersConsistent
-    /\ AnyWaitersConsistent
-    /\ PendingCancelsConsistent
-    /\ TombstonesConsistent
-    /\ IoWaitersConsistent
-    /\ ShutdownImpliesNoRunnableOrRunning
+    \/ \E a \in Workers, p \in Pids : Dequeue(a, p)
+    \/ \E a \in Workers : SliceCancelled(a)
+    \/ \E a \in Workers : SliceYield(a)
+    \/ \E a \in Workers : SliceSpawn(a)
+    \/ \E a \in Workers, o \in {"ok", "err"} : SliceFinish(a, o)
+    \/ \E a \in Workers, c \in Pids, kind \in {"raw", "result"} : SliceAwait(a, c, kind)
+    \/ \E a \in Workers, c \in Pids : SliceCancel(a, c)
+    \/ \E a \in Workers, s \in SUBSET Pids : SliceWaitAny(a, s)
+    \/ \E a \in Workers : SliceIo(a)
+    \/ \E a \in Actors :
+        \/ Park(a) \/ Park2(a)
+        \/ TryCancel(a) \/ CancelPid(a) \/ CancelPid2(a) \/ CancelPid3(a)
+        \/ Drain(a)
+        \/ Finish1(a) \/ Finish2(a) \/ Finish3(a) \/ Finish4(a) \/ Finish5(a)
+        \/ Finish5b(a) \/ Finish6(a) \/ Finish7(a)
+        \/ WakeAny0(a) \/ WakeAny1(a) \/ WakeAny2(a) \/ WakeAny3(a)
+        \/ WakeJoin0(a) \/ WakeJoin1(a) \/ WakeJoin2(a) \/ WakeJoin3(a)
+        \/ AwaitRecheck(a) \/ AnyRecheck(a) \/ IoRegister(a) \/ CancelResume(a)
+    \/ \E t \in Toks : MonitorPoll(t)
+    \/ MonitorTake
+    \/ \E ok \in BOOLEAN : MonitorDeliver(ok)
 
 Spec == Init /\ [][Next]_vars
 
-\* ── Liveness ────────────────────────────────────────────────
-\* Fairness: workers eventually run, monitor eventually polls
+\* ---------------------------------------------------------------------------
+\* Invariants
 
-ImplFairness ==
-    /\ \A w \in Workers :
-        /\ WF_vars(WorkerDone(w))
-        /\ WF_vars(WorkerFail(w))
-    /\ \A entry \in [pid : 1..MaxProcesses, token : 1..MaxIoOps] :
-        WF_vars(MonitorIoComplete(entry))
-    /\ WF_vars(MonitorDetectDeadlock)
+TypeOK ==
+    /\ \A p \in Pids :
+        /\ loc[p] \in {"none", "table", "gone"} \union Actors
+        /\ st[p] \in {"runnable", "await", "any", "io", "done", "failed"}
+        /\ tomb[p] \in {"none", "ok", "err", "cancelled"}
+        /\ par[p] \in Pids \union {0}
+        /\ kids[p] \subseteq Pids
+        /\ waiters[p] \subseteq Pids
+        /\ anyw[p] \subseteq Pids
+    /\ live \subseteq Pids
+    /\ pcancel \subseteq Pids
+    /\ creq \subseteq Pids
+    /\ queued \subseteq Pids
+    /\ backend \subseteq Toks
+    /\ \A t \in Toks : iow[t] \in Pids \union {0}
 
-LiveSpec == Init /\ [][Next]_vars /\ ImplFairness
+Quiescent ==
+    /\ \A a \in Actors : wk[a].pc = "idle"
+    /\ queued = {}
+    /\ backend = {}
 
-ImplParentWaitingOnTerminalChild(parent, child) ==
-    IF /\ parent \in DOMAIN procs
-       /\ child \in DOMAIN procs
-    THEN /\ procs[child].status \in {Done, Failed}
-         /\ parent \in waiters[child]
-    ELSE FALSE
+\* Nothing can run, so every process must have terminated: a live process
+\* here is blocked with no waker left.
+NoLostWakeup == Quiescent => live = {}
 
-ImplParentUnblockedOrFailed(parent) ==
-    IF parent \in DOMAIN procs
-    THEN procs[parent].status \in {Runnable, Running, Failed}
-    ELSE TRUE
+CleanAtQuiescence ==
+    Quiescent =>
+        /\ \A p \in Pids : waiters[p] = {} /\ anyw[p] = {} /\ tomb[p] = "none"
+        /\ \A t \in Toks : iow[t] = 0
+        /\ pcancel = {}
+        /\ creq = {}
 
-\* If a parent is blocked awaiting a child that finished, it eventually unblocks
-ImplParentEventuallyWoken ==
-    \A child \in 1..MaxProcesses :
-        \A parent \in 1..MaxProcesses :
-            ImplParentWaitingOnTerminalChild(parent, child)
-                ~> ImplParentUnblockedOrFailed(parent)
+\* A terminated process is never back in the table as runnable or blocked,
+\* and nobody owns it.
+NoResurrection ==
+    \A p \in Pids :
+        (loc[p] # "none" /\ p \notin live) =>
+            \/ loc[p] = "gone"
+            \/ par[p] = 0 /\ loc[p] = "table" /\ st[p] \in {"done", "failed"}
 
-\* Every pending I/O entry eventually resolves
-ImplIoEventuallyCompletes ==
-    \A entry \in [pid : 1..MaxProcesses, token : 1..MaxIoOps] :
-        [](entry \in io_waiters ~> entry \notin io_waiters)
+\* Actor a is terminating x and has not yet reaped the tombstone of child p.
+ReapingChild(a, x, p) ==
+    /\ wk[a].q = x
+    /\ \/ wk[a].pc = "f4"
+       \/ p \in wk[a].ktodo
+       \/ wk[a].k = p /\ (wk[a].pc = "f5b" \/ "f5b" \in {wk[a].stack[i] : i \in DOMAIN wk[a].stack})
+
+\* A tombstone exists only for a child of a live parent, while the terminating
+\* parent has not reached it in its scope-exit loop, or between the child
+\* recording it and checking whether its parent is gone.
+BoundedTombstones ==
+    \A p \in Pids :
+        tomb[p] # "none" =>
+            \/ par[p] \in live
+            \/ \E a \in Actors : ReapingChild(a, par[p], p)
+            \/ \E a \in Actors : wk[a].q = p /\ wk[a].pc = "f2"
+
+\* A pending cancel names a live process, except between cancel_pid recording
+\* it and checking whether the process terminated meanwhile, and between a
+\* terminating process stopping being live and clearing its request.
+PendingCancelsConsistent ==
+    \A p \in pcancel :
+        \/ p \in live
+        \/ \E a \in Actors : wk[a].x = p /\ wk[a].pc = "cp3"
+        \/ \E a \in Actors : wk[a].q = p /\ wk[a].pc = "f4"
+
+\* A registered waiter is never terminated and still waiting for that child
+\* once it is back in the table; stale entries name live processes.
+RegistrationsConsistent ==
+    /\ \A c \in Pids : \A w \in waiters[c] :
+        loc[w] = "table" /\ w \in live => st[w] = "await" /\ target[w] = c
+    /\ \A t \in Toks : iow[t] # 0 => iow[t] \in live
+
+SafetyInvariant ==
+    /\ TypeOK
+    /\ NoLostWakeup
+    /\ CleanAtQuiescence
+    /\ NoResurrection
+    /\ BoundedTombstones
+    /\ PendingCancelsConsistent
+    /\ RegistrationsConsistent
+
+\* ---------------------------------------------------------------------------
+\* Liveness
+
+Fairness ==
+    /\ \A a \in Actors : WF_vars(Busy(a))
+    /\ WF_vars(MonitorTake)
+    /\ WF_vars(\E ok \in BOOLEAN : MonitorDeliver(ok))
+
+LiveSpec == Spec /\ Fairness
+
+BlockedOnTerminated(p, c) ==
+    /\ loc[p] = "table"
+    /\ st[p] = "await"
+    /\ target[p] = c
+    /\ c \notin live
+    /\ p \in live
+
+\* A process parked in await on a child that has terminated is woken.
+ParentEventuallyWoken ==
+    \A p \in Pids : \A c \in Pids :
+        BlockedOnTerminated(p, c) ~> ~BlockedOnTerminated(p, c)
 
 ====
