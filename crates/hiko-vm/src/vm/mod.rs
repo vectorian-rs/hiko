@@ -1790,6 +1790,69 @@ mod tests {
     }
 
     #[test]
+    fn test_resume_keeps_inner_abortive_handler() {
+        // #112: `Fail` is handled inside the handler that catches `Ask`; after
+        // `resume`, the inner handler must still be installed.
+        let vm = run("effect Ask of int
+             effect Fail of int
+             fun body () = let val a = perform Ask 1 val _ = perform Fail (a + 5) in 1000 end
+             val result = handle
+               1 + (handle body () with return x => x | Fail n _ => n + 100)
+             with return x => x | Ask n k => resume k (n * 10)");
+        assert_eq!(global_int(&vm, "result"), 116);
+    }
+
+    #[test]
+    fn test_resume_keeps_two_inner_handlers_that_resume() {
+        let vm = run("effect Ask of int
+             effect A of int
+             effect B of int
+             fun body () =
+               let val x = perform Ask 1 val a = perform A x val b = perform B a in a + b end
+             val result = handle
+               (handle
+                  (handle body () with return x => x | B n k => resume k (n * 100))
+                with return x => x | A n k => resume k (n + 1))
+             with return x => x | Ask n k => resume k (n * 10)");
+        assert_eq!(global_int(&vm, "result"), 11 + 1100);
+    }
+
+    #[test]
+    fn test_multi_shot_resume_restores_inner_handler_each_time() {
+        let vm = run("effect Choose of unit
+             effect Fail of int
+             fun body () =
+               let val b = perform Choose () in
+                 if b then 1 else let val _ = perform Fail 7 in 0 end
+               end
+             val result = handle
+               (handle body () with return x => x | Fail n _ => n * 10)
+             with return x => x | Choose _ k => resume k true + resume k false");
+        assert_eq!(global_int(&vm, "result"), 1 + 70);
+    }
+
+    #[test]
+    fn test_shallow_style_resume_keeps_inner_handler() {
+        // The clause resumes under a handler it installs itself, so the
+        // catching handler is not reinstalled (see `catching_handler_depth`),
+        // but the inner `Log` handler is.
+        let vm = run("effect Yield of int
+             effect Log of int
+             fun run_gen f = handle f ()
+               with return _ => 0
+                  | Yield n k => n + run_gen (fn _ => resume k ())
+             fun gen () =
+               handle
+                 (let val _ = perform Yield 1
+                      val _ = perform Log 5
+                      val _ = perform Yield 2
+                  in () end)
+               with return x => x | Log _ k => resume k ()
+             val result = run_gen gen");
+        assert_eq!(global_int(&vm, "result"), 3);
+    }
+
+    #[test]
     fn test_effect_resume_direct_large_loop() {
         // Repeated direct resumes should stay correct for larger workloads,
         // even before a dedicated tail-resume path lands.
@@ -1860,7 +1923,8 @@ mod tests {
                     },
                 ],
                 saved_stack: vec![Value::Unit],
-                saved_handler: None,
+                saved_handlers: Vec::new(),
+                catching_handler_depth: 0,
             })))
             .unwrap();
         vm.blocked_continuation = Some(cont);

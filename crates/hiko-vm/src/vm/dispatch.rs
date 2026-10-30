@@ -573,9 +573,13 @@ impl VM {
                                 message: "perform: invalid handler stack range".into(),
                             })?;
 
-                    let handler_count_before = self.handlers.len();
-                    let handler = self.handlers.remove(h_idx);
-                    self.handlers.truncate(h_idx);
+                    let catching_handler_depth = h_idx + 1;
+                    // Handlers installed inside the one that caught the
+                    // effect belong to the captured computation.
+                    let inner_handlers = self.handlers.split_off(h_idx + 1);
+                    let Some(handler) = self.handlers.pop() else {
+                        unreachable!("h_idx indexes an installed handler");
+                    };
 
                     if !clause.resumes {
                         // The clause never mentions its continuation, so
@@ -632,6 +636,35 @@ impl VM {
                         });
                     }
 
+                    let mut saved_handlers = Vec::with_capacity(1 + inner_handlers.len());
+                    saved_handlers.push(SavedHandler {
+                        clauses: handler.clauses,
+                        proto_idx: handler.proto_idx,
+                        captures: handler.captures.clone(),
+                        frame_offset: 0,
+                        stack_offset: handler_locals_count,
+                    });
+                    for inner in inner_handlers {
+                        let frame_offset = inner
+                            .call_frame_idx
+                            .checked_sub(handler_frame_idx)
+                            .filter(|&offset| offset < saved_frames.len());
+                        let stack_offset = inner.stack_base.checked_sub(handler_base);
+                        let (Some(frame_offset), Some(stack_offset)) = (frame_offset, stack_offset)
+                        else {
+                            return Err(RuntimeError {
+                                message: "perform: inner handler outside the captured range".into(),
+                            });
+                        };
+                        saved_handlers.push(SavedHandler {
+                            clauses: inner.clauses,
+                            proto_idx: inner.proto_idx,
+                            captures: inner.captures,
+                            frame_offset,
+                            stack_offset,
+                        });
+                    }
+
                     // Keep the payload on the stack while allocating the
                     // continuation so a collection triggered here roots it.
                     self.push(payload)?;
@@ -639,13 +672,8 @@ impl VM {
                         self.alloc(HeapObject::Continuation(Box::new(ContinuationData {
                             saved_frames,
                             saved_stack,
-                            saved_handler: Some(SavedHandler {
-                                clauses: handler.clauses,
-                                proto_idx: handler.proto_idx,
-                                captures: handler.captures.clone(),
-                                locals_offset: handler_locals_count,
-                                handler_count_before,
-                            }),
+                            saved_handlers,
+                            catching_handler_depth,
                         })))?;
 
                     self.frames.truncate(handler_frame_idx + 1);
@@ -688,6 +716,16 @@ impl VM {
                             message: "stack overflow".into(),
                         });
                     }
+                    if self
+                        .handlers
+                        .len()
+                        .saturating_add(data.saved_handlers.len())
+                        > DEFAULT_MAX_HANDLER_FRAMES
+                    {
+                        return Err(RuntimeError {
+                            message: "too many installed effect handlers".into(),
+                        });
+                    }
 
                     let stack_base = self.stack.len();
                     self.stack.extend_from_slice(&data.saved_stack);
@@ -708,24 +746,31 @@ impl VM {
                         });
                     }
 
-                    if let Some(sh) = &data.saved_handler
-                        && self.handlers.len() < sh.handler_count_before
+                    // The resumed computation runs under every handler that
+                    // was installed inside the one that caught the effect, as
+                    // it did before `perform`. The catching handler itself
+                    // is reinstalled only for a direct resume (see
+                    // `ContinuationData::catching_handler_depth`).
+                    let reinstall_catching = self.handlers.len() < data.catching_handler_depth;
+                    for sh in data
+                        .saved_handlers
+                        .iter()
+                        .skip(usize::from(!reinstall_catching))
                     {
-                        let handler_frame_base = self
-                            .frames
-                            .get(first_restored_idx)
-                            .map(|frame| frame.base)
-                            .ok_or_else(|| RuntimeError {
-                                message: "resume: continuation has no handler frame".into(),
-                            })?;
-                        let stack_base = handler_frame_base
-                            .checked_add(sh.locals_offset)
+                        let call_frame_idx = first_restored_idx + sh.frame_offset;
+                        let handler_stack_base = stack_base
+                            .checked_add(sh.stack_offset)
                             .ok_or_else(|| RuntimeError {
                                 message: "resume: handler stack base overflow".into(),
                             })?;
+                        if call_frame_idx >= self.frames.len() {
+                            return Err(RuntimeError {
+                                message: "resume: continuation has no handler frame".into(),
+                            });
+                        }
                         self.handlers.push(HandlerFrame {
-                            call_frame_idx: first_restored_idx,
-                            stack_base,
+                            call_frame_idx,
+                            stack_base: handler_stack_base,
                             clauses: sh.clauses.clone(),
                             proto_idx: sh.proto_idx,
                             captures: sh.captures.clone(),

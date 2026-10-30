@@ -148,8 +148,18 @@ pub enum HeapObject {
 pub struct ContinuationData {
     pub saved_frames: Vec<SavedFrame>,
     pub saved_stack: Vec<Value>,
-    /// Handler removed by Perform, for auto-reinstallation by Resume.
-    pub saved_handler: Option<SavedHandler>,
+    /// Handlers removed by Perform, reinstalled by Resume: the handler that
+    /// caught the effect, then every handler installed inside it, outermost
+    /// first. The inner handlers are part of the captured computation and are
+    /// always reinstalled; see `catching_handler_depth` for the first one.
+    pub saved_handlers: Vec<SavedHandler>,
+    /// Position of the catching handler in the handler list, counted from 1.
+    /// Resume reinstalls that handler only when fewer handlers are installed
+    /// at the resume point, which is the case when its clause resumes
+    /// directly (deep). A clause that resumes under a handler it installed
+    /// itself, as in `run (fn () => resume k v)`, gets shallow behavior. See
+    /// `docs/language/effects.md`.
+    pub catching_handler_depth: usize,
 }
 
 /// One decoded `InstallHandler` clause.
@@ -168,8 +178,10 @@ pub struct SavedHandler {
     pub clauses: Vec<HandlerClause>,
     pub proto_idx: usize,
     pub captures: Arc<[Value]>,
-    pub locals_offset: usize,        // stack_base - handler_frame.base
-    pub handler_count_before: usize, // handler list length before removal
+    /// Index of the handler's frame in `saved_frames`.
+    pub frame_offset: usize,
+    /// Handler stack base relative to the start of `saved_stack`.
+    pub stack_offset: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -207,14 +219,15 @@ impl HeapObject {
             HeapObject::Bytes(bytes) => base + bytes.capacity(),
             HeapObject::Rng { .. } => base,
             HeapObject::Continuation(data) => {
-                let handler_clause_bytes = data
-                    .saved_handler
-                    .as_ref()
+                let handler_clause_bytes: usize = data
+                    .saved_handlers
+                    .iter()
                     .map(|handler| handler.clauses.capacity() * size_of::<HandlerClause>())
-                    .unwrap_or(0);
+                    .sum();
                 base + size_of::<ContinuationData>()
                     + data.saved_frames.capacity() * size_of::<SavedFrame>()
                     + data.saved_stack.capacity() * size_of::<Value>()
+                    + data.saved_handlers.capacity() * size_of::<SavedHandler>()
                     + handler_clause_bytes
             }
         }
@@ -240,7 +253,7 @@ impl HeapObject {
                 for frame in &data.saved_frames {
                     visit(&frame.captures, &mut f);
                 }
-                if let Some(handler) = &data.saved_handler {
+                for handler in &data.saved_handlers {
                     visit(&handler.captures, &mut f);
                 }
             }
