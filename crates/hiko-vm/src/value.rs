@@ -141,55 +141,24 @@ pub enum HeapObject {
         state: u64,
         inc: u64,
     },
-    Continuation(Box<ContinuationData>),
-}
-
-#[derive(Debug)]
-pub struct ContinuationData {
-    pub saved_frames: Vec<SavedFrame>,
-    pub saved_stack: Vec<Value>,
-    /// Handlers removed by Perform, reinstalled by Resume: the handler that
-    /// caught the effect, then every handler installed inside it, outermost
-    /// first. The inner handlers are part of the captured computation and are
-    /// always reinstalled; see `catching_handler_depth` for the first one.
-    pub saved_handlers: Vec<SavedHandler>,
-    /// Position of the catching handler in the handler list, counted from 1.
-    /// Resume reinstalls that handler only when fewer handlers are installed
-    /// at the resume point, which is the case when its clause resumes
-    /// directly (deep). A clause that resumes under a handler it installed
-    /// itself, as in `run (fn () => resume k v)`, gets shallow behavior. See
-    /// `docs/language/effects.md`.
-    pub catching_handler_depth: usize,
 }
 
 /// One decoded `InstallHandler` clause.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandlerClause {
     pub effect_tag: u16,
-    /// Absolute instruction pointer of the clause body.
-    pub ip: usize,
-    /// False when the clause body never mentions its continuation, so
-    /// `Perform` can unwind without capturing one.
-    pub resumes: bool,
+    pub action: ClauseAction,
 }
 
-#[derive(Clone, Debug)]
-pub struct SavedHandler {
-    pub clauses: Vec<HandlerClause>,
-    pub proto_idx: usize,
-    pub captures: Arc<[Value]>,
-    /// Index of the handler's frame in `saved_frames`.
-    pub frame_offset: usize,
-    /// Handler stack base relative to the start of `saved_stack`.
-    pub stack_offset: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct SavedFrame {
-    pub proto_idx: usize,
-    pub ip: usize,
-    pub base_offset: usize,
-    pub captures: Arc<[Value]>,
+/// What `Perform` does when a clause matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClauseAction {
+    /// Call the closure in this absolute stack slot with the payload, at the
+    /// perform site. Its result is the result of `perform`.
+    Provide { closure_slot: usize },
+    /// Unwind to the handler and run the clause body at this absolute
+    /// instruction pointer in the handler's frame.
+    Abort { ip: usize },
 }
 
 impl HeapObject {
@@ -218,18 +187,6 @@ impl HeapObject {
             HeapObject::Closure { .. } => base,
             HeapObject::Bytes(bytes) => base + bytes.capacity(),
             HeapObject::Rng { .. } => base,
-            HeapObject::Continuation(data) => {
-                let handler_clause_bytes: usize = data
-                    .saved_handlers
-                    .iter()
-                    .map(|handler| handler.clauses.capacity() * size_of::<HandlerClause>())
-                    .sum();
-                base + size_of::<ContinuationData>()
-                    + data.saved_frames.capacity() * size_of::<SavedFrame>()
-                    + data.saved_stack.capacity() * size_of::<Value>()
-                    + data.saved_handlers.capacity() * size_of::<SavedHandler>()
-                    + handler_clause_bytes
-            }
         }
     }
 
@@ -248,15 +205,6 @@ impl HeapObject {
             HeapObject::Tuple(elems) => visit(elems, &mut f),
             HeapObject::Data { fields, .. } => visit(fields, &mut f),
             HeapObject::Closure { captures, .. } => visit(captures, &mut f),
-            HeapObject::Continuation(data) => {
-                visit(&data.saved_stack, &mut f);
-                for frame in &data.saved_frames {
-                    visit(&frame.captures, &mut f);
-                }
-                for handler in &data.saved_handlers {
-                    visit(&handler.captures, &mut f);
-                }
-            }
         }
     }
 }
@@ -296,12 +244,9 @@ mod size_tests {
     use super::*;
 
     #[test]
-    fn continuation_boxing_reduces_heap_object_size() {
-        const OLD_INLINE_CONTINUATION_HEAP_OBJECT_SIZE: usize = 112;
-        assert!(std::mem::size_of::<HeapObject>() < OLD_INLINE_CONTINUATION_HEAP_OBJECT_SIZE);
+    fn value_and_heap_object_sizes() {
         assert_eq!(std::mem::size_of::<Value>(), 16);
-        assert_eq!(std::mem::size_of::<SavedFrame>(), 40);
-        assert_eq!(std::mem::size_of::<SavedHandler>(), 64);
         assert_eq!(std::mem::size_of::<Fields>(), 48);
+        assert!(std::mem::size_of::<HeapObject>() <= 64);
     }
 }

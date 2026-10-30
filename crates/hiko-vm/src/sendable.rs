@@ -277,7 +277,6 @@ fn message_children(r: GcRef, heap: &Heap) -> Result<Vec<Value>, String> {
         HeapObject::Data { tag, fields } if is_list(*tag, fields) => list_items(r, heap),
         HeapObject::Data { fields, .. } => Ok(fields.to_vec()),
         HeapObject::Closure { captures, .. } => Ok(captures.to_vec()),
-        HeapObject::Continuation(_) => Err("cannot send continuations across processes".into()),
         HeapObject::Rng { .. } => Err("cannot send Rng state across processes".into()),
         HeapObject::HostHandle { .. } => {
             Err("cannot send host resource handles across processes".into())
@@ -809,25 +808,6 @@ mod tests {
             }
             _ => panic!("expected Closure"),
         }
-    }
-
-    #[test]
-    fn test_continuation_rejected() {
-        let mut heap = Heap::new();
-        let cont = Value::Heap(
-            heap.alloc(HeapObject::Continuation(Box::new(
-                crate::value::ContinuationData {
-                    saved_frames: vec![],
-                    saved_stack: vec![],
-                    saved_handlers: Vec::new(),
-                    catching_handler_depth: 0,
-                },
-            )))
-            .unwrap(),
-        );
-        let result = serialize(cont, &heap);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("continuation"));
     }
 
     #[test]

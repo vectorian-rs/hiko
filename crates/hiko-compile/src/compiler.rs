@@ -15,13 +15,14 @@ use hiko_syntax::ast::*;
 use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
+use hiko_syntax::span::Span;
 use hiko_types::infer::{InferCtx, TypeError};
 use hiko_types::ty::Type;
 use serde::Deserialize;
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use crate::op::{
-    HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
+    HANDLER_CLAUSE_PROVIDER, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
 };
 
 /// Overrides for resolving named imports listed in `hiko.lock.toml`.
@@ -379,6 +380,9 @@ struct Local {
     /// Set when a variable reference resolves to this local, either directly
     /// or as an upvalue of a nested function.
     used: Cell<bool>,
+    /// A handler clause's continuation variable. It is not a value: its
+    /// only use is `resume k e` at the end of a provider clause.
+    continuation: bool,
 }
 
 struct UpvalueDesc {
@@ -405,6 +409,9 @@ struct FuncCtx {
     /// literals and global names share one entry.
     string_constants: HashMap<String, u16>,
     scalar_constants: HashMap<ScalarConstant, u16>,
+    /// Slot of the continuation variable when this function is a provider
+    /// clause; `resume k e` in its tail position returns `e`.
+    provider_cont_slot: Option<u16>,
 }
 
 impl FuncCtx {
@@ -419,6 +426,7 @@ impl FuncCtx {
             name,
             string_constants: HashMap::new(),
             scalar_constants: HashMap::new(),
+            provider_cont_slot: None,
         }
     }
 }
@@ -901,6 +909,23 @@ impl Compiler {
         None
     }
 
+    /// Whether `name` resolves to a handler clause's continuation variable,
+    /// searching scopes in the same order as `resolve_local` and
+    /// `resolve_upvalue`.
+    fn is_continuation(&self, name: &str) -> bool {
+        self.func_stack
+            .iter()
+            .rev()
+            .find_map(|ctx| ctx.locals.iter().rev().find(|local| local.name == name))
+            .is_some_and(|local| local.continuation)
+    }
+
+    fn add_continuation_local(&mut self, name: String) -> u16 {
+        let slot = self.add_local(name);
+        self.ctx_mut().locals[slot as usize].continuation = true;
+        slot
+    }
+
     fn add_upvalue(&mut self, func_idx: usize, is_local: bool, index: u16) -> u16 {
         let ctx = &mut self.func_stack[func_idx];
         for (i, uv) in ctx.upvalues.iter().enumerate() {
@@ -1056,6 +1081,7 @@ impl Compiler {
             name,
             depth,
             used: Cell::new(false),
+            continuation: false,
         });
         ctx.max_locals = ctx.max_locals.max(ctx.locals.len());
         (ctx.locals.len() - 1) as u16
@@ -2265,48 +2291,66 @@ impl Compiler {
         return_body: &Expr,
         handlers: &[EffectHandler],
     ) -> Result<(), CompileError> {
-        // Emit InstallHandler: u16 n_clauses, then per clause:
-        //   u16 effect_tag, u8 flags (placeholder), i16 offset (placeholder)
-        self.emit(Op::InstallHandler);
-        let n_clauses = handlers.len() as u16;
-        self.emit_u16(n_clauses);
-        // Record positions of clause flag and offset placeholders
-        let mut clause_flag_positions = Vec::new();
-        let mut clause_offset_positions = Vec::new();
+        // A provider clause (every path ends in `resume k e`) becomes a
+        // closure of (payload, k). `Perform` calls it at the perform site and
+        // its result is the result of `perform`. The closures stay on the
+        // stack as unnamed locals below the handler, which keeps them alive
+        // while it is installed.
+        self.begin_scope();
+        let mut provider_slots = Vec::with_capacity(handlers.len());
         for handler in handlers {
+            if ends_in_resume(&handler.body, handler.cont_var) {
+                self.compile_provider_clause(handler)?;
+                provider_slots.push(Some(self.add_local(String::new())));
+            } else {
+                provider_slots.push(None);
+            }
+        }
+
+        // Emit InstallHandler: u16 n_clauses, then per clause:
+        //   u16 effect_tag, u8 flags, u16 closure slot or i16 offset
+        self.emit(Op::InstallHandler);
+        let n_clauses = checked_u16(handlers.len(), "handler clauses")?;
+        self.emit_u16(n_clauses);
+        let mut clause_offset_positions = Vec::new();
+        for (handler, provider_slot) in handlers.iter().zip(&provider_slots) {
             let eff_name = self.interner.resolve(handler.effect_name).to_string();
             let tag = *self
                 .effect_tags
                 .get(&eff_name)
                 .ok_or_else(|| CompileError::codegen(format!("unknown effect: {eff_name}")))?;
             self.emit_u16(tag);
-            clause_flag_positions.push(self.chunk().code.len());
-            self.emit_u8(0); // placeholder flags
-            let pos = self.chunk().code.len();
-            self.emit_u16(0); // placeholder offset
-            clause_offset_positions.push(pos);
+            match provider_slot {
+                Some(slot) => {
+                    self.emit_u8(HANDLER_CLAUSE_PROVIDER);
+                    self.emit_u16(*slot);
+                }
+                None => {
+                    self.emit_u8(0);
+                    clause_offset_positions.push(self.chunk().code.len());
+                    self.emit_u16(0); // placeholder offset
+                }
+            }
         }
 
         // Jump over clause code
         let skip_jump = self.emit_jump(Op::Jump);
 
-        // Compile each effect clause
+        // An abort clause runs in this frame after `Perform` unwinds to the
+        // handler. Its continuation slot holds Unit and cannot be read.
         let mut clause_end_jumps = Vec::new();
-        for (i, handler) in handlers.iter().enumerate() {
-            self.patch_jump(clause_offset_positions[i])?;
+        let abort_clauses = handlers
+            .iter()
+            .zip(&provider_slots)
+            .filter(|(_, slot)| slot.is_none());
+        for ((handler, _), offset_pos) in abort_clauses.zip(clause_offset_positions) {
+            self.patch_jump(offset_pos)?;
             self.begin_scope();
             let payload_name = self.interner.resolve(handler.payload_var).to_string();
             let cont_name = self.interner.resolve(handler.cont_var).to_string();
             self.add_local(payload_name);
-            let cont_slot = self.add_local(cont_name);
+            self.add_continuation_local(cont_name);
             self.compile_expr_inner(&handler.body, false)?;
-            // The clause resumes only if its body refers to the continuation
-            // variable. Resolution is scope-aware, so a shadowed `k` or a `_`
-            // pattern leaves the slot unused and Perform can skip the capture.
-            if self.ctx().locals[cont_slot as usize].used.get() {
-                let pos = clause_flag_positions[i];
-                self.chunk().code[pos] = HANDLER_CLAUSE_RESUMES;
-            }
             self.end_scope_keep_result();
             clause_end_jumps.push(self.emit_jump(Op::Jump));
         }
@@ -2331,7 +2375,22 @@ impl Compiler {
         for j in clause_end_jumps {
             self.patch_jump(j)?;
         }
+        self.end_scope_keep_result();
         Ok(())
+    }
+
+    /// Compile a provider clause as a closure taking the payload and a Unit
+    /// continuation slot, and leave the closure on the stack.
+    fn compile_provider_clause(&mut self, handler: &EffectHandler) -> Result<(), CompileError> {
+        self.func_stack.push(FuncCtx::new(None, 2));
+        let payload_name = self.interner.resolve(handler.payload_var).to_string();
+        let cont_name = self.interner.resolve(handler.cont_var).to_string();
+        self.add_local(payload_name);
+        let cont_slot = self.add_continuation_local(cont_name);
+        self.ctx_mut().provider_cont_slot = Some(cont_slot);
+        self.compile_expr_tail(&handler.body)?;
+        self.emit(Op::Return);
+        self.finish_function()
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
@@ -2374,6 +2433,15 @@ impl Compiler {
             ExprKind::Unit => self.emit(Op::Unit),
             ExprKind::Var(sym) | ExprKind::Constructor(sym) => {
                 let name = self.interner.resolve(*sym).to_string();
+                if self.is_continuation(&name) {
+                    return Err(continuation_error(
+                        expr.span,
+                        format!(
+                            "the continuation `{name}` is not a value; use it only as \
+                             `resume {name} e` at the end of a handler clause"
+                        ),
+                    ));
+                }
                 self.emit_get_var(&name)?;
             }
 
@@ -2504,29 +2572,28 @@ impl Compiler {
                 return_var,
                 return_body,
                 handlers,
-            } => {
-                // A continuation captured by `perform` restores the frame that
-                // installed the handler and runs it until that frame returns.
-                // The handle expression must therefore end its frame, or a
-                // resumed continuation also runs the code after the handle.
-                // Outside function tail position, run it in its own thunk.
-                if tail && self.func_stack.len() > 1 {
-                    self.compile_handle(body, *return_var, return_body, handlers)?;
-                } else {
-                    self.push_new_function(None);
-                    self.add_local("<handle>".to_string());
-                    self.compile_handle(body, *return_var, return_body, handlers)?;
-                    self.emit(Op::Return);
-                    self.finish_function()?;
-                    self.emit(Op::Unit);
-                    self.emit(if tail { Op::TailCall } else { Op::Call });
-                    self.emit_u8(1);
-                }
-            }
+            } => self.compile_handle(body, *return_var, return_body, handlers)?,
 
             ExprKind::Resume(cont, arg) => {
-                self.compile_operands(&[cont, arg])?;
-                self.emit(Op::Resume);
+                // In a provider clause, `resume k e` in tail position is the
+                // clause's result: `Perform` returns it to the perform site.
+                let resumes_this_clause = tail
+                    && match &strip_parens(cont).kind {
+                        ExprKind::Var(sym) => {
+                            let name = self.interner.resolve(*sym).to_string();
+                            self.resolve_local(&name)
+                                .is_some_and(|slot| self.ctx().provider_cont_slot == Some(slot))
+                        }
+                        _ => false,
+                    };
+                if !resumes_this_clause {
+                    return Err(continuation_error(
+                        expr.span,
+                        "`resume k e` is supported only at the end of a handler clause, \
+                         with every path of the clause ending in `resume k e`",
+                    ));
+                }
+                self.compile_expr_inner(arg, false)?;
             }
         }
         Ok(())
@@ -2553,6 +2620,39 @@ fn checked_u16(value: usize, what: &str) -> Result<u16, CompileError> {
             u16::MAX
         ))
     })
+}
+
+/// A misuse of a handler clause's continuation, reported at its source
+/// location.
+fn continuation_error(span: Span, message: impl Into<String>) -> CompileError {
+    CompileError::Type(TypeError {
+        message: message.into(),
+        span,
+    })
+}
+
+fn strip_parens(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Paren(e) | ExprKind::Ann(e, _) => strip_parens(e),
+        _ => expr,
+    }
+}
+
+/// Whether every path through a clause body ends in `resume k e`, which
+/// makes the clause a provider. Shadowing is checked when `resume` is
+/// compiled.
+fn ends_in_resume(expr: &Expr, cont: Symbol) -> bool {
+    match &strip_parens(expr).kind {
+        ExprKind::Resume(k, _) => matches!(strip_parens(k).kind, ExprKind::Var(sym) if sym == cont),
+        ExprKind::Let(_, body) => ends_in_resume(body, cont),
+        ExprKind::If(_, then_branch, else_branch) => {
+            ends_in_resume(then_branch, cont) && ends_in_resume(else_branch, cont)
+        }
+        ExprKind::Case(_, branches) => {
+            !branches.is_empty() && branches.iter().all(|(_, body)| ends_in_resume(body, cont))
+        }
+        _ => false,
+    }
 }
 
 fn simple_pat_name(pat: &Pat, interner: &StringInterner) -> String {
@@ -3715,39 +3815,79 @@ Filesystem = "blake3:deadbeef"
         }
     }
 
-    /// Flags of the clauses of the first `InstallHandler` that starts a
-    /// function chunk. A non-tail `handle` compiles to a thunk whose body
-    /// starts with `InstallHandler`.
+    /// Flags of the clauses of the first `InstallHandler` in a function
+    /// chunk. A function whose body is a `handle` starts with one
+    /// `MakeClosure` per provider clause, then `InstallHandler`.
     fn handler_clause_flags(source: &str) -> Vec<u8> {
         let (program, _) = Compiler::compile(parse_program(source)).expect("compile");
-        let code = &program
+        let install_at = |code: &[u8]| {
+            let mut ip = 0;
+            while code.get(ip) == Some(&(Op::MakeClosure as u8)) {
+                let n_captures = code[ip + 3] as usize;
+                ip += 4 + 3 * n_captures;
+            }
+            (code.get(ip) == Some(&(Op::InstallHandler as u8))).then_some(ip)
+        };
+        let (code, start) = program
             .functions
             .iter()
-            .find(|f| f.chunk.code.first() == Some(&(Op::InstallHandler as u8)))
-            .expect("a function chunk starting with InstallHandler")
-            .chunk
-            .code;
-        let n_clauses = u16::from_le_bytes([code[1], code[2]]) as usize;
+            .find_map(|f| install_at(&f.chunk.code).map(|ip| (&f.chunk.code, ip)))
+            .expect("a function chunk with InstallHandler after its provider closures");
+        let n_clauses = u16::from_le_bytes([code[start + 1], code[start + 2]]) as usize;
         (0..n_clauses)
-            .map(|i| code[3 + i * crate::op::HANDLER_CLAUSE_BYTES + 2])
+            .map(|i| code[start + 3 + i * crate::op::HANDLER_CLAUSE_BYTES + 2])
             .collect()
     }
 
     #[test]
-    fn handler_clause_resumes_flag_tracks_continuation_use() {
+    fn handler_clause_is_a_provider_when_every_path_resumes() {
         let effects = "effect A of int\neffect B of int\neffect C of int\neffect D of int\n";
         let flags = handler_clause_flags(&format!(
-            "{effects}val r = 1 + (handle perform A 1\n\
+            "{effects}fun r u = handle perform A 1\n\
              with return x => x\n\
                 | A n _ => n\n\
                 | B n k => n\n\
                 | C n k => resume k n\n\
-                | D n k => (fn u => resume k u) n)"
+                | D n k => if n > 0 then resume k n else (case n of 0 => resume k 1 | _ => resume k 2)"
         ));
         assert_eq!(
             flags,
-            vec![0, 0, HANDLER_CLAUSE_RESUMES, HANDLER_CLAUSE_RESUMES]
+            vec![0, 0, HANDLER_CLAUSE_PROVIDER, HANDLER_CLAUSE_PROVIDER]
         );
+    }
+
+    fn compile_error(source: &str) -> String {
+        match Compiler::compile(parse_program(source)) {
+            Err(CompileError::Type(TypeError { message, .. })) => message,
+            other => panic!("expected a continuation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continuation_is_not_a_value() {
+        let prefix = "effect A of int\nval r = handle perform A 1 with return x => x\n";
+        for clause in [
+            // stored
+            "| A n k => let val saved = k in resume k n end",
+            // passed to a function
+            "| A n k => let val _ = (fn f => 0) k in resume k n end",
+            // captured by a closure
+            "| A n k => (fn u => resume k u) n",
+            // resumed twice
+            "| A n k => resume k (resume k n)",
+            // not in tail position
+            "| A n k => 1 + resume k n",
+            // only some paths resume
+            "| A n k => if n > 0 then resume k n else 0",
+            // inside a nested handle
+            "| A n k => handle resume k n with return x => x",
+        ] {
+            let message = compile_error(&format!("{prefix}{clause}"));
+            assert!(
+                message.contains("continuation") || message.contains("resume k e"),
+                "{clause}: unexpected error: {message}"
+            );
+        }
     }
 
     #[test]
@@ -3756,9 +3896,9 @@ Filesystem = "blake3:deadbeef"
         // continuation.
         let flags = handler_clause_flags(
             "effect A of int\n\
-             val r = 1 + (handle perform A 1\n\
+             fun r u = handle perform A 1\n\
              with return x => x\n\
-                | A n k => let val k = n + 1 in k end)",
+                | A n k => let val k = n + 1 in k end",
         );
         assert_eq!(flags, vec![0]);
     }

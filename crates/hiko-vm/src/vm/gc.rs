@@ -77,9 +77,6 @@ impl VM {
     }
 
     /// Collect with the current execution state plus any request-local roots.
-    ///
-    /// The root set intentionally includes the blocked continuation because
-    /// async I/O suspends the process between slices.
     pub(super) fn gc_collect_with_extra_roots(
         &mut self,
         extra_roots: impl IntoIterator<Item = GcRef>,
@@ -90,12 +87,17 @@ impl VM {
             .chain(self.frames.iter().flat_map(|f| f.captures.iter()))
             .chain(self.globals.iter())
             .chain(self.handlers.iter().flat_map(|h| h.captures.iter()))
+            .chain(
+                self.hidden_handlers
+                    .iter()
+                    .flat_map(|hidden| &hidden.handlers)
+                    .flat_map(|h| h.captures.iter()),
+            )
             .filter_map(|v| match v {
                 Value::Heap(r) => Some(*r),
                 _ => None,
             })
             .chain(self.string_cache.values().copied())
-            .chain(self.blocked_continuation.iter().copied())
             .chain(extra_roots);
         self.heap.collect(roots);
     }

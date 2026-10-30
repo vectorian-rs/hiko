@@ -333,53 +333,9 @@ impl VM {
                 Op::Call => {
                     let arity = self.read_u8()? as usize;
                     let callee_pos = self.callee_pos_for_arity(arity, "Call")?;
-                    let callee = self.stack[callee_pos];
-                    match callee {
-                        Value::Heap(r) => {
-                            let (closure_proto, closure_captures) = match self.heap_get(r)? {
-                                HeapObject::Closure {
-                                    proto_idx,
-                                    captures,
-                                } => (*proto_idx, captures.clone()),
-                                _ => {
-                                    return Err(RuntimeError {
-                                        message: format!("cannot call non-function: {callee:?}"),
-                                    });
-                                }
-                            };
-                            let proto = self.proto(closure_proto)?;
-                            if proto.arity as usize != arity {
-                                return Err(RuntimeError {
-                                    message: format!(
-                                        "function expects {} arg(s), got {arity}",
-                                        proto.arity
-                                    ),
-                                });
-                            }
-                            if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
-                                return Err(RuntimeError {
-                                    message: "stack overflow".into(),
-                                });
-                            }
-                            for i in 0..arity {
-                                self.stack[callee_pos + i] = self.stack[callee_pos + 1 + i];
-                            }
-                            self.stack.truncate(callee_pos + arity);
-                            self.frames.push(CallFrame {
-                                proto_idx: closure_proto,
-                                ip: 0,
-                                base: callee_pos,
-                                captures: closure_captures,
-                            });
-                        }
-                        Value::Builtin(id) => {
-                            self.call_builtin(id, callee_pos, arity)?;
-                        }
-                        _ => {
-                            return Err(RuntimeError {
-                                message: format!("cannot call non-function: {callee:?}"),
-                            });
-                        }
+                    match self.stack[callee_pos] {
+                        Value::Builtin(id) => self.call_builtin(id, callee_pos, arity)?,
+                        _ => self.enter_closure(callee_pos, arity)?,
                     }
                 }
 
@@ -477,6 +433,14 @@ impl VM {
                     })?;
                     self.stack.truncate(frame.base);
                     self.push(result)?;
+                    if self
+                        .hidden_handlers
+                        .last()
+                        .is_some_and(|h| h.clause_frame_idx == self.frames.len())
+                        && let Some(hidden) = self.hidden_handlers.pop()
+                    {
+                        self.handlers.extend(hidden.handlers);
+                    }
                     if self.frames.is_empty() {
                         return Ok(());
                     }
@@ -499,25 +463,32 @@ impl VM {
                     for _ in 0..n_clauses {
                         let effect_tag = self.read_u16()?;
                         let flags = self.read_u8()?;
-                        if flags & !HANDLER_CLAUSE_RESUMES != 0 {
-                            return Err(RuntimeError {
-                                message: format!(
-                                    "InstallHandler clause: invalid flags {flags:#04x}"
-                                ),
-                            });
-                        }
-                        let offset = self.read_i16()?;
-                        let abs_ip = self.checked_relative_ip(
-                            self.frames[fi].proto_idx,
-                            self.frames[fi].ip,
-                            offset,
-                            "InstallHandler clause",
-                        )?;
-                        clauses.push(HandlerClause {
-                            effect_tag,
-                            ip: abs_ip,
-                            resumes: flags & HANDLER_CLAUSE_RESUMES != 0,
-                        });
+                        let action = match flags {
+                            HANDLER_CLAUSE_PROVIDER => {
+                                let slot = self.read_u16()? as usize;
+                                let closure_slot =
+                                    self.local_stack_index(fi, slot, "InstallHandler provider")?;
+                                ClauseAction::Provide { closure_slot }
+                            }
+                            0 => {
+                                let offset = self.read_i16()?;
+                                let ip = self.checked_relative_ip(
+                                    self.frames[fi].proto_idx,
+                                    self.frames[fi].ip,
+                                    offset,
+                                    "InstallHandler clause",
+                                )?;
+                                ClauseAction::Abort { ip }
+                            }
+                            _ => {
+                                return Err(RuntimeError {
+                                    message: format!(
+                                        "InstallHandler clause: invalid flags {flags:#04x}"
+                                    ),
+                                });
+                            }
+                        };
+                        clauses.push(HandlerClause { effect_tag, action });
                     }
                     self.handlers.push(HandlerFrame {
                         call_frame_idx: fi,
@@ -541,246 +512,125 @@ impl VM {
                             h.clauses
                                 .iter()
                                 .find(|c| c.effect_tag == effect_tag)
-                                .map(|c| (hi, *c))
+                                .map(|c| (hi, c.action))
                         });
 
-                    let (h_idx, clause) = user_handler.ok_or_else(|| RuntimeError {
+                    let (h_idx, action) = user_handler.ok_or_else(|| RuntimeError {
                         message: format!("unhandled effect (tag {effect_tag})"),
                     })?;
-                    let clause_ip = clause.ip;
 
                     // The verifier does not prove handler install/remove
                     // balance, so a handler may outlive the frame or stack
-                    // range it was installed in. Check before capturing.
+                    // range it was installed in. Check before using it.
                     let handler_frame_idx = self.handlers[h_idx].call_frame_idx;
                     let save_from = self.handlers[h_idx].stack_base;
-                    let handler_base = self
+                    let handler_frame_active = self
                         .frames
                         .get(handler_frame_idx)
-                        .map(|frame| frame.base)
-                        .ok_or_else(|| RuntimeError {
-                        message: "perform: handler frame is no longer active".into(),
-                    })?;
-                    if save_from > self.stack.len() {
+                        .is_some_and(|frame| frame.base <= save_from);
+                    if !handler_frame_active || save_from > self.stack.len() {
                         return Err(RuntimeError {
-                            message: "perform: invalid handler stack range".into(),
-                        });
-                    }
-                    let handler_locals_count =
-                        save_from
-                            .checked_sub(handler_base)
-                            .ok_or_else(|| RuntimeError {
-                                message: "perform: invalid handler stack range".into(),
-                            })?;
-
-                    let catching_handler_depth = h_idx + 1;
-                    // Handlers installed inside the one that caught the
-                    // effect belong to the captured computation.
-                    let inner_handlers = self.handlers.split_off(h_idx + 1);
-                    let Some(handler) = self.handlers.pop() else {
-                        unreachable!("h_idx indexes an installed handler");
-                    };
-
-                    if !clause.resumes {
-                        // The clause never mentions its continuation, so
-                        // nothing can resume it: unwind to the handler frame
-                        // without capturing. Nothing here allocates, so the
-                        // popped payload cannot be collected before it is
-                        // pushed back.
-                        self.stack.truncate(save_from);
-                        self.frames.truncate(handler_frame_idx + 1);
-                        let frame = &mut self.frames[handler_frame_idx];
-                        frame.proto_idx = handler.proto_idx;
-                        frame.captures = handler.captures;
-                        frame.ip = clause_ip;
-                        self.push(payload)?;
-                        // The clause layout keeps a slot for the unused
-                        // continuation variable.
-                        self.push(Value::Unit)?;
-                        continue;
-                    }
-
-                    let mut saved_stack = self.stack.split_off(save_from);
-                    if handler_locals_count > 0 {
-                        let mut combined =
-                            Vec::with_capacity(handler_locals_count + saved_stack.len());
-                        combined.extend_from_slice(&self.stack[handler_base..save_from]);
-                        combined.extend_from_slice(&saved_stack);
-                        saved_stack = combined;
-                    }
-
-                    let hf = &self.frames[handler_frame_idx];
-                    let mut saved_frames = vec![SavedFrame {
-                        proto_idx: hf.proto_idx,
-                        ip: hf.ip,
-                        base_offset: 0,
-                        captures: hf.captures.clone(),
-                    }];
-                    for frame in &self.frames[handler_frame_idx + 1..] {
-                        let frame_offset =
-                            frame
-                                .base
-                                .checked_sub(save_from)
-                                .ok_or_else(|| RuntimeError {
-                                    message: "perform: invalid saved frame base".into(),
-                                })?;
-                        saved_frames.push(SavedFrame {
-                            proto_idx: frame.proto_idx,
-                            ip: frame.ip,
-                            base_offset: handler_locals_count
-                                .checked_add(frame_offset)
-                                .ok_or_else(|| RuntimeError {
-                                    message: "perform: saved frame base overflow".into(),
-                                })?,
-                            captures: frame.captures.clone(),
+                            message: "perform: handler frame is no longer active".into(),
                         });
                     }
 
-                    let mut saved_handlers = Vec::with_capacity(1 + inner_handlers.len());
-                    saved_handlers.push(SavedHandler {
-                        clauses: handler.clauses,
-                        proto_idx: handler.proto_idx,
-                        captures: handler.captures.clone(),
-                        frame_offset: 0,
-                        stack_offset: handler_locals_count,
-                    });
-                    for inner in inner_handlers {
-                        let frame_offset = inner
-                            .call_frame_idx
-                            .checked_sub(handler_frame_idx)
-                            .filter(|&offset| offset < saved_frames.len());
-                        let stack_offset = inner.stack_base.checked_sub(handler_base);
-                        let (Some(frame_offset), Some(stack_offset)) = (frame_offset, stack_offset)
-                        else {
-                            return Err(RuntimeError {
-                                message: "perform: inner handler outside the captured range".into(),
-                            });
-                        };
-                        saved_handlers.push(SavedHandler {
-                            clauses: inner.clauses,
-                            proto_idx: inner.proto_idx,
-                            captures: inner.captures,
-                            frame_offset,
-                            stack_offset,
-                        });
-                    }
-
-                    // Keep the payload on the stack while allocating the
-                    // continuation so a collection triggered here roots it.
-                    self.push(payload)?;
-                    let cont =
-                        self.alloc(HeapObject::Continuation(Box::new(ContinuationData {
-                            saved_frames,
-                            saved_stack,
-                            saved_handlers,
-                            catching_handler_depth,
-                        })))?;
-
-                    self.frames.truncate(handler_frame_idx + 1);
-                    let frame = &mut self.frames[handler_frame_idx];
-                    frame.proto_idx = handler.proto_idx;
-                    frame.captures = handler.captures;
-                    frame.ip = clause_ip;
-
-                    self.push(cont)?;
-                }
-
-                Op::Resume => {
-                    let arg = self.pop()?;
-                    let cont_val = self.pop()?;
-
-                    let data = match cont_val {
-                        Value::Heap(r) => match self.heap.get(r) {
-                            Ok(HeapObject::Continuation(data)) => data,
-                            _ => {
+                    match action {
+                        ClauseAction::Provide { closure_slot } => {
+                            if closure_slot >= save_from {
                                 return Err(RuntimeError {
-                                    message: "resume: expected continuation".into(),
+                                    message: "perform: invalid provider closure slot".into(),
                                 });
                             }
-                        },
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "resume: expected continuation".into(),
+                            // The clause runs at the perform site, outside
+                            // the handler: hide the handler and every handler
+                            // inside it until the clause frame returns.
+                            let hidden = self.handlers.split_off(h_idx);
+                            self.hidden_handlers.push(HiddenHandlers {
+                                clause_frame_idx: self.frames.len(),
+                                handlers: hidden,
                             });
+                            let callee_pos = self.stack.len();
+                            self.push(self.stack[closure_slot])?;
+                            self.push(payload)?;
+                            // The clause's continuation slot.
+                            self.push(Value::Unit)?;
+                            self.enter_closure(callee_pos, 2)?;
                         }
-                    };
-
-                    // A continuation can be resumed more than once, so its
-                    // saved state is copied, not moved, onto the live stacks.
-                    if self.stack.len().saturating_add(data.saved_stack.len())
-                        >= DEFAULT_MAX_STACK_SLOTS
-                        || self.frames.len().saturating_add(data.saved_frames.len())
-                            > DEFAULT_MAX_CALL_FRAMES
-                    {
-                        return Err(RuntimeError {
-                            message: "stack overflow".into(),
-                        });
-                    }
-                    if self
-                        .handlers
-                        .len()
-                        .saturating_add(data.saved_handlers.len())
-                        > DEFAULT_MAX_HANDLER_FRAMES
-                    {
-                        return Err(RuntimeError {
-                            message: "too many installed effect handlers".into(),
-                        });
-                    }
-
-                    let stack_base = self.stack.len();
-                    self.stack.extend_from_slice(&data.saved_stack);
-
-                    let first_restored_idx = self.frames.len();
-                    for sf in &data.saved_frames {
-                        let frame_base =
-                            stack_base
-                                .checked_add(sf.base_offset)
-                                .ok_or_else(|| RuntimeError {
-                                    message: "resume: saved frame base overflow".into(),
-                                })?;
-                        self.frames.push(CallFrame {
-                            proto_idx: sf.proto_idx,
-                            ip: sf.ip,
-                            base: frame_base,
-                            captures: sf.captures.clone(),
-                        });
-                    }
-
-                    // The resumed computation runs under every handler that
-                    // was installed inside the one that caught the effect, as
-                    // it did before `perform`. The catching handler itself
-                    // is reinstalled only for a direct resume (see
-                    // `ContinuationData::catching_handler_depth`).
-                    let reinstall_catching = self.handlers.len() < data.catching_handler_depth;
-                    for sh in data
-                        .saved_handlers
-                        .iter()
-                        .skip(usize::from(!reinstall_catching))
-                    {
-                        let call_frame_idx = first_restored_idx + sh.frame_offset;
-                        let handler_stack_base = stack_base
-                            .checked_add(sh.stack_offset)
-                            .ok_or_else(|| RuntimeError {
-                                message: "resume: handler stack base overflow".into(),
-                            })?;
-                        if call_frame_idx >= self.frames.len() {
-                            return Err(RuntimeError {
-                                message: "resume: continuation has no handler frame".into(),
-                            });
+                        ClauseAction::Abort { ip } => {
+                            // Unwind to the handler frame. Nothing here
+                            // allocates, so the popped payload cannot be
+                            // collected before it is pushed back.
+                            self.handlers.truncate(h_idx + 1);
+                            let Some(handler) = self.handlers.pop() else {
+                                unreachable!("h_idx indexes an installed handler");
+                            };
+                            self.stack.truncate(save_from);
+                            self.frames.truncate(handler_frame_idx + 1);
+                            while self
+                                .hidden_handlers
+                                .last()
+                                .is_some_and(|h| h.clause_frame_idx > handler_frame_idx)
+                            {
+                                self.hidden_handlers.pop();
+                            }
+                            let frame = &mut self.frames[handler_frame_idx];
+                            frame.proto_idx = handler.proto_idx;
+                            frame.captures = handler.captures;
+                            frame.ip = ip;
+                            self.push(payload)?;
+                            // The clause's continuation slot.
+                            self.push(Value::Unit)?;
                         }
-                        self.handlers.push(HandlerFrame {
-                            call_frame_idx,
-                            stack_base: handler_stack_base,
-                            clauses: sh.clauses.clone(),
-                            proto_idx: sh.proto_idx,
-                            captures: sh.captures.clone(),
-                        });
                     }
-
-                    self.push(arg)?;
                 }
             }
         }
+    }
+
+    /// Push a call frame for the closure at `callee_pos`, whose `arity`
+    /// arguments follow it on the stack.
+    fn enter_closure(&mut self, callee_pos: usize, arity: usize) -> Result<(), RuntimeError> {
+        let callee = self.stack[callee_pos];
+        let (closure_proto, closure_captures) = match callee {
+            Value::Heap(r) => match self.heap_get(r)? {
+                HeapObject::Closure {
+                    proto_idx,
+                    captures,
+                } => (*proto_idx, captures.clone()),
+                _ => {
+                    return Err(RuntimeError {
+                        message: format!("cannot call non-function: {callee:?}"),
+                    });
+                }
+            },
+            _ => {
+                return Err(RuntimeError {
+                    message: format!("cannot call non-function: {callee:?}"),
+                });
+            }
+        };
+        let proto = self.proto(closure_proto)?;
+        if proto.arity as usize != arity {
+            return Err(RuntimeError {
+                message: format!("function expects {} arg(s), got {arity}", proto.arity),
+            });
+        }
+        if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
+            return Err(RuntimeError {
+                message: "stack overflow".into(),
+            });
+        }
+        for i in 0..arity {
+            self.stack[callee_pos + i] = self.stack[callee_pos + 1 + i];
+        }
+        self.stack.truncate(callee_pos + arity);
+        self.frames.push(CallFrame {
+            proto_idx: closure_proto,
+            ip: 0,
+            base: callee_pos,
+            captures: closure_captures,
+        });
+        Ok(())
     }
 
     /// `MakeRecClosures`: create a group of closures that capture each other.
