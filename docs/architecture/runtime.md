@@ -247,7 +247,10 @@ case fast of
 Cancellation is cooperative:
 
 - `Fiber.cancel` is fire-and-forget
-- the child observes it at the next suspension point
+- a child that is blocked (on `await`, `wait_any`, a timer or other I/O)
+  terminates as `Cancelled` immediately; its pending timer or I/O request is
+  cancelled with the I/O backend, and a late result is discarded
+- a runnable or running child observes it at the start of its next slice
 - cancelling an already-finished child is a no-op
 - `Fiber.join` on a cancelled child returns `Result.Err ...`
 
@@ -257,6 +260,71 @@ Cancellation is cooperative:
 - `join`/`await_process` block until completion
 - result is delivered exactly once
 
+### Process lifecycle
+
+A process is live until it becomes terminal: done, failed, or cancelled.
+Both runtimes make a process terminal in a single place, whatever the cause
+(normal return, runtime failure, a failed raw await, cancellation, parent
+exit, an I/O or spawn failure, or deadlock detection). That transition, in
+order:
+
+1. records the outcome: a tombstone for a child whose parent is still live,
+   nothing for a child whose parent is already terminal, the final status for
+   a root process;
+2. cancels every live child of the process (scope exit), recursively, and
+   removes the tombstones of its terminated, unconsumed children;
+3. wakes the processes blocked in `await` or `wait_any` on it.
+
+So children never outlive their parent: when a parent exits without awaiting
+a child, the child is cancelled, and so are its own children.
+
+Tombstones hold a terminated child's outcome until it is consumed. A tombstone
+is removed when:
+
+- the parent consumes it with `await_process` or `await_process_result`
+  (`Fiber.join`), or
+- the parent terminates.
+
+A long-running process that spawns and awaits children in sequence therefore
+keeps no per-child state. A child that is terminated but never awaited (for
+example cancelled and never joined) keeps its tombstone until its parent
+terminates.
+
+After its tombstone is removed a pid is *reaped*. The runtime cannot tell a
+reaped child of the caller from a reaped process of another parent, so for
+any reaped pid:
+
+- `await_process_result` (`Fiber.join`) returns `Err AlreadyJoined`;
+- `await_process` fails the caller with "child result already consumed";
+- `cancel` is a no-op;
+- `wait_any` treats it as complete.
+
+A pid that belongs to another parent and is still live or unconsumed is
+rejected as "not a child"; a pid that was never allocated as "unknown".
+
+On the threaded runtime, a process blocked on a child registers itself, then
+parks, then rechecks the child; a terminating child records its outcome
+before it looks for waiters. Whichever runs second sees the other, so a wakeup
+cannot be lost. If no process is runnable, no I/O is pending, and some process
+is still blocked on another process, the runtime fails the blocked processes
+with "deadlock: process blocked with no possible waker" through the normal
+terminal path. With only parents able to await children this cannot happen;
+it is a safety net against bookkeeping bugs.
+
+### Shutdown
+
+`run_to_completion` returns once every process is terminal; workers are joined
+before it returns. Dropping a `ThreadPoolIoBackend` cancels every pending
+timer and does not wait for a request that is inside a blocking call (an HTTP
+request or a file read): such a worker thread is detached and its result
+discarded. `ThreadPoolIoBackend::shutdown` joins every thread instead.
+
+### Single-threaded runtime
+
+The single-threaded runtime follows the same rules, with one difference: I/O
+builtins run inline and block the thread, so a process is never blocked on
+I/O there and a sleeping process cannot be cancelled mid-sleep.
+
 ---
 
 ## Semantic decisions (v1)
@@ -264,7 +332,9 @@ Cancellation is cooperative:
 ### Await
 
 - Only parent may await child
-- Result consumed once
+- Result consumed once; the tombstone is then removed (see Process lifecycle)
+- Awaiting a reaped pid: `await_process_result` returns `Err AlreadyJoined`,
+  `await_process` fails the caller
 
 ### Spawn
 
@@ -275,11 +345,13 @@ Cancellation is cooperative:
 
 ## Failure model
 
-| Case                        | Behavior                 |
-| --------------------------- | ------------------------ |
-| Child process failure       | propagated via `await`   |
-| I/O failure                 | returned as `Result.Err` |
-| Runtime invariant violation | process failure          |
+| Case                        | Behavior                                                                                 |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| Child process failure       | `await_process` fails the parent (`child process failed: ...`), which propagates up a chain of raw awaits; `await_process_result` / `Fiber.join` returns `Err` |
+| Child cancelled             | as a failure, with error `Cancelled`                                                     |
+| Parent terminates           | its live children are cancelled and its unconsumed tombstones removed                    |
+| I/O failure                 | returned as `Result.Err` by APIs that model it; otherwise fails the process              |
+| Runtime invariant violation | process failure                                                                          |
 
 ---
 

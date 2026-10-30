@@ -1,16 +1,48 @@
 //! Multi-threaded runtime: N worker threads executing hiko processes in parallel.
+//!
+//! # Ownership model
+//!
+//! A process is owned by exactly one party at a time:
+//!
+//! - a worker, while it runs a slice (the process is out of the table);
+//! - the table, while it is runnable and queued, or blocked;
+//! - whoever removed it from the table with [`ProcessTable::take_runnable`] or
+//!   [`ProcessTable::take_blocked`] to change its state.
+//!
+//! State changes happen only on an owned process. A blocked process is put back
+//! with [`park`], a runnable one with [`resume`], and a terminating one is
+//! handed to [`terminate_process`], the only place that makes a process
+//! terminal. `terminate_process` records the outcome (a tombstone for a child,
+//! a terminal status for a root), cancels the process's children, reaps their
+//! unconsumed tombstones, and wakes every process waiting on it.
+//!
+//! # Wake protocol
+//!
+//! A process that blocks on a child (await, wait_any) or on I/O first
+//! registers itself in `waiters`, `any_waiters` or `io_waiters`, then parks
+//! itself, then rechecks whether the awaited child already terminated. A
+//! terminating child marks itself terminal first and only then reads the
+//! registrations. Whichever side comes second sees the other, so a wakeup
+//! cannot be lost. A waker that finds the waiter not yet parked leaves the
+//! registration in place; the waiter's own recheck then delivers the result.
+//! Registrations are removed by the party that delivers, or when the waiter
+//! terminates.
+//!
+//! Cancellation of a process that is out of the table is recorded in
+//! `pending_cancels`. The owner observes it when it next parks the process
+//! (see [`park`]) or when a worker next dequeues it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::{DashMap, DashSet};
 
 use crate::io_backend::{IoBackend, IoResult, IoToken, ThreadPoolIoBackend};
 use crate::process::{
-    AwaitKind, BlockReason, ChildOutcome, ChildRecord, FiberJoinError, Pid, Process,
-    ProcessFailure, ProcessStatus, Scope, ScopeId,
+    AwaitKind, BlockReason, ChildOutcome, ChildRecord, Pid, Process, ProcessFailure, ProcessStatus,
+    Scope, ScopeId,
 };
-use crate::runtime_ops::{dedup_pids, deliver_join_result_to_parent, deliver_result_to_parent};
+use crate::runtime_ops::{ChildState, dedup_pids, deliver_await_outcome, deliver_result_to_parent};
 use crate::scheduler::{FifoScheduler, Scheduler};
 use crate::value::Value;
 use crate::vm::{RunResult, VM};
@@ -18,45 +50,121 @@ use hiko_compile::chunk::CompiledProgram;
 
 /// Thread-safe process table using DashMap for fine-grained locking.
 struct ProcessTable {
+    /// Runnable and blocked processes, plus terminated root processes.
+    /// A process that a worker is executing is temporarily absent.
     processes: DashMap<Pid, Process>,
-    /// Compact tombstones for terminated child processes.
+    /// Every process that has not terminated, including executing ones.
+    live: DashSet<Pid>,
+    /// Outcomes of terminated children that their parent has not consumed.
     tombstones: DashMap<Pid, ChildRecord>,
-    /// Permanent child→parent map set at spawn time. Lets operations recognise
-    /// a child that is temporarily invisible (taken from `processes` for execution).
-    child_parents: DashMap<Pid, Pid>,
-    /// Children that should be cancelled when they return from execution.
+    /// Live processes with a cancellation request that their owner has not
+    /// observed yet, because the process was out of the table.
     pending_cancels: DashSet<Pid>,
+    /// child pid -> processes blocked in `await` on it.
     waiters: DashMap<Pid, Vec<Pid>>,
+    /// child pid -> processes blocked in `wait_any` on a list containing it.
     any_waiters: DashMap<Pid, Vec<Pid>>,
+    /// I/O token -> process blocked on it.
     io_waiters: DashMap<IoToken, Pid>,
     #[allow(dead_code)] // scaffolding for structured concurrency
     scopes: DashMap<ScopeId, Scope>,
+    next_pid: AtomicU64,
+    /// Largest tombstone count ever observed after a tombstone insert.
+    #[cfg(test)]
+    max_tombstones: AtomicUsize,
 }
 
 impl ProcessTable {
     fn new() -> Self {
         Self {
             processes: DashMap::new(),
+            live: DashSet::new(),
             tombstones: DashMap::new(),
-            child_parents: DashMap::new(),
             pending_cancels: DashSet::new(),
             waiters: DashMap::new(),
             any_waiters: DashMap::new(),
             io_waiters: DashMap::new(),
             scopes: DashMap::new(),
+            next_pid: AtomicU64::new(1),
+            #[cfg(test)]
+            max_tombstones: AtomicUsize::new(0),
         }
     }
 
+    fn alloc_pid(&self) -> Pid {
+        Pid(self.next_pid.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Publish a new, runnable process. The caller enqueues it.
     fn insert(&self, process: Process) {
+        self.live.insert(process.pid);
         self.processes.insert(process.pid, process);
     }
 
-    fn take(&self, pid: Pid) -> Option<Process> {
-        self.processes.remove(&pid).map(|(_, p)| p)
+    /// Take a runnable process out of the table to run it. Stale queue
+    /// entries (the process is blocked, terminal, or gone) yield `None`.
+    fn take_runnable(&self, pid: Pid) -> Option<Process> {
+        self.processes
+            .remove_if(&pid, |_, process| process.is_runnable())
+            .map(|(_, process)| process)
     }
 
-    fn return_process(&self, process: Process) {
-        self.processes.insert(process.pid, process);
+    /// Take a blocked process out of the table if its block reason matches.
+    fn take_blocked(&self, pid: Pid, pred: impl Fn(&BlockReason) -> bool) -> Option<Process> {
+        self.processes
+            .remove_if(&pid, |_, process| match &process.status {
+                ProcessStatus::Blocked(reason) => pred(reason),
+                _ => false,
+            })
+            .map(|(_, process)| process)
+    }
+
+    /// Take a process that is registered as a waiter, for delivery.
+    fn take_waiter(
+        &self,
+        pid: Pid,
+        pred: impl Fn(&BlockReason) -> bool,
+    ) -> Result<Process, NotTaken> {
+        loop {
+            if let Some(process) = self.take_blocked(pid, &pred) {
+                return Ok(process);
+            }
+            match self.processes.get(&pid) {
+                // It was parked after our attempt; try again.
+                Some(process) if matches!(&process.status, ProcessStatus::Blocked(reason) if pred(reason)) =>
+                {
+                    continue;
+                }
+                // In the table but not waiting for this: the registration is stale.
+                Some(_) => return Err(NotTaken::Stale),
+                // Out of the table: either about to park (its recheck will
+                // deliver), or owned by another party that will handle it.
+                None if self.live.contains(&pid) => return Err(NotTaken::InFlight),
+                None => return Err(NotTaken::Stale),
+            }
+        }
+    }
+
+    /// Classify `pid` from the point of view of `parent`, which the caller owns.
+    fn classify_child(&self, parent: &Process, pid: Pid) -> ChildState {
+        if parent.children.contains(&pid) {
+            // A terminating child gets its tombstone before it stops being
+            // live, so "not live" implies "tombstone present".
+            if self.live.contains(&pid) {
+                ChildState::Live
+            } else {
+                ChildState::Terminated
+            }
+        } else if self.live.contains(&pid)
+            || self.tombstones.contains_key(&pid)
+            || self.processes.contains_key(&pid)
+        {
+            ChildState::NotChild
+        } else if pid.0 > 0 && pid.0 < self.next_pid.load(Ordering::SeqCst) {
+            ChildState::Reaped
+        } else {
+            ChildState::Unknown
+        }
     }
 
     #[cfg(test)]
@@ -81,32 +189,34 @@ impl ProcessTable {
             .all(|e| e.is_done() || matches!(e.status, ProcessStatus::Blocked(_)))
     }
 
-    /// Check if all non-done processes are permanently blocked
-    /// (currently only blocked on Await with no possible waker).
-    fn has_permanently_blocked(&self) -> bool {
-        let io_count = self.io_waiters.len();
-        if io_count > 0 {
-            return false; // I/O may still complete
+    /// Processes blocked on another process with no runnable process and no
+    /// pending I/O left to wake them.
+    fn permanently_blocked(&self) -> Vec<Pid> {
+        if !self.io_waiters.is_empty() || self.processes.iter().any(|e| e.is_runnable()) {
+            return Vec::new();
         }
-        // If no I/O pending and no runnable processes, remaining blocked
-        // processes are deadlocked
-        self.processes.iter().any(|e| {
-            matches!(
-                e.status,
-                ProcessStatus::Blocked(BlockReason::Await { .. })
-                    | ProcessStatus::Blocked(BlockReason::WaitAny(_))
-            )
-        }) && !self.processes.iter().any(|e| e.is_runnable())
+        self.processes
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.status,
+                    ProcessStatus::Blocked(BlockReason::Await { .. })
+                        | ProcessStatus::Blocked(BlockReason::WaitAny(_))
+                )
+            })
+            .map(|e| *e.key())
+            .collect()
     }
 
+    /// Check the bookkeeping invariants. Only meaningful while no worker is
+    /// executing a slice, for example after `run_to_completion`.
     #[cfg(test)]
     fn check_invariants(&self) -> Result<(), String> {
+        let known = |pid: &Pid| self.live.contains(pid) || self.tombstones.contains_key(pid);
+
         for entry in self.waiters.iter() {
             let child_pid = *entry.key();
-            if !self.processes.contains_key(&child_pid)
-                && !self.tombstones.contains_key(&child_pid)
-                && !self.child_parents.contains_key(&child_pid)
-            {
+            if !known(&child_pid) {
                 return Err(format!("waiters contains unknown child {child_pid:?}"));
             }
             for waiter_pid in entry.value() {
@@ -129,10 +239,7 @@ impl ProcessTable {
 
         for entry in self.any_waiters.iter() {
             let child_pid = *entry.key();
-            if !self.processes.contains_key(&child_pid)
-                && !self.tombstones.contains_key(&child_pid)
-                && !self.child_parents.contains_key(&child_pid)
-            {
+            if !known(&child_pid) {
                 return Err(format!("any_waiters contains unknown child {child_pid:?}"));
             }
             for waiter_pid in entry.value() {
@@ -170,18 +277,68 @@ impl ProcessTable {
             }
         }
 
+        for entry in self.tombstones.iter() {
+            if !self.live.contains(&entry.value().parent) {
+                return Err(format!(
+                    "tombstone {:?} outlived its parent {:?}",
+                    entry.key(),
+                    entry.value().parent
+                ));
+            }
+        }
+
+        for pid in self.pending_cancels.iter() {
+            if !self.live.contains(&*pid) {
+                return Err(format!("pending cancel for terminated process {:?}", *pid));
+            }
+        }
+
+        for pid in self.live.iter() {
+            match self.processes.get(&*pid) {
+                Some(process) if !process.is_done() => {}
+                Some(_) => return Err(format!("live process {:?} is terminal", *pid)),
+                None => return Err(format!("live process {:?} is missing", *pid)),
+            }
+        }
+
+        for entry in self.processes.iter() {
+            if entry.is_done() && entry.parent.is_some() {
+                return Err(format!("terminal child {:?} kept in table", entry.key()));
+            }
+        }
+
         Ok(())
     }
 }
 
+/// Why `take_waiter` did not return the waiter.
+enum NotTaken {
+    /// Out of the table but live: about to park, or owned by another party.
+    InFlight,
+    /// Not waiting for this event: the registration is stale.
+    Stale,
+}
+
+/// Borrowed runtime services passed to every lifecycle transition.
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    table: &'a ProcessTable,
+    scheduler: &'a dyn Scheduler,
+    io: &'a dyn IoBackend,
+}
+
+/// Processes waiting to be terminated. Transitions push here instead of
+/// recursing, so cascades (a failure propagating up an await chain, a
+/// cancellation propagating down a process tree) run in constant stack.
+type Terminations = Vec<(Process, ChildOutcome)>;
+
 /// Multi-threaded hiko runtime.
 pub struct ThreadedRuntime {
-    next_pid: Arc<AtomicU64>,
-    next_io_token: Arc<AtomicU64>,
-    active_workers: Arc<std::sync::atomic::AtomicUsize>,
+    active_workers: Arc<AtomicUsize>,
     /// Number of slices ever started. Lets the monitor detect a slice that
     /// started while it was scanning the process table.
     slices_started: Arc<AtomicU64>,
+    next_io_token: Arc<AtomicU64>,
     table: Arc<ProcessTable>,
     scheduler: Arc<dyn Scheduler>,
     io_backend: Arc<dyn IoBackend>,
@@ -192,10 +349,9 @@ impl ThreadedRuntime {
     pub fn new(num_workers: usize) -> Self {
         let num_workers = num_workers.max(1);
         Self {
-            next_pid: Arc::new(AtomicU64::new(1)),
-            next_io_token: Arc::new(AtomicU64::new(1)),
-            active_workers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            active_workers: Arc::new(AtomicUsize::new(0)),
             slices_started: Arc::new(AtomicU64::new(0)),
+            next_io_token: Arc::new(AtomicU64::new(1)),
             table: Arc::new(ProcessTable::new()),
             scheduler: Arc::new(FifoScheduler::new(1000)),
             io_backend: Arc::new(ThreadPoolIoBackend::new(num_workers.max(2))),
@@ -209,7 +365,15 @@ impl ThreadedRuntime {
     }
 
     fn new_pid(&self) -> Pid {
-        Pid(self.next_pid.fetch_add(1, Ordering::Relaxed))
+        self.table.alloc_pid()
+    }
+
+    fn ctx(&self) -> Ctx<'_> {
+        Ctx {
+            table: &self.table,
+            scheduler: &*self.scheduler,
+            io: &*self.io_backend,
+        }
     }
 
     pub fn spawn_root(&self, program: CompiledProgram) -> Pid {
@@ -217,11 +381,15 @@ impl ThreadedRuntime {
     }
 
     pub fn spawn_root_vm(&self, mut vm: VM) -> Pid {
-        let pid = self.new_pid();
         vm.enable_output_capture();
         vm.set_async_io(true);
-        let process = Process::new(pid, vm, None);
-        self.table.insert(process);
+        self.insert_root(vm)
+    }
+
+    /// Publish an already-configured root VM.
+    fn insert_root(&self, vm: VM) -> Pid {
+        let pid = self.new_pid();
+        self.table.insert(Process::new(pid, vm, None));
         self.scheduler.enqueue(pid);
         pid
     }
@@ -247,34 +415,31 @@ impl ThreadedRuntime {
             .map(|_| {
                 let table = Arc::clone(&self.table);
                 let scheduler = Arc::clone(&self.scheduler);
-                let next_pid = Arc::clone(&self.next_pid);
                 let next_io_token = Arc::clone(&self.next_io_token);
                 let active_workers = Arc::clone(&self.active_workers);
                 let slices_started = Arc::clone(&self.slices_started);
                 let io_backend = Arc::clone(&self.io_backend);
 
                 std::thread::spawn(move || {
-                    worker_loop(
-                        &table,
-                        &*scheduler,
-                        &next_pid,
-                        &next_io_token,
-                        &active_workers,
-                        &slices_started,
-                        &*io_backend,
-                    );
+                    let cx = Ctx {
+                        table: &table,
+                        scheduler: &*scheduler,
+                        io: &*io_backend,
+                    };
+                    worker_loop(cx, &next_io_token, &active_workers, &slices_started);
                 })
             })
             .collect();
 
         // Monitor: poll I/O completions and check for termination
+        let cx = self.ctx();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1));
 
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
             for (token, result) in completions {
-                handle_io_completion(&self.table, &*self.scheduler, token, result);
+                handle_io_completion(cx, token, result);
             }
 
             // A running process is out of the table, so the table scan alone
@@ -288,51 +453,18 @@ impl ThreadedRuntime {
             if idle_before
                 && self.table.is_all_done_or_blocked()
                 && self.slices_started.load(Ordering::SeqCst) == slices_before
+                && self.table.io_waiters.is_empty()
             {
-                let has_io_waiters = !self.table.io_waiters.is_empty();
-                if !has_io_waiters {
-                    if self.table.has_permanently_blocked() {
-                        // Collect pids of permanently blocked processes
-                        let stuck: Vec<Pid> = self
-                            .table
-                            .processes
-                            .iter()
-                            .filter(|e| {
-                                matches!(
-                                    e.status,
-                                    ProcessStatus::Blocked(BlockReason::Await { .. })
-                                        | ProcessStatus::Blocked(BlockReason::WaitAny(_))
-                                )
-                            })
-                            .map(|e| *e.key())
-                            .collect();
-
-                        // Mark as failed and atomically clean up waiters
-                        for &pid in &stuck {
-                            if let Some(mut entry) = self.table.processes.get_mut(&pid) {
-                                entry.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                                    "deadlock: process blocked with no possible waker",
-                                ));
-                            }
-                            // Clear any waiters that were waiting on this process
-                            if let Some((_, waiter_pids)) = self.table.waiters.remove(&pid) {
-                                for waiter_pid in waiter_pids {
-                                    if let Some(mut waiter) =
-                                        self.table.processes.get_mut(&waiter_pid)
-                                        && matches!(waiter.status, ProcessStatus::Blocked(_))
-                                    {
-                                        waiter.status =
-                                            ProcessStatus::Failed(ProcessFailure::runtime(
-                                                "deadlock: child process deadlocked",
-                                            ));
-                                    }
-                                }
-                            }
-                        }
-                    }
+                let stuck = self.table.permanently_blocked();
+                if stuck.is_empty() {
                     self.scheduler.shutdown();
                     break;
                 }
+                // Safety net: with correct bookkeeping no process can block
+                // forever, because only a parent may await its child. Fail the
+                // stuck processes through the normal terminal path so their
+                // own waiters observe the failure, then keep running.
+                fail_deadlocked(cx, &stuck);
             }
         }
 
@@ -344,29 +476,403 @@ impl ThreadedRuntime {
     }
 }
 
-fn handle_io_completion(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
-    token: IoToken,
-    result: IoResult,
-) {
-    let Some((_, pid)) = table.io_waiters.remove(&token) else {
-        return;
-    };
-
-    let Some(mut process) = table.processes.get_mut(&pid) else {
-        remove_io_waiters_for_pid(table, pid);
-        return;
-    };
-
-    match &process.status {
-        ProcessStatus::Blocked(BlockReason::Io(blocked_token)) if *blocked_token == token => {}
-        _ => {
-            drop(process);
-            remove_io_waiters_for_pid(table, pid);
-            return;
+#[cfg(test)]
+impl ThreadedRuntime {
+    /// Observable result of `pid` plus any bookkeeping left behind.
+    pub(crate) fn lifecycle_report(&self, pid: Pid) -> crate::lifecycle_tests::Report {
+        let table = &self.table;
+        let mut leftovers = Vec::new();
+        let mut note = |name: &str, len: usize| {
+            if len > 0 {
+                leftovers.push(format!("{name}={len}"));
+            }
+        };
+        note("extra_processes", table.processes.len().saturating_sub(1));
+        note("live", table.live.len());
+        note("tombstones", table.tombstones.len());
+        note("pending_cancels", table.pending_cancels.len());
+        note("waiters", table.waiters.len());
+        note("any_waiters", table.any_waiters.len());
+        note("io_waiters", table.io_waiters.len());
+        if let Err(message) = table.check_invariants() {
+            leftovers.push(message);
+        }
+        crate::lifecycle_tests::Report {
+            output: table.get_output(pid),
+            status: table
+                .processes
+                .get(&pid)
+                .map(|process| format!("{:?}", process.status))
+                .unwrap_or_else(|| "<missing>".into()),
+            leftovers,
         }
     }
+
+    /// The largest number of tombstones held at any point so far.
+    pub(crate) fn max_tombstones(&self) -> usize {
+        self.table.max_tombstones.load(Ordering::SeqCst)
+    }
+}
+
+fn fail_deadlocked(cx: Ctx<'_>, stuck: &[Pid]) {
+    let mut terminations = Terminations::new();
+    for &pid in stuck {
+        let Some(process) = cx.table.take_blocked(pid, |reason| {
+            matches!(reason, BlockReason::Await { .. } | BlockReason::WaitAny(_))
+        }) else {
+            continue;
+        };
+        clear_blocked_registration(cx, &process);
+        terminations.push((
+            process,
+            ChildOutcome::Err(ProcessFailure::runtime(
+                "deadlock: process blocked with no possible waker",
+            )),
+        ));
+    }
+    drain_terminations(cx, &mut terminations);
+}
+
+// --- Ownership transitions ---------------------------------------------------
+
+/// Return an owned, runnable process to the table and queue it.
+fn resume(cx: Ctx<'_>, mut process: Process) {
+    let pid = process.pid;
+    process.status = ProcessStatus::Runnable;
+    cx.table.processes.insert(pid, process);
+    cx.scheduler.enqueue(pid);
+}
+
+/// Return an owned, blocked process to the table. Its block registration must
+/// already be in place. Observes a cancellation requested while it was owned.
+fn park(cx: Ctx<'_>, process: Process, terminations: &mut Terminations) {
+    debug_assert!(matches!(process.status, ProcessStatus::Blocked(_)));
+    let pid = process.pid;
+    cx.table.processes.insert(pid, process);
+    if cx.table.pending_cancels.remove(&pid).is_some() {
+        try_cancel_in_table(cx, pid, terminations);
+    }
+}
+
+/// Terminate an owned process. The single entry point for terminal
+/// transitions; see [`finish_process`].
+fn terminate_process(cx: Ctx<'_>, process: Process, outcome: ChildOutcome) {
+    let mut terminations = vec![(process, outcome)];
+    drain_terminations(cx, &mut terminations);
+}
+
+fn drain_terminations(cx: Ctx<'_>, terminations: &mut Terminations) {
+    while let Some((process, outcome)) = terminations.pop() {
+        finish_process(cx, process, outcome, terminations);
+    }
+}
+
+/// Make an owned process terminal:
+///
+/// 1. record the outcome: a tombstone for a child whose parent is alive,
+///    nothing for a child whose parent is gone, a terminal status for a root;
+/// 2. stop being live;
+/// 3. cancel live children and reap the tombstones of terminated ones;
+/// 4. wake processes blocked on this one.
+///
+/// Step 1 precedes step 2 so that "not live" always implies "terminal outcome
+/// recorded or reaped". A child and its parent terminating concurrently each
+/// record their own state before reading the other's, so either the child sees
+/// the parent gone and reaps itself, or the parent sees the child's tombstone
+/// and reaps it.
+fn finish_process(
+    cx: Ctx<'_>,
+    mut process: Process,
+    outcome: ChildOutcome,
+    terminations: &mut Terminations,
+) {
+    let pid = process.pid;
+    let children = std::mem::take(&mut process.children);
+    cx.scheduler.remove(pid);
+
+    match process.parent {
+        Some(parent) => {
+            // Free the VM, heap and stack before publishing the tombstone.
+            drop(process);
+            cx.table
+                .tombstones
+                .insert(pid, ChildRecord { parent, outcome });
+            #[cfg(test)]
+            cx.table
+                .max_tombstones
+                .fetch_max(cx.table.tombstones.len(), Ordering::SeqCst);
+            if !cx.table.live.contains(&parent) {
+                cx.table.tombstones.remove(&pid);
+            }
+        }
+        None => {
+            process.status = match outcome {
+                ChildOutcome::Ok(_) => ProcessStatus::Done,
+                ChildOutcome::Err(failure) => ProcessStatus::Failed(failure),
+            };
+            cx.table.processes.insert(pid, process);
+        }
+    }
+
+    cx.table.live.remove(&pid);
+    cx.table.pending_cancels.remove(&pid);
+
+    // Scope exit: children must not outlive their parent. A child that is
+    // terminating concurrently may already have its tombstone even though it
+    // is still live, so always remove the tombstone after cancelling; a child
+    // that records its tombstone later sees this process gone and reaps it.
+    for child in children {
+        if cx.table.live.contains(&child) {
+            cancel_pid(cx, child, terminations);
+        }
+        cx.table.tombstones.remove(&child);
+    }
+
+    wake_any_waiters(cx, pid, terminations);
+    wake_join_waiters(cx, pid, terminations);
+}
+
+/// Cancel a live process wherever it currently is.
+fn cancel_pid(cx: Ctx<'_>, pid: Pid, terminations: &mut Terminations) {
+    if try_cancel_in_table(cx, pid, terminations) {
+        return;
+    }
+    // Out of the table: leave a request for its owner.
+    cx.table.pending_cancels.insert(pid);
+    if !cx.table.live.contains(&pid) {
+        // It terminated meanwhile; don't leave a stale request behind.
+        cx.table.pending_cancels.remove(&pid);
+        return;
+    }
+    // The owner may have parked it before seeing the request.
+    try_cancel_in_table(cx, pid, terminations);
+}
+
+/// Cancel `pid` if it is in the table. Returns false if it is not.
+fn try_cancel_in_table(cx: Ctx<'_>, pid: Pid, terminations: &mut Terminations) -> bool {
+    loop {
+        if let Some(process) = cx.table.take_blocked(pid, |_| true) {
+            // Cancelling a blocked process wakes it right away: it stops
+            // waiting (timers and I/O are cancelled) and terminates now.
+            clear_blocked_registration(cx, &process);
+            terminations.push((process, ChildOutcome::Err(ProcessFailure::Cancelled)));
+            return true;
+        }
+        let Some(mut process) = cx.table.processes.get_mut(&pid) else {
+            return false;
+        };
+        match process.status {
+            // Observed by the VM at the start of its next slice.
+            ProcessStatus::Runnable => process.vm.request_cancellation(),
+            // Parked between our two lookups; take it.
+            ProcessStatus::Blocked(_) => continue,
+            // A terminated root: nothing to cancel.
+            ProcessStatus::Done | ProcessStatus::Failed(_) => {}
+        }
+        return true;
+    }
+}
+
+/// Remove the registration that makes `process` (blocked, owned) wakeable.
+fn clear_blocked_registration(cx: Ctx<'_>, process: &Process) {
+    let pid = process.pid;
+    let ProcessStatus::Blocked(reason) = &process.status else {
+        return;
+    };
+    match reason {
+        BlockReason::Await { child, .. } => remove_waiter(&cx.table.waiters, *child, pid),
+        BlockReason::WaitAny(child_pids) => {
+            remove_any_waiter_registration(cx.table, pid, child_pids)
+        }
+        BlockReason::Io(token) => {
+            cx.table.io_waiters.remove(token);
+            cx.io.cancel(*token);
+        }
+    }
+}
+
+// --- Worker loop ---------------------------------------------------------------
+
+fn worker_loop(
+    cx: Ctx<'_>,
+    next_io_token: &AtomicU64,
+    active_workers: &AtomicUsize,
+    slices_started: &AtomicU64,
+) {
+    struct ActiveSlice<'a>(&'a AtomicUsize);
+
+    impl Drop for ActiveSlice<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    loop {
+        let pid = match cx.scheduler.dequeue() {
+            Some(pid) => pid,
+            None => return,
+        };
+
+        active_workers.fetch_add(1, Ordering::SeqCst);
+        slices_started.fetch_add(1, Ordering::SeqCst);
+        let _active_slice = ActiveSlice(active_workers);
+
+        let reductions = cx.scheduler.reductions(pid);
+        let Some(mut process) = cx.table.take_runnable(pid) else {
+            continue;
+        };
+
+        // Cooperative cancellation is owned by the VM. A concurrent cancel
+        // request can only mark intent here; the interpreter observes it at the
+        // next slice boundary and returns `RunResult::Cancelled`.
+        if cx.table.pending_cancels.remove(&pid).is_some() {
+            process.vm.request_cancellation();
+        }
+
+        let result = process.vm.run_slice(reductions);
+        handle_slice_result(cx, process, result, next_io_token);
+    }
+}
+
+fn handle_slice_result(
+    cx: Ctx<'_>,
+    mut process: Process,
+    result: RunResult,
+    next_io_token: &AtomicU64,
+) {
+    let pid = process.pid;
+    match result {
+        RunResult::Done => {
+            let outcome = if process.parent.is_some() {
+                child_result(&mut process)
+            } else {
+                ChildOutcome::Ok(crate::sendable::SendableValue::Unit)
+            };
+            terminate_process(cx, process, outcome);
+        }
+        RunResult::Yielded => resume(cx, process),
+        RunResult::Failed(failure) => {
+            terminate_process(cx, process, ChildOutcome::Err(failure));
+        }
+        RunResult::Spawn {
+            proto_idx,
+            captures,
+        } => {
+            match crate::runtime_ops::create_child_vm_from_parent(&process.vm, proto_idx, captures)
+            {
+                Ok(child_vm) => {
+                    let child_pid = cx.table.alloc_pid();
+                    process.children.insert(child_pid);
+                    cx.table
+                        .insert(Process::new(child_pid, child_vm, Some(pid)));
+                    cx.scheduler.enqueue(child_pid);
+
+                    process.vm.stack.pop();
+                    process.vm.push_value(Value::Pid(child_pid.0));
+                    resume(cx, process);
+                }
+                Err(failure) => {
+                    terminate_process(cx, process, ChildOutcome::Err(failure));
+                }
+            }
+        }
+        RunResult::Await(child_pid_val) => {
+            handle_await(cx, process, Pid(child_pid_val), AwaitKind::Raw);
+        }
+        RunResult::AwaitResult(child_pid_val) => {
+            handle_await(cx, process, Pid(child_pid_val), AwaitKind::Result);
+        }
+        RunResult::Cancel(child_pid_val) => {
+            handle_cancel(cx, process, Pid(child_pid_val));
+        }
+        RunResult::WaitAny(child_pid_vals) => {
+            let child_pids = child_pid_vals.into_iter().map(Pid).collect();
+            handle_wait_any(cx, process, child_pids);
+        }
+        RunResult::Io(request) => {
+            let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
+            // Register and park before handing the request to the backend, so
+            // a completion always finds the process parked.
+            process.status = ProcessStatus::Blocked(BlockReason::Io(token));
+            cx.table.io_waiters.insert(token, pid);
+            let mut terminations = Terminations::new();
+            park(cx, process, &mut terminations);
+            drain_terminations(cx, &mut terminations);
+
+            // Cancelled while parking: never start the request.
+            if !cx.table.io_waiters.contains_key(&token) {
+                return;
+            }
+            match cx.io.register(token, request) {
+                Ok(()) => {
+                    // Cancelled before the backend knew the token: release it.
+                    if !cx.table.io_waiters.contains_key(&token) {
+                        cx.io.cancel(token);
+                    }
+                }
+                Err(message) => {
+                    if cx.table.io_waiters.remove(&token).is_some()
+                        && let Some(process) = cx.table.take_blocked(
+                            pid,
+                            |reason| matches!(reason, BlockReason::Io(t) if *t == token),
+                        )
+                    {
+                        terminate_process(
+                            cx,
+                            process,
+                            ChildOutcome::Err(ProcessFailure::runtime(message)),
+                        );
+                    }
+                }
+            }
+        }
+        RunResult::Cancelled => {
+            terminate_process(cx, process, ChildOutcome::Err(ProcessFailure::Cancelled));
+        }
+    }
+}
+
+/// Serialize the final value of a finished child for its parent.
+fn child_result(process: &mut Process) -> ChildOutcome {
+    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
+    match process
+        .vm
+        .heap
+        .charge_host_work(crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK)
+        .map_err(ProcessFailure::runtime)
+        .and_then(|()| {
+            crate::sendable::serialize(val, &process.vm.heap)
+                .map_err(|e| ProcessFailure::runtime(format!("child result not sendable: {e}")))
+        })
+        .and_then(|sv| {
+            process
+                .vm
+                .heap
+                .charge_host_work(crate::sendable::host_work_for_sendable(&sv))
+                .map_err(ProcessFailure::runtime)?;
+            Ok(sv)
+        }) {
+        Ok(sv) => ChildOutcome::Ok(sv),
+        Err(failure) => ChildOutcome::Err(failure),
+    }
+}
+
+// --- I/O completion ------------------------------------------------------------
+
+fn handle_io_completion(cx: Ctx<'_>, token: IoToken, result: IoResult) {
+    let Some((_, pid)) = cx.table.io_waiters.remove(&token) else {
+        // Cancelled, or not ours: drop the late result.
+        return;
+    };
+
+    let Some(mut process) = cx.table.take_blocked(
+        pid,
+        |reason| matches!(reason, BlockReason::Io(t) if *t == token),
+    ) else {
+        // Defensive: a registration for a process not waiting on it.
+        remove_io_waiters_for_pid(cx.table, pid);
+        return;
+    };
 
     let failure = match result {
         IoResult::Ok { value, io_bytes } => {
@@ -378,9 +884,7 @@ fn handle_io_completion(
                 .and_then(|()| deliver_result_to_parent(&mut process.vm, value))
             {
                 Ok(()) => {
-                    process.status = ProcessStatus::Runnable;
-                    drop(process);
-                    scheduler.enqueue(pid);
+                    resume(cx, process);
                     return;
                 }
                 Err(failure) => failure,
@@ -391,822 +895,305 @@ fn handle_io_completion(
             Err(err) => ProcessFailure::runtime(err.to_string()),
         },
     };
-    drop(process);
-    if let Some(process) = table.take(pid) {
-        terminate_process(table, scheduler, process, ChildOutcome::Err(failure));
-    }
+    terminate_process(cx, process, ChildOutcome::Err(failure));
 }
 
-/// Transition a process to terminal state. For children, creates a compact
-/// tombstone and drops the Process (freeing VM/heap). For root processes,
-/// sets the status and returns to the table.
-fn make_terminal(table: &ProcessTable, process: Process, outcome: ChildOutcome) {
-    let pid = process.pid;
-    if let Some(parent_pid) = process.parent {
-        table.tombstones.insert(
-            pid,
-            ChildRecord::Ready {
-                parent: parent_pid,
-                outcome,
-            },
-        );
-        // process is dropped here, freeing VM/heap/stack
-    } else {
-        let mut process = process;
-        match outcome {
-            ChildOutcome::Ok(_) => process.status = ProcessStatus::Done,
-            ChildOutcome::Err(failure) => process.status = ProcessStatus::Failed(failure),
+// --- Process operations ----------------------------------------------------------
+
+fn handle_await(cx: Ctx<'_>, mut parent: Process, child_pid: Pid, await_kind: AwaitKind) {
+    let parent_pid = parent.pid;
+    let mut terminations = Terminations::new();
+
+    match cx.table.classify_child(&parent, child_pid) {
+        ChildState::Live => {
+            block_on_child(cx, parent, child_pid, await_kind, &mut terminations);
         }
-        table.return_process(process);
-    }
-}
-
-/// Finish a process: record its outcome, cancel its children, and wake every
-/// process waiting on it. All terminal transitions go through here so that
-/// waiters always find a tombstone (or a terminal root) to read.
-fn terminate_process(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
-    process: Process,
-    outcome: ChildOutcome,
-) {
-    let pid = process.pid;
-    make_terminal(table, process, outcome);
-    cancel_scope_children(table, scheduler, pid);
-    scheduler.remove(pid);
-    wake_any_waiters(table, scheduler, pid);
-    wake_join_waiters(table, scheduler, pid);
-}
-
-/// Cancel all running children of a terminating process (scope cleanup).
-/// When a parent exits, its children must not outlive it.
-fn cancel_scope_children(table: &ProcessTable, scheduler: &dyn Scheduler, parent_pid: Pid) {
-    let children: Vec<Pid> = table
-        .child_parents
-        .iter()
-        .filter(|entry| *entry.value() == parent_pid)
-        .map(|entry| *entry.key())
-        .collect();
-
-    for child_pid in children {
-        // Skip if already tombstoned
-        if table.tombstones.contains_key(&child_pid) {
-            continue;
-        }
-
-        // Try to cancel in the table
-        match table.processes.get_mut(&child_pid) {
-            Some(mut child) => match &child.status {
-                ProcessStatus::Blocked(reason) => {
-                    let reason = reason.clone();
-                    let child_parent = child.parent;
-                    child.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
-                    drop(child);
-                    scheduler.remove(child_pid);
-                    clear_blocked_registration(table, child_pid, &reason);
-                    if let Some(child_parent) = child_parent {
-                        table.processes.remove(&child_pid);
-                        table.tombstones.insert(
-                            child_pid,
-                            ChildRecord::Ready {
-                                parent: child_parent,
-                                outcome: ChildOutcome::Err(ProcessFailure::Cancelled),
-                            },
-                        );
-                    }
-                    wake_any_waiters(table, scheduler, child_pid);
-                    wake_join_waiters(table, scheduler, child_pid);
-                }
-                ProcessStatus::Runnable => {
-                    child.vm.request_cancellation();
-                    drop(child);
-                }
-                _ => {
-                    drop(child);
-                }
-            },
-            None => {
-                // Being executed by another worker — schedule pending cancel
-                table.pending_cancels.insert(child_pid);
-            }
-        }
-    }
-}
-
-fn worker_loop(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
-    next_pid: &AtomicU64,
-    next_io_token: &AtomicU64,
-    active_workers: &std::sync::atomic::AtomicUsize,
-    slices_started: &AtomicU64,
-    io_backend: &dyn IoBackend,
-) {
-    // Ownership model:
-    // - runnable/blocked processes live in `table.processes`
-    // - the currently executing process is temporarily removed from the table
-    // - terminal children are replaced by tombstones so await/cancel can still
-    //   observe parent/child relationships without keeping the full VM alive
-    struct ActiveSlice<'a>(&'a std::sync::atomic::AtomicUsize);
-
-    impl Drop for ActiveSlice<'_> {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    loop {
-        let pid = match scheduler.dequeue() {
-            Some(pid) => pid,
-            None => return,
-        };
-
-        active_workers.fetch_add(1, Ordering::SeqCst);
-        slices_started.fetch_add(1, Ordering::SeqCst);
-        let _active_slice = ActiveSlice(active_workers);
-
-        let reductions = scheduler.reductions(pid);
-        let mut process = match table.take(pid) {
-            Some(p) => p,
-            None => continue,
-        };
-
-        // Cooperative cancellation is owned by the VM. A concurrent cancel
-        // request can only mark intent here; the interpreter observes it at the
-        // next slice boundary and returns `RunResult::Cancelled`.
-        if table.pending_cancels.remove(&pid).is_some() {
-            process.vm.request_cancellation();
-        }
-
-        let result = process.vm.run_slice(reductions);
-
-        match result {
-            RunResult::Done => {
-                let outcome = if process.parent.is_some() {
-                    let val = process.vm.stack.last().copied().unwrap_or(Value::Unit);
-                    match process
-                        .vm
-                        .heap
-                        .charge_host_work(crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK)
-                        .map_err(ProcessFailure::runtime)
-                        .and_then(|()| {
-                            crate::sendable::serialize(val, &process.vm.heap).map_err(|e| {
-                                ProcessFailure::runtime(format!("child result not sendable: {e}"))
-                            })
-                        })
-                        .and_then(|sv| {
-                            process
-                                .vm
-                                .heap
-                                .charge_host_work(crate::sendable::host_work_for_sendable(&sv))
-                                .map_err(ProcessFailure::runtime)?;
-                            Ok(sv)
-                        }) {
-                        Ok(sv) => ChildOutcome::Ok(sv),
-                        Err(failure) => ChildOutcome::Err(failure),
-                    }
-                } else {
-                    ChildOutcome::Ok(crate::sendable::SendableValue::Unit)
-                };
-                terminate_process(table, scheduler, process, outcome);
-            }
-            RunResult::Yielded => {
-                table.return_process(process);
-                scheduler.enqueue(pid);
-            }
-            RunResult::Failed(failure) => {
-                terminate_process(table, scheduler, process, ChildOutcome::Err(failure));
-            }
-            RunResult::Spawn {
-                proto_idx,
-                captures,
-            } => {
-                let child_pid = Pid(next_pid.fetch_add(1, Ordering::Relaxed));
-                match crate::runtime_ops::create_child_vm_from_parent(
-                    &process.vm,
-                    proto_idx,
-                    captures,
-                ) {
-                    Ok(child_vm) => {
-                        let child = Process::new(child_pid, child_vm, Some(pid));
-                        table.child_parents.insert(child_pid, pid);
-                        table.insert(child);
-                        scheduler.enqueue(child_pid);
-
-                        process.vm.stack.pop();
-                        process.vm.push_value(Value::Pid(child_pid.0));
-                        table.return_process(process);
-                        scheduler.enqueue(pid);
-                    }
-                    Err(failure) => {
-                        terminate_process(table, scheduler, process, ChildOutcome::Err(failure));
-                    }
-                }
-            }
-            RunResult::Await(child_pid_val) => {
-                let child_pid = Pid(child_pid_val);
-                handle_await(table, scheduler, process, child_pid, AwaitKind::Raw);
-            }
-            RunResult::AwaitResult(child_pid_val) => {
-                let child_pid = Pid(child_pid_val);
-                handle_await(table, scheduler, process, child_pid, AwaitKind::Result);
-            }
-            RunResult::Cancel(child_pid_val) => {
-                let child_pid = Pid(child_pid_val);
-                handle_cancel(table, scheduler, process, child_pid);
-            }
-            RunResult::WaitAny(child_pid_vals) => {
-                let child_pids = child_pid_vals.into_iter().map(Pid).collect();
-                handle_wait_any(table, scheduler, process, child_pids);
-            }
-            RunResult::Io(request) => {
-                let token = IoToken(next_io_token.fetch_add(1, Ordering::Relaxed));
-                process.status = ProcessStatus::Blocked(BlockReason::Io(token));
-                table.return_process(process);
-                table.io_waiters.insert(token, pid);
-                if let Err(message) = io_backend.register(token, request) {
-                    table.io_waiters.remove(&token);
-                    if let Some(process) = table.take(pid) {
-                        terminate_process(
-                            table,
-                            scheduler,
-                            process,
-                            ChildOutcome::Err(ProcessFailure::runtime(message)),
-                        );
-                    }
-                }
-            }
-            RunResult::Cancelled => {
-                terminate_process(
-                    table,
-                    scheduler,
-                    process,
-                    ChildOutcome::Err(ProcessFailure::Cancelled),
+        ChildState::Terminated => match cx.table.tombstones.remove(&child_pid) {
+            Some((_, record)) => {
+                consume_child(
+                    cx,
+                    parent,
+                    child_pid,
+                    record.outcome,
+                    await_kind,
+                    &mut terminations,
                 );
             }
+            None => {
+                // Unreachable while the parent is alive; report it as joined.
+                parent.children.remove(&child_pid);
+                deliver_already_joined(cx, parent, await_kind, &mut terminations);
+            }
+        },
+        ChildState::Reaped => {
+            deliver_already_joined(cx, parent, await_kind, &mut terminations);
         }
+        ChildState::NotChild => terminations.push((
+            parent,
+            ChildOutcome::Err(ProcessFailure::runtime(format!(
+                "await: process {child_pid:?} is not a child of {parent_pid:?}"
+            ))),
+        )),
+        ChildState::Unknown => terminations.push((
+            parent,
+            ChildOutcome::Err(ProcessFailure::runtime(format!(
+                "await: unknown process {child_pid:?}"
+            ))),
+        )),
+    }
+
+    drain_terminations(cx, &mut terminations);
+}
+
+/// Deliver a terminated child's outcome to its owned parent, consuming it.
+fn consume_child(
+    cx: Ctx<'_>,
+    mut parent: Process,
+    child_pid: Pid,
+    outcome: ChildOutcome,
+    await_kind: AwaitKind,
+    terminations: &mut Terminations,
+) {
+    parent.children.remove(&child_pid);
+    match deliver_await_outcome(&mut parent.vm, await_kind, outcome) {
+        Ok(()) => resume(cx, parent),
+        Err(failure) => terminations.push((parent, ChildOutcome::Err(failure))),
     }
 }
 
-fn handle_await(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
+/// The child's result was already consumed (or the pid is no longer known).
+fn deliver_already_joined(
+    cx: Ctx<'_>,
+    mut parent: Process,
+    await_kind: AwaitKind,
+    terminations: &mut Terminations,
+) {
+    match crate::runtime_ops::deliver_already_joined(&mut parent.vm, await_kind) {
+        Ok(()) => resume(cx, parent),
+        Err(failure) => terminations.push((parent, ChildOutcome::Err(failure))),
+    }
+}
+
+/// Block an owned parent on a live child. See the module docs for the wake
+/// protocol: register, park, then recheck.
+fn block_on_child(
+    cx: Ctx<'_>,
     mut parent: Process,
     child_pid: Pid,
     await_kind: AwaitKind,
+    terminations: &mut Terminations,
 ) {
     let parent_pid = parent.pid;
-
-    // Check tombstone first (child already finished and freed)
-    let tombstone = table.tombstones.get(&child_pid).map(|r| r.value().clone());
-    if let Some(record) = tombstone {
-        match record {
-            ChildRecord::Consumed {
-                parent: tombstone_parent,
-            } => {
-                if tombstone_parent != parent_pid {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "await: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )));
-                    table.return_process(parent);
-                    return;
-                }
-                match await_kind {
-                    AwaitKind::Raw => {
-                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-                            "await: child result already consumed",
-                        ));
-                    }
-                    AwaitKind::Result => {
-                        match deliver_join_result_to_parent(
-                            &mut parent.vm,
-                            Err(FiberJoinError::AlreadyJoined),
-                        ) {
-                            Ok(()) => {
-                                parent.status = ProcessStatus::Runnable;
-                                table.return_process(parent);
-                                scheduler.enqueue(parent_pid);
-                                return;
-                            }
-                            Err(failure) => {
-                                parent.status = ProcessStatus::Failed(failure);
-                            }
-                        }
-                    }
-                }
-                table.return_process(parent);
-                return;
-            }
-            ChildRecord::Ready {
-                parent: tombstone_parent,
-                outcome,
-            } => {
-                if tombstone_parent != parent_pid {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "await: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )));
-                    table.return_process(parent);
-                    return;
-                }
-                let delivered = match (&await_kind, &outcome) {
-                    (AwaitKind::Raw, ChildOutcome::Ok(sv)) => {
-                        deliver_result_to_parent(&mut parent.vm, sv.clone())
-                    }
-                    (AwaitKind::Raw, ChildOutcome::Err(failure)) => {
-                        parent.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
-                            Box::new(failure.clone()),
-                        ));
-                        table.tombstones.insert(
-                            child_pid,
-                            ChildRecord::Consumed {
-                                parent: tombstone_parent,
-                            },
-                        );
-                        table.child_parents.remove(&child_pid);
-                        table.return_process(parent);
-                        return;
-                    }
-                    (AwaitKind::Result, ChildOutcome::Ok(sv)) => {
-                        deliver_join_result_to_parent(&mut parent.vm, Ok(sv.clone()))
-                    }
-                    (AwaitKind::Result, ChildOutcome::Err(failure)) => {
-                        deliver_join_result_to_parent(
-                            &mut parent.vm,
-                            Err(FiberJoinError::from_process_failure(failure.clone())),
-                        )
-                    }
-                };
-                match delivered {
-                    Ok(()) => {
-                        parent.status = ProcessStatus::Runnable;
-                        table.return_process(parent);
-                        scheduler.enqueue(parent_pid);
-                    }
-                    Err(failure) => {
-                        parent.status = ProcessStatus::Failed(failure);
-                        table.return_process(parent);
-                    }
-                }
-                table.tombstones.insert(
-                    child_pid,
-                    ChildRecord::Consumed {
-                        parent: tombstone_parent,
-                    },
-                );
-                table.child_parents.remove(&child_pid);
-                return;
-            }
-        }
-    }
-
-    // Check live processes (child still running or temporarily taken for execution)
-    let child_known = table.processes.get(&child_pid).map(|c| c.parent);
-
-    match child_known {
-        Some(Some(cp)) if cp != parent_pid => {
-            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                "await: process {:?} is not a child of {:?}",
-                child_pid, parent_pid
-            )));
-            table.return_process(parent);
-        }
-        Some(_) => {
-            // Child is in the table (running) — block and register waiter
-            block_on_child(table, scheduler, parent, parent_pid, child_pid, await_kind);
-        }
-        None => {
-            // Not in processes — check child_parents to see if it's being executed
-            match table.child_parents.get(&child_pid).map(|r| *r.value()) {
-                Some(cp) if cp != parent_pid => {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "await: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )));
-                    table.return_process(parent);
-                }
-                Some(_) => {
-                    // Child is executing on another worker — block and register waiter
-                    block_on_child(table, scheduler, parent, parent_pid, child_pid, await_kind);
-                }
-                None => {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "await: unknown process {:?}",
-                        child_pid
-                    )));
-                    table.return_process(parent);
-                }
-            }
-        }
-    }
-}
-
-/// Block a parent on a child and register a waiter, with tombstone recheck.
-fn block_on_child(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
-    mut parent: Process,
-    parent_pid: Pid,
-    child_pid: Pid,
-    await_kind: AwaitKind,
-) {
-    // Transition:
-    // runnable parent -> blocked parent registered under `waiters[child_pid]`
-    //
-    // Registration happens before the parent is re-published so a racing child
-    // completion can still discover the waiter and deliver the tombstoned
-    // result.
     parent.status = ProcessStatus::Blocked(BlockReason::Await {
         child: child_pid,
         kind: await_kind,
     });
-    // Register waiter BEFORE returning parent to table, so that
-    // if the child finishes concurrently, wake_join_waiters will
-    // find this waiter entry.
-    table.waiters.entry(child_pid).or_default().push(parent_pid);
-    table.return_process(parent);
+    cx.table
+        .waiters
+        .entry(child_pid)
+        .or_default()
+        .push(parent_pid);
+    park(cx, parent, terminations);
 
-    // Recheck: if the child became tombstoned during the gap,
-    // wake_join_waiters may have already run and missed us.
-    if table.tombstones.contains_key(&child_pid) {
-        wake_join_waiters(table, scheduler, child_pid);
+    if !cx.table.live.contains(&child_pid) {
+        wake_join_waiters(cx, child_pid, terminations);
     }
 }
 
-fn handle_cancel(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
-    mut parent: Process,
-    child_pid: Pid,
-) {
+fn handle_cancel(cx: Ctx<'_>, mut parent: Process, child_pid: Pid) {
     let parent_pid = parent.pid;
+    let mut terminations = Terminations::new();
 
-    // Check tombstone first — child already terminal
-    let tombstone_parent = table.tombstones.get(&child_pid).map(|r| r.parent());
-    if let Some(tombstone_parent) = tombstone_parent {
-        if tombstone_parent != parent_pid {
-            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                "cancel: process {:?} is not a child of {:?}",
-                child_pid, parent_pid
-            )));
-            table.return_process(parent);
-            return;
+    let failure = match cx.table.classify_child(&parent, child_pid) {
+        ChildState::Live => {
+            cancel_pid(cx, child_pid, &mut terminations);
+            None
         }
-        // Already terminal — cancel is no-op
-        parent.vm.stack.pop();
-        parent.vm.push_value(Value::Unit);
-        table.return_process(parent);
-        scheduler.enqueue(parent_pid);
-        return;
-    }
+        // Cancelling a finished child is a no-op.
+        ChildState::Terminated | ChildState::Reaped => None,
+        ChildState::NotChild => Some(format!(
+            "cancel: process {child_pid:?} is not a child of {parent_pid:?}"
+        )),
+        ChildState::Unknown => Some(format!("cancel: unknown process {child_pid:?}")),
+    };
 
-    // Check live processes (or child_parents for executing children)
-    match table.processes.get_mut(&child_pid) {
+    // Finish the cancelled child before the parent can observe it.
+    drain_terminations(cx, &mut terminations);
+
+    match failure {
         None => {
-            // Not in processes — check if executing on another worker
-            match table.child_parents.get(&child_pid).map(|r| *r.value()) {
-                Some(cp) if cp == parent_pid => {
-                    // Child is executing — schedule a pending cancel
-                    table.pending_cancels.insert(child_pid);
-                    parent.vm.stack.pop();
-                    parent.vm.push_value(Value::Unit);
-                    table.return_process(parent);
-                    scheduler.enqueue(parent_pid);
-                }
-                Some(_) => {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "cancel: process {:?} is not a child of {:?}",
-                        child_pid, parent_pid
-                    )));
-                    table.return_process(parent);
-                }
-                None => {
-                    parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                        "cancel: unknown process {:?}",
-                        child_pid
-                    )));
-                    table.return_process(parent);
-                }
-            }
-        }
-        Some(child) if child.parent != Some(parent_pid) => {
-            parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                "cancel: process {:?} is not a child of {:?}",
-                child_pid, parent_pid
-            )));
-            table.return_process(parent);
-        }
-        Some(mut child) => {
-            match &child.status {
-                ProcessStatus::Done | ProcessStatus::Failed(_) => {
-                    // Shouldn't happen with tombstones (terminal children are tombstoned),
-                    // but handle defensively.
-                    drop(child);
-                }
-                ProcessStatus::Blocked(reason) => {
-                    let reason = reason.clone();
-                    let child_parent = child.parent;
-                    child.status = ProcessStatus::Failed(ProcessFailure::Cancelled);
-                    drop(child);
-                    scheduler.remove(child_pid);
-                    clear_blocked_registration(table, child_pid, &reason);
-                    // Tombstone the cancelled child
-                    if let Some(child_parent) = child_parent {
-                        table.processes.remove(&child_pid);
-                        table.tombstones.insert(
-                            child_pid,
-                            ChildRecord::Ready {
-                                parent: child_parent,
-                                outcome: ChildOutcome::Err(ProcessFailure::Cancelled),
-                            },
-                        );
-                    }
-                    wake_any_waiters(table, scheduler, child_pid);
-                    wake_join_waiters(table, scheduler, child_pid);
-                }
-                ProcessStatus::Runnable => {
-                    child.vm.request_cancellation();
-                    drop(child);
-                }
-            }
-
             parent.vm.stack.pop();
             parent.vm.push_value(Value::Unit);
-            table.return_process(parent);
-            scheduler.enqueue(parent_pid);
+            resume(cx, parent);
+        }
+        Some(message) => {
+            terminate_process(
+                cx,
+                parent,
+                ChildOutcome::Err(ProcessFailure::runtime(message)),
+            );
         }
     }
 }
 
-fn handle_wait_any(
-    table: &ProcessTable,
-    scheduler: &dyn Scheduler,
-    mut parent: Process,
-    child_pids: Vec<Pid>,
-) {
+fn handle_wait_any(cx: Ctx<'_>, mut parent: Process, child_pids: Vec<Pid>) {
     let parent_pid = parent.pid;
     let child_pids = dedup_pids(child_pids);
 
     if child_pids.is_empty() {
-        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(
-            "wait_any: expected non-empty pid list",
-        ));
-        table.return_process(parent);
+        terminate_process(
+            cx,
+            parent,
+            ChildOutcome::Err(ProcessFailure::runtime(
+                "wait_any: expected non-empty pid list",
+            )),
+        );
         return;
     }
 
     for &child_pid in &child_pids {
-        // Check tombstone first — child already finished
-        if let Some(record) = table.tombstones.get(&child_pid) {
-            let tombstone_parent = record.parent();
-            drop(record);
-            if tombstone_parent != parent_pid {
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "wait_any: process {:?} is not a child of {:?}",
-                    child_pid, parent_pid
-                )));
-                table.return_process(parent);
+        let failure = match cx.table.classify_child(&parent, child_pid) {
+            ChildState::Live => continue,
+            // Already terminal: the leftmost such pid wins immediately.
+            ChildState::Terminated | ChildState::Reaped => {
+                match crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, child_pid) {
+                    Ok(()) => resume(cx, parent),
+                    Err(failure) => terminate_process(cx, parent, ChildOutcome::Err(failure)),
+                }
                 return;
             }
-            // Child already terminal — immediate winner
-            match crate::runtime_ops::deliver_pid_to_parent(&mut parent.vm, child_pid) {
-                Ok(()) => {
-                    table.return_process(parent);
-                    scheduler.enqueue(parent_pid);
-                }
-                Err(failure) => {
-                    parent.status = ProcessStatus::Failed(failure);
-                    table.return_process(parent);
-                }
+            ChildState::NotChild => {
+                format!("wait_any: process {child_pid:?} is not a child of {parent_pid:?}")
             }
-            return;
-        }
-
-        // Check live process or executing child
-        match table.processes.get(&child_pid) {
-            Some(child) if child.parent != Some(parent_pid) => {
-                parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                    "wait_any: process {:?} is not a child of {:?}",
-                    child_pid, parent_pid
-                )));
-                table.return_process(parent);
-                return;
-            }
-            Some(_) => {} // Running — will check later
-            None => {
-                // Not in processes — check child_parents for executing children
-                match table.child_parents.get(&child_pid).map(|r| *r.value()) {
-                    Some(cp) if cp == parent_pid => {} // Executing — valid child
-                    Some(_) => {
-                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                            "wait_any: process {:?} is not a child of {:?}",
-                            child_pid, parent_pid
-                        )));
-                        table.return_process(parent);
-                        return;
-                    }
-                    None => {
-                        parent.status = ProcessStatus::Failed(ProcessFailure::runtime(format!(
-                            "wait_any: unknown process {:?}",
-                            child_pid
-                        )));
-                        table.return_process(parent);
-                        return;
-                    }
-                }
-            }
-        }
+            ChildState::Unknown => format!("wait_any: unknown process {child_pid:?}"),
+        };
+        terminate_process(
+            cx,
+            parent,
+            ChildOutcome::Err(ProcessFailure::runtime(failure)),
+        );
+        return;
     }
 
-    // Transition:
-    // runnable parent -> blocked on an arbitrary child completion
-    //
-    // The parent is registered with every child pid so the first child that
-    // reaches a tombstone can wake and resume it.
+    // Every listed child is live. Register with each, park, then recheck.
     parent.status = ProcessStatus::Blocked(BlockReason::WaitAny(child_pids.clone()));
-    // Register all waiters BEFORE returning parent to table, so that
-    // if a child finishes concurrently, wake_any_waiters will find
-    // this waiter entry.
     for &child_pid in &child_pids {
-        table
+        cx.table
             .any_waiters
             .entry(child_pid)
             .or_default()
             .push(parent_pid);
     }
-    table.return_process(parent);
+    let mut terminations = Terminations::new();
+    park(cx, parent, &mut terminations);
 
-    // Recheck: if any child became tombstoned during the gap between
-    // our initial scan and the waiter registration, trigger the wake
-    // path. The single-get_mut wake logic prevents double delivery.
-    for &child_pid in &child_pids {
-        if table.tombstones.contains_key(&child_pid) {
-            wake_any_waiters(table, scheduler, child_pid);
-            break;
-        }
+    if let Some(&finished) = child_pids
+        .iter()
+        .find(|child_pid| !cx.table.live.contains(child_pid))
+    {
+        wake_any_waiters(cx, finished, &mut terminations);
     }
+    drain_terminations(cx, &mut terminations);
 }
 
-fn wake_any_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
-    let waiter_pids = match table.any_waiters.remove(&finished_pid) {
-        Some((_, waiters)) => waiters,
-        None => return,
+// --- Waking ----------------------------------------------------------------------
+
+fn wake_any_waiters(cx: Ctx<'_>, finished_pid: Pid, terminations: &mut Terminations) {
+    let Some(waiter_pids) = cx
+        .table
+        .any_waiters
+        .get(&finished_pid)
+        .map(|waiters| waiters.clone())
+    else {
+        return;
     };
 
     for waiter_pid in waiter_pids {
-        // Use a single get_mut() to check status and deliver atomically,
-        // avoiding a TOCTOU race where two children finishing concurrently
-        // could both deliver to the same waiter. The finished pid is only a
-        // wakeup signal; the semantic winner is the leftmost completed pid in
-        // the parent's original wait_any input list.
-        let child_pids = match table.processes.get_mut(&waiter_pid) {
-            Some(mut waiter) => match &waiter.status {
-                ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) => {
-                    let child_pids = child_pids.clone();
-                    let winner = child_pids.iter().copied().find(|child_pid| {
-                        table
-                            .tombstones
-                            .get(child_pid)
-                            .is_some_and(|record| record.parent() == waiter_pid)
-                    });
-                    let Some(winner) = winner else {
-                        continue;
-                    };
-                    match crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, winner) {
-                        Ok(()) => {
-                            waiter.status = ProcessStatus::Runnable;
-                            drop(waiter);
-                            scheduler.enqueue(waiter_pid);
-                        }
-                        Err(failure) => {
-                            waiter.status = ProcessStatus::Failed(failure);
-                        }
-                    }
-                    child_pids
-                }
-                _ => {
-                    drop(waiter);
-                    remove_waiter_globally(&table.any_waiters, waiter_pid);
-                    continue;
-                }
-            },
-            None => {
-                remove_waiter_globally(&table.any_waiters, waiter_pid);
+        let mut waiter = match cx.table.take_waiter(waiter_pid, |reason| {
+            matches!(reason, BlockReason::WaitAny(child_pids) if child_pids.contains(&finished_pid))
+        }) {
+            Ok(waiter) => waiter,
+            Err(NotTaken::InFlight) => continue,
+            Err(NotTaken::Stale) => {
+                remove_stale_waiter(cx.table, &cx.table.any_waiters, finished_pid, waiter_pid);
                 continue;
             }
         };
+        let ProcessStatus::Blocked(BlockReason::WaitAny(child_pids)) = &waiter.status else {
+            unreachable!("take_waiter returned a process not blocked in wait_any");
+        };
+        let child_pids = child_pids.clone();
 
-        remove_any_waiter_registration(table, waiter_pid, &child_pids);
+        // The finished pid is only a wakeup signal; the semantic winner is the
+        // leftmost terminated pid in the parent's original wait_any list.
+        // Every listed pid is a child of the waiter or already reaped, so
+        // "not live" means "terminated".
+        let Some(winner) = child_pids
+            .iter()
+            .copied()
+            .find(|child_pid| !cx.table.live.contains(child_pid))
+        else {
+            park(cx, waiter, terminations);
+            continue;
+        };
+
+        remove_any_waiter_registration(cx.table, waiter_pid, &child_pids);
+        match crate::runtime_ops::deliver_pid_to_parent(&mut waiter.vm, winner) {
+            Ok(()) => resume(cx, waiter),
+            Err(failure) => terminations.push((waiter, ChildOutcome::Err(failure))),
+        }
     }
 }
 
-fn wake_join_waiters(table: &ProcessTable, scheduler: &dyn Scheduler, finished_pid: Pid) {
-    let waiter_pids = match table.waiters.remove(&finished_pid) {
-        Some((_, w)) => w,
-        None => return,
+fn wake_join_waiters(cx: Ctx<'_>, finished_pid: Pid, terminations: &mut Terminations) {
+    let Some(waiter_pids) = cx
+        .table
+        .waiters
+        .get(&finished_pid)
+        .map(|waiters| waiters.clone())
+    else {
+        return;
     };
 
-    // Read delivery payload from the tombstone
-    let delivery = match table.tombstones.get(&finished_pid) {
-        Some(record) => match record.value() {
-            ChildRecord::Ready { outcome, .. } => match outcome {
-                ChildOutcome::Ok(sv) => Ok(sv.clone()),
-                ChildOutcome::Err(failure) => Err(failure.clone()),
-            },
-            ChildRecord::Consumed { .. } => return,
-        },
-        None => return,
-    };
+    if !cx.table.tombstones.contains_key(&finished_pid) {
+        // Reaped: its parent is gone, so nobody can still be waiting.
+        cx.table.waiters.remove(&finished_pid);
+        return;
+    }
 
     for waiter_pid in waiter_pids {
-        // Single get_mut() to check status and deliver atomically,
-        // avoiding a TOCTOU race if the waiter is concurrently cancelled.
-        if let Some(mut waiter) = table.processes.get_mut(&waiter_pid) {
-            let await_kind = match &waiter.status {
-                ProcessStatus::Blocked(BlockReason::Await { child, kind })
-                    if *child == finished_pid =>
-                {
-                    *kind
-                }
-                _ => {
-                    drop(waiter);
-                    remove_waiter_globally(&table.waiters, waiter_pid);
-                    continue;
-                }
-            };
-
-            match (await_kind, &delivery) {
-                (AwaitKind::Raw, Ok(sendable)) => {
-                    match deliver_result_to_parent(&mut waiter.vm, sendable.clone()) {
-                        Ok(()) => {
-                            waiter.status = ProcessStatus::Runnable;
-                            drop(waiter);
-                            scheduler.enqueue(waiter_pid);
-                        }
-                        Err(failure) => {
-                            waiter.status = ProcessStatus::Failed(failure);
-                        }
-                    }
-                }
-                (AwaitKind::Raw, Err(msg)) => {
-                    waiter.status = ProcessStatus::Failed(ProcessFailure::ChildProcessFailed(
-                        Box::new(msg.clone()),
-                    ));
-                }
-                (AwaitKind::Result, Ok(sendable)) => {
-                    match deliver_join_result_to_parent(&mut waiter.vm, Ok(sendable.clone())) {
-                        Ok(()) => {
-                            waiter.status = ProcessStatus::Runnable;
-                            drop(waiter);
-                            scheduler.enqueue(waiter_pid);
-                        }
-                        Err(failure) => {
-                            waiter.status = ProcessStatus::Failed(failure);
-                        }
-                    }
-                }
-                (AwaitKind::Result, Err(msg)) => {
-                    match deliver_join_result_to_parent(
-                        &mut waiter.vm,
-                        Err(FiberJoinError::from_process_failure(msg.clone())),
-                    ) {
-                        Ok(()) => {
-                            waiter.status = ProcessStatus::Runnable;
-                            drop(waiter);
-                            scheduler.enqueue(waiter_pid);
-                        }
-                        Err(failure) => {
-                            waiter.status = ProcessStatus::Failed(failure);
-                        }
-                    }
-                }
+        let waiter = match cx.table.take_waiter(
+            waiter_pid,
+            |reason| matches!(reason, BlockReason::Await { child, .. } if *child == finished_pid),
+        ) {
+            Ok(waiter) => waiter,
+            Err(NotTaken::InFlight) => continue,
+            Err(NotTaken::Stale) => {
+                remove_stale_waiter(cx.table, &cx.table.waiters, finished_pid, waiter_pid);
+                continue;
             }
-        } else {
-            remove_waiter_globally(&table.waiters, waiter_pid);
-        }
-    }
+        };
+        let ProcessStatus::Blocked(BlockReason::Await { kind, .. }) = waiter.status else {
+            unreachable!("take_waiter returned a process not blocked in await");
+        };
+        remove_waiter(&cx.table.waiters, finished_pid, waiter_pid);
 
-    // Mark tombstone as consumed after all deliveries
-    if let Some(record) = table.tombstones.get(&finished_pid) {
-        let parent = record.parent();
-        drop(record);
-        table
-            .tombstones
-            .insert(finished_pid, ChildRecord::Consumed { parent });
-        table.child_parents.remove(&finished_pid);
-    }
-}
-
-fn clear_blocked_registration(table: &ProcessTable, pid: Pid, reason: &BlockReason) {
-    match reason {
-        BlockReason::Await { child, .. } => remove_waiter(&table.waiters, *child, pid),
-        BlockReason::WaitAny(child_pids) => remove_any_waiter_registration(table, pid, child_pids),
-        BlockReason::Io(token) => {
-            table.io_waiters.remove(token);
+        // Only the parent may await a child, so this waiter is the parent and
+        // delivery consumes the tombstone.
+        match cx.table.tombstones.remove(&finished_pid) {
+            Some((_, record)) => {
+                consume_child(cx, waiter, finished_pid, record.outcome, kind, terminations);
+            }
+            None => {
+                let mut waiter = waiter;
+                waiter.children.remove(&finished_pid);
+                deliver_already_joined(cx, waiter, kind, terminations);
+            }
         }
     }
 }
+
+// --- Registration helpers ----------------------------------------------------------
 
 fn remove_any_waiter_registration(table: &ProcessTable, waiter_pid: Pid, child_pids: &[Pid]) {
     for &child_pid in child_pids {
@@ -1226,6 +1213,23 @@ fn remove_io_waiters_for_pid(table: &ProcessTable, pid: Pid) {
     }
 }
 
+/// Drop a registration that `take_waiter` found stale. A live waiter may
+/// already be registered for a different child (a late waker raced with its
+/// delivery and it has since blocked again), so only its entry for
+/// `finished_pid` goes. A terminated waiter can hold no valid registration.
+fn remove_stale_waiter(
+    table: &ProcessTable,
+    waiters: &DashMap<Pid, Vec<Pid>>,
+    finished_pid: Pid,
+    waiter_pid: Pid,
+) {
+    if table.live.contains(&waiter_pid) {
+        remove_waiter(waiters, finished_pid, waiter_pid);
+    } else {
+        remove_waiter_globally(waiters, waiter_pid);
+    }
+}
+
 fn remove_waiter_globally(waiters: &DashMap<Pid, Vec<Pid>>, waiter_pid: Pid) {
     let child_pids: Vec<Pid> = waiters.iter().map(|entry| *entry.key()).collect();
     for child_pid in child_pids {
@@ -1234,15 +1238,10 @@ fn remove_waiter_globally(waiters: &DashMap<Pid, Vec<Pid>>, waiter_pid: Pid) {
 }
 
 fn remove_waiter(waiters: &DashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: Pid) {
-    let should_remove = if let Some(mut waiter_pids) = waiters.get_mut(&child_pid) {
+    waiters.remove_if_mut(&child_pid, |_, waiter_pids| {
         waiter_pids.retain(|pid| *pid != waiter_pid);
         waiter_pids.is_empty()
-    } else {
-        false
-    };
-    if should_remove {
-        waiters.remove(&child_pid);
-    }
+    });
 }
 
 #[cfg(test)]
@@ -1290,10 +1289,25 @@ mod tests {
     }
 
     fn ready_unit_child(parent: Pid) -> ChildRecord {
-        ChildRecord::Ready {
+        ChildRecord {
             parent,
             outcome: ChildOutcome::Ok(crate::sendable::SendableValue::Unit),
         }
+    }
+
+    /// Run a lifecycle transition against `table` and finish any
+    /// terminations it queued.
+    fn with_ctx(table: &ProcessTable, f: impl FnOnce(Ctx<'_>, &mut Terminations)) {
+        let scheduler = FifoScheduler::new(1000);
+        let io = crate::io_backend::MockIoBackend::new();
+        let cx = Ctx {
+            table,
+            scheduler: &scheduler,
+            io: &io,
+        };
+        let mut terminations = Terminations::new();
+        f(cx, &mut terminations);
+        drain_terminations(cx, &mut terminations);
     }
 
     #[test]
@@ -1338,14 +1352,13 @@ mod tests {
     #[test]
     fn test_wake_any_waiters_removes_missing_waiter_registrations() {
         let table = ProcessTable::new();
-        let scheduler = FifoScheduler::new(1000);
         let waiter = Pid(10);
         let child1 = Pid(11);
         let child2 = Pid(12);
         table.any_waiters.insert(child1, vec![waiter]);
         table.any_waiters.insert(child2, vec![waiter]);
 
-        wake_any_waiters(&table, &scheduler, child1);
+        with_ctx(&table, |cx, t| wake_any_waiters(cx, child1, t));
 
         assert!(!table.any_waiters.contains_key(&child1));
         assert!(
@@ -1357,9 +1370,8 @@ mod tests {
     }
 
     #[test]
-    fn test_wake_any_waiters_removes_non_blocked_waiter_registrations() {
+    fn test_wake_any_waiters_drops_only_finished_entry_of_non_blocked_live_waiter() {
         let table = ProcessTable::new();
-        let scheduler = FifoScheduler::new(1000);
         let waiter = Pid(10);
         let child1 = Pid(11);
         let child2 = Pid(12);
@@ -1367,11 +1379,13 @@ mod tests {
         table.any_waiters.insert(child1, vec![waiter]);
         table.any_waiters.insert(child2, vec![waiter]);
 
-        wake_any_waiters(&table, &scheduler, child1);
+        with_ctx(&table, |cx, t| wake_any_waiters(cx, child1, t));
 
         assert!(!table.any_waiters.contains_key(&child1));
+        // The waiter is live, so it may register for other children at any
+        // moment; only the entry for the finished child is removed.
         assert!(
-            !table
+            table
                 .any_waiters
                 .get(&child2)
                 .is_some_and(|waiters| waiters.contains(&waiter))
@@ -1381,14 +1395,15 @@ mod tests {
     #[test]
     fn test_io_completion_removes_missing_waiter_registrations() {
         let table = ProcessTable::new();
-        let scheduler = FifoScheduler::new(1000);
         let pid = Pid(10);
         let token1 = IoToken(1);
         let token2 = IoToken(2);
         table.io_waiters.insert(token1, pid);
         table.io_waiters.insert(token2, pid);
 
-        handle_io_completion(&table, &scheduler, token1, ok_unit_io_result());
+        with_ctx(&table, |cx, _| {
+            handle_io_completion(cx, token1, ok_unit_io_result())
+        });
 
         assert!(!table.io_waiters.contains_key(&token1));
         assert!(!table.io_waiters.contains_key(&token2));
@@ -1397,7 +1412,6 @@ mod tests {
     #[test]
     fn test_io_completion_removes_non_blocked_waiter_registrations() {
         let table = ProcessTable::new();
-        let scheduler = FifoScheduler::new(1000);
         let pid = Pid(10);
         let token1 = IoToken(1);
         let token2 = IoToken(2);
@@ -1405,7 +1419,9 @@ mod tests {
         table.io_waiters.insert(token1, pid);
         table.io_waiters.insert(token2, pid);
 
-        handle_io_completion(&table, &scheduler, token1, ok_unit_io_result());
+        with_ctx(&table, |cx, _| {
+            handle_io_completion(cx, token1, ok_unit_io_result())
+        });
 
         assert!(!table.io_waiters.contains_key(&token1));
         assert!(!table.io_waiters.contains_key(&token2));
@@ -1421,7 +1437,6 @@ mod tests {
     #[test]
     fn test_wake_join_waiters_removes_missing_waiter_registrations() {
         let table = ProcessTable::new();
-        let scheduler = FifoScheduler::new(1000);
         let waiter = Pid(10);
         let child1 = Pid(11);
         let child2 = Pid(12);
@@ -1429,7 +1444,7 @@ mod tests {
         table.waiters.insert(child2, vec![waiter]);
         table.tombstones.insert(child1, ready_unit_child(waiter));
 
-        wake_join_waiters(&table, &scheduler, child1);
+        with_ctx(&table, |cx, t| wake_join_waiters(cx, child1, t));
 
         assert!(!table.waiters.contains_key(&child1));
         assert!(
@@ -1440,10 +1455,62 @@ mod tests {
         );
     }
 
+    /// A late waker for a child the waiter already consumed must not drop
+    /// the waiter's registration for the child it awaits now. (Found by the
+    /// 50-run loop: the root's registration vanished and the deadlock safety
+    /// net failed it.)
     #[test]
-    fn test_wake_join_waiters_removes_non_blocked_waiter_registrations() {
+    fn test_late_join_wake_keeps_registration_for_current_child() {
         let table = ProcessTable::new();
-        let scheduler = FifoScheduler::new(1000);
+        let waiter = Pid(10);
+        let old_child = Pid(11);
+        let current_child = Pid(12);
+        let mut process = Process::new(waiter, VM::new(compile("val _ = ()")), None);
+        process.status = ProcessStatus::Blocked(BlockReason::Await {
+            child: current_child,
+            kind: AwaitKind::Raw,
+        });
+        table.insert(process);
+        table.live.insert(current_child);
+        table.waiters.insert(old_child, vec![waiter]);
+        table.waiters.insert(current_child, vec![waiter]);
+        table.tombstones.insert(old_child, ready_unit_child(waiter));
+
+        with_ctx(&table, |cx, t| wake_join_waiters(cx, old_child, t));
+
+        assert!(!table.waiters.contains_key(&old_child));
+        assert_eq!(
+            table.waiters.get(&current_child).map(|w| w.clone()),
+            Some(vec![waiter])
+        );
+    }
+
+    /// Same race for wait_any.
+    #[test]
+    fn test_late_wait_any_wake_keeps_registration_for_current_children() {
+        let table = ProcessTable::new();
+        let waiter = Pid(10);
+        let old_child = Pid(11);
+        let current_child = Pid(12);
+        let mut process = Process::new(waiter, VM::new(compile("val _ = ()")), None);
+        process.status = ProcessStatus::Blocked(BlockReason::WaitAny(vec![current_child]));
+        table.insert(process);
+        table.live.insert(current_child);
+        table.any_waiters.insert(old_child, vec![waiter]);
+        table.any_waiters.insert(current_child, vec![waiter]);
+
+        with_ctx(&table, |cx, t| wake_any_waiters(cx, old_child, t));
+
+        assert!(!table.any_waiters.contains_key(&old_child));
+        assert_eq!(
+            table.any_waiters.get(&current_child).map(|w| w.clone()),
+            Some(vec![waiter])
+        );
+    }
+
+    #[test]
+    fn test_wake_join_waiters_drops_only_finished_entry_of_non_blocked_live_waiter() {
+        let table = ProcessTable::new();
         let waiter = Pid(10);
         let child1 = Pid(11);
         let child2 = Pid(12);
@@ -1452,11 +1519,13 @@ mod tests {
         table.waiters.insert(child2, vec![waiter]);
         table.tombstones.insert(child1, ready_unit_child(waiter));
 
-        wake_join_waiters(&table, &scheduler, child1);
+        with_ctx(&table, |cx, t| wake_join_waiters(cx, child1, t));
 
         assert!(!table.waiters.contains_key(&child1));
+        // The waiter is live, so it may register for other children at any
+        // moment; only the entry for the finished child is removed.
         assert!(
-            !table
+            table
                 .waiters
                 .get(&child2)
                 .is_some_and(|waiters| waiters.contains(&waiter))
@@ -1608,16 +1677,10 @@ mod tests {
 
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["cancelled\n"]);
-        // With tombstones, the cancelled child is in the tombstones map, not processes.
-        assert!(runtime.table.tombstones.iter().any(|entry| {
-            matches!(
-                entry.value(),
-                ChildRecord::Ready {
-                    outcome: ChildOutcome::Err(ProcessFailure::Cancelled),
-                    ..
-                }
-            )
-        }));
+        // The cancelled child was tombstoned, then reaped when the root exited.
+        assert_eq!(runtime.table.processes.len(), 1);
+        assert!(runtime.table.tombstones.is_empty());
+        runtime.check_invariants().unwrap();
     }
 
     #[test]

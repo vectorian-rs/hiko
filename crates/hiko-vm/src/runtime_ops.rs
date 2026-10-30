@@ -2,8 +2,8 @@
 
 use smallvec::smallvec;
 
-use crate::process::{FiberJoinError, Pid, ProcessFailure};
-use crate::sendable::{deserialize, SendableValue};
+use crate::process::{AwaitKind, ChildOutcome, FiberJoinError, Pid, ProcessFailure};
+use crate::sendable::{SendableValue, deserialize};
 use crate::value::{Fields, HeapObject, Value};
 use crate::vm::VM;
 
@@ -176,6 +176,62 @@ fn deserialize_with_heap_limit(
             ProcessFailure::runtime(e.to_string())
         }
     })
+}
+
+/// How a pid relates to a parent process that the runtime currently owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChildState {
+    /// A child of the parent that has not terminated.
+    Live,
+    /// A terminated child of the parent whose result is still unconsumed.
+    Terminated,
+    /// An allocated pid with no process and no result left: a child whose
+    /// result was consumed, or a child reaped with its parent. Await reports
+    /// `AlreadyJoined`, cancel is a no-op, and wait_any treats it as complete.
+    Reaped,
+    /// A live or unconsumed process that belongs to another parent.
+    NotChild,
+    /// A pid that was never allocated.
+    Unknown,
+}
+
+/// Deliver a child's terminal outcome to its parent according to the await
+/// kind. A raw await of a failed child fails the parent.
+pub(crate) fn deliver_await_outcome(
+    parent_vm: &mut VM,
+    await_kind: AwaitKind,
+    outcome: ChildOutcome,
+) -> Result<(), ProcessFailure> {
+    match (await_kind, outcome) {
+        (AwaitKind::Raw, ChildOutcome::Ok(sendable)) => {
+            deliver_result_to_parent(parent_vm, sendable)
+        }
+        (AwaitKind::Raw, ChildOutcome::Err(failure)) => {
+            Err(ProcessFailure::ChildProcessFailed(Box::new(failure)))
+        }
+        (AwaitKind::Result, ChildOutcome::Ok(sendable)) => {
+            deliver_join_result_to_parent(parent_vm, Ok(sendable))
+        }
+        (AwaitKind::Result, ChildOutcome::Err(failure)) => deliver_join_result_to_parent(
+            parent_vm,
+            Err(FiberJoinError::from_process_failure(failure)),
+        ),
+    }
+}
+
+/// Answer an await on a child whose result was already consumed.
+pub(crate) fn deliver_already_joined(
+    parent_vm: &mut VM,
+    await_kind: AwaitKind,
+) -> Result<(), ProcessFailure> {
+    match await_kind {
+        AwaitKind::Raw => Err(ProcessFailure::runtime(
+            "await: child result already consumed",
+        )),
+        AwaitKind::Result => {
+            deliver_join_result_to_parent(parent_vm, Err(FiberJoinError::AlreadyJoined))
+        }
+    }
 }
 
 /// Deduplicate a pid list, preserving order.
