@@ -1380,7 +1380,7 @@ mod tests {
     fn test_s3_errors_are_returned_as_hiko_result_tuple_with_message() {
         let value = list_buckets_error("connection reset by peer".to_string());
 
-        match value {
+        match &value {
             SendableValue::Tuple(fields) => {
                 assert!(
                     matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer")
@@ -1395,7 +1395,7 @@ mod tests {
     fn test_sqs_errors_are_returned_as_hiko_result_tuple_with_message() {
         let value = list_queues_error("connection reset by peer".to_string());
 
-        match value {
+        match &value {
             SendableValue::Tuple(fields) => {
                 assert!(
                     matches!(fields.as_slice(), [SendableValue::Bool(false), SendableValue::List(items), SendableValue::String(message)] if items.is_empty() && message.as_ref() == "connection reset by peer")

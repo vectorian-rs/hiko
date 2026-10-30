@@ -421,6 +421,12 @@ impl VM {
         self.process_budgets.spawns = Some(crate::budget::SharedBudget::new(max));
     }
 
+    /// Set the largest value one spawn capture or child result may serialize
+    /// to.
+    pub fn set_max_message_bytes(&mut self, max: u64) {
+        self.heap.set_max_message_bytes(max);
+    }
+
     /// Set the maximum tracked heap memory in bytes.
     pub fn set_max_memory_bytes(&mut self, max: usize) {
         self.heap.set_max_bytes(max);

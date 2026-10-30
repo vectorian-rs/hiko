@@ -2560,4 +2560,70 @@ mod tests {
         assert_eq!(runtime.failure(pid), Some(ProcessFailure::FuelExhausted));
         assert_eq!(budget.used(), FUEL, "nothing is lost or counted twice");
     }
+
+    #[test]
+    fn test_spawn_capturing_exponential_dag_fails_fast() {
+        // `grow 30` is 31 heap objects that expand into 2^31 nodes when
+        // copied. (The plan's `val x1 = (x0, x0) ... val x30` version gives a
+        // tuple type with 2^30 leaves, which the type checker cannot handle.)
+        let program = compile(
+            "datatype t = Leaf | Node of t * t\n\
+             fun grow n acc = if n = 0 then acc else grow (n - 1) (Node (acc, acc))\n\
+             val c = let val x30 = grow 30 Leaf in spawn (fn () => case x30 of Leaf => 0 | Node _ => 1) end\n\
+             val _ = await_process_result c\n",
+        );
+        let vm = tree_budget_vm(program).build();
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root_vm(vm);
+        let started = std::time::Instant::now();
+        runtime.run_to_completion().unwrap();
+        let elapsed = started.elapsed();
+
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("max_message_bytes"), "{failure}");
+        eprintln!("x30 capture failed after {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_spawn_limits_are_enforced() {
+        // Ten children that never finish: the fourth spawn exceeds
+        // max_live_processes = 3 and fails the root.
+        let program = compile(
+            "fun spawn_all n = if n = 0 then () else let val _ = spawn (fn () => let fun spin () = spin () in spin () end) in spawn_all (n - 1) end\n\
+             val _ = spawn_all 10\n",
+        );
+        let vm = tree_budget_vm(program).max_live_processes(3).build();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("max_live_processes (3)"), "{failure}");
+        assert_eq!(runtime.table.processes.len(), 1, "children are cancelled");
+
+        // Children that finish free their slot, but max_spawns counts every
+        // spawn.
+        let program = compile(
+            "fun spawn_all n = if n = 0 then () else let val c = spawn (fn () => 0) val _ = await_process_result c in spawn_all (n - 1) end\n\
+             val _ = spawn_all 10\n\
+             val _ = println \"done\"\n",
+        );
+        let vm = tree_budget_vm(program.clone())
+            .max_live_processes(1)
+            .build();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+
+        let vm = tree_budget_vm(program).max_spawns(5).build();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("max_spawns (5)"), "{failure}");
+    }
 }

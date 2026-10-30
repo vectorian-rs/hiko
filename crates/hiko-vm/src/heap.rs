@@ -110,6 +110,8 @@ pub struct Heap {
     /// Cumulative I/O bytes across the process tree, when limited.
     io_budget: Option<Arc<SharedBudget>>,
     io_limits: IoLimits,
+    /// Largest value one serialization across a process boundary may produce.
+    max_message_bytes: u64,
     host_work_used: u64,
     /// Cumulative host work across the process tree, when limited.
     host_work_budget: Option<Arc<SharedBudget>>,
@@ -180,6 +182,7 @@ impl Heap {
             io_bytes_used: 0,
             io_budget: None,
             io_limits: IoLimits::default(),
+            max_message_bytes: crate::sendable::DEFAULT_MAX_MESSAGE_BYTES,
             host_work_used: 0,
             host_work_budget: None,
             host_resources_by_kind: HashMap::new(),
@@ -568,6 +571,14 @@ impl Heap {
 
     pub fn remaining_io_bytes(&self) -> Option<u64> {
         self.io_budget.as_ref().map(|budget| budget.remaining())
+    }
+
+    pub fn set_max_message_bytes(&mut self, max: u64) {
+        self.max_message_bytes = max;
+    }
+
+    pub fn max_message_bytes(&self) -> u64 {
+        self.max_message_bytes
     }
 
     pub fn set_io_limits(&mut self, limits: IoLimits) {

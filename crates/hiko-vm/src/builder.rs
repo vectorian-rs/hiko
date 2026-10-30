@@ -81,6 +81,7 @@ pub struct VMBuilder {
     max_work: Option<u64>,
     max_live_processes: Option<u64>,
     max_spawns: Option<u64>,
+    max_message_bytes: Option<u64>,
 }
 
 fn find_builtin(name: &str) -> Option<BuiltinFn> {
@@ -116,6 +117,7 @@ impl VMBuilder {
             max_work: None,
             max_live_processes: None,
             max_spawns: None,
+            max_message_bytes: None,
         }
     }
 
@@ -401,6 +403,13 @@ impl VMBuilder {
         self
     }
 
+    /// Set the largest value one spawn capture or child result may serialize
+    /// to. Defaults to [`crate::sendable::DEFAULT_MAX_MESSAGE_BYTES`].
+    pub fn max_message_bytes(mut self, bytes: u64) -> Self {
+        self.max_message_bytes = Some(bytes);
+        self
+    }
+
     /// Set maximum total host resources.
     pub fn max_host_resources(mut self, count: usize) -> Self {
         self.max_host_resources = Some(count);
@@ -463,6 +472,9 @@ impl VMBuilder {
         }
         if let Some(count) = self.max_spawns {
             vm.set_max_spawns(count);
+        }
+        if let Some(bytes) = self.max_message_bytes {
+            vm.set_max_message_bytes(bytes);
         }
 
         vm
