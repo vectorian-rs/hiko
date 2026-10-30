@@ -24,7 +24,7 @@ This design combines:
 | Communication model   | Structured (`spawn` / `await`) | Shared memory          | Message passing          |
 | GC                    | Per-process, independent       | Global, stop-the-world | Per-process, independent |
 | Async style           | Runtime-managed suspension     | Effects (no coloring)  | Receive loops            |
-| Continuations         | Local to process               | Local to fiber         | None                     |
+| Effect handlers       | Local to process               | Local to fiber         | None                     |
 | Large payload passing | Zero-copy via `Arc<str>`       | Zero-copy (same heap)  | Deep copy                |
 
 We borrow from Eio: direct-style async ergonomics.
@@ -53,7 +53,7 @@ struct Process {
 
 Each process owns:
 
-- VM state (heap, stack, frames, handlers, blocked continuation root)
+- VM state (heap, stack, frames, effect handlers)
 - lifecycle metadata (`pid`, `status`, `parent`, scope membership)
 
 There is **no mailbox** and no general inter-process messaging.
@@ -89,7 +89,7 @@ Rule:
 
 A closure is sent as its function index and its captures. Every process runs
 the same compiled program and registers the same builtins in the same order,
-so the index means the same function in the child. Continuations, `Rng`
+so the index means the same function in the child. `Rng`
 values and host handles (other than AWS configs) cannot be sent; trying to
 send one is a runtime error that names the kind of value.
 
@@ -155,7 +155,7 @@ Use a mock I/O backend (`MockIoBackend`) for deterministic testing. The backend 
 ### One-shot I/O suspensions
 
 - A process suspended on a builtin I/O request is resumed **exactly once**, by the runtime, when the I/O completes
-- This applies to runtime I/O suspensions only. Local algebraic-effect continuations (`perform`/`resume`) are a separate mechanism and can currently be resumed more than once; see [`../language/effects.md`](../language/effects.md#current-continuation-semantics)
+- This applies to runtime I/O suspensions only. Local algebraic effects (`perform`/`resume`) are a separate mechanism without first-class continuations; see [`../language/effects.md`](../language/effects.md)
 
 ### Error handling
 
@@ -236,8 +236,7 @@ Includes:
 
 - stack
 - frames
-- handlers
-- **blocked_continuation**
+- handlers, including handlers hidden while a provider clause runs
 
 ### Invariant
 

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use hiko_compile::op::{
-    HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
+    HANDLER_CLAUSE_PROVIDER, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
 };
 
 #[derive(Debug, Clone)]
@@ -37,6 +37,9 @@ struct DecodedInst {
     stack: StackRule,
     successors: Vec<usize>,
     handler_clause_targets: Vec<usize>,
+    /// Local slots holding provider clause closures; each must be below the
+    /// stack depth at the `InstallHandler`.
+    provider_slots: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +188,7 @@ fn decode_instruction(
 
     let mut successors = Vec::new();
     let mut handler_clause_targets = Vec::new();
+    let mut provider_slots = Vec::new();
     let stack = match op {
         Op::Halt => StackRule::Terminal { min_depth: 0 },
         Op::Const => {
@@ -544,14 +548,22 @@ fn decode_instruction(
                 let effect_tag = read_u16(chunk, ip, "InstallHandler clause")?;
                 validate_effect_tag(effect_tag, effect_tags, "InstallHandler clause")?;
                 let flags = read_u8(chunk, ip, "InstallHandler clause")?;
-                if flags & !HANDLER_CLAUSE_RESUMES != 0 {
-                    return Err(format!(
-                        "InstallHandler at offset {start} has clause with invalid flags {flags:#04x}"
-                    ));
+                match flags {
+                    HANDLER_CLAUSE_PROVIDER => {
+                        let slot = read_u16(chunk, ip, "InstallHandler clause")?;
+                        provider_slots.push(slot as usize);
+                    }
+                    0 => {
+                        let offset = read_i16(chunk, ip, "InstallHandler clause")?;
+                        let target = read_relative_target(*ip, offset, "InstallHandler clause")?;
+                        handler_clause_targets.push(target);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "InstallHandler at offset {start} has clause with invalid flags {flags:#04x}"
+                        ));
+                    }
                 }
-                let offset = read_i16(chunk, ip, "InstallHandler clause")?;
-                let target = read_relative_target(*ip, offset, "InstallHandler clause")?;
-                handler_clause_targets.push(target);
             }
             successors.push(*ip);
             StackRule::Exact {
@@ -575,15 +587,6 @@ fn decode_instruction(
                 delta: 0,
             }
         }
-        Op::Resume => {
-            // The resumed continuation runs until its outermost frame
-            // returns, then execution continues here with that result.
-            successors.push(*ip);
-            StackRule::Exact {
-                min_depth: 2,
-                delta: -1,
-            }
-        }
     };
 
     Ok(DecodedInst {
@@ -592,6 +595,7 @@ fn decode_instruction(
         stack,
         successors,
         handler_clause_targets,
+        provider_slots,
     })
 }
 
@@ -638,6 +642,13 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
             .get(&start)
             .expect("decoded instruction starts should be indexed")];
 
+        if let Some(slot) = inst.provider_slots.iter().find(|&&slot| slot >= depth) {
+            return Err(format!(
+                "{:?} at offset {} names provider closure slot {slot}, but the stack depth is {depth}",
+                inst.op, inst.start
+            ));
+        }
+
         let successor_depth = match &inst.stack {
             StackRule::Exact { min_depth, delta } => {
                 if depth < *min_depth {
@@ -663,9 +674,8 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
             pending.push_back((*target, successor_depth));
         }
         if !inst.handler_clause_targets.is_empty() {
-            // Every clause enters with the payload and a continuation slot.
-            // For a clause without HANDLER_CLAUSE_RESUMES the slot holds a
-            // Unit placeholder instead of a captured continuation.
+            // An abort clause enters with the payload and a Unit
+            // continuation slot.
             let clause_depth = successor_depth.checked_add(2).ok_or_else(|| {
                 format!(
                     "{:?} at offset {} overflows stack depth for handler clause entry",
@@ -702,7 +712,7 @@ fn apply_delta(inst: &DecodedInst, depth: usize, delta: isize) -> Result<usize, 
 mod tests {
     use super::verify_program;
     use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
-    use hiko_compile::op::{HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_UPVALUE};
+    use hiko_compile::op::{HANDLER_CLAUSE_PROVIDER, Op, REC_CAPTURE_GROUP, REC_CAPTURE_UPVALUE};
     use std::sync::Arc;
 
     fn empty_program(code: Vec<u8>) -> CompiledProgram {
@@ -1039,7 +1049,7 @@ mod tests {
             0,
             7,
             0,
-            HANDLER_CLAUSE_RESUMES,
+            0,
             0,
             0,
             Op::Halt as u8,
@@ -1069,11 +1079,37 @@ mod tests {
     }
 
     #[test]
-    fn accepts_install_handler_clause_flags() {
-        for flags in [0, HANDLER_CLAUSE_RESUMES] {
-            verify_program(&one_clause_handler(flags, 2))
-                .unwrap_or_else(|err| panic!("flags {flags}: {err}"));
-        }
+    fn accepts_abort_clause() {
+        verify_program(&one_clause_handler(0, 2)).unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    /// A provider clause for effect tag 0 whose closure is in local `slot`,
+    /// installed with one value on the stack.
+    fn provider_handler(slot: u8) -> CompiledProgram {
+        let code = vec![
+            Op::Unit as u8,
+            Op::InstallHandler as u8,
+            1,
+            0,
+            0,
+            0,
+            HANDLER_CLAUSE_PROVIDER,
+            slot,
+            0,
+            Op::Halt as u8,
+        ];
+        program_with_effects(code, 0, vec![effect_zero()])
+    }
+
+    #[test]
+    fn provider_clause_slot_must_be_on_the_stack() {
+        verify_program(&provider_handler(0)).unwrap_or_else(|err| panic!("{err}"));
+        let err = verify_program(&provider_handler(1)).expect_err("slot 1 is above the stack");
+        assert!(
+            err.message().contains("provider closure slot 1"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]
@@ -1090,42 +1126,22 @@ mod tests {
     }
 
     #[test]
-    fn handler_clause_entry_has_payload_and_continuation_slots() {
-        // Both kinds of clause enter with two values: the payload and either
-        // the continuation or a placeholder.
-        for flags in [0, HANDLER_CLAUSE_RESUMES] {
-            let err = verify_program(&one_clause_handler(flags, 3))
-                .expect_err("program should fail verification");
-            assert!(
-                err.message().contains("Pop at offset 12"),
-                "flags {flags}: {}",
-                err.message()
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_resume_without_continuation_and_argument() {
-        let program = empty_program(vec![Op::Resume as u8, Op::Halt as u8]);
-        let err = verify_program(&program).expect_err("program should fail verification");
-        assert!(err.message().contains("requires stack depth >= 2"));
-    }
-
-    #[test]
-    fn verifies_stack_effects_after_resume() {
-        let program = empty_program(vec![
-            Op::Unit as u8,
-            Op::Unit as u8,
-            Op::Resume as u8,
-            Op::Pop as u8,
-            Op::Pop as u8,
-            Op::Halt as u8,
-        ]);
-        let err = verify_program(&program).expect_err("program should fail verification");
+    fn abort_clause_entry_has_payload_and_continuation_slots() {
+        // An abort clause enters with two values: the payload and a Unit
+        // continuation slot.
+        let err = verify_program(&one_clause_handler(0, 3))
+            .expect_err("program should fail verification");
         assert!(
-            err.message().contains("Pop at offset 4"),
+            err.message().contains("Pop at offset 12"),
             "{}",
             err.message()
         );
+    }
+
+    #[test]
+    fn rejects_removed_resume_opcode() {
+        // Opcode 55 was `Resume`; continuations are no longer values.
+        let program = empty_program(vec![55, Op::Halt as u8]);
+        verify_program(&program).expect_err("opcode 55 is not an instruction");
     }
 }

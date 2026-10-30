@@ -68,8 +68,9 @@ Every heap slot is sized for `HeapObject`, not for the particular variant stored
 in that slot. A large rare variant therefore inflates every heap slot, including
 common `String`, `Tuple`, `Data`, and `Bytes` objects.
 
-Hiko's continuation payload is a good example. Continuations are important but
-rare compared with ordinary heap objects. Keeping all continuation fields inline
+Hiko's former continuation payload is a good example. Effect continuations
+were removed later (PR #121), but the measurement still shows the effect.
+Continuations were rare compared with ordinary heap objects. Keeping all continuation fields inline
 inside `HeapObject::Continuation` made every heap slot larger. Boxing the
 continuation payload moved those fields behind one pointer:
 

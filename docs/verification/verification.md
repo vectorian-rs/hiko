@@ -27,7 +27,7 @@ claim; "partial" means important gaps remain.
 | Definition area | Claim or invariant | Verification evidence | Status | Remaining gap |
 |---|---|---|---|---|
 | Core bytecode execution | Malformed bytecode should be rejected before execution when structural errors are knowable; semantic/value errors should fail as controlled runtime errors. | Bytecode verifier in [`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs) plus verifier and VM dispatch regression tests. | Tested / specified | Value types, indirect-call callable checks, field presence, data-tag ownership, and resource safety are runtime-guarded or out of verifier scope by design. |
-| Effects | `perform` and handler clauses refer to declared effect metadata; invalid `resume` paths fail deterministically. | Type-inference tests, VM effect/resume tests, and verifier checks for `Perform` / `InstallHandler` effect tags. | Partial | No complete static effect-row/type-and-effect discipline yet; arbitrary malformed bytecode can still violate source-level effect protocol invariants. |
+| Effects | `perform` and handler clauses refer to declared effect metadata; a continuation is never a value, and every misuse of `k` is a compile error. | Type-inference tests, compiler tests that reject misuse of `k`, VM effect tests, and verifier checks for `Perform` / `InstallHandler` effect tags and provider slots. | Partial | No complete static effect-row/type-and-effect discipline yet; arbitrary malformed bytecode can still violate source-level effect protocol invariants. |
 | Process lifecycle | Spawn, await, await-result, cancellation, I/O blocking/completion, parent-exit cleanup, and deadlock transitions follow the intended lifecycle model. | [`ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla), configs, runtime tests, and runtime docs. | Modeled / partial implementation evidence | TLA+ is a design model, not a refinement proof of Rust; Quint lifecycle port lags. |
 | Threaded scheduler | Workers should not duplicate process ownership, stale queue entries should not resurrect invalid work, and waiter/I/O registrations should remain consistent. | [`ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla), runtime tests, scheduler tests. | Partial | Model lags current tombstone, `child_parents`, `pending_cancels`, `AwaitKind::Result`, and stale-waiter cleanup behavior. |
 | Cancellation and async I/O | A cancelled process should not be resurrected by a stale I/O completion. | [`CancelIoRace.tla`](../../specs/tla/CancelIoRace.tla), scenario file, runtime cancellation/I/O tests. | Modeled | More direct refinement tests against threaded runtime interleavings would improve confidence. |
@@ -110,7 +110,7 @@ guarantees, and several are explicitly runtime concerns:
   - The verifier does not prove that memory or fuel limits will not be exceeded.
 - Full effect/resume protocol semantic correctness for arbitrary bytecode.
   - The verifier checks declared effect tags and stack depth for `Perform` and
-    `Resume`, but it does not prove the full source-level effect-handler
+    `InstallHandler`, but it does not prove the full source-level effect-handler
     protocol for hand-written malformed bytecode.
 
 Indirect `Call` and `TailCall` callable-ness and arity failures remain runtime

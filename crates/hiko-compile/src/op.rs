@@ -1,9 +1,12 @@
 /// `InstallHandler` encodes each clause as `u16 effect_tag, u8 flags,
-/// i16 relative_offset`. This flag bit is set when the clause body mentions
-/// its continuation variable. When it is clear, `Perform` unwinds to the
-/// handler without capturing a continuation and passes `Unit` in the
-/// continuation slot. All other flag bits are reserved and must be zero.
-pub const HANDLER_CLAUSE_RESUMES: u8 = 0b0000_0001;
+/// u16 operand`. When this flag bit is set the clause is a provider: the
+/// operand is the local slot of a closure taking (payload, Unit), and
+/// `Perform` calls it at the perform site; its result is the result of
+/// `perform`. When it is clear the clause aborts: the operand is an `i16`
+/// relative offset to the clause body, and `Perform` unwinds to the handler
+/// and passes the payload and a Unit continuation slot. All other flag bits
+/// are reserved and must be zero.
+pub const HANDLER_CLAUSE_PROVIDER: u8 = 0b0000_0001;
 
 /// Byte length of one `InstallHandler` clause entry.
 pub const HANDLER_CLAUSE_BYTES: usize = 5;
@@ -95,7 +98,6 @@ pub enum Op {
 
     InstallHandler = 53,
     Perform = 54,
-    Resume = 55,
     RemoveHandler = 56,
 
     GetLocal0 = 60,
@@ -178,7 +180,6 @@ impl TryFrom<u8> for Op {
             52 => Ok(Op::Halt),
             53 => Ok(Op::InstallHandler),
             54 => Ok(Op::Perform),
-            55 => Ok(Op::Resume),
             56 => Ok(Op::RemoveHandler),
             57 => Ok(Op::CallDirect),
             58 => Ok(Op::TailCallDirect),
