@@ -8,6 +8,8 @@
  *   - HttpGet = user-defined effect (not a runtime primitive)
  *   - Handlers bridge the effect to builtins or test data
  *   - Business logic doesn't know which handler is installed
+ *   - Each handler answers a request and resumes at once, so it also
+ *     receives the next request
  *)
 effect HttpGet of string
 
@@ -46,7 +48,7 @@ fun with_mock_http f =
     f ()
   with
     return x => x
-  | HttpGet url k => with_mock_http (fn () => resume k (200, [], "fake body from " ^ url))
+  | HttpGet url k => resume k (200, [], "fake body from " ^ url)
 
 val _ = println "1. Mock handler (no network)"
 
@@ -66,11 +68,7 @@ fun with_real_http f =
     f ()
   with
     return x => x
-  | HttpGet url k => let
-      val res = http_get url
-    in
-      with_real_http (fn () => resume k res)
-    end
+  | HttpGet url k => resume k (http_get url)
 
 val _ = println "2. Real handler (network)"
 

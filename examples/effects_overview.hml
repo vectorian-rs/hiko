@@ -1,104 +1,88 @@
-(* effects_overview.hml -- Algebraic effects for user control flow
+(* effects_overview.hml -- What effects are for in Hiko
  *
- * Effects in Hiko are for control flow, NOT for I/O.
- * I/O uses builtins (http_get, read_file, sleep, etc.).
- * Recoverable errors use Std.Result, not effects.
+ * Effects are a research feature. Two uses are supported:
+ *   1. Provider: the handler answers a request and resumes at once
+ *      (`| Op x k => resume k answer`). Code that performs the request does
+ *      not know which provider is installed, so a test can swap in a mock.
+ *   2. Abort: the handler ignores the continuation and returns a value
+ *      for the whole `handle` expression (early exit).
  *
- * This example shows:
- *   1. Error handling with Result (for contrast: no effect needed)
- *   2. Generators (Yield)
- *   3. Mutable state (Get/Put)
+ * Not effects:
+ *   - recoverable errors use Std.Result;
+ *   - I/O uses builtins (read_file, http_get, sleep, ...);
+ *   - generators and state use closures and ordinary arguments
+ *     (see generator.hml and state.hml).
  *)
+import Std.Option
 import Std.Result
 
-(* ── 1. Error handling ─────────────────────────────────────── *)
+(* ── Errors are values, not effects ────────────────────────── *)
 fun divide a b = if b = 0 then Result.Err "division by zero" else Result.Ok (a / b)
 
-val _ = println "--- Error handling ---"
-
-val good = Result.map2 (fn x => fn y => x + y) (divide 100 5) (divide 20 4)
+val _ = println "--- Error handling with Result ---"
 
 val _ =
-  case good of
-      Result.Ok n => println ("100/5 + 20/4 = " ^ int_to_string n)
-    | Result.Err e => println ("Error: " ^ e)
-
-val bad = divide 10 0
-
-val _ =
-  case bad of
+  case divide 10 0 of
       Result.Ok n => println ("Unexpected: " ^ int_to_string n)
     | Result.Err e => println ("Caught: " ^ e)
 
-(* ── 2. Generators ─────────────────────────────────────────── *)
-effect Yield of int
+(* ── 1. Provider ───────────────────────────────────────────── *)
+effect Config of string
 
-fun collect f =
+fun greeting () = perform Config "greeting" ^ ", " ^ perform Config "name"
+
+fun lookup (key : string) table =
+  case table of
+      [] => "?"
+    | (k, v) :: rest => if k = key then v else lookup key rest
+
+(* Answers from a fixed table *)
+fun with_config table f =
   handle
     f ()
   with
-    return _ => []
-  | Yield n k => n :: collect (fn _ => resume k ())
+    return x => x
+  | Config key k => resume k (lookup key table)
 
-fun fib_go a b count = if count = 0 then () else let
-    val _ = perform Yield a
-  in
-    fib_go b (a + b) (count - 1)
-  end
+val _ = println "\n--- Provider ---"
 
-fun fibonacci n () = fib_go 0 1 n
+val english = with_config [("greeting", "hello"), ("name", "world")] greeting
 
-val fibs = collect (fibonacci 10)
+val japanese = with_config [("greeting", "konnichiwa"), ("name", "sekai")] greeting
 
-val _ = println "\n--- Generators ---"
+val _ = println english
 
-val _ = println "First 10 Fibonacci numbers:"
+val _ = println japanese
 
-fun show_list xs =
+val _ = assert_eq (english, "hello, world", "provider")
+
+(* ── 2. Abort ──────────────────────────────────────────────── *)
+effect Found of int
+
+(* Stop at the first negative number *)
+fun scan xs =
   case xs of
-      [] => println ""
-    | [x] => println (int_to_string x)
-    | x :: rest =>
-      let
-        val _ = print (int_to_string x ^ ", ")
-      in
-        show_list rest
-      end
-
-val _ = show_list fibs
-
-(* ── 3. Mutable state ──────────────────────────────────────── *)
-effect Get of unit
-
-effect Put of int
-
-fun run_state init f =
-  handle
-    f ()
-  with
-    return x => (init, x)
-  | Get _ k => run_state init (fn _ => resume k init)
-  | Put n k => run_state n (fn _ => resume k ())
-
-fun count_each ws =
-  case ws of
       [] => ()
-    | w :: rest => if string_length w > 0 then let
-        val n = perform Get ()
-        val _ = perform Put (n + 1)
-      in
-        count_each rest
-      end else count_each rest
+    | x :: rest => if x < 0 then perform Found x else scan rest
 
-fun count_words text =
-  let
-    val words = split (text, " ")
-  in
-    count_each words
-  end
+fun first_negative xs =
+  handle
+    let
+      val _ = scan xs
+    in
+      Option.None
+    end
+  with
+    return x => x
+  | Found n _ => Option.Some n
 
-val (word_count, _) = run_state 0 (fn () => count_words "the quick brown fox jumps")
+val _ = println "\n--- Abort ---"
 
-val _ = println "\n--- Mutable state ---"
+val _ =
+  case first_negative [3, 1, ~4, 1, ~5] of
+      Option.Some n => println ("First negative: " ^ int_to_string n)
+    | Option.None => println "No negative number"
 
-val _ = println ("Word count: " ^ int_to_string word_count)
+val _ = assert_eq (first_negative [3, 1, ~4, 1, ~5], Option.Some (~4), "abort")
+
+val _ = assert_eq (first_negative [1, 2], Option.None, "no abort")
