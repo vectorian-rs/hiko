@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use hiko_syntax::ast::*;
@@ -30,6 +30,11 @@ pub struct InferCtx {
     subst: HashMap<u32, Type>,
     next_var: u32,
     scopes: Vec<HashMap<String, Scheme>>,
+    /// Per scope, the bindings whose type may still have free variables
+    /// other than its own quantified ones. Once a binding's type has none,
+    /// substitution cannot change it, so `free_vars_in_env` drops it from
+    /// this set and never walks it again.
+    open: RefCell<Vec<HashSet<String>>>,
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     type_aliases: HashMap<String, (Vec<u32>, Type)>,
@@ -213,6 +218,7 @@ impl InferCtx {
             subst: HashMap::new(),
             next_var: 0,
             scopes: vec![HashMap::new()],
+            open: RefCell::new(vec![HashSet::new()]),
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -444,14 +450,19 @@ impl InferCtx {
         } else {
             self.scopes.len()
         };
-        for scope in &self.scopes[..limit] {
-            for scheme in scope.values() {
+        let mut open = self.open.borrow_mut();
+        for (scope, open) in self.scopes[..limit].iter().zip(open.iter_mut()) {
+            open.retain(|name| {
+                let scheme = &scope[name];
+                let mut has_free = false;
                 for v in self.apply(&scheme.ty).free_vars() {
                     if !scheme.vars.contains(&v) {
                         vars.insert(v);
+                        has_free = true;
                     }
                 }
-            }
+                has_free
+            });
         }
         // An effect's result type is one variable shared by every `perform`
         // and handler of that effect, so it is part of the environment and
@@ -474,15 +485,18 @@ impl InferCtx {
     }
 
     fn bind(&mut self, name: String, scheme: Scheme) {
+        self.open.get_mut().last_mut().unwrap().insert(name.clone());
         self.scopes.last_mut().unwrap().insert(name, scheme);
     }
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.open.get_mut().push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.open.get_mut().pop();
     }
 
     // ── Program inference ────────────────────────────────────────────
@@ -597,6 +611,7 @@ impl InferCtx {
                     self.infer_decl(d)?;
                 }
                 let exported = self.scopes.pop().unwrap();
+                self.open.get_mut().pop();
                 self.pop_scope(); // pop the locals scope
                 // re-bind exported names in the enclosing scope
                 for (name, scheme) in exported {
@@ -1705,6 +1720,17 @@ mod tests {
             msg.contains(&format!("max_type_work ({})", used - 1)),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn test_many_declarations_do_not_rescan_closed_bindings() {
+        // Generalizing used to walk every binding in scope, so work grew with
+        // the square of the number of declarations.
+        let src: String = (0..2000)
+            .map(|i| format!("fun f{i} x = (x, {i})\nval v{i} = f{i} \"s\"\n"))
+            .collect();
+        let ctx = infer(&src);
+        assert!(ctx.type_work() < 2_000_000, "{}", ctx.type_work());
     }
 
     #[test]
