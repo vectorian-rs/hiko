@@ -167,10 +167,12 @@ reads.
 This section describes what the VM does today. It is implemented, but it is
 not a stable guarantee and may change.
 
-**Handlers are deep.** `perform` removes the matching handler and stores it in
-the continuation (`ContinuationData::saved_handler` in
-`crates/hiko-vm/src/value.rs`). `resume` reinstalls it. A second `perform` of the
-same effect inside the resumed computation therefore reaches the same handler:
+**Handlers are deep when the clause resumes directly.** `perform` removes the
+matching handler, and every handler installed inside it, and stores them in the
+continuation (`ContinuationData::saved_handlers` in
+`crates/hiko-vm/src/value.rs`). When a clause calls `resume k v` directly,
+`resume` reinstalls all of them. A second `perform` of the same effect inside
+the resumed computation therefore reaches the same handler:
 
 ```hiko
 effect Tick of unit
@@ -192,6 +194,52 @@ fun count () =
 
 (* count () = 2 *)
 ```
+
+**Inner handlers are part of the continuation.** A handler installed between
+the catching handler and the `perform` site is always reinstalled by `resume`,
+so effects it handles still reach it after the resume:
+
+```hiko
+effect Ask of int
+effect Fail of int
+
+fun body () =
+  let val a = perform Ask 1 val _ = perform Fail (a + 5) in 1000 end
+
+val result =
+  handle 1 + (handle body () with return x => x | Fail n _ => n + 100)
+  with return x => x | Ask n k => resume k (n * 10)
+
+(* result = 116: Ask resumes with 10, the inner handler catches Fail 15 *)
+```
+
+**Exception: resuming under a new handler is shallow.** If the clause resumes
+inside a handler it installed itself, as in the generator pattern below, the
+catching handler is not reinstalled; the new handler takes its place.
+`resume` reinstalls the catching handler only when fewer handlers are
+installed at the resume point than when the effect was caught
+(`ContinuationData::catching_handler_depth`). Inner handlers are reinstalled
+in both cases.
+
+```hiko
+effect Yield of int
+
+fun run_gen f =
+  handle f ()
+  with return _ => 0
+     | Yield n k => n + run_gen (fn _ => resume k ())
+
+fun gen () =
+  let val _ = perform Yield 1 val _ = perform Yield 2 in () end
+
+(* run_gen gen = 3. With fully deep handlers (as in OCaml or Koka) the
+   original handler would also be reinstalled, catch Yield 2, and the result
+   would be 1. *)
+```
+
+This mixed rule is what the VM does today; it is not a designed semantics.
+Choosing between deep, shallow, or an explicit choice per handler is part of
+the open research questions below.
 
 **A continuation runs to the end of its `handle` expression.** The captured
 continuation starts at the `perform` site and ends where the `handle`

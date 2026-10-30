@@ -819,7 +819,8 @@ mod tests {
                 crate::value::ContinuationData {
                     saved_frames: vec![],
                     saved_stack: vec![],
-                    saved_handler: None,
+                    saved_handlers: Vec::new(),
+                    catching_handler_depth: 0,
                 },
             )))
             .unwrap(),
