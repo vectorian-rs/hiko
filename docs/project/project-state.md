@@ -18,8 +18,9 @@ Hiko is being refocused on three things:
    bytecode verification, and verified module loading.
 
 The **effect system** is the research part of the language. It stays in the
-tree, but it is treated as an experiment with explicit open questions rather
-than a stable surface.
+tree as a small, isolated experiment, not a stable surface. The supported uses
+are providers and aborts; generators and state use closures (decided
+2026-10-30).
 
 Everything else (cloud providers, agent harness, editor tooling, demos) is
 either supporting tooling or out of focus. See [Inventory](#inventory).
@@ -152,9 +153,10 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   script, mostly in system time (#81, #82). The opcode-density half of #82 is
   done. The filesystem half (per-file `canonicalize` plus `cap_std` checks) is
   not re-measured.
-- `Resume` clones `saved_frames` and `saved_stack` on every call
-  (`vm/dispatch.rs`, `Op::Resume`). Every resume costs time proportional to the
-  captured stack depth.
+- `Resume` copies the captured frames and stack back onto the VM stack
+  (`vm/dispatch.rs`, `Op::Resume`), so every resume costs time proportional to
+  the captured stack depth. #121 plans to remove continuation capture for
+  provider clauses.
 - `HeapObject::String(String)` copies on transfer. #12 (`Arc<str>`) is open.
 - Spawn cost is dominated by rebuilding builtin and global tables per child.
 - There is no continuous benchmark baseline. `benchmarks/` has six classic
@@ -206,8 +208,11 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   is `effect-result -> handled-body-result`, handler arms agree on result
   type.
 - Runtime: `Perform` captures frames and stack up to the nearest matching
-  handler into a `Continuation`. It also saves that handler, and `Resume`
-  reinstalls it. The handlers are therefore **deep**.
+  handler into a `Continuation`. It also saves that handler and the handlers
+  inside it. A direct `resume` reinstalls all of them (deep); a resume inside
+  a handler the clause installed itself does not reinstall the catching one
+  (shallow). See
+  [`effects.md`](../language/effects.md#current-continuation-semantics).
 - `Resume` copies the continuation, so the same `k` can be resumed more than
   once (**multi-shot**). Verified: inside a function,
   `Choose _ k => resume k true + resume k false` returns 11 for
@@ -215,49 +220,34 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
 - Runtime-handled effects (I/O, spawn, await) use a separate one-shot blocked
   continuation owned by the scheduler.
 
-### Verified bug
+### Decided
 
-Code after `resume` in a handler clause is lost when the `handle` is in the
-top-level (main chunk) rather than inside a function:
-
-```sml
-effect Ask of unit
-
-fun fa () = handle (perform Ask () + 1)
-  with return x => x
-     | Ask _ k => resume k 10 + 100
-(* fa () = 111, correct *)
-
-val top = handle (perform Ask () + 1)
-  with return x => x
-     | Ask _ k => resume k 10 + 100
-(* top = 11, expected 111 *)
-```
-
-The same top-level shape with `resume k 1 + resume k 2` returns 2 instead
-of 5. This needs a regression test and a fix in how `Resume` restores frames
-when the handler belongs to the main chunk.
+- **Scope (2026-10-30).** Effects keep two uses: providers (the clause resumes
+  at once) and aborts (the clause ignores `k`). Generators and state use
+  closures and ordinary arguments; the examples and docs were converted.
+  Measured on a debug build: summing a 100,000-item effect generator
+  overflowed the stack after 25.8s, the closure version took 1.6s.
+- **Next step.** #121 plans to remove first-class continuations: a provider
+  clause runs in place at the `perform` site, and an abort clause unwinds.
 
 ### Open research questions
 
 These are the questions the research track should answer, in rough order:
 
-1. **One-shot or multi-shot.** Local continuations are multi-shot by copy
-   today (documented in
-   [`effects.md`](../language/effects.md#current-continuation-semantics) as not
-   stable). Choose one. One-shot is cheaper (no clone) and
-   matches OCaml 5. Multi-shot enables backtracking and is closer to Eff/Koka.
-2. **Deep or shallow.** The implementation is deep, and the README and
-   `effects.md` now say so. Decide whether to keep it and make tests and
-   #29/#30 agree.
+1. **One-shot or multi-shot.** Answered by the scope decision above: neither.
+   With only provider and abort clauses, `k` is not a value. #121 implements
+   it.
+2. **Deep or shallow.** Answered the same way: a provider handler stays
+   installed for later requests (deep), and nothing resumes under a new
+   handler. #121 removes the mixed rule from #119.
 3. **Effect rows in types.** Function types do not record effects, so
    unhandled effects are runtime errors (#48, #74).
    [`effects-design.md`](../rnd/effects-design.md) lists strategies A to F.
 4. **Effects and capabilities.** Whether host capabilities become effects
    handled by the runtime, so a policy is a top-level handler. This is the
    point where the research track meets the security focus.
-5. **Resume cost.** A tail-resume path (#29) and avoiding the clone for
-   one-shot use.
+5. **Resume cost.** Answered by #121: a provider clause runs in place, so
+   there is nothing to copy, and it uses constant stack (#29).
 6. **Verifier support.** The verifier checks effect tags and stack depth only.
    A protocol-level check is still open.
 

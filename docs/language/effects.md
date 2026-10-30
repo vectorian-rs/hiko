@@ -6,8 +6,30 @@ of the language (see [project-state.md](../project/project-state.md)); design
 proposals and comparisons with other languages live in
 [rnd/effects-design.md](../rnd/effects-design.md).
 
-Recoverable errors use `Std.Result`, not effects. See
-[error-handling.md](error-handling.md).
+Effects are a small, isolated research feature, not part of the core
+language. Two uses are supported:
+
+- **Provider:** a handler answers a request and resumes at once
+  (`| Op x k => resume k answer`). The code that performs the request does not
+  know which provider is installed, so a test can install a mock. See
+  [Supported Uses](#supported-uses).
+- **Abort:** a handler ignores the continuation and returns a value for the
+  whole `handle` expression (early exit).
+
+Other things are not effects:
+
+- Recoverable errors use `Std.Result`. See
+  [error-handling.md](error-handling.md).
+- I/O uses builtins.
+- Generators and state use closures and ordinary arguments. See
+  [Generators and State Without Effects](#generators-and-state-without-effects).
+
+Effects can do more than these two uses today: a handler can store `k`,
+resume it later, resume it twice, or resume it inside another handler. That
+behavior is described under
+[Current Continuation Semantics](#current-continuation-semantics), but it is
+not supported. The plan is to remove first-class continuations and keep only
+the two forms above (PR #121).
 
 ## Mental Model
 
@@ -40,27 +62,27 @@ result of `perform AskName ()`.
 Current Hiko declares only the payload side of an effect:
 
 ```hiko
-effect Get of unit
-effect Put of int
+effect Ask of unit
+effect Log of string
 effect Fail of string
 ```
 
 Perform an effect:
 
 ```hiko
-val current = perform Get ()
-val _ = perform Put (current + 1)
+val limit = perform Ask ()
+val _ = perform Log ("limit is " ^ int_to_string limit)
 ```
 
 Handle effects:
 
 ```hiko
-fun run_state init f = handle
+fun with_settings limit f = handle
     f ()
   with
     return x => x
-  | Get _ k => run_state init (fn _ => resume k init)
-  | Put n k => run_state n (fn _ => resume k ())
+  | Ask _ k => resume k limit
+  | Log msg k => let val _ = println msg in resume k () end
 ```
 
 In current syntax, `effect Fail of string` means:
@@ -88,6 +110,85 @@ Both types are monomorphic. The payload type cannot contain type variables, and
 the resume/result type is one type shared by every `perform` and handler of
 that effect in the program. A function that performs an effect is therefore not
 generalized over the effect's result type.
+
+## Supported Uses
+
+### Provider
+
+The handler answers each request and resumes at once. Because `resume`
+reinstalls the handler, the same provider also answers every later request
+from the resumed code.
+
+```hiko
+effect Log of string
+
+fun with_console_log f =
+  handle
+    f ()
+  with
+    return x => x
+  | Log msg k => let
+      val _ = println ("[log] " ^ msg)
+    in
+      resume k ()
+    end
+```
+
+`examples/http_effect_wrapper_test.hml` runs the same code against a mock HTTP
+provider and a real one. `Std.Filesystem` and `Std.Hashline` are written as
+providers over their builtins.
+
+### Abort
+
+The clause does not use `k`, so the computation stops and the clause's value
+becomes the value of the `handle` expression. The VM unwinds without capturing
+a continuation (see [Abortive Handler Clauses](#abortive-handler-clauses)).
+
+```hiko
+effect Found of int
+
+fun scan xs =
+  case xs of
+      [] => ()
+    | x :: rest => if x < 0 then perform Found x else scan rest
+
+fun first_negative xs =
+  handle
+    let val _ = scan xs in 0 end
+  with
+    return x => x
+  | Found n _ => n
+
+(* first_negative [1, ~2, ~3] = ~2 *)
+```
+
+## Generators and State Without Effects
+
+A generator is a function that returns the next item and a function that
+produces the rest. It needs only a datatype and closures, it can be infinite,
+and it runs in constant stack:
+
+```hiko
+datatype 'a stream = Done | Next of 'a * (unit -> 'a stream)
+
+fun range lo hi () = if lo > hi then Done else Next (lo, range (lo + 1) hi)
+
+fun take n s = if n = 0 then [] else case s () of
+      Done => []
+    | Next (x, rest) => x :: take (n - 1) rest
+
+(* take 3 (range 1 10) = [1, 2, 3] *)
+```
+
+State is an argument that a function takes and returns, usually as an
+accumulator or a `(result, new_state)` pair. See `examples/generator.hml` and
+`examples/state.hml`.
+
+The effect-based versions (`perform Yield` with a handler that re-handles
+around `resume`, and `Get`/`Put` handlers) are not supported. They depend on
+the unsupported continuation behavior below. They are also slower: summing a
+100,000-item effect generator overflowed the stack after 25 seconds in a debug
+build, while the closure version finished in 1.6 seconds.
 
 ## Current Static Guarantees
 
@@ -165,7 +266,9 @@ reads.
 ## Current Continuation Semantics
 
 This section describes what the VM does today. It is implemented, but it is
-not a stable guarantee and may change.
+not a stable guarantee. Only the provider and abort forms in
+[Supported Uses](#supported-uses) are supported. The rest of this section
+describes behavior that PR #121 plans to remove.
 
 **Handlers are deep when the clause resumes directly.** `perform` removes the
 matching handler, and every handler installed inside it, and stores them in the
@@ -269,11 +372,9 @@ fun both () =
 (* both () = 30 *)
 ```
 
-**Direction.** One-shot continuations are the intended direction. Multi-shot
-resumption works today only as a consequence of copying, and it may be removed
-or put behind an explicit marker, so do not rely on it. Whether Hiko keeps
-multi-shot resumption is an open research question; see
-[project-state.md](../project/project-state.md#open-research-questions) and
-[rnd/effects-design.md](../rnd/effects-design.md). The threaded runtime's I/O
-suspensions are a separate mechanism and are always one-shot (see
-[`../architecture/runtime.md`](../architecture/runtime.md)).
+**Direction.** First-class continuations are planned to go away (PR #121).
+A provider clause will run in place at the `perform` site, and an abort clause
+will unwind as it does now. Storing `k`, resuming it twice, or resuming it
+inside another handler will no longer be possible, so do not rely on them. The
+threaded runtime's I/O suspensions are a separate mechanism and are always
+one-shot (see [`../architecture/runtime.md`](../architecture/runtime.md)).

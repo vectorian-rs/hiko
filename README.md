@@ -2,7 +2,7 @@
 
 A strict, statically typed, ML-family scripting language implemented in Rust with a bytecode VM.
 
-Hiko's semantics are anchored in Core SML (Standard ML), with Hindley-Milner type inference, algebraic data types, exhaustive pattern matching, and OCaml 5-style algebraic effect handlers for structured concurrency. Hiko is SML-derived, but it deliberately repairs or omits several historically messy parts of the SML specification; see [docs/language/sml-deltas.md](docs/language/sml-deltas.md).
+Hiko's semantics are anchored in Core SML (Standard ML), with Hindley-Milner type inference, algebraic data types, and exhaustive pattern matching. Algebraic effects are a small research feature, kept separate from the core language. Hiko is SML-derived, but it deliberately repairs or omits several historically messy parts of the SML specification; see [docs/language/sml-deltas.md](docs/language/sml-deltas.md).
 
 ## Current Snapshot
 
@@ -13,7 +13,7 @@ than daemon-style runtime tuning.
 - Stack-based bytecode VM with 16-byte `Copy` values and `GcRef(u32)` heap references
 - Mark-and-sweep GC with iterative marking, free-list reuse, and adaptive thresholds
 - Two cooperative runtimes: simple single-threaded execution and multi-worker threaded execution with async I/O
-- Deep effect handlers via continuation capture, kept local to each process
+- Local algebraic effects (research): provider and abort handlers, kept local to each process
 - Capability-based sandboxing at the VM boundary for filesystem, HTTP, and `exec`
 - `hiko-vm` uses zero `unsafe`
 
@@ -94,44 +94,55 @@ fun describe xs = case xs of
 (* Exhaustiveness and redundancy checked at compile time *)
 ```
 
-### Algebraic Effect Handlers
+### Generators and State
 
-OCaml 5-inspired deep effect handlers with delimited continuations. Effects are for control flow (generators, state); recoverable errors use `Std.Result`. See [docs/language/effects.md](docs/language/effects.md) for the current semantics:
+Generators and state need no special feature: a datatype and closures are
+enough. A generator returns the next item and a function for the rest, so it
+can be infinite and runs in constant stack (see `examples/generator.hml`):
 
 ```sml
-(* Declare an effect *)
-effect Yield of int
+datatype 'a stream = Done | Next of 'a * (unit -> 'a stream)
 
-(* Generator: yields values *)
-fun gen () =
-  let val _ = perform Yield 1
-      val _ = perform Yield 2
-      val _ = perform Yield 3
-  in () end
+fun range lo hi () = if lo > hi then Done else Next (lo, range (lo + 1) hi)
 
-(* Handler: collects yielded values into a sum *)
-fun run_gen f = handle f ()
-  with return _ => 0
-     | Yield n k => n + run_gen (fn _ => resume k ())
+fun sfold f acc s =
+  case s () of
+      Done => acc
+    | Next (x, rest) => sfold f (f (acc, x)) rest
 
-val result = run_gen gen   (* result = 6 *)
+val total = sfold (fn (acc, x) => acc + x) 0 (range 1 10)   (* total = 55 *)
 ```
 
-**State effect** (get/put pattern):
+State is passed along as an argument and returned (see `examples/state.hml`).
+
+### Algebraic Effects (Research)
+
+Effects are a research feature, isolated from the core language. Two uses are
+supported: a **provider** answers a request and resumes at once, and an
+**abort** handler ignores the continuation to exit early. Recoverable errors
+use `Std.Result`. See [docs/language/effects.md](docs/language/effects.md):
 
 ```sml
-effect Get of unit
-effect Put of int
+effect Log of string
 
-fun run_state init f =
+(* Provider: the caller decides where log messages go *)
+fun with_console_log f =
   handle f ()
   with return x => x
-     | Get _ k => run_state init (fn _ => resume k init)
-     | Put n k => run_state n (fn _ => resume k ())
+     | Log msg k => let val _ = println msg in resume k () end
 
-val result = run_state 0 (fn _ =>
-  let val _ = perform Put 42
-  in perform Get () end)       (* result = 42 *)
+effect Found of int
+
+fun scan xs =
+  case xs of
+      [] => ()
+    | x :: rest => if x < 0 then perform Found x else scan rest
+
+(* Abort: stop at the first negative number, or return 0 *)
+fun first_negative xs =
+  handle let val _ = scan xs in 0 end
+  with return x => x
+     | Found n _ => n
 ```
 
 ### Type System
@@ -251,7 +262,7 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 **Garbage Collector.** Mark-and-sweep with worklist-based marking (avoids stack overflow on deep object graphs), free-list reuse, and adaptive collection threshold.
 
-**Effect Handlers.** Deep handlers over copied delimited continuations. `perform` captures the stack and frames between the perform site and the nearest matching handler and removes that handler. `resume` copies the captured continuation back onto the stack and reinstalls the handler, so later performs in the resumed computation reach the same handler. A continuation can currently be resumed more than once; this is not a stable guarantee. See [docs/language/effects.md](docs/language/effects.md#current-continuation-semantics).
+**Effect Handlers (research).** `perform` finds the nearest matching handler. A clause that ignores its continuation unwinds to the handler without capturing anything. A clause that uses `k` gets a copied delimited continuation, and `resume` copies it back. The supported uses are provider clauses (`resume k v` at once) and abort clauses; the general continuation machinery is planned to shrink to those two forms (#121). See [docs/language/effects.md](docs/language/effects.md#current-continuation-semantics).
 
 **Tail-Call Optimization.** The `TailCall` opcode reuses the current call frame instead of pushing a new one. Propagated through `if`/`case`/`let` branches so tail-recursive functions run in constant stack space.
 
