@@ -1,40 +1,62 @@
-(* Generator pattern using algebraic effect handlers *)
-effect Yield of int
+(* generator.hml -- Generators with closures
+ *
+ * A generator is a function that returns the next item together with a
+ * function that produces the rest. Nothing is computed until the consumer
+ * asks for it, so a generator can be infinite. It needs only a datatype and
+ * closures, and runs in constant stack.
+ *)
+datatype 'a stream =
+    Done
+  | Next of 'a * (unit -> 'a stream)
 
-fun run_gen f =
-  handle
-    f ()
-  with
-    return _ => []
-  | Yield n k => n :: run_gen (fn _ => resume k ())
+fun range lo hi () = if lo > hi then Done else Next (lo, range (lo + 1) hi)
 
-fun range_gen lo hi () = if lo > hi then () else let
-    val _ = perform Yield lo
-  in
-    range_gen (lo + 1) hi ()
-  end
+fun fib_from a b () = Next (a, fib_from b (a + b))
 
-fun sum xs =
+(* Take at most n items *)
+fun take n s = if n = 0 then [] else case s () of
+      Done => []
+    | Next (x, rest) => x :: take (n - 1) rest
+
+(* Transform each item *)
+fun smap f s () =
+  case s () of
+      Done => Done
+    | Next (x, rest) => Next (f x, smap f rest)
+
+(* Combine all items, left to right *)
+fun sfold f acc s =
+  case s () of
+      Done => acc
+    | Next (x, rest) => sfold f (f (acc, x)) rest
+
+fun show xs =
   case xs of
-      [] => 0
-    | x :: rest => x + sum rest
+      [] => ""
+    | [x] => int_to_string x
+    | x :: rest => int_to_string x ^ ", " ^ show rest
 
-val generated = run_gen (range_gen 1 10)
+val generated = take 100 (range 1 10)
 
-val total = sum generated
+val _ = println ("Generated 1..10: " ^ show generated)
 
-val _ = println "Generated 1..10 via yield:"
+val _ = assert_eq (generated, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "range")
 
-fun print_list xs =
-  case xs of
-      [] => ()
-    | x :: rest =>
-      let
-        val _ = println (int_to_string x)
-      in
-        print_list rest
-      end
-
-val _ = print_list generated
+val total = sfold (fn (acc, x) => acc + x) 0 (range 1 10)
 
 val _ = println ("Sum: " ^ int_to_string total)
+
+val _ = assert_eq (total, 55, "sum")
+
+(* An infinite generator: only the items taken are computed *)
+val fibs = take 10 (fib_from 0 1)
+
+val _ = println ("First 10 Fibonacci numbers: " ^ show fibs)
+
+val _ = assert_eq (fibs, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34], "fibonacci")
+
+val squares = take 5 (smap (fn x => x * x) (range 1 100))
+
+val _ = println ("Squares: " ^ show squares)
+
+val _ = assert_eq (squares, [1, 4, 9, 16, 25], "squares")
