@@ -3,11 +3,13 @@
 This document summarizes Hiko's current verification coverage. It is a status
 and routing document, not a claim that the VM or runtime are fully verified.
 
-Hiko currently has three complementary verification layers:
+Hiko currently has four complementary verification layers:
 
 1. the Rust bytecode verifier in `hiko-vm`,
-2. Rust unit/regression tests around runtime and VM invariants, and
-3. formal models under [`specs/`](../../specs).
+2. Rust unit/regression tests around runtime and VM invariants,
+3. Loom models that explore thread interleavings of the threaded runtime's
+   real code, and
+4. formal models under [`specs/`](../../specs).
 
 For a point-in-time grade and reassessment prompt, see
 [`verification-status-20260428.md`](verification-status-20260428.md).
@@ -29,7 +31,7 @@ claim; "partial" means important gaps remain.
 | Core bytecode execution | Malformed bytecode should be rejected before execution when structural errors are knowable; semantic/value errors should fail as controlled runtime errors. | Bytecode verifier in [`crates/hiko-vm/src/verify.rs`](../../crates/hiko-vm/src/verify.rs) plus verifier and VM dispatch regression tests. | Tested / specified | Value types, indirect-call callable checks, field presence, data-tag ownership, and resource safety are runtime-guarded or out of verifier scope by design. |
 | Effects | `perform` and handler clauses refer to declared effect metadata; invalid `resume` paths fail deterministically. | Type-inference tests, VM effect/resume tests, and verifier checks for `Perform` / `InstallHandler` effect tags. | Partial | No complete static effect-row/type-and-effect discipline yet; arbitrary malformed bytecode can still violate source-level effect protocol invariants. |
 | Process lifecycle | Spawn, await, await-result, cancellation, I/O blocking/completion, parent-exit cleanup, and deadlock transitions follow the intended lifecycle model. | [`ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla), configs, runtime tests, and runtime docs. | Modeled / partial implementation evidence | TLA+ is a design model, not a refinement proof of Rust; Quint lifecycle port lags. |
-| Threaded scheduler | Workers should not duplicate process ownership, stale queue entries should not resurrect invalid work, and waiter/I/O registrations should remain consistent. | [`ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla), runtime tests, scheduler tests. | Partial | Model lags current tombstone, `child_parents`, `pending_cancels`, `AwaitKind::Result`, and stale-waiter cleanup behavior. |
+| Threaded scheduler | No lost wakeup, no resurrection of a terminated process, tombstones bounded by live parents, no registration or cancel request left behind, single ownership of each process. | [`ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla) (one table operation per step) with two negative configurations; [Loom models](#loom) of the real lifecycle code; runtime and scheduler tests. | Modeled / Loom-checked | The model is checked with 2 processes; 3 processes are out of reach for the current checker. Loom runs each race with a preemption bound of 3, and the worker loop, monitor loop and `run_to_completion` are not under Loom. |
 | Cancellation and async I/O | A cancelled process should not be resurrected by a stale I/O completion. | [`CancelIoRace.tla`](../../specs/tla/CancelIoRace.tla), scenario file, runtime cancellation/I/O tests. | Modeled | More direct refinement tests against threaded runtime interleavings would improve confidence. |
 | `wait_any` | When multiple requested children are ready, selection is deterministic and follows the caller's leftmost child order. | [`WaitAnyLeftmost.tla`](../../specs/tla/WaitAnyLeftmost.tla), scenario file, negative broken model, runtime tests. | Modeled | Continue aligning runtime edge-case tests with the focused model. |
 | Numeric width semantics | Width-specific numeric modules preserve documented conversion, wrapping, saturating, checked, and Float32 boundary behavior. | [`NumericWidthSemantics.tla`](../../specs/tla/NumericWidthSemantics.tla), numeric module tests, [`docs/language/numerics.md`](../language/numerics.md). | Modeled / tested | Float32 model is symbolic; implementation tests remain necessary for concrete host behavior. |
@@ -144,18 +146,30 @@ Current TLA+ files:
 
 - [`specs/tla/ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla)
   with [`ThreadedSchedulerImpl.cfg`](../../specs/tla/ThreadedSchedulerImpl.cfg)
-  and [`ThreadedSchedulerImplLive.cfg`](../../specs/tla/ThreadedSchedulerImplLive.cfg)
-  - Lower-level worker/scheduler implementation model.
-  - Covers queue behavior, worker ownership, stale queue entries, join waiters,
-    I/O waiters, and shutdown/deadlock structure.
-  - This is still a partial model of the current threaded runtime. It does not
-    model `wait_any`, `AwaitKind::Result`, scope cancellation details,
-    `child_parents`, `pending_cancels`, tombstones, or the publish/recheck
-    TOCTOU mitigation in `threaded.rs`. Recent Rust hardening around stale
-    `wait_any`, join, and I/O waiter registrations should eventually be
-    reflected here.
-  - Liveness runs depend on the checker: not every local `tla` CLI supports
-    the `WF`-based path of `ThreadedSchedulerImplLive.cfg` the same way.
+  - Implementation model of
+    [`threaded.rs`](../../crates/hiko-vm/src/threaded.rs). Each step is one
+    operation on the shared process table, so the checker explores the same
+    races the code has. Two workers and the I/O monitor are actors.
+  - Covers the register/park/recheck wake protocol, `take_waiter`'s in-flight
+    and stale cases, `finish_process` (tombstones, parent-gone reaping,
+    `live`, scope-exit cancellation and reaping, wakeups), `cancel_pid` and
+    `pending_cancels`, the VM cancel flag, raw and result awaits, `wait_any`,
+    and I/O registration, completion and late completions. A process's
+    children are `Process::children` in the code (`kids` in the model); there
+    is no separate `child_parents` map.
+  - Invariants: `NoLostWakeup` (once nothing can run, every process has
+    terminated), `CleanAtQuiescence`, `NoResurrection`, `BoundedTombstones`,
+    `PendingCancelsConsistent`, `RegistrationsConsistent`.
+  - No liveness configuration. `NoLostWakeup` is the safety form of "a
+    waiter is eventually woken": the model is finite, so a waiter that is
+    never woken ends in a state where nothing can run. The liveness form
+    needs weak fairness per actor (otherwise the I/O monitor may be starved
+    while a process yields forever, which the runtime never does), and `tla`
+    cannot evaluate `WF`.
+  - With `MaxProcesses = 2`: 101,703 reachable states, 212,804 transitions,
+    depth 60, no violations (21 minutes with `tla`).
+  - Abstracts bytecode and values; the leftmost-winner rule of `wait_any` is
+    `WaitAnyLeftmost.tla`'s job.
 
 - [`specs/tla/CancelIoRace.tla`](../../specs/tla/CancelIoRace.tla) with
   [`CancelIoRace.cfg`](../../specs/tla/CancelIoRace.cfg) and
@@ -188,12 +202,67 @@ Current TLA+ files:
   - Useful as a sanity check that the focused `wait_any` property can catch the
     wrong implementation shape.
 
+- [`specs/tla/broken/ThreadedSchedulerNoRecheck.cfg`](../../specs/tla/broken/ThreadedSchedulerNoRecheck.cfg)
+  and [`ThreadedSchedulerNoReap.cfg`](../../specs/tla/broken/ThreadedSchedulerNoReap.cfg)
+  - Run `ThreadedSchedulerImpl.tla` with the recheck after parking turned off,
+    or with scope exit not reaping children's tombstones. Both must fail, and
+    do: without the recheck, after 13,333 states a parent stays parked on a
+    child that is gone (`NoLostWakeup`); without reaping, after 4,462 states
+    a child's tombstone outlives its terminated parent
+    (`BoundedTombstones`).
+
 Scenario files:
 
 - [`specs/tla/CancelIoRaceStaleCompletion.scenario`](../../specs/tla/CancelIoRaceStaleCompletion.scenario)
 - [`specs/tla/WaitAnyLeftmostRightNotifier.scenario`](../../specs/tla/WaitAnyLeftmostRightNotifier.scenario)
 
 These are focused traces/examples for specific interleavings.
+
+### Running the checks
+
+- TLA+: `hiko run scripts/check_tla.hml` runs every maintained model and the
+  negative checks, with `ThreadedSchedulerImpl` limited to 10,000 states. The
+  full threaded scheduler check takes about 20 minutes:
+
+  ```sh
+  tla specs/tla/ThreadedSchedulerImpl.tla \
+    --config specs/tla/ThreadedSchedulerImpl.cfg -c MaxProcesses=2 \
+    --allow-deadlock --max-states 20000000 --max-depth 1000
+  ```
+
+- Loom: `RUSTFLAGS="--cfg loom" cargo test -p hiko-vm --release loom` (a few
+  seconds).
+
+There is no CI in this repository yet; run these before merging changes to
+`threaded.rs`, `scheduler.rs` or `sync.rs`.
+
+## Loom
+
+[`crates/hiko-vm/src/threaded_loom.rs`](../../crates/hiko-vm/src/threaded_loom.rs)
+runs the threaded runtime's real lifecycle functions on two or three Loom
+threads, each owning the process it acts on, and checks the process table
+after every interleaving:
+
+- await vs child completion (raw and result await);
+- `wait_any` with two children completing at once;
+- cancel vs completion;
+- cancel vs I/O completion;
+- tombstone removal (the parent is cancelled) vs the awaited child finishing.
+
+The runtime takes its maps, sets, locks and atomics from
+[`sync.rs`](../../crates/hiko-vm/src/sync.rs). Normal builds re-export the
+`std` and `dashmap` types; `--cfg loom` builds use Loom's primitives, with a
+map on one Loom `RwLock` in place of `DashMap`.
+
+The tests catch real bugs. Each of these, reintroduced on purpose, makes a
+test fail with the waiter left blocked: removing the recheck after parking in
+`block_on_child`, removing it in `handle_wait_any`, and marking a child not
+live before its tombstone is written.
+
+Limits: each model runs with a preemption bound of 3; the worker loop, the
+monitor loop and `run_to_completion` (which use OS threads) are not under
+Loom; the `RwLock` map serializes operations that `DashMap` runs in parallel
+on different shards.
 
 ### Quint
 
@@ -205,8 +274,10 @@ Quint files live under [`specs/quint`](../../specs/quint):
 
 Current status:
 
-- `ThreadedSchedulerImpl.qnt` tracks the lower-level scheduler model and is
-  useful for typechecking and model-checking that structure.
+- `ThreadedSchedulerImpl.qnt` is a port of the earlier, slice-atomic
+  scheduler model. It does not follow the step-by-step
+  [`ThreadedSchedulerImpl.tla`](../../specs/tla/ThreadedSchedulerImpl.tla);
+  prefer the TLA+ model.
 - `ProcessLifecycle.qnt` is a lagging port of an older lifecycle model. Prefer
   [`specs/tla/ProcessLifecycle.tla`](../../specs/tla/ProcessLifecycle.tla) for
   current cancellation, `wait_any`, and `await_result` semantics.
@@ -234,8 +305,8 @@ Current coverage is strongest around:
 - process lifecycle semantics,
 - cancellation and async I/O interaction,
 - deterministic `wait_any` selection,
-- threaded scheduler ownership/waiter consistency at a partial implementation
-  level, and
+- the threaded runtime's wake, cancel and tombstone protocol, modeled step by
+  step and checked with Loom on the real code, and
 - numeric width semantic boundaries.
 
 Recent runtime hardening also added Rust tests and test-only invariants for
@@ -249,8 +320,8 @@ Useful next verification work includes:
 - add fuzz targets for bytecode verification and interpreter dispatch,
 - add fuzz targets for lockfile parsing and filesystem capability path handling,
 - refresh `ProcessLifecycle.qnt` to match the current TLA+ lifecycle model,
-- extend `ThreadedSchedulerImpl.tla` with current tombstone, `child_parents`,
-  `pending_cancels`, `AwaitKind::Result`, and stale waiter cleanup behavior,
+- check `ThreadedSchedulerImpl.tla` with 3 processes (needs a faster checker),
+- bring the worker and monitor loops under Loom,
 - model more of the threaded runtime as a refinement of the lifecycle spec,
 - add model scenarios for cancellation racing child completion and parent-exit
   scope cleanup,

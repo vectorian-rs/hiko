@@ -4,7 +4,9 @@
 
 These files are useful, but they are **not** all equally current.
 
-- `ThreadedSchedulerImpl.qnt` is the more trustworthy Quint port right now.
+- `ThreadedSchedulerImpl.qnt` ports the earlier, slice-atomic scheduler model.
+  `specs/tla/ThreadedSchedulerImpl.tla` now models the runtime one table
+  operation at a time and is not ported.
 - `ProcessLifecycle.qnt` is a lagging port of an older lifecycle model.
 - If you need the current formal semantic model, use `specs/tla`, especially
   `ProcessLifecycle.tla`.

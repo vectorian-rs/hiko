@@ -169,6 +169,11 @@ impl VM {
         self.cancelled = true;
     }
 
+    #[cfg(all(test, loom))]
+    pub(crate) fn cancellation_requested(&self) -> bool {
+        self.cancelled
+    }
+
     /// Enable or disable runtime-managed async I/O suspension.
     pub fn set_async_io(&mut self, enabled: bool) {
         self.async_io = enabled;
