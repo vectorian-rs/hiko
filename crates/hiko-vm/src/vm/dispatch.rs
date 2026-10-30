@@ -130,9 +130,13 @@ impl VM {
                 Op::GetGlobal => {
                     let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx)?;
-                    let slot = *self.global_names.get(name).ok_or_else(|| RuntimeError {
-                        message: format!("undefined global: {name}"),
-                    })?;
+                    let slot = match self.global_names.get(name) {
+                        Some(&slot) => slot,
+                        None => {
+                            let name = name.to_string();
+                            self.load_inherited_global(&name)?
+                        }
+                    };
                     let val = self.globals[slot];
                     self.push(val)?;
                 }
@@ -140,8 +144,9 @@ impl VM {
                     let idx = self.read_u16()? as usize;
                     let name = self.read_const_string(proto_idx, idx)?.to_string();
                     let val = self.pop()?;
-                    let slot = self.global_slot(name);
+                    let slot = self.global_slot(name.clone());
                     self.globals[slot] = val;
+                    self.note_global_defined(slot, &name);
                 }
 
                 Op::Pop => {

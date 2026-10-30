@@ -112,6 +112,7 @@ impl VM {
                     }) => {
                         let proto_idx = *proto_idx;
                         let captures = captures.clone();
+                        self.refresh_spawn_snapshot()?;
                         let mut serialized = Vec::new();
                         for &v in captures.iter() {
                             self.heap

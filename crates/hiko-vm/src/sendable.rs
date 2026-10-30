@@ -1,7 +1,9 @@
 //! SendableValue: the process boundary type.
 //!
 //! Only SendableValue may cross process boundaries.
-//! It contains no GcRef, no closures, no continuations.
+//! It contains no GcRef and no continuations. A closure is sent as its
+//! function index and its captures, which is enough because every process
+//! runs the same compiled program.
 
 use std::sync::Arc;
 
@@ -48,6 +50,12 @@ pub enum SendableValue {
         tag: u16,
         fields: Vec<SendableValue>,
     },
+    Closure {
+        proto_idx: usize,
+        captures: Vec<SendableValue>,
+    },
+    /// Index into the builtin table, which is the same in every process.
+    Builtin(u16),
 }
 
 impl SendableValue {
@@ -59,6 +67,7 @@ impl SendableValue {
             | SendableValue::Pid(_)
             | SendableValue::Float(_) => 8,
             SendableValue::Bool(_) => 1,
+            SendableValue::Builtin(_) => 2,
             SendableValue::Char(_) => 4,
             SendableValue::Unit => 0,
             SendableValue::String(text) => text.len(),
@@ -70,14 +79,17 @@ impl SendableValue {
             SendableValue::Tuple(fields) | SendableValue::List(fields) => {
                 fields.iter().map(Self::estimated_bytes).sum()
             }
-            SendableValue::Data { fields, .. } => fields.iter().map(Self::estimated_bytes).sum(),
+            SendableValue::Data { fields, .. }
+            | SendableValue::Closure {
+                captures: fields, ..
+            } => fields.iter().map(Self::estimated_bytes).sum(),
         }
     }
 }
 
 /// Serialize a VM Value into a SendableValue.
 /// Returns Err if the value contains non-sendable types
-/// (closures, continuations, Rng, provider handles).
+/// (continuations, Rng, provider handles).
 pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
     match value {
         Value::Int(n) => Ok(SendableValue::Int(n)),
@@ -87,7 +99,7 @@ pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
         Value::Bool(b) => Ok(SendableValue::Bool(b)),
         Value::Char(c) => Ok(SendableValue::Char(c)),
         Value::Unit => Ok(SendableValue::Unit),
-        Value::Builtin(_) => Err("cannot send builtin functions across processes".into()),
+        Value::Builtin(idx) => Ok(SendableValue::Builtin(idx)),
         Value::Heap(r) => serialize_heap(r, heap),
     }
 }
@@ -120,7 +132,19 @@ fn serialize_heap(r: GcRef, heap: &Heap) -> Result<SendableValue, String> {
                 fields: out,
             })
         }
-        HeapObject::Closure { .. } => Err("cannot send closures across processes".into()),
+        HeapObject::Closure {
+            proto_idx,
+            captures,
+        } => {
+            let mut out = Vec::with_capacity(captures.len());
+            for &v in captures.iter() {
+                out.push(serialize(v, heap)?);
+            }
+            Ok(SendableValue::Closure {
+                proto_idx: *proto_idx,
+                captures: out,
+            })
+        }
         HeapObject::Continuation(_) => Err("cannot send continuations across processes".into()),
         HeapObject::Rng { .. } => Err("cannot send Rng state across processes".into()),
         HeapObject::HostHandle { .. } => {
@@ -163,6 +187,7 @@ pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLim
         SendableValue::Bool(b) => Ok(Value::Bool(b)),
         SendableValue::Char(c) => Ok(Value::Char(c)),
         SendableValue::Unit => Ok(Value::Unit),
+        SendableValue::Builtin(idx) => Ok(Value::Builtin(idx)),
         SendableValue::String(s) => Ok(Value::Heap(heap.alloc(HeapObject::String(s.to_string()))?)),
         SendableValue::Bytes(b) => Ok(Value::Heap(heap.alloc(HeapObject::Bytes(b.to_vec()))?)),
         #[cfg(feature = "builtin-aws-config")]
@@ -212,6 +237,19 @@ pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLim
             Ok(Value::Heap(heap.alloc(HeapObject::Data {
                 tag,
                 fields: values,
+            })?))
+        }
+        SendableValue::Closure {
+            proto_idx,
+            captures,
+        } => {
+            let mut values = Vec::with_capacity(captures.len());
+            for v in captures {
+                values.push(deserialize(v, heap)?);
+            }
+            Ok(Value::Heap(heap.alloc(HeapObject::Closure {
+                proto_idx,
+                captures: values.into(),
             })?))
         }
     }
@@ -468,18 +506,35 @@ mod tests {
     }
 
     #[test]
-    fn test_closure_rejected() {
+    fn test_closure_round_trips_with_captures() {
         let mut heap = Heap::new();
+        let s = Value::Heap(heap.alloc(HeapObject::String("cap".to_string())).unwrap());
         let closure = Value::Heap(
             heap.alloc(HeapObject::Closure {
-                proto_idx: 0,
-                captures: Arc::from(vec![].into_boxed_slice()),
+                proto_idx: 3,
+                captures: Arc::from(vec![Value::Int(7), s].into_boxed_slice()),
             })
             .unwrap(),
         );
-        let result = serialize(closure, &heap);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("closure"));
+        let mut new_heap = Heap::new();
+        let back = deserialize(serialize(closure, &heap).unwrap(), &mut new_heap).unwrap();
+        let Value::Heap(r) = back else {
+            panic!("expected heap closure, got {back:?}");
+        };
+        match new_heap.get(r).unwrap() {
+            HeapObject::Closure {
+                proto_idx,
+                captures,
+            } => {
+                assert_eq!(*proto_idx, 3);
+                assert!(matches!(captures[0], Value::Int(7)));
+                let Value::Heap(sr) = captures[1] else {
+                    panic!("expected string capture");
+                };
+                assert!(matches!(new_heap.get(sr).unwrap(), HeapObject::String(t) if t == "cap"));
+            }
+            _ => panic!("expected Closure"),
+        }
     }
 
     #[test]
@@ -527,11 +582,12 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_rejected() {
+    fn test_builtin() {
         let heap = Heap::new();
-        let result = serialize(Value::Builtin(0), &heap);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("builtin"));
+        assert!(matches!(
+            round_trip(Value::Builtin(5), &heap),
+            Value::Builtin(5)
+        ));
     }
 
     #[test]
@@ -590,12 +646,13 @@ mod tests {
     }
 
     #[test]
-    fn test_tuple_with_closure_rejected() {
+    fn test_closure_capturing_rng_rejected() {
         let mut heap = Heap::new();
+        let rng = Value::Heap(heap.alloc(HeapObject::Rng { state: 0, inc: 1 }).unwrap());
         let closure = Value::Heap(
             heap.alloc(HeapObject::Closure {
                 proto_idx: 0,
-                captures: Arc::from(vec![].into_boxed_slice()),
+                captures: Arc::from(vec![rng].into_boxed_slice()),
             })
             .unwrap(),
         );
@@ -605,6 +662,6 @@ mod tests {
         );
         let result = serialize(t, &heap);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("closure"));
+        assert!(result.unwrap_err().contains("Rng"));
     }
 }

@@ -133,10 +133,8 @@ const SINGLE_THREADED_LEAF_WORK: usize = 80;
 const THREADED_LEAF_WORK: usize = 4;
 
 /// A child body that does not finish before its parent acts on it; see the
-/// module docs. A child process sees only builtins and its captures (every
-/// named function, even a local `fun` or a constructor, is a VM global), so
-/// it cannot loop. It does `work` units of straight-line work instead, then
-/// I/O.
+/// module docs. It does `work` units of straight-line work, then I/O, so its
+/// length does not depend on the scheduler.
 fn leaf(work: usize) -> String {
     let sum = vec!["k"; 100].join(" + ");
     let work: String = (0..work).map(|_| format!("val _ = {sum}\n")).collect();
@@ -521,4 +519,105 @@ fn cancelling_a_process_blocked_on_io_wakes_its_parent_and_cancels_the_io() {
             "run {run}: registered {registered:?}, cancelled {cancelled:?}"
         );
     }
+}
+
+// ── What a child process can see (#113) ─────────────────────────────
+
+/// Run `source` on both runtimes and check the root printed `expected`
+/// (one `println` per line) and finished cleanly.
+fn assert_child_output(source: &str, expected: &[&str]) {
+    let expected: Vec<String> = expected.iter().map(|line| format!("{line}\n")).collect();
+    let program = compile(source);
+    let single = run_single(&program);
+    assert_eq!(single.output, expected, "single-threaded: {single:?}");
+    assert_eq!(single.status, "Done", "single-threaded: {single:?}");
+    for run in 0..20 {
+        let workers = 1 + run % 4;
+        let report = run_threaded(&program, workers, None);
+        assert_eq!(report.output, expected, "threaded run {run}: {report:?}");
+        assert_eq!(report.status, "Done", "threaded run {run}: {report:?}");
+        assert!(
+            report.leftovers.is_empty(),
+            "threaded run {run}: {report:?}"
+        );
+    }
+}
+
+#[test]
+fn child_calls_top_level_functions_and_constructors() {
+    let source = "\
+        datatype shape = Sq of int | Pt\n\
+        fun fact n = if n = 0 then 1 else n * fact (n - 1)\n\
+        fun even n = if n = 0 then true else odd (n - 1)\n\
+        and odd n = if n = 0 then false else even (n - 1)\n\
+        fun twice n = fact n + fact n\n\
+        fun area s = case s of Sq n => n * n | Pt => 0\n\
+        val base = 100\n\
+        val names = [\"a\", \"b\", \"c\"]\n\
+        fun len xs = case xs of [] => 0 | _ :: rest => 1 + len rest\n\
+        val add5 = let val k = 5 in fn x => x + k end\n\
+        val show = int_to_string\n\
+        structure M = struct fun sq x = x * x end\n\
+        fun show_pid p = show (await_process p)\n\
+        val _ = println (show_pid (spawn (fn () => fact 5)))\n\
+        val _ = println (show_pid (spawn (fn () => if even 10 then 1 else 0)))\n\
+        val _ = println (show_pid (spawn (fn () => twice 3)))\n\
+        val _ = println (show_pid (spawn (fn () => area (Sq 4) + area Pt)))\n\
+        val _ = println (show_pid (spawn (fn () => base + len names)))\n\
+        val _ = println (show_pid (spawn (fn () => add5 1)))\n\
+        val _ = println (show_pid (spawn (fn () => M.sq 9)))\n\
+        val _ = println (await_process (spawn (fn () => show 42)))\n";
+    assert_child_output(source, &["120", "1", "12", "16", "103", "6", "81", "42"]);
+}
+
+#[test]
+fn child_receives_closures_in_captures_and_spawns_grandchildren() {
+    let source = "\
+        fun fact n = if n = 0 then 1 else n * fact (n - 1)\n\
+        fun run () =\n\
+          let val k = 10\n\
+              val f = fn x => fact x + k\n\
+              val p = spawn (fn () => await_process (spawn (fn () => f 3)))\n\
+          in await_process p end\n\
+        val _ = println (int_to_string (run ()))\n";
+    assert_child_output(source, &["16"]);
+}
+
+#[test]
+fn child_sees_bindings_defined_before_the_spawn() {
+    // The first spawn happens before `late` is defined; each spawn sees the
+    // globals defined up to that point.
+    let source = "\
+        fun early () = 1\n\
+        val p = spawn (fn () => early ())\n\
+        fun late () = early () + 1\n\
+        val q = spawn (fn () => late ())\n\
+        val _ = println (int_to_string (await_process p + await_process q))\n";
+    assert_child_output(source, &["3"]);
+}
+
+#[test]
+fn child_uses_program_binding_that_rebinds_a_builtin_name() {
+    let source = "\
+        fun int_to_string (n : int) = \"n\"\n\
+        val _ = println (await_process (spawn (fn () => int_to_string 1)))\n";
+    assert_child_output(source, &["n"]);
+}
+
+#[test]
+fn child_reading_an_unsendable_global_fails_with_its_name() {
+    let source = "\
+        import __Builtin.Process\n\
+        val r = rng_seed (string_to_bytes \"seed\")\n\
+        fun use_rng () = let val _ = r in 1 end\n\
+        val _ =\n\
+          case BuiltinProcess.await_result_raw (spawn (fn () => use_rng ())) of\n\
+              BuiltinProcess.Err (BuiltinProcess.RuntimeError msg) => println msg\n\
+            | _ => println \"other\"\n";
+    assert_child_output(
+        source,
+        &[
+            "top-level `r` cannot be used in a child process: cannot send Rng state across processes",
+        ],
+    );
 }

@@ -587,6 +587,8 @@ fn value_kind(value: &SendableValue) -> &'static str {
         SendableValue::Tuple(_) => "tuple",
         SendableValue::List(_) => "list",
         SendableValue::Data { .. } => "data",
+        SendableValue::Closure { .. } => "closure",
+        SendableValue::Builtin(_) => "builtin",
     }
 }
 
