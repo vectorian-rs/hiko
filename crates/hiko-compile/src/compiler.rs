@@ -20,7 +20,9 @@ use hiko_types::ty::Type;
 use serde::Deserialize;
 
 use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
-use crate::op::{HANDLER_CLAUSE_RESUMES, Op};
+use crate::op::{
+    HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
+};
 
 /// Overrides for resolving named imports listed in `hiko.lock.toml`.
 ///
@@ -382,6 +384,13 @@ struct Local {
 struct UpvalueDesc {
     is_local: bool,
     index: u16,
+}
+
+/// A compiled function prototype whose closure has not been emitted yet.
+struct PendingClosure {
+    proto_idx: u16,
+    n_captures: u8,
+    upvalues: Vec<UpvalueDesc>,
 }
 
 struct FuncCtx {
@@ -1091,10 +1100,24 @@ impl Compiler {
             }
             DeclKind::ValRec(sym, expr) => {
                 let name = self.interner.resolve(*sym).to_string();
+                if self.ctx().scope_depth > 0
+                    && let ExprKind::Fn(pat, body) = &expr.kind
+                {
+                    return self.compile_local_rec_group(vec![name.clone()], |c, _| {
+                        c.compile_lambda_proto(Some(name.clone()), pat, body)
+                    });
+                }
                 self.forget_global_proto(&name);
                 self.compile_expr(expr)?;
                 self.bind_name(&name)?;
                 Ok(())
+            }
+            DeclKind::Fun(bindings) if self.ctx().scope_depth > 0 => {
+                let names = bindings
+                    .iter()
+                    .map(|b| self.interner.resolve(b.name).to_string())
+                    .collect();
+                self.compile_local_rec_group(names, |c, i| c.compile_fun_binding(&bindings[i]))
             }
             DeclKind::Fun(bindings) => {
                 // `fun` is recursive: inside the bodies, these names refer to
@@ -1104,7 +1127,8 @@ impl Compiler {
                     self.forget_global_proto(&name);
                 }
                 for binding in bindings {
-                    self.compile_fun_binding(binding)?;
+                    let closure = self.compile_fun_binding(binding)?;
+                    self.emit_make_closure(&closure);
                     let name = self.interner.resolve(binding.name).to_string();
                     self.bind_name(&name)?;
                     self.register_global_proto(&name);
@@ -1661,6 +1685,14 @@ impl Compiler {
                     self.emit_get_field(i)?;
                     self.compile_binding_pattern(p)?;
                 }
+                // At top level the fields went to globals, so the tuple is
+                // back on top of the stack and nothing else will remove it.
+                // In a local scope the fields are locals above it, and the
+                // scope end removes them together.
+                if self.ctx().scope_depth == 0 {
+                    self.ctx_mut().locals.pop();
+                    self.emit(Op::Pop);
+                }
                 Ok(())
             }
             PatKind::Paren(p) | PatKind::Ann(p, _) => self.compile_binding_pattern(p),
@@ -1704,7 +1736,12 @@ impl Compiler {
 
     // ── Functions ────────────────────────────────────────────────────
 
-    fn compile_fun_binding(&mut self, binding: &FunBinding) -> Result<(), CompileError> {
+    /// Compile the function of one `fun` binding. The closure is not created
+    /// yet; the caller emits it.
+    fn compile_fun_binding(
+        &mut self,
+        binding: &FunBinding,
+    ) -> Result<PendingClosure, CompileError> {
         let name = self.interner.resolve(binding.name).to_string();
         if binding.clauses.len() == 1 && binding.clauses[0].pats.iter().all(is_simple_pat) {
             let clause = &binding.clauses[0];
@@ -1714,13 +1751,74 @@ impl Compiler {
         self.compile_clausal_fn_inner(Some(&name), arity, 0, &binding.clauses)
     }
 
+    /// Compile a recursive group of local functions: `fun f ... and g ...`
+    /// or `val rec f = fn ...` inside a `let`, `local` or function body.
+    ///
+    /// The names are bound to local slots before the bodies are compiled, so
+    /// a body that refers to a member captures that slot. The closures do not
+    /// exist when the slots are captured, so the slots are not read at run
+    /// time: those captures become group references of one
+    /// `MakeRecClosures` that creates all members and points them at each
+    /// other. A group whose bodies never refer to a member uses plain
+    /// `MakeClosure`, as before.
+    fn compile_local_rec_group(
+        &mut self,
+        names: Vec<String>,
+        mut compile_member: impl FnMut(&mut Self, usize) -> Result<PendingClosure, CompileError>,
+    ) -> Result<(), CompileError> {
+        let first_slot = self.ctx().locals.len();
+        let n = names.len();
+        for name in names {
+            self.add_local(name);
+        }
+        let group = first_slot..first_slot + n;
+        let mut members = Vec::with_capacity(n);
+        for i in 0..n {
+            members.push(compile_member(self, i)?);
+        }
+
+        let recursive = members.iter().any(|m| {
+            m.upvalues
+                .iter()
+                .any(|uv| uv.is_local && group.contains(&(uv.index as usize)))
+        });
+        if !recursive {
+            for member in &members {
+                self.emit_make_closure(member);
+            }
+            return Ok(());
+        }
+
+        self.emit(Op::MakeRecClosures);
+        self.emit_u8(checked_u8(n, "functions in a recursive group")?);
+        for member in &members {
+            self.emit_u16(member.proto_idx);
+            self.emit_u8(member.n_captures);
+            for uv in &member.upvalues {
+                let index = uv.index as usize;
+                if uv.is_local && group.contains(&index) {
+                    self.emit_u8(REC_CAPTURE_GROUP);
+                    self.emit_u16((index - first_slot) as u16);
+                } else {
+                    self.emit_u8(if uv.is_local {
+                        REC_CAPTURE_LOCAL
+                    } else {
+                        REC_CAPTURE_UPVALUE
+                    });
+                    self.emit_u16(uv.index);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn compile_clausal_fn_inner(
         &mut self,
         name: Option<&str>,
         arity: usize,
         arg_idx: usize,
         clauses: &[FunClause],
-    ) -> Result<(), CompileError> {
+    ) -> Result<PendingClosure, CompileError> {
         let fn_name = if arg_idx == 0 {
             name.map(|s| s.to_string())
         } else {
@@ -1730,7 +1828,8 @@ impl Compiler {
         self.add_local(format!("_arg{arg_idx}"));
 
         if arg_idx + 1 < arity {
-            self.compile_clausal_fn_inner(None, arity, arg_idx + 1, clauses)?;
+            let inner = self.compile_clausal_fn_inner(None, arity, arg_idx + 1, clauses)?;
+            self.emit_make_closure(&inner);
         } else {
             self.begin_scope();
             if arity == 1 {
@@ -1760,7 +1859,7 @@ impl Compiler {
             self.end_scope_keep_result();
         }
         self.emit(Op::Return);
-        self.finish_function()
+        self.finish_function_proto()
     }
 
     fn compile_curried_fn(
@@ -1769,7 +1868,7 @@ impl Compiler {
         pats: &[Pat],
         idx: usize,
         body: &Expr,
-    ) -> Result<(), CompileError> {
+    ) -> Result<PendingClosure, CompileError> {
         let fn_name = if idx == 0 {
             name.map(|s| s.to_string())
         } else {
@@ -1778,16 +1877,28 @@ impl Compiler {
         self.push_new_function(fn_name);
         self.add_local(simple_pat_name(&pats[idx], &self.interner));
         if idx + 1 < pats.len() {
-            self.compile_curried_fn(None, pats, idx + 1, body)?;
+            let inner = self.compile_curried_fn(None, pats, idx + 1, body)?;
+            self.emit_make_closure(&inner);
         } else {
             self.compile_expr_tail(body)?;
         }
         self.emit(Op::Return);
-        self.finish_function()
+        self.finish_function_proto()
     }
 
     fn compile_lambda(&mut self, pat: &Pat, body: &Expr) -> Result<(), CompileError> {
-        self.push_new_function(None);
+        let closure = self.compile_lambda_proto(None, pat, body)?;
+        self.emit_make_closure(&closure);
+        Ok(())
+    }
+
+    fn compile_lambda_proto(
+        &mut self,
+        name: Option<String>,
+        pat: &Pat,
+        body: &Expr,
+    ) -> Result<PendingClosure, CompileError> {
+        self.push_new_function(name);
         if is_simple_pat(pat) {
             self.add_local(simple_pat_name(pat, &self.interner));
             self.compile_expr_tail(body)?;
@@ -1800,10 +1911,19 @@ impl Compiler {
             self.end_scope_keep_result();
         }
         self.emit(Op::Return);
-        self.finish_function()
+        self.finish_function_proto()
     }
 
     fn finish_function(&mut self) -> Result<(), CompileError> {
+        let closure = self.finish_function_proto()?;
+        self.emit_make_closure(&closure);
+        Ok(())
+    }
+
+    /// Pop the current function context and store its prototype. Its
+    /// closure is created in the enclosing function by `emit_make_closure`
+    /// or as part of a `MakeRecClosures` group.
+    fn finish_function_proto(&mut self) -> Result<PendingClosure, CompileError> {
         let func_ctx = self.func_stack.pop().unwrap();
         let n_captures = checked_u8(func_ctx.upvalues.len(), "closure captures")?;
         let proto = FunctionProto {
@@ -1815,14 +1935,21 @@ impl Compiler {
         };
         let proto_idx = checked_u16(self.functions.len(), "functions")?;
         self.functions.push(proto);
+        Ok(PendingClosure {
+            proto_idx,
+            n_captures,
+            upvalues: func_ctx.upvalues,
+        })
+    }
+
+    fn emit_make_closure(&mut self, closure: &PendingClosure) {
         self.emit(Op::MakeClosure);
-        self.emit_u16(proto_idx);
-        self.emit_u8(n_captures);
-        for uv in &func_ctx.upvalues {
+        self.emit_u16(closure.proto_idx);
+        self.emit_u8(closure.n_captures);
+        for uv in &closure.upvalues {
             self.emit_u8(u8::from(uv.is_local));
             self.emit_u16(uv.index);
         }
-        Ok(())
     }
 
     // ── Case / Pattern Matching ──────────────────────────────────────
@@ -2352,8 +2479,7 @@ impl Compiler {
             }
 
             ExprKind::Resume(cont, arg) => {
-                self.compile_expr_inner(cont, false)?;
-                self.compile_expr_inner(arg, false)?;
+                self.compile_operands(&[cont, arg])?;
                 self.emit(Op::Resume);
             }
         }
@@ -2589,6 +2715,34 @@ mod tests {
         let program = parse_program("val xs = 1 :: []\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
         assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
+    }
+
+    /// First instruction of the function named `name`.
+    fn first_op_of(compiled: &CompiledProgram, name: &str) -> Op {
+        let proto = compiled
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no function named {name}"));
+        Op::try_from(proto.chunk.code[0]).expect("valid opcode")
+    }
+
+    #[test]
+    fn local_fun_closure_kind_depends_on_recursion() {
+        let (compiled, _) = Compiler::compile(parse_program(
+            "fun rec_one n = let fun go 0 = 0 | go k = go (k - 1) in go n end\n\
+             fun rec_two n = let fun ev 0 = true | ev k = od (k - 1)\n\
+                                 and od 0 = false | od k = ev (k - 1) in ev n end\n\
+             fun plain n = let fun inc k = k + n in inc 1 end\n\
+             fun later n = let fun a k = k + 1\n\
+                               fun b k = a (a k) in b n end\n",
+        ))
+        .expect("compile");
+        assert_eq!(first_op_of(&compiled, "rec_one"), Op::MakeRecClosures);
+        assert_eq!(first_op_of(&compiled, "rec_two"), Op::MakeRecClosures);
+        // No member refers to its own group: plain closures, as before.
+        assert_eq!(first_op_of(&compiled, "plain"), Op::MakeClosure);
+        assert_eq!(first_op_of(&compiled, "later"), Op::MakeClosure);
     }
 
     /// Long chains and deep nesting must end in a parse error or a compiled

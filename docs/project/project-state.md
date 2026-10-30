@@ -107,7 +107,7 @@ Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 | Other     | `Eq`, `Ne`, `Not`, `ConcatString`                                                                      |
 | Data      | `MakeTuple`, `GetField`, `GetField0-1`, `MakeData`, `GetTag`, `MakeCons`                               |
 | Control   | `Jump`, `JumpIfFalse`, `Panic`, `Halt`                                                                 |
-| Calls     | `MakeClosure`, `Call`, `TailCall`, `CallDirect`, `TailCallDirect`, `Return`                            |
+| Calls     | `MakeClosure`, `MakeRecClosures`, `Call`, `TailCall`, `CallDirect`, `TailCallDirect`, `Return` |
 | Effects   | `InstallHandler`, `Perform`, `Resume`, `RemoveHandler`                                                 |
 
 ### Bytecode observations

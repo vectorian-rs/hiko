@@ -869,6 +869,29 @@ impl Heap {
             .ok_or("dangling GcRef")
     }
 
+    /// Replace the captures of an existing closure. Only `MakeRecClosures`
+    /// uses this, to point the closures of a recursive group at each other
+    /// after all of them exist. The estimated size of a closure does not
+    /// depend on its captures, so heap accounting is unchanged.
+    pub fn set_closure_captures(
+        &mut self,
+        r: GcRef,
+        new_captures: Arc<[Value]>,
+    ) -> Result<(), &'static str> {
+        match self
+            .objects
+            .get_mut(r.0 as usize)
+            .and_then(|slot| slot.as_mut())
+        {
+            Some(HeapObject::Closure { captures, .. }) => {
+                *captures = new_captures;
+                Ok(())
+            }
+            Some(_) => Err("set_closure_captures: not a closure"),
+            None => Err("dangling GcRef"),
+        }
+    }
+
     pub fn should_collect(&self) -> bool {
         self.alloc_since_gc >= self.gc_threshold
     }

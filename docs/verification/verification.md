@@ -70,7 +70,11 @@ The verifier is primarily a structural bytecode verifier. It currently checks:
 - `GetLocal` and `SetLocal` slot operands are within the main chunk's or
   function prototype's declared maximum local slot count, and
 - local `MakeClosure` captures reference an existing local slot while non-local
-  captures reference an existing upvalue in the current function.
+  captures reference an existing upvalue in the current function, and
+- `MakeRecClosures` creates at least one closure; each member has a valid
+  function-prototype index and the prototype's capture count, and each capture
+  is a known source (upvalue, local slot or group member) whose index is within
+  the current function's upvalues, its local slots or the group size.
 
 ### What it does not currently prove
 
