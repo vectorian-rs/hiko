@@ -1,3 +1,4 @@
+pub mod budget;
 pub mod builder;
 pub mod builtins;
 pub mod config;

@@ -1737,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stdlib_fiber_reports_child_fuel_exhaustion() {
+    fn test_child_fuel_exhaustion_exhausts_the_tree() {
         let program = compile_file(&test_program_path("test_fiber_fuel.hml"));
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.new_pid();
@@ -1755,8 +1755,8 @@ mod tests {
             .get(&pid)
             .map(|process| format!("{:?}", process.status))
             .unwrap_or_else(|| "<missing>".into());
-        assert_eq!(status, "Done");
-        assert_eq!(output, vec!["fiber fuel tests passed\n"]);
+        assert_eq!(status, "Failed(FuelExhausted)");
+        assert!(output.is_empty(), "{output:?}");
     }
 
     #[test]
@@ -2457,5 +2457,172 @@ mod tests {
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["done\n"]);
         assert_eq!(runtime.table.processes.len(), 1);
+    }
+
+    /// `count` children each evaluating `child`, awaited with
+    /// `await_process_result` so that a failed child does not fail the root
+    /// by itself. The root prints how many children succeeded.
+    fn spawn_children_program(count: usize, child: &str) -> CompiledProgram {
+        let mut source = String::from("import __Builtin.Process\n");
+        source.push_str(&format!(
+            "fun spawn_all n acc = if n = 0 then acc else spawn_all (n - 1) (spawn (fn () => {child}) :: acc)\n\
+             fun join_all ps ok = case ps of [] => ok | p :: rest => (case BuiltinProcess.await_result_raw p of BuiltinProcess.Ok _ => join_all rest (ok + 1) | BuiltinProcess.Err _ => join_all rest ok)\n\
+             val ok = join_all (spawn_all {count} []) 0\n\
+             val _ = println (int_to_string ok)\n"
+        ));
+        crate::test_support::compile_source_hermetic(&source)
+    }
+
+    fn tree_budget_vm(program: CompiledProgram) -> crate::builder::VMBuilder {
+        crate::builder::VMBuilder::new(program)
+            .with_core()
+            .register_builtin_name("spawn")
+            .register_builtin_name("await_process_result")
+    }
+
+    #[test]
+    fn test_children_share_the_tree_fuel_budget() {
+        const FUEL: u64 = 200_000;
+        let program = spawn_children_program(100, "let fun spin () = spin () in spin () end");
+        let vm = tree_budget_vm(program).max_fuel(FUEL).build();
+        let budget = vm.fuel_budget().unwrap().clone();
+        let runtime = ThreadedRuntime::new(4);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.failure(pid), Some(ProcessFailure::FuelExhausted));
+        assert_eq!(budget.used(), FUEL, "the tree spent exactly its budget");
+        assert_eq!(runtime.table.processes.len(), 1);
+    }
+
+    #[test]
+    fn test_children_share_the_tree_io_budget() {
+        const IO_BYTES: u64 = 1_000;
+        let program = spawn_children_program(
+            100,
+            "let fun spam () = let val _ = print \"0123456789\" in spam () end in spam () end",
+        );
+        let vm = tree_budget_vm(program).max_io_bytes(IO_BYTES).build();
+        let budget = vm.heap().io_budget().unwrap().clone();
+        let runtime = ThreadedRuntime::new(4);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+
+        // 100 ten-byte prints fill the budget exactly; every child then
+        // fails, and so does the root's final println.
+        assert_eq!(budget.used(), IO_BYTES);
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("io limit exceeded"), "{failure}");
+        assert!(runtime.table.get_output(pid).is_empty());
+    }
+
+    #[test]
+    fn test_children_share_the_tree_host_work_budget() {
+        const HOST_WORK: u64 = 5_000;
+        let program = spawn_children_program(
+            100,
+            "let fun measure n = measure (n + string_length \"abc\") in measure 0 end",
+        );
+        let vm = tree_budget_vm(program).max_host_work(HOST_WORK).build();
+        let budget = vm.heap().host_work_budget().unwrap().clone();
+        let runtime = ThreadedRuntime::new(4);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+
+        // Children charge host work until the budget cannot cover the next
+        // call, then fail. Receiving a failed join result costs no host
+        // work, so the root finishes and reports that no child succeeded.
+        let used = budget.used();
+        assert!(used <= HOST_WORK && used > HOST_WORK - 100, "used {used}");
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+        assert_eq!(runtime.table.get_output(pid), vec!["0\n"]);
+    }
+
+    #[test]
+    fn test_unused_child_budget_stays_with_the_tree() {
+        // The child uses a little fuel and returns; the parent can then spend
+        // everything the child did not use.
+        const FUEL: u64 = 100_000;
+        let program = compile(
+            "fun count n = if n = 0 then 0 else count (n - 1)\n\
+             val c = spawn (fn () => count 100)\n\
+             val _ = await_process_result c\n\
+             fun spin () = spin ()\n\
+             val _ = spin ()\n",
+        );
+        let vm = tree_budget_vm(program).max_fuel(FUEL).build();
+        let budget = vm.fuel_budget().unwrap().clone();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+
+        assert_eq!(runtime.failure(pid), Some(ProcessFailure::FuelExhausted));
+        assert_eq!(budget.used(), FUEL, "nothing is lost or counted twice");
+    }
+
+    #[test]
+    fn test_spawn_capturing_exponential_dag_fails_fast() {
+        // `grow 30` is 31 heap objects that expand into 2^31 nodes when
+        // copied. (The plan's `val x1 = (x0, x0) ... val x30` version gives a
+        // tuple type with 2^30 leaves, which the type checker cannot handle.)
+        let program = compile(
+            "datatype t = Leaf | Node of t * t\n\
+             fun grow n acc = if n = 0 then acc else grow (n - 1) (Node (acc, acc))\n\
+             val c = let val x30 = grow 30 Leaf in spawn (fn () => case x30 of Leaf => 0 | Node _ => 1) end\n\
+             val _ = await_process_result c\n",
+        );
+        let vm = tree_budget_vm(program).build();
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root_vm(vm);
+        let started = std::time::Instant::now();
+        runtime.run_to_completion().unwrap();
+        let elapsed = started.elapsed();
+
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("max_message_bytes"), "{failure}");
+        eprintln!("x30 capture failed after {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_spawn_limits_are_enforced() {
+        // Ten children that never finish: the fourth spawn exceeds
+        // max_live_processes = 3 and fails the root.
+        let program = compile(
+            "fun spawn_all n = if n = 0 then () else let val _ = spawn (fn () => let fun spin () = spin () in spin () end) in spawn_all (n - 1) end\n\
+             val _ = spawn_all 10\n",
+        );
+        let vm = tree_budget_vm(program).max_live_processes(3).build();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("max_live_processes (3)"), "{failure}");
+        assert_eq!(runtime.table.processes.len(), 1, "children are cancelled");
+
+        // Children that finish free their slot, but max_spawns counts every
+        // spawn.
+        let program = compile(
+            "fun spawn_all n = if n = 0 then () else let val c = spawn (fn () => 0) val _ = await_process_result c in spawn_all (n - 1) end\n\
+             val _ = spawn_all 10\n\
+             val _ = println \"done\"\n",
+        );
+        let vm = tree_budget_vm(program.clone())
+            .max_live_processes(1)
+            .build();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+
+        let vm = tree_budget_vm(program).max_spawns(5).build();
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root_vm(vm);
+        runtime.run_to_completion().unwrap();
+        let failure = format!("{:?}", runtime.failure(pid));
+        assert!(failure.contains("max_spawns (5)"), "{failure}");
     }
 }

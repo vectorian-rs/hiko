@@ -45,12 +45,14 @@ latency control.
 A slice does the following:
 
 1. validates startup state;
-2. caps the requested reduction budget by remaining persistent `max_work`;
-3. observes any previously requested cancellation;
+2. observes any previously requested cancellation;
+3. reserves the requested reductions from the process tree's `max_work`
+   budget, or whatever is left of it (see
+   [Budgets across process boundaries](#budgets-across-process-boundaries));
 4. ensures the root frame exists;
 5. dispatches bytecode until completion, failure, fuel exhaustion, or a runtime
    request;
-6. updates remaining persistent fuel/work;
+6. returns the reductions it did not use to the tree's budget;
 7. returns a `RunResult` for the runtime to map back into process state.
 
 A reduction is currently one VM opcode dispatch. Host work inside one opcode or
@@ -85,7 +87,7 @@ The following operations do not yield in the middle of their Rust implementation
 | Native sync builtins | `max_host_work`, `max_io_bytes`, `max_memory_bytes` where applicable | JSON, regex, random, string, bytes, hash, HTTP/file, and process-boundary paths have first-pass accounting. |
 | Synchronous HTTP/file/exec reads | per-operation byte limits and `max_io_bytes`; HTTP and exec timeouts | Bounded readers stop one byte past the limit, so an oversized result is never buffered in full. See [Per-operation I/O limits](#per-operation-io-limits). |
 | Async I/O worker execution | request carries the per-operation byte limit and HTTP timeouts; completion is charged on delivery | The process is suspended while the worker runs. The worker itself is not preempted by VM reductions. |
-| Process-boundary serialization/deserialization | `max_host_work`, heap/memory limits | Used for spawn captures and child results. |
+| Process-boundary serialization/deserialization | `max_message_bytes`, `max_host_work`, heap/memory limits | Used for spawn captures and child results. Iterative, with a depth limit; see [Budgets across process boundaries](#budgets-across-process-boundaries). |
 | GC collection | heap/memory thresholds and limits | Mark/sweep is local to one VM and runs to completion. |
 | Output formatting/display | `max_io_bytes` for stdout bytes; heap/memory for generated strings | Large display work is not preempted mid-format. |
 
@@ -153,8 +155,64 @@ cooperative collection point, not a preemptive collector.
 | `exec_timeout_ms` | wall-clock duration of one `exec` call | Processes that detach from the child's process group |
 | `max_memory_bytes` | accounted heap bytes | Native resources held behind host handles |
 | `max_host_resources` / `limits.host_resources` | total and per-kind live opaque native host handles | Size of the native object behind each handle |
-| `max_heap` | live heap object count | Object byte size |
+| `max_heap` | live heap object count of one process | Object byte size |
+| `max_live_processes`, `max_spawns` | spawned processes alive at once, and spawned in total, per process tree | Work each process does (that is `max_work` and the other tree budgets) |
+| `max_message_bytes` | size of one serialized spawn capture or child result | How often values are sent |
 | Stack/frame constants | value stack and call-frame depth | Heap or host resource size |
+
+## Budgets across process boundaries
+
+A root process and every process it spawns, directly or indirectly, form a
+process tree. Fuel (`max_work`), `max_memory_bytes`, `max_io_bytes` and
+`max_host_work` are budgets for the whole tree: each is one shared counter
+that every process in the tree charges, so spawning children cannot
+multiply a script's budget.
+
+- **Fuel.** Each scheduling slice reserves its reductions from the tree's
+  budget before it runs and returns what it did not use afterwards, so
+  processes running at the same time on different threads can never spend
+  more than the budget between them. Near the end of the budget, a process
+  can find the budget empty while another process still holds an unused
+  reservation for its current slice.
+- **I/O bytes and host work** are charged to the tree as they are used.
+- **Memory** is the sum of the live heaps in the tree. A heap returns bytes to
+  the tree's budget when garbage collection frees them and when its process
+  ends. Each process collects only its own heap, so a process can fail with a
+  memory error because of data that another live process in the tree holds.
+- `max_heap` (an object count) and the per-operation limits stay per process;
+  children inherit the parent's values.
+
+One consequence: a child that runs out of fuel has used up the tree's fuel,
+so its parent cannot recover and fails too when it next runs. A child that
+fails for other reasons, or finishes, leaves the rest of the budget to the
+tree.
+
+Spawning is bounded by two more limits, counted per tree without the root:
+
+| Key | Default | Bounds |
+| --- | --- | --- |
+| `max_live_processes` | 10,000 | spawned processes alive at once; a process frees its slot when it ends |
+| `max_spawns` | unlimited | processes spawned over the tree's lifetime |
+
+A spawn over either limit fails the spawning process.
+
+Values that cross a process boundary (spawn captures and child results) are
+copied by `sendable.rs` with explicit work stacks rather than recursion, so
+a deeply nested value cannot overflow the Rust stack:
+
+- A value nested deeper than 100,000 levels is rejected. A list counts as one
+  level, however long it is.
+- `max_message_bytes` (default 64 MiB) bounds the size of one copied value:
+  the in-memory size of every node plus the bytes of strings and byte
+  arrays. The size is computed before anything is copied, with one memo
+  entry per distinct heap object, so a small value with heavy sharing (such as
+  `x30` in `val x1 = (x0, x0) ... val x30 = (x29, x29)`, 31 objects that
+  expand into 2^31 nodes) fails in time proportional to its objects.
+- Strings and byte arrays are shared through `Arc` while in transit, not
+  copied.
+
+Exceeding a limit is an error at the spawn or at the child's return, not a
+crash.
 
 ## Per-operation I/O limits
 

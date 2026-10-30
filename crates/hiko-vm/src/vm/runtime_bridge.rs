@@ -208,6 +208,7 @@ impl VM {
         child.exec_allowed_paths = self.exec_allowed_paths.clone();
         child.exec_allowed_resolution_errors = self.exec_allowed_resolution_errors.clone();
         child.set_io_limits(self.heap.io_limits());
+        child.set_max_message_bytes(self.heap.max_message_bytes());
         child.set_fs_root(self.heap.fs_root().to_string());
         child.set_fs_builtin_folders(self.heap.fs_builtin_folders().clone());
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
@@ -224,17 +225,11 @@ impl VM {
         if let Some(max_heap) = self.heap.max_objects() {
             child.set_max_heap(max_heap);
         }
-        if let Some(max_memory_bytes) = self.heap.max_bytes() {
-            child.set_max_memory_bytes(max_memory_bytes);
-        }
-        if let Some(max_io_bytes) = self.heap.max_io_bytes() {
-            child.set_max_io_bytes(max_io_bytes);
-        }
-        // Like fuel, host work is a budget for the whole spawn tree, so the
-        // child starts from what the parent has left.
-        if let Some(max_host_work) = self.heap.max_host_work() {
-            child.set_max_host_work(max_host_work.saturating_sub(self.heap.host_work_used()));
-        }
+        // Memory, I/O, host work, fuel and the spawn limits are budgets for
+        // the whole process tree: the child draws from the parent's counters.
+        child.heap.share_tree_budgets(&self.heap);
+        child.fuel_budget = self.fuel_budget.clone();
+        child.process_budgets = self.process_budgets.clone();
         if let Some(max_host_resources) = self.heap.max_host_resources() {
             child.set_max_host_resources(max_host_resources);
         }
@@ -245,15 +240,21 @@ impl VM {
         if let Some(sink) = &self.output_sink {
             child.set_output_sink(sink.clone());
         }
-        // Inherit only the persistent fuel budget. The active `fuel` field is
-        // a slice-local dispatch counter installed by `run_slice`; copying it
-        // here would make child execution depend on the parent's current
-        // scheduler quantum rather than the configured remaining budget.
-        if let Some(remaining) = self.max_fuel_remaining {
-            child.max_fuel_remaining = Some(remaining);
-        }
+        // The active `fuel` field is a slice-local dispatch counter installed
+        // by `run_slice`, so the child does not copy it.
         child.set_async_io(self.async_io);
         child
+    }
+
+    /// Count a spawn against the tree's process limits. The returned slot
+    /// belongs to the child VM; see [`VM::set_live_process_slot`].
+    pub fn admit_child(&self) -> Result<Option<crate::budget::BudgetSlot>, String> {
+        self.process_budgets.admit_child()
+    }
+
+    /// Hold a live-process slot until this VM is dropped.
+    pub fn set_live_process_slot(&mut self, slot: Option<crate::budget::BudgetSlot>) {
+        self.live_process_slot = slot;
     }
 
     /// Get the compiled program for child-process creation.
@@ -304,20 +305,20 @@ impl VM {
                 "program verification failed: {message}"
             )));
         }
-        if let Some(ref remaining) = self.max_fuel_remaining
-            && *remaining == 0
-        {
-            return RunResult::Failed(ProcessFailure::FuelExhausted);
-        }
-        let effective = match self.max_fuel_remaining {
-            Some(remaining) => remaining.min(reductions),
-            None => reductions,
-        };
-        self.fuel = Some(effective);
-
         if self.cancelled {
             return RunResult::Cancelled;
         }
+        // Reserve this slice's fuel from the tree's budget up front and
+        // return what the slice did not use, so concurrent processes in one
+        // tree can never spend more than the budget between them.
+        let effective = match &self.fuel_budget {
+            Some(budget) => match budget.reserve_up_to(reductions) {
+                0 => return RunResult::Failed(ProcessFailure::FuelExhausted),
+                reserved => reserved,
+            },
+            None => reductions,
+        };
+        self.fuel = Some(effective);
 
         if self.frames.is_empty() {
             self.frames.push(CallFrame {
@@ -330,9 +331,8 @@ impl VM {
 
         let result = self.dispatch();
 
-        if let Some(ref mut remaining) = self.max_fuel_remaining {
-            let consumed = effective.saturating_sub(self.fuel.unwrap_or(0));
-            *remaining = remaining.saturating_sub(consumed);
+        if let Some(budget) = &self.fuel_budget {
+            budget.refund(self.fuel.unwrap_or(0));
         }
         self.fuel = None;
 

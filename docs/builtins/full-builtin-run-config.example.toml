@@ -21,6 +21,11 @@ max_io_bytes = 67108864
 max_host_work = 10_000_000
 max_host_resources = 32
 max_heap = 1_000_000
+# Fuel (max_work), memory, I/O bytes and host work are budgets for the whole
+# process tree: spawned processes draw from the same counters as the root.
+max_live_processes = 10_000             # spawned processes alive at once
+max_spawns = 1_000_000                  # processes spawned in total (default: unlimited)
+max_message_bytes = 67_108_864          # largest serialized spawn capture or child result
 
 # Per-operation I/O limits. Each bounds one builtin call; values shown are the
 # defaults used when a key is omitted. Byte limits also stay within the

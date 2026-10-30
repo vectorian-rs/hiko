@@ -1,3 +1,7 @@
+(* Fuel is one budget for the whole process tree. A child that runs out of
+ * fuel has used up the parent's fuel too, so the parent fails with a fuel
+ * error when it resumes and never reaches the println below. Run with a
+ * fuel limit that the child exceeds (the threaded runtime test uses 2,500). *)
 use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
 
 val child = Fiber.spawn (fn () => let
@@ -1505,12 +1509,6 @@ in
   x1500
 end)
 
-val fuel_status =
-  case Fiber.join child of
-      Ok _ => 0
-    | Err err => if string_contains (Fiber.render_error err, "fuel exhausted") then 1 else 0
-    | _ => 0
+val _ = Fiber.join child
 
-val _ = assert_eq (fuel_status, 1, "fuel exhausted")
-
-val _ = println "fiber fuel tests passed"
+val _ = println "unreachable: the tree has no fuel left"
