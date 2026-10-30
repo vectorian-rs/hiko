@@ -2461,8 +2461,7 @@ mod tests {
 
     /// `count` children each evaluating `child`, awaited with
     /// `await_process_result` so that a failed child does not fail the root
-    /// by itself. The root prints how many children succeeded. `child` must
-    /// not call top-level functions (#113).
+    /// by itself. The root prints how many children succeeded.
     fn spawn_children_program(count: usize, child: &str) -> CompiledProgram {
         let mut source = String::from("import __Builtin.Process\n");
         source.push_str(&format!(
