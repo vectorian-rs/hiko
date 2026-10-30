@@ -285,6 +285,32 @@ Module fetching (`import` of remote modules and `hiko lock verify`) does not
 follow redirects, and accepts plain `http://` only for loopback hosts
 (`localhost`, `127.0.0.0/8`, `::1`). Other hosts must use `https://`.
 
+## Type checking
+
+Type inference counts every type node it visits (substituting, instantiating,
+running the occurs check) against `max_type_work`, 10,000,000 per compilation
+by default (`hiko_types::infer::DEFAULT_MAX_TYPE_WORK`). Going over the limit
+fails the compilation with "type checking exceeded its work limit".
+
+The limit exists because types can grow exponentially in the size of the
+source. Each line here doubles the type:
+
+```sml
+val x0 = 0
+val x1 = (x0, x0)
+val x2 = (x1, x1)
+(* ... *)
+```
+
+and polymorphic functions that apply each other twice do the same. Without
+the limit, 30 such lines stall the compiler for many minutes. With it, the
+worst inputs found fail in under 1.5 s (release build). Ordinary programs use
+far less: the largest program in this repository uses about 30,000, and a
+generated 15,000-line program about 1,000,000.
+
+The limit is not a `hiko.toml` key. Code that drives `InferCtx` directly can
+change it with `InferCtx::set_max_type_work`.
+
 ## Embedder guidance
 
 For latency-sensitive use:
