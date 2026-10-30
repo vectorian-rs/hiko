@@ -56,8 +56,12 @@
 \*   or in the short windows where a terminating parent or child is about to
 \*   reap it.
 \* - PendingCancelsConsistent, RegistrationsConsistent.
-\* - Liveness (ThreadedSchedulerImplLive.cfg): a process blocked on a child
-\*   that has terminated is eventually woken.
+\*
+\* NoLostWakeup is the safety form of "a waiter is eventually woken": the model
+\* is finite, so a waiter that is never woken ends in a state where nothing
+\* can run. The liveness form needs weak fairness per actor (the I/O monitor
+\* must not be starved while a process yields forever), which tla-checker
+\* cannot evaluate.
 \*
 \* The broken configurations under specs/tla/broken/ turn off the recheck
 \* after parking (RecheckAfterPark) or the scope-exit reaping of tombstones
@@ -683,18 +687,6 @@ MonitorDeliver(ok) ==
 
 \* ---------------------------------------------------------------------------
 
-\* Steps that continue work an actor has started. Used for fairness; Next
-\* lists them again, written out (see the note on Next).
-Busy(a) ==
-    \/ Park(a) \/ Park2(a)
-    \/ TryCancel(a) \/ CancelPid(a) \/ CancelPid2(a) \/ CancelPid3(a)
-    \/ Drain(a)
-    \/ Finish1(a) \/ Finish2(a) \/ Finish3(a) \/ Finish4(a) \/ Finish5(a)
-    \/ Finish5b(a) \/ Finish6(a) \/ Finish7(a)
-    \/ WakeAny0(a) \/ WakeAny1(a) \/ WakeAny2(a) \/ WakeAny3(a)
-    \/ WakeJoin0(a) \/ WakeJoin1(a) \/ WakeJoin2(a) \/ WakeJoin3(a)
-    \/ AwaitRecheck(a) \/ AnyRecheck(a) \/ IoRegister(a) \/ CancelResume(a)
-
 \* Every action is its own disjunct of Next. With tla-checker, grouping actions
 \* in an operator made exploration far slower or stall, and a CASE dispatch on
 \* pc produced successor states the actions do not allow.
@@ -807,27 +799,5 @@ SafetyInvariant ==
     /\ BoundedTombstones
     /\ PendingCancelsConsistent
     /\ RegistrationsConsistent
-
-\* ---------------------------------------------------------------------------
-\* Liveness
-
-Fairness ==
-    /\ \A a \in Actors : WF_vars(Busy(a))
-    /\ WF_vars(MonitorTake)
-    /\ WF_vars(\E ok \in BOOLEAN : MonitorDeliver(ok))
-
-LiveSpec == Spec /\ Fairness
-
-BlockedOnTerminated(p, c) ==
-    /\ loc[p] = "table"
-    /\ st[p] = "await"
-    /\ target[p] = c
-    /\ c \notin live
-    /\ p \in live
-
-\* A process parked in await on a child that has terminated is woken.
-ParentEventuallyWoken ==
-    \A p \in Pids : \A c \in Pids :
-        BlockedOnTerminated(p, c) ~> ~BlockedOnTerminated(p, c)
 
 ====
