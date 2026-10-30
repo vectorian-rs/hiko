@@ -437,8 +437,17 @@ impl VM {
         self.heap.set_host_resource_limits(limits);
     }
 
+    /// The latest top-level binding of `name`. The compiler stores a binding
+    /// that shadows an earlier one, or a builtin, as `name$1`, `name$2`, ...
     pub fn get_global(&self, name: &str) -> Option<&Value> {
-        self.global_names.get(name).map(|&slot| &self.globals[slot])
+        let mut slot = self.global_names.get(name);
+        for n in 1.. {
+            match self.global_names.get(&format!("{name}${n}")) {
+                Some(found) => slot = Some(found),
+                None => break,
+            }
+        }
+        slot.map(|&slot| &self.globals[slot])
     }
 
     pub fn get_output(&self) -> &[String] {
@@ -826,6 +835,46 @@ mod tests {
              fun f x = if x = 0 then 0 else f (x - 1)
              val result = f 5");
         assert_eq!(global_int(&vm, "result"), 0);
+    }
+
+    #[test]
+    fn test_shadowed_global_keeps_binding_for_earlier_code() {
+        let vm = run("val x = 1
+             fun f () = x
+             val x = 2
+             val result = f () * 10 + x");
+        assert_eq!(global_int(&vm, "result"), 12);
+        assert_eq!(global_int(&vm, "x"), 2);
+    }
+
+    #[test]
+    fn test_shadowing_global_with_another_type_is_sound() {
+        // Before #116 `f` read the string at run time: "expected Int".
+        let vm = run("val x = 1
+             fun f () = x + 1
+             val x = \"text\"
+             val result = f ()");
+        assert_eq!(global_int(&vm, "result"), 2);
+    }
+
+    #[test]
+    fn test_val_rhs_and_rec_body_see_the_right_binding() {
+        let vm = run("val n = 5
+             val n = n + 1
+             val rec down = fn k => if k = 0 then n else down (k - 1)
+             val down = fn k => down k * 2
+             val result = down 3");
+        assert_eq!(global_int(&vm, "result"), 12);
+    }
+
+    #[test]
+    fn test_rebinding_a_builtin_name_does_not_change_earlier_calls() {
+        let vm = run("fun f n = int_to_string n
+             fun int_to_string (n : int) = \"shadowed\"
+             val a = f 7
+             val b = int_to_string 7
+             val result = if a = \"7\" andalso b = \"shadowed\" then 1 else 0");
+        assert_eq!(global_int(&vm, "result"), 1);
     }
 
     #[test]

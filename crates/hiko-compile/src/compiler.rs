@@ -674,6 +674,11 @@ pub struct Compiler {
     /// Global name -> proto_idx of the capture-free function it is currently
     /// bound to, for `CallDirect`. Every global rebinding clears the entry.
     global_protos: HashMap<String, u16>,
+    /// Source name -> VM global name of the top-level binding in scope. A
+    /// binding that shadows an earlier one, or a builtin, gets a fresh name
+    /// (`x$1`, `x$2`, ...), so code compiled earlier keeps its binding.
+    /// `$` cannot appear in a source identifier.
+    global_bindings: HashMap<String, String>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
     /// String interner for resolving symbols from the AST.
@@ -750,6 +755,7 @@ impl Compiler {
             module_cache_dir: None,
             loader_options,
             global_protos: HashMap::new(),
+            global_bindings: HashMap::new(),
             infer_ctx: InferCtx::new(),
             interner,
         };
@@ -960,17 +966,51 @@ impl Compiler {
             self.emit(Op::GetUpvalue);
             self.emit_u16(idx);
         } else {
-            let c = self.add_string_constant(name)?;
+            let global = self.global_name(name).to_string();
+            let c = self.add_string_constant(&global)?;
             self.emit(Op::GetGlobal);
             self.emit_u16(c);
         }
         Ok(())
     }
 
+    /// VM global name for the top-level binding of `name` in scope; a name
+    /// with no top-level binding is a builtin.
+    fn global_name<'a>(&'a self, name: &'a str) -> &'a str {
+        self.global_bindings.get(name).map_or(name, String::as_str)
+    }
+
+    /// Start a new top-level binding of `name`: later references resolve to
+    /// it, earlier code keeps the binding it was compiled against.
+    fn declare_global(&mut self, name: &str) {
+        let taken = self.global_bindings.contains_key(name)
+            || hiko_builtin_meta::builtin_meta(name).is_some();
+        let global = if taken {
+            let mut n = 1;
+            loop {
+                let candidate = format!("{name}${n}");
+                if !self.global_bindings.values().any(|g| *g == candidate) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        } else {
+            name.to_string()
+        };
+        self.global_bindings.insert(name.to_string(), global);
+    }
+
     fn emit_set_global(&mut self, name: &str) -> Result<(), CompileError> {
+        self.declare_global(name);
+        self.emit_set_declared_global(name)
+    }
+
+    /// Store into the binding of `name` that `declare_global` started.
+    fn emit_set_declared_global(&mut self, name: &str) -> Result<(), CompileError> {
         // The global may no longer hold the function recorded for direct calls.
         self.global_protos.remove(name);
-        let c = self.add_string_constant(name)?;
+        let global = self.global_name(name).to_string();
+        let c = self.add_string_constant(&global)?;
         self.emit(Op::SetGlobal);
         self.emit_u16(c);
         Ok(())
@@ -1108,9 +1148,14 @@ impl Compiler {
                     });
                 }
                 self.forget_global_proto(&name);
+                if self.ctx().scope_depth > 0 {
+                    self.compile_expr(expr)?;
+                    return self.bind_name(&name);
+                }
+                // Recursive: the body refers to the new binding.
+                self.declare_global(&name);
                 self.compile_expr(expr)?;
-                self.bind_name(&name)?;
-                Ok(())
+                self.emit_set_declared_global(&name)
             }
             DeclKind::Fun(bindings) if self.ctx().scope_depth > 0 => {
                 let names = bindings
@@ -1125,12 +1170,13 @@ impl Compiler {
                 for binding in bindings {
                     let name = self.interner.resolve(binding.name).to_string();
                     self.forget_global_proto(&name);
+                    self.declare_global(&name);
                 }
                 for binding in bindings {
                     let closure = self.compile_fun_binding(binding)?;
                     self.emit_make_closure(&closure);
                     let name = self.interner.resolve(binding.name).to_string();
-                    self.bind_name(&name)?;
+                    self.emit_set_declared_global(&name)?;
                     self.register_global_proto(&name);
                 }
                 Ok(())
