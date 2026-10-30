@@ -113,8 +113,16 @@ impl VM {
         let sendable = entry.as_ref().as_ref().map_err(|reason| RuntimeError {
             message: format!("top-level `{name}` cannot be used in a child process: {reason}"),
         })?;
-        // The bytes a child loads here come from the parent's heap; resource
-        // budgets for process boundaries (#101) should count them.
+        // Loading counts like any other value crossing a process boundary:
+        // host work here, and the allocations against the tree's memory.
+        self.heap
+            .charge_host_work(
+                crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK
+                    .saturating_add(crate::sendable::host_work_for_sendable(sendable)),
+            )
+            .map_err(|e| RuntimeError {
+                message: format!("{name}: {e}"),
+            })?;
         let value = deserialize(sendable.clone(), &mut self.heap).map_err(|e| RuntimeError {
             message: e.to_string(),
         })?;
