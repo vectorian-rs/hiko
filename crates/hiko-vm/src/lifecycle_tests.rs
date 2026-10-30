@@ -597,6 +597,17 @@ fn child_sees_bindings_defined_before_the_spawn() {
 }
 
 #[test]
+fn child_sees_the_binding_in_scope_where_it_was_spawned() {
+    let source = "\
+        val x = 1\n\
+        fun f () = x\n\
+        val x = \"two\"\n\
+        val p = spawn (fn () => f () + 1)\n\
+        val _ = println (x ^ \" \" ^ int_to_string (await_process p))\n";
+    assert_child_output(source, &["two 2"]);
+}
+
+#[test]
 fn child_uses_program_binding_that_rebinds_a_builtin_name() {
     let source = "\
         fun int_to_string (n : int) = \"n\"\n\
