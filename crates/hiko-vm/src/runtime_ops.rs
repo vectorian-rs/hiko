@@ -83,7 +83,9 @@ pub fn create_child_vm_from_parent(
     proto_idx: usize,
     captures: Vec<SendableValue>,
 ) -> Result<VM, ProcessFailure> {
+    let live_process_slot = parent_vm.admit_child().map_err(ProcessFailure::runtime)?;
     let mut child_vm = parent_vm.create_child();
+    child_vm.set_live_process_slot(live_process_slot);
     let child_captures: Vec<Value> = captures
         .into_iter()
         .map(|v| deserialize_with_heap_limit(v, &mut child_vm.heap))

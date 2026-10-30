@@ -79,6 +79,8 @@ pub struct VMBuilder {
     max_host_resources: Option<usize>,
     host_resource_limits: HashMap<String, usize>,
     max_work: Option<u64>,
+    max_live_processes: Option<u64>,
+    max_spawns: Option<u64>,
 }
 
 fn find_builtin(name: &str) -> Option<BuiltinFn> {
@@ -112,6 +114,8 @@ impl VMBuilder {
             max_host_resources: None,
             host_resource_limits: HashMap::new(),
             max_work: None,
+            max_live_processes: None,
+            max_spawns: None,
         }
     }
 
@@ -382,6 +386,21 @@ impl VMBuilder {
         self
     }
 
+    /// Set the maximum number of spawned processes alive at once in the
+    /// process tree. The root is not counted. Defaults to
+    /// [`crate::budget::DEFAULT_MAX_LIVE_PROCESSES`].
+    pub fn max_live_processes(mut self, count: u64) -> Self {
+        self.max_live_processes = Some(count);
+        self
+    }
+
+    /// Set the maximum number of processes the process tree may spawn in
+    /// total. Unlimited by default.
+    pub fn max_spawns(mut self, count: u64) -> Self {
+        self.max_spawns = Some(count);
+        self
+    }
+
     /// Set maximum total host resources.
     pub fn max_host_resources(mut self, count: usize) -> Self {
         self.max_host_resources = Some(count);
@@ -438,6 +457,12 @@ impl VMBuilder {
         }
         if let Some(work) = self.max_work {
             vm.set_max_work(work);
+        }
+        if let Some(count) = self.max_live_processes {
+            vm.set_max_live_processes(count);
+        }
+        if let Some(count) = self.max_spawns {
+            vm.set_max_spawns(count);
         }
 
         vm

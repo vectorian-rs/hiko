@@ -40,6 +40,11 @@ pub struct Limits {
     pub max_io_bytes: Option<u64>,
     pub max_host_work: Option<u64>,
     pub max_host_resources: Option<usize>,
+    /// Spawned processes alive at once in the process tree (root not
+    /// counted). Defaults to `crate::budget::DEFAULT_MAX_LIVE_PROCESSES`.
+    pub max_live_processes: Option<u64>,
+    /// Processes the process tree may spawn in total. Unlimited when unset.
+    pub max_spawns: Option<u64>,
     #[serde(default)]
     pub host_resources: HashMap<String, usize>,
     /// Per-operation I/O limits. Unset keys use the defaults in
@@ -1178,6 +1183,12 @@ impl RunConfig {
         if let Some(max_host_resources) = self.limits.max_host_resources {
             builder = builder.max_host_resources(max_host_resources);
         }
+        if let Some(count) = self.limits.max_live_processes {
+            builder = builder.max_live_processes(count);
+        }
+        if let Some(count) = self.limits.max_spawns {
+            builder = builder.max_spawns(count);
+        }
         if !self.limits.host_resources.is_empty() {
             builder = builder.host_resource_limits(self.limits.host_resources.clone());
         }
@@ -1261,6 +1272,12 @@ impl RunConfig {
             s.push_str(&format!(
                 "            .max_host_resources({max_host_resources})\n"
             ));
+        }
+        if let Some(count) = self.limits.max_live_processes {
+            s.push_str(&format!("            .max_live_processes({count})\n"));
+        }
+        if let Some(count) = self.limits.max_spawns {
+            s.push_str(&format!("            .max_spawns({count})\n"));
         }
         if !self.limits.host_resources.is_empty() {
             let mut limits: Vec<_> = self.limits.host_resources.iter().collect();

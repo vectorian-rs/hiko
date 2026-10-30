@@ -1,3 +1,4 @@
+use crate::budget::SharedBudget;
 use crate::io_limits::{IoLimits, ReadLimit};
 use crate::value::{GcRef, HeapObject, HostHandleId, HostHandleKind, HostResource, Value};
 use std::collections::HashMap;
@@ -98,16 +99,20 @@ pub struct Heap {
     alloc_since_gc: usize,
     gc_threshold: usize,
     max_objects: Option<usize>,
-    max_bytes: Option<usize>,
+    /// Live tracked bytes across the process tree, when limited. This heap's
+    /// share is `current_bytes`, which is returned on GC and on drop.
+    memory_budget: Option<Arc<SharedBudget>>,
     current_bytes: usize,
     peak_bytes: usize,
     host_resources: HashMap<HostHandleId, HostResource>,
     next_host_handle_id: u64,
     io_bytes_used: u64,
-    max_io_bytes: Option<u64>,
+    /// Cumulative I/O bytes across the process tree, when limited.
+    io_budget: Option<Arc<SharedBudget>>,
     io_limits: IoLimits,
     host_work_used: u64,
-    max_host_work: Option<u64>,
+    /// Cumulative host work across the process tree, when limited.
+    host_work_budget: Option<Arc<SharedBudget>>,
     /// Count of host resources by kind.
     host_resources_by_kind: HashMap<HostHandleKind, usize>,
     /// Peak host resource count observed during this heap's lifetime.
@@ -142,6 +147,15 @@ pub struct Heap {
     stdin_override_consumed: bool,
 }
 
+impl Drop for Heap {
+    fn drop(&mut self) {
+        // A finished process stops counting against its tree's memory.
+        if let Some(budget) = &self.memory_budget {
+            budget.refund(self.current_bytes as u64);
+        }
+    }
+}
+
 impl Default for Heap {
     fn default() -> Self {
         Self::new()
@@ -158,16 +172,16 @@ impl Heap {
             alloc_since_gc: 0,
             gc_threshold: 1024,
             max_objects: None,
-            max_bytes: None,
+            memory_budget: None,
             current_bytes: 0,
             peak_bytes: 0,
             host_resources: HashMap::new(),
             next_host_handle_id: 1,
             io_bytes_used: 0,
-            max_io_bytes: None,
+            io_budget: None,
             io_limits: IoLimits::default(),
             host_work_used: 0,
-            max_host_work: None,
+            host_work_budget: None,
             host_resources_by_kind: HashMap::new(),
             peak_host_resources: 0,
             peak_host_resources_by_kind: HashMap::new(),
@@ -483,12 +497,53 @@ impl Heap {
         self.max_objects
     }
 
+    /// Limit tracked heap memory. This starts a new budget, so call it on a
+    /// root heap; children join their parent's budget through
+    /// [`Heap::share_tree_budgets`].
     pub fn set_max_bytes(&mut self, max: usize) {
-        self.max_bytes = Some(max);
+        self.memory_budget = Some(SharedBudget::with_used(
+            max as u64,
+            self.current_bytes as u64,
+        ));
     }
 
     pub fn max_bytes(&self) -> Option<usize> {
-        self.max_bytes
+        self.memory_budget
+            .as_ref()
+            .map(|budget| usize::try_from(budget.limit()).unwrap_or(usize::MAX))
+    }
+
+    /// Join `parent`'s memory, I/O and host-work budgets, so that this heap
+    /// and the parent's process tree draw from the same counters.
+    pub fn share_tree_budgets(&mut self, parent: &Heap) {
+        debug_assert_eq!(self.current_bytes, 0, "share budgets before allocating");
+        self.memory_budget = parent.memory_budget.clone();
+        self.io_budget = parent.io_budget.clone();
+        self.host_work_budget = parent.host_work_budget.clone();
+    }
+
+    /// The process tree's memory budget, when memory is limited.
+    pub fn memory_budget(&self) -> Option<&Arc<SharedBudget>> {
+        self.memory_budget.as_ref()
+    }
+
+    /// The process tree's I/O byte budget, when I/O is limited.
+    pub fn io_budget(&self) -> Option<&Arc<SharedBudget>> {
+        self.io_budget.as_ref()
+    }
+
+    /// The process tree's host-work budget, when host work is limited.
+    pub fn host_work_budget(&self) -> Option<&Arc<SharedBudget>> {
+        self.host_work_budget.as_ref()
+    }
+
+    /// Tracked bytes in use across the process tree, when memory is limited.
+    fn tree_bytes(&self) -> usize {
+        self.memory_budget
+            .as_ref()
+            .map_or(self.current_bytes, |budget| {
+                usize::try_from(budget.used()).unwrap_or(usize::MAX)
+            })
     }
 
     pub fn live_bytes(&self) -> usize {
@@ -500,7 +555,7 @@ impl Heap {
     }
 
     pub fn set_max_io_bytes(&mut self, max: u64) {
-        self.max_io_bytes = Some(max);
+        self.io_budget = Some(SharedBudget::with_used(max, self.io_bytes_used));
     }
 
     pub fn io_bytes_used(&self) -> u64 {
@@ -508,12 +563,11 @@ impl Heap {
     }
 
     pub fn max_io_bytes(&self) -> Option<u64> {
-        self.max_io_bytes
+        self.io_budget.as_ref().map(|budget| budget.limit())
     }
 
     pub fn remaining_io_bytes(&self) -> Option<u64> {
-        self.max_io_bytes
-            .map(|max| max.saturating_sub(self.io_bytes_used))
+        self.io_budget.as_ref().map(|budget| budget.remaining())
     }
 
     pub fn set_io_limits(&mut self, limits: IoLimits) {
@@ -552,22 +606,22 @@ impl Heap {
     }
 
     pub fn charge_io_bytes(&mut self, bytes: u64) -> Result<(), IoLimitExceeded> {
-        let next = self.io_bytes_used.saturating_add(bytes);
-        if let Some(limit_bytes) = self.max_io_bytes
-            && next > limit_bytes
-        {
-            return Err(IoLimitExceeded {
-                used_bytes: self.io_bytes_used,
-                limit_bytes,
-                attempted_bytes: bytes,
-            });
+        if let Some(budget) = &self.io_budget {
+            budget
+                .try_charge(bytes)
+                .map_err(|used_bytes| IoLimitExceeded {
+                    used_bytes,
+                    limit_bytes: budget.limit(),
+                    attempted_bytes: bytes,
+                })?;
         }
-        self.io_bytes_used = next;
+        self.io_bytes_used = self.io_bytes_used.saturating_add(bytes);
         Ok(())
     }
 
+    /// Limit host work. Like [`Heap::set_max_bytes`], this starts a new budget.
     pub fn set_max_host_work(&mut self, max: u64) {
-        self.max_host_work = Some(max);
+        self.host_work_budget = Some(SharedBudget::with_used(max, self.host_work_used));
     }
 
     pub fn set_max_host_resources(&mut self, max: usize) {
@@ -587,7 +641,7 @@ impl Heap {
     }
 
     pub fn max_host_work(&self) -> Option<u64> {
-        self.max_host_work
+        self.host_work_budget.as_ref().map(|budget| budget.limit())
     }
 
     pub fn host_work_used(&self) -> u64 {
@@ -595,16 +649,16 @@ impl Heap {
     }
 
     pub fn charge_host_work(&mut self, work: u64) -> Result<(), String> {
-        let next = self.host_work_used.saturating_add(work);
-        if let Some(limit) = self.max_host_work
-            && next > limit
-        {
-            return Err(format!(
-                "host work budget exceeded: used {} limit {}",
-                self.host_work_used, limit
-            ));
+        if let Some(budget) = &self.host_work_budget {
+            budget.try_charge(work).map_err(|used| {
+                format!(
+                    "host work budget exceeded: used {} limit {}",
+                    used,
+                    budget.limit()
+                )
+            })?;
         }
-        self.host_work_used = next;
+        self.host_work_used = self.host_work_used.saturating_add(work);
         Ok(())
     }
 
@@ -612,11 +666,11 @@ impl Heap {
         &self,
         attempted_bytes: usize,
     ) -> Result<(), HeapLimitExceeded> {
-        if let Some(limit_bytes) = self.max_bytes {
-            let next_bytes = self.current_bytes.saturating_add(attempted_bytes);
-            if next_bytes > limit_bytes {
+        if let Some(limit_bytes) = self.max_bytes() {
+            let used_bytes = self.tree_bytes();
+            if used_bytes.saturating_add(attempted_bytes) > limit_bytes {
                 return Err(HeapLimitExceeded::Bytes {
-                    used_bytes: self.current_bytes,
+                    used_bytes,
                     limit_bytes,
                     attempted_bytes,
                 });
@@ -632,11 +686,10 @@ impl Heap {
                 return true;
             }
         }
-        if let Some(limit_bytes) = self.max_bytes {
-            let next_bytes = self.current_bytes.saturating_add(object_bytes);
-            if next_bytes > limit_bytes {
-                return true;
-            }
+        if let Some(limit_bytes) = self.max_bytes()
+            && self.tree_bytes().saturating_add(object_bytes) > limit_bytes
+        {
+            return true;
         }
         false
     }
@@ -835,15 +888,14 @@ impl Heap {
                 return Err(HeapLimitExceeded::Objects { live, limit: max });
             }
         }
-        if let Some(limit_bytes) = self.max_bytes {
-            let next_bytes = self.current_bytes.saturating_add(object_bytes);
-            if next_bytes > limit_bytes {
-                return Err(HeapLimitExceeded::Bytes {
-                    used_bytes: self.current_bytes,
-                    limit_bytes,
+        if let Some(budget) = &self.memory_budget {
+            budget
+                .try_charge(object_bytes as u64)
+                .map_err(|used_bytes| HeapLimitExceeded::Bytes {
+                    used_bytes: usize::try_from(used_bytes).unwrap_or(usize::MAX),
+                    limit_bytes: usize::try_from(budget.limit()).unwrap_or(usize::MAX),
                     attempted_bytes: object_bytes,
-                });
-            }
+                })?;
         }
         self.alloc_since_gc += 1;
         let idx = if let Some(idx) = self.free_list.pop() {
@@ -946,6 +998,7 @@ impl Heap {
         }
 
         self.free_list.clear();
+        let bytes_before = self.current_bytes;
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
                 if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref()
@@ -965,6 +1018,9 @@ impl Heap {
             }
         }
 
+        if let Some(budget) = &self.memory_budget {
+            budget.refund((bytes_before - self.current_bytes) as u64);
+        }
         self.alloc_since_gc = 0;
         let live_count = self.objects.len() - self.free_list.len();
         self.gc_threshold = (live_count * 2).max(1024);

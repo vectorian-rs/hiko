@@ -125,9 +125,13 @@ pub struct VM {
     fuel: Option<u64>,
     /// Persistent total fuel budget from `VMBuilder::max_fuel` / `set_fuel`.
     ///
-    /// Unlike `fuel`, this carries across scheduling slices and is inherited by
-    /// child VMs so spawned work cannot escape the parent's remaining budget.
-    max_fuel_remaining: Option<u64>,
+    /// Unlike `fuel`, this carries across scheduling slices. Child VMs share
+    /// it, so the whole process tree draws from one budget.
+    fuel_budget: Option<Arc<crate::budget::SharedBudget>>,
+    /// This process's place in its tree's live-process count.
+    live_process_slot: Option<crate::budget::BudgetSlot>,
+    /// Live-process and total-spawn budgets for the process tree.
+    process_budgets: crate::budget::ProcessBudgets,
     exec_allowed: Vec<String>,
     exec_allowed_paths: Vec<ExecAllowedPath>,
     exec_allowed_resolution_errors: Vec<String>,
@@ -282,7 +286,9 @@ impl VM {
             handlers: Vec::with_capacity(4),
             string_cache: HashMap::new(),
             fuel: None,
-            max_fuel_remaining: None,
+            fuel_budget: None,
+            live_process_slot: None,
+            process_budgets: Default::default(),
             exec_allowed: Vec::new(),
             exec_allowed_paths: Vec::new(),
             exec_allowed_resolution_errors: Vec::new(),
@@ -400,7 +406,19 @@ impl VM {
     /// This remains as a compatibility alias for `set_max_work`.
     pub fn set_fuel(&mut self, fuel: u64) {
         self.fuel = Some(fuel);
-        self.max_fuel_remaining = Some(fuel);
+        self.fuel_budget = Some(crate::budget::SharedBudget::new(fuel));
+    }
+
+    /// Set the maximum number of spawned processes alive at once in this
+    /// process tree. The root process is not counted.
+    pub fn set_max_live_processes(&mut self, max: u64) {
+        self.process_budgets.live = Some(crate::budget::SharedBudget::new(max));
+    }
+
+    /// Set the maximum number of processes this process tree may spawn in
+    /// total.
+    pub fn set_max_spawns(&mut self, max: u64) {
+        self.process_budgets.spawns = Some(crate::budget::SharedBudget::new(max));
     }
 
     /// Set the maximum tracked heap memory in bytes.
@@ -452,6 +470,11 @@ impl VM {
 
     pub fn get_output(&self) -> &[String] {
         self.output.as_deref().unwrap_or(&[])
+    }
+
+    /// The process tree's fuel budget, when fuel is limited.
+    pub fn fuel_budget(&self) -> Option<&Arc<crate::budget::SharedBudget>> {
+        self.fuel_budget.as_ref()
     }
 
     pub fn heap(&self) -> &Heap {
@@ -1934,26 +1957,56 @@ mod tests {
     #[test]
     fn test_create_child_inherits_persistent_fuel_not_slice_fuel() {
         let mut vm = compile_vm("val x = 1");
+        vm.set_fuel(42);
         vm.fuel = Some(3);
-        vm.max_fuel_remaining = Some(42);
 
         let child = vm.create_child();
 
         assert_eq!(child.fuel, None);
-        assert_eq!(child.max_fuel_remaining, Some(42));
+        assert!(Arc::ptr_eq(
+            vm.fuel_budget.as_ref().unwrap(),
+            child.fuel_budget.as_ref().unwrap()
+        ));
     }
 
     #[test]
-    fn test_create_child_inherits_host_work_and_resource_limits() {
+    fn test_live_child_heaps_count_against_the_tree_memory_budget() {
+        let mut vm = compile_vm("val x = 1");
+        vm.set_max_memory_bytes(vm.heap.live_bytes() + 1_000);
+        let budget = vm.heap.memory_budget().unwrap().clone();
+        let used_by_parent = budget.used();
+
+        let mut child = vm.create_child();
+        child
+            .heap
+            .alloc(HeapObject::String("x".repeat(600)))
+            .unwrap();
+        assert!(budget.used() >= used_by_parent + 600);
+        let err = vm
+            .heap
+            .alloc(HeapObject::String("y".repeat(600)))
+            .unwrap_err();
+        assert!(err.to_string().contains("memory limit exceeded"), "{err}");
+
+        drop(child);
+        assert_eq!(budget.used(), used_by_parent);
+        vm.heap.alloc(HeapObject::String("y".repeat(600))).unwrap();
+    }
+
+    #[test]
+    fn test_create_child_shares_host_work_and_inherits_resource_limits() {
         let mut vm = compile_vm("val x = 1");
         vm.set_max_host_work(100);
         vm.heap.charge_host_work(30).unwrap();
         vm.set_max_host_resources(4);
         vm.set_host_resource_limits(HashMap::from([("aws_config".to_string(), 1)]));
 
-        let child = vm.create_child();
+        let mut child = vm.create_child();
+        child.heap.charge_host_work(60).unwrap();
+        let err = vm.heap.charge_host_work(20).unwrap_err();
+        assert!(err.contains("used 90 limit 100"), "{err}");
 
-        assert_eq!(child.heap.max_host_work(), Some(70));
+        assert_eq!(child.heap.max_host_work(), Some(100));
         assert_eq!(child.heap.max_host_resources(), Some(4));
         assert_eq!(
             child.heap.host_resource_limits().get("aws_config"),

@@ -29,6 +29,18 @@ pub(crate) fn hermetic_loader_options() -> ModuleLoaderOptions {
     }
 }
 
+/// Compile source text that may use named imports, with
+/// [`hermetic_loader_options`].
+pub(crate) fn compile_source_hermetic(source: &str) -> CompiledProgram {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("inline.hml");
+    let tokens = Lexer::new(source, 0).tokenize().expect("lex error");
+    let program = Parser::new(tokens).parse_program().expect("parse error");
+    let (compiled, _) =
+        Compiler::compile_file_with_options(program, &path, hermetic_loader_options())
+            .unwrap_or_else(|e| panic!("cannot compile inline source: {e:?}"));
+    compiled
+}
+
 /// Compile a `.hml` file with [`hermetic_loader_options`].
 pub(crate) fn compile_file_hermetic(path: &Path) -> CompiledProgram {
     let source = std::fs::read_to_string(path)
