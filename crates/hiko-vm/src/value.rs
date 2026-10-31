@@ -210,6 +210,7 @@ impl HeapObject {
 }
 
 /// Builtin function entry, stored in a VM-level table.
+#[derive(Clone)]
 pub struct BuiltinEntry {
     pub name: Arc<str>,
     pub func: BuiltinFn,

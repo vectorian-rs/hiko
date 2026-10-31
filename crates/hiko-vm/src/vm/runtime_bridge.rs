@@ -129,12 +129,7 @@ impl VM {
     /// capability cloning, not by compiled-program cloning.
     pub fn create_child(&self) -> VM {
         let mut child = Self::from_verified_program(self.get_program(), self.startup_error.clone());
-        child.builtins.reserve(self.builtins.len());
-        child.globals.reserve(self.globals.len());
-        child.global_names.reserve(self.global_names.len());
-        for entry in &self.builtins {
-            child.register_builtin(entry.name.clone(), entry.func);
-        }
+        child.builtins = self.builtins.clone();
         child.inherit_globals(self.spawn_snapshot.clone());
         // `exec` permissions are immutable capability data, so a child can
         // inherit the parent's resolved allowlist directly instead of

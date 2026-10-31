@@ -24,46 +24,53 @@ impl VM {
     /// Register a single builtin function by name.
     pub fn register_builtin(&mut self, name: impl Into<Arc<str>>, func: BuiltinFn) {
         let name: Arc<str> = name.into();
-        let idx = self.builtins.len() as u16;
-        self.builtins.push(BuiltinEntry {
+        let table = Arc::make_mut(&mut self.builtins);
+        let idx = table.entries.len() as u16;
+        table.entries.push(BuiltinEntry {
             name: name.clone(),
             func,
         });
-        let slot = self.global_slot(name.to_string());
-        self.globals[slot] = Value::Builtin(idx);
+        table.values.push(Value::Builtin(idx));
+        let ids = &mut table.ids;
         match name.as_ref() {
-            "print" => self.print_builtin_id = Some(idx),
-            "println" => self.println_builtin_id = Some(idx),
-            "exec" => self.exec_builtin_id = Some(idx),
-            "spawn" => self.spawn_builtin_id = Some(idx),
-            "await_process" => self.await_builtin_id = Some(idx),
-            "await_process_result" => self.await_result_builtin_id = Some(idx),
-            "cancel" => self.cancel_builtin_id = Some(idx),
-            "wait_any" => self.wait_any_builtin_id = Some(idx),
-            "sleep" => self.sleep_builtin_id = Some(idx),
-            "http_get" => self.http_get_builtin_id = Some(idx),
-            "http" => self.http_builtin_id = Some(idx),
-            "http_json" => self.http_json_builtin_id = Some(idx),
-            "http_msgpack" => self.http_msgpack_builtin_id = Some(idx),
-            "http_bytes" => self.http_bytes_builtin_id = Some(idx),
-            "read_file" => self.read_file_builtin_id = Some(idx),
+            "print" => ids.print_builtin_id = Some(idx),
+            "println" => ids.println_builtin_id = Some(idx),
+            "exec" => ids.exec_builtin_id = Some(idx),
+            "spawn" => ids.spawn_builtin_id = Some(idx),
+            "await_process" => ids.await_builtin_id = Some(idx),
+            "await_process_result" => ids.await_result_builtin_id = Some(idx),
+            "cancel" => ids.cancel_builtin_id = Some(idx),
+            "wait_any" => ids.wait_any_builtin_id = Some(idx),
+            "sleep" => ids.sleep_builtin_id = Some(idx),
+            "http_get" => ids.http_get_builtin_id = Some(idx),
+            "http" => ids.http_builtin_id = Some(idx),
+            "http_json" => ids.http_json_builtin_id = Some(idx),
+            "http_msgpack" => ids.http_msgpack_builtin_id = Some(idx),
+            "http_bytes" => ids.http_bytes_builtin_id = Some(idx),
+            "read_file" => ids.read_file_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-config")]
-            "aws_config_sso_profile" => self.aws_config_sso_profile_builtin_id = Some(idx),
+            "aws_config_sso_profile" => ids.aws_config_sso_profile_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-config")]
-            "aws_config_instance_profile" => {
-                self.aws_config_instance_profile_builtin_id = Some(idx)
-            }
+            "aws_config_instance_profile" => ids.aws_config_instance_profile_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-s3")]
-            "aws_s3_list_buckets" => self.aws_s3_list_buckets_builtin_id = Some(idx),
+            "aws_s3_list_buckets" => ids.aws_s3_list_buckets_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-sqs")]
-            "aws_sqs_list_queues" => self.aws_sqs_list_queues_builtin_id = Some(idx),
+            "aws_sqs_list_queues" => ids.aws_sqs_list_queues_builtin_id = Some(idx),
             #[cfg(feature = "builtin-github")]
-            "github_issue_create" => self.github_issue_create_builtin_id = Some(idx),
+            "github_issue_create" => ids.github_issue_create_builtin_id = Some(idx),
             #[cfg(feature = "builtin-github")]
-            "github_issue_view" => self.github_issue_view_builtin_id = Some(idx),
+            "github_issue_view" => ids.github_issue_view_builtin_id = Some(idx),
             #[cfg(feature = "builtin-github")]
-            "github_issue_update" => self.github_issue_update_builtin_id = Some(idx),
+            "github_issue_update" => ids.github_issue_update_builtin_id = Some(idx),
             _ => {}
+        }
+        table.by_name.insert(name.clone(), idx);
+        // A global already resolved to an earlier builtin of this name now
+        // refers to the new one.
+        if let Some(&slot) = self.global_names.get(name.as_ref())
+            && matches!(self.globals[slot], Value::Builtin(_))
+        {
+            self.globals[slot] = Value::Builtin(idx);
         }
     }
 
@@ -102,7 +109,7 @@ impl VM {
         }
         let first_arg = self.stack[callee_pos + 1];
 
-        if self.spawn_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.spawn_builtin_id == Some(builtin_id) {
             let closure_val = self.stack[callee_pos + 1];
             match closure_val {
                 Value::Heap(r) => match self.heap.get(r) {
@@ -157,7 +164,7 @@ impl VM {
             }
         }
 
-        if self.await_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.await_builtin_id == Some(builtin_id) {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
                 Value::Pid(pid) => {
@@ -172,7 +179,7 @@ impl VM {
             }
         }
 
-        if self.await_result_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.await_result_builtin_id == Some(builtin_id) {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
                 Value::Pid(pid) => {
@@ -187,7 +194,7 @@ impl VM {
             }
         }
 
-        if self.cancel_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.cancel_builtin_id == Some(builtin_id) {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
                 Value::Pid(pid) => {
@@ -202,7 +209,7 @@ impl VM {
             }
         }
 
-        if self.wait_any_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.wait_any_builtin_id == Some(builtin_id) {
             let pids = crate::builtins::extract_pid_list_arg(
                 &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                 &self.heap,
@@ -213,7 +220,7 @@ impl VM {
         }
 
         if self.async_io {
-            let io_request = if self.sleep_builtin_id == Some(builtin_id) {
+            let io_request = if self.builtins.ids.sleep_builtin_id == Some(builtin_id) {
                 let ms = match self.stack[callee_pos + 1] {
                     Value::Int(ms) if ms >= 0 => ms as u64,
                     _ => {
@@ -225,7 +232,7 @@ impl VM {
                 Some(crate::io_backend::IoRequest::Sleep(
                     std::time::Duration::from_millis(ms),
                 ))
-            } else if self.http_get_builtin_id == Some(builtin_id) {
+            } else if self.builtins.ids.http_get_builtin_id == Some(builtin_id) {
                 let url = crate::builtins::extract_string_arg(
                     &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                     &self.heap,
@@ -247,7 +254,7 @@ impl VM {
                 let (method, url, headers, body) =
                     crate::builtins::extract_http_args(args, &self.heap, "http")
                         .map_err(|msg| RuntimeError { message: msg })?;
-                let builtin_name = self.builtins[builtin_id as usize].name.as_ref();
+                let builtin_name = self.builtins.entries[builtin_id as usize].name.as_ref();
                 self.heap
                     .check_http_host_for(builtin_name, &url)
                     .map_err(|e| RuntimeError {
@@ -267,7 +274,7 @@ impl VM {
                     max_response: self.heap.http_response_limit(),
                     timeouts: self.heap.io_limits().http_timeouts(),
                 })
-            } else if self.read_file_builtin_id == Some(builtin_id) {
+            } else if self.builtins.ids.read_file_builtin_id == Some(builtin_id) {
                 let path = crate::builtins::extract_string_arg(
                     &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                     &self.heap,
@@ -303,7 +310,7 @@ impl VM {
             } else {
                 #[cfg(feature = "builtin-aws-config")]
                 {
-                    if self.aws_config_sso_profile_builtin_id == Some(builtin_id) {
+                    if self.builtins.ids.aws_config_sso_profile_builtin_id == Some(builtin_id) {
                         let profile = crate::builtins::extract_string_arg(
                             &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                             &self.heap,
@@ -316,7 +323,9 @@ impl VM {
                                 message: format!("aws_config_sso_profile: {e}"),
                             })?;
                         Some(crate::io_backend::IoRequest::AwsConfigSsoProfile { profile })
-                    } else if self.aws_config_instance_profile_builtin_id == Some(builtin_id) {
+                    } else if self.builtins.ids.aws_config_instance_profile_builtin_id
+                        == Some(builtin_id)
+                    {
                         self.heap
                             .check_aws_instance_profile()
                             .map_err(|e| RuntimeError {
@@ -326,7 +335,8 @@ impl VM {
                     } else {
                         #[cfg(feature = "builtin-aws-s3")]
                         {
-                            if self.aws_s3_list_buckets_builtin_id == Some(builtin_id) {
+                            if self.builtins.ids.aws_s3_list_buckets_builtin_id == Some(builtin_id)
+                            {
                                 let client = self.stack[callee_pos + 1];
                                 let handle = self
                                     .heap
@@ -338,7 +348,9 @@ impl VM {
                             } else {
                                 #[cfg(feature = "builtin-aws-sqs")]
                                 {
-                                    if self.aws_sqs_list_queues_builtin_id == Some(builtin_id) {
+                                    if self.builtins.ids.aws_sqs_list_queues_builtin_id
+                                        == Some(builtin_id)
+                                    {
                                         let client = self.stack[callee_pos + 1];
                                         let handle = self
                                             .heap
@@ -362,7 +374,8 @@ impl VM {
                         }
                         #[cfg(all(not(feature = "builtin-aws-s3"), feature = "builtin-aws-sqs"))]
                         {
-                            if self.aws_sqs_list_queues_builtin_id == Some(builtin_id) {
+                            if self.builtins.ids.aws_sqs_list_queues_builtin_id == Some(builtin_id)
+                            {
                                 let client = self.stack[callee_pos + 1];
                                 let handle = self
                                     .heap
@@ -394,7 +407,7 @@ impl VM {
             }
         }
 
-        if self.exec_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.exec_builtin_id == Some(builtin_id) {
             let exec_arg = self.stack[callee_pos + 1];
             let prepared = self.prepare_exec(exec_arg)?;
             let result = self
@@ -405,12 +418,12 @@ impl VM {
             return Ok(());
         }
 
-        let func = self.builtins[builtin_id as usize].func;
+        let func = self.builtins.entries[builtin_id as usize].func;
         let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
         let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
         self.stack.truncate(callee_pos);
-        let is_print = self.print_builtin_id == Some(builtin_id);
-        let is_println = self.println_builtin_id == Some(builtin_id);
+        let is_print = self.builtins.ids.print_builtin_id == Some(builtin_id);
+        let is_println = self.builtins.ids.println_builtin_id == Some(builtin_id);
         if is_print || is_println {
             let displayed = if is_println {
                 format!("{}\n", self.display_value(&first_arg))
@@ -439,13 +452,13 @@ impl VM {
 
     fn match_http_builtin(&self, builtin_id: u16) -> Option<crate::io_backend::HttpResponseFormat> {
         use crate::io_backend::HttpResponseFormat;
-        if self.http_builtin_id == Some(builtin_id) {
+        if self.builtins.ids.http_builtin_id == Some(builtin_id) {
             Some(HttpResponseFormat::Text)
-        } else if self.http_json_builtin_id == Some(builtin_id) {
+        } else if self.builtins.ids.http_json_builtin_id == Some(builtin_id) {
             Some(HttpResponseFormat::Json)
-        } else if self.http_msgpack_builtin_id == Some(builtin_id) {
+        } else if self.builtins.ids.http_msgpack_builtin_id == Some(builtin_id) {
             Some(HttpResponseFormat::Msgpack)
-        } else if self.http_bytes_builtin_id == Some(builtin_id) {
+        } else if self.builtins.ids.http_bytes_builtin_id == Some(builtin_id) {
             Some(HttpResponseFormat::Bytes)
         } else {
             None

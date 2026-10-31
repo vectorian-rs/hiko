@@ -200,7 +200,10 @@ impl VM {
     pub(super) fn display_value(&self, v: &Value) -> String {
         match v {
             Value::Builtin(id) => {
-                format!("<builtin:{}>", self.builtins[*id as usize].name.as_ref())
+                format!(
+                    "<builtin:{}>",
+                    self.builtins.entries[*id as usize].name.as_ref()
+                )
             }
             Value::Word(w) => format!("0w{w}"),
             Value::Pid(pid) => format!("<pid {pid}>"),

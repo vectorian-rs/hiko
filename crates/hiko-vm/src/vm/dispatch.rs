@@ -134,7 +134,7 @@ impl VM {
                         Some(&slot) => slot,
                         None => {
                             let name = name.to_string();
-                            self.load_inherited_global(&name)?
+                            self.load_global(&name)?
                         }
                     };
                     let val = self.globals[slot];

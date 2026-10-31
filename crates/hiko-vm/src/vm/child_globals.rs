@@ -10,6 +10,10 @@
 //! (`Arc`) by every child and grandchild until the parent defines another
 //! global. A global that cannot be sent (for example an `Rng` value) is
 //! recorded with the reason, which the child reports if it reads that global.
+//!
+//! Builtins are not globals of the program: a VM resolves a builtin name on
+//! first use and caches it in its own global table, after the inherited
+//! globals, so a program binding of the same name wins as in the parent.
 
 use super::*;
 use crate::sendable::{SendableValue, deserialize, serialize};
@@ -19,9 +23,6 @@ type SnapshotEntry = Arc<Result<SendableValue, String>>;
 #[derive(Debug, Default, Clone)]
 pub(crate) struct GlobalSnapshot {
     values: HashMap<Arc<str>, SnapshotEntry>,
-    /// Names bound both to a builtin and, later, by the program. In a child
-    /// the program's binding wins, as it does in the parent.
-    rebound_builtins: Vec<Arc<str>>,
 }
 
 /// A global defined by this VM's own `SetGlobal`, with its cached serialized
@@ -77,13 +78,6 @@ impl VM {
                     entry
                 }
             };
-            if self
-                .builtins
-                .iter()
-                .any(|builtin| *builtin.name == *defined.name)
-            {
-                snapshot.rebound_builtins.push(defined.name.clone());
-            }
             snapshot.values.insert(defined.name.clone(), entry);
         }
         self.spawn_snapshot = Some(Arc::new(snapshot));
@@ -92,24 +86,29 @@ impl VM {
 
     /// Give a freshly created child the parent's snapshot.
     pub(super) fn inherit_globals(&mut self, snapshot: Option<Arc<GlobalSnapshot>>) {
-        if let Some(snapshot) = &snapshot {
-            for name in &snapshot.rebound_builtins {
-                self.global_names.remove(&**name);
-            }
-        }
         self.inherited_globals = snapshot;
     }
 
-    /// Load an inherited global into this VM on first use and return its slot.
-    pub(super) fn load_inherited_global(&mut self, name: &str) -> Result<usize, RuntimeError> {
-        let entry = self
+    /// Resolve a global this VM has not used yet: an inherited global, else
+    /// a builtin. Cache it in the VM's global table and return its slot.
+    pub(super) fn load_global(&mut self, name: &str) -> Result<usize, RuntimeError> {
+        let inherited = self
             .inherited_globals
             .as_ref()
             .and_then(|snapshot| snapshot.values.get(name))
-            .cloned()
-            .ok_or_else(|| RuntimeError {
-                message: format!("undefined global: {name}"),
-            })?;
+            .cloned();
+        let Some(entry) = inherited else {
+            let id = *self
+                .builtins
+                .by_name
+                .get(name)
+                .ok_or_else(|| RuntimeError {
+                    message: format!("undefined global: {name}"),
+                })?;
+            let slot = self.global_slot(name.to_string());
+            self.globals[slot] = Value::Builtin(id);
+            return Ok(slot);
+        };
         let sendable = entry.as_ref().as_ref().map_err(|reason| RuntimeError {
             message: format!("top-level `{name}` cannot be used in a child process: {reason}"),
         })?;
