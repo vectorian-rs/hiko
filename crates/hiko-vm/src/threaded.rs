@@ -1921,6 +1921,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn test_child_process_keeps_parent_fs_root() {
+        // A child uses the parent's filesystem policy and its open directory
+        // capabilities: a path inside the root works, one outside does not.
+        let root = temp_path("child-root-test");
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::fs::write(root.join("data.txt"), "rooted");
+        let outside = temp_path("child-root-outside.txt");
+        let _ = std::fs::write(&outside, "secret");
+        let run = |source: &str| {
+            let runtime = ThreadedRuntime::new(2);
+            let pid = runtime.new_pid();
+            let mut vm = VM::new(compile(source));
+            vm.enable_output_capture();
+            vm.set_async_io(true);
+            vm.set_fs_root(root.to_string_lossy().to_string());
+            runtime.table.insert(Process::new(pid, vm, None));
+            runtime.scheduler.enqueue(pid);
+            let result = runtime.run_to_completion();
+            let failed = result.is_err()
+                || runtime
+                    .table
+                    .processes
+                    .iter()
+                    .any(|p| matches!(p.status, ProcessStatus::Failed(_)));
+            (runtime.table.get_output(pid), failed)
+        };
+
+        let (output, failed) = run("val child = spawn (fn () => read_file \"data.txt\")\n\
+             val _ = println (await_process child)");
+        assert!(!failed);
+        assert_eq!(output, vec!["rooted\n"]);
+
+        let (output, failed) = run(&format!(
+            "val child = spawn (fn () => read_file \"{}\")\n\
+             val _ = println (await_process child)",
+            outside.to_string_lossy()
+        ));
+        assert!(failed, "reading outside the root must fail in a child");
+        assert!(output.is_empty(), "got {output:?}");
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
+    }
+
     /// Local HTTP server that answers every request with `body` after
     /// `delay`, handling each connection on its own thread.
     #[cfg(feature = "builtin-http")]

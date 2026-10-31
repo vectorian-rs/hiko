@@ -76,6 +76,20 @@ impl std::fmt::Display for IoLimitExceeded {
     }
 }
 
+/// Filesystem paths a process may use, with their directory capabilities
+/// opened once. Child processes share the parent's policy, so a spawn does
+/// not reopen the directories.
+#[derive(Clone, Debug, Default)]
+struct FsPolicy {
+    /// Filesystem root for path enforcement (empty = unrestricted).
+    root: String,
+    /// Per-builtin filesystem folder allowlists.
+    builtin_folders: HashMap<String, Vec<String>>,
+    /// Preopened per-builtin filesystem directory capabilities.
+    #[cfg(feature = "builtin-filesystem")]
+    builtin_dirs: HashMap<String, Vec<CapAllowedDir>>,
+}
+
 #[cfg(feature = "builtin-filesystem")]
 #[derive(Clone, Debug)]
 pub struct CapAllowedDir {
@@ -125,13 +139,8 @@ pub struct Heap {
     max_host_resources: Option<usize>,
     /// Per-kind host resource limits.
     host_resource_limits: HashMap<String, usize>,
-    /// Filesystem root for path enforcement (empty = unrestricted).
-    fs_root: String,
-    /// Per-builtin filesystem folder allowlists.
-    fs_builtin_folders: HashMap<String, Vec<String>>,
-    /// Preopened per-builtin filesystem directory capabilities.
-    #[cfg(feature = "builtin-filesystem")]
-    fs_builtin_dirs: HashMap<String, Vec<CapAllowedDir>>,
+    /// Filesystem policy, shared with child processes.
+    fs: Arc<FsPolicy>,
     /// Allowed HTTP hosts (empty = unrestricted).
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
@@ -190,10 +199,7 @@ impl Heap {
             peak_host_resources_by_kind: HashMap::new(),
             max_host_resources: None,
             host_resource_limits: HashMap::new(),
-            fs_root: String::new(),
-            fs_builtin_folders: HashMap::new(),
-            #[cfg(feature = "builtin-filesystem")]
-            fs_builtin_dirs: HashMap::new(),
+            fs: Arc::default(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
             github_issue_allowed_repos: HashMap::new(),
@@ -234,7 +240,7 @@ impl Heap {
     }
 
     pub fn set_fs_root(&mut self, root: String) {
-        self.fs_root = root;
+        Arc::make_mut(&mut self.fs).root = root;
         #[cfg(feature = "builtin-filesystem")]
         {
             self.rebuild_cap_dirs();
@@ -242,11 +248,11 @@ impl Heap {
     }
 
     pub fn fs_root(&self) -> &str {
-        &self.fs_root
+        &self.fs.root
     }
 
     pub fn set_fs_builtin_folders(&mut self, folders: HashMap<String, Vec<String>>) {
-        self.fs_builtin_folders = folders;
+        Arc::make_mut(&mut self.fs).builtin_folders = folders;
         #[cfg(feature = "builtin-filesystem")]
         {
             self.rebuild_cap_dirs();
@@ -254,12 +260,18 @@ impl Heap {
     }
 
     pub fn fs_builtin_folders(&self) -> &HashMap<String, Vec<String>> {
-        &self.fs_builtin_folders
+        &self.fs.builtin_folders
+    }
+
+    /// Use `parent`'s filesystem policy, including its open directory
+    /// capabilities.
+    pub fn share_fs_policy(&mut self, parent: &Heap) {
+        self.fs = Arc::clone(&parent.fs);
     }
 
     #[cfg(feature = "builtin-filesystem")]
     pub fn has_cap_fs_policy(&self) -> bool {
-        !self.fs_root.is_empty() || !self.fs_builtin_folders.is_empty()
+        !self.fs.root.is_empty() || !self.fs.builtin_folders.is_empty()
     }
 
     #[cfg(feature = "builtin-filesystem")]
@@ -269,7 +281,8 @@ impl Heap {
         path: &str,
     ) -> Result<Vec<CapFsCandidate>, String> {
         let dirs = self
-            .fs_builtin_dirs
+            .fs
+            .builtin_dirs
             .get(builtin)
             .ok_or_else(|| format!("builtin '{builtin}' has no filesystem permission"))?;
         if dirs.is_empty() {
@@ -294,24 +307,25 @@ impl Heap {
 
     #[cfg(feature = "builtin-filesystem")]
     fn rebuild_cap_dirs(&mut self) {
-        self.fs_builtin_dirs.clear();
-        if self.fs_builtin_folders.is_empty() {
-            if !self.fs_root.is_empty()
-                && let Ok((root, dir)) = open_cap_dir(&self.fs_root)
+        let fs = Arc::make_mut(&mut self.fs);
+        fs.builtin_dirs.clear();
+        if fs.builtin_folders.is_empty() {
+            if !fs.root.is_empty()
+                && let Ok((root, dir)) = open_cap_dir(&fs.root)
             {
                 let entry = CapAllowedDir {
                     root,
                     dir: Arc::new(dir),
                 };
                 for builtin in FILESYSTEM_BUILTIN_NAMES {
-                    self.fs_builtin_dirs
+                    fs.builtin_dirs
                         .insert((*builtin).to_string(), vec![entry.clone()]);
                 }
             }
             return;
         }
 
-        for (builtin, folders) in &self.fs_builtin_folders {
+        for (builtin, folders) in &fs.builtin_folders {
             let dirs = folders
                 .iter()
                 .filter_map(|folder| {
@@ -321,7 +335,7 @@ impl Heap {
                     })
                 })
                 .collect();
-            self.fs_builtin_dirs.insert(builtin.clone(), dirs);
+            fs.builtin_dirs.insert(builtin.clone(), dirs);
         }
     }
 
@@ -385,17 +399,18 @@ impl Heap {
 
     /// Check if a path is within the allowed filesystem root.
     pub fn check_fs_path(&self, path: &str) -> Result<PathBuf, String> {
-        resolve_fs_path(&self.fs_root, path)
+        resolve_fs_path(&self.fs.root, path)
     }
 
     /// Check if a path is allowed for a specific filesystem builtin.
     pub fn check_fs_path_for(&self, builtin: &str, path: &str) -> Result<PathBuf, String> {
-        if self.fs_builtin_folders.is_empty() {
-            return resolve_fs_path(&self.fs_root, path);
+        if self.fs.builtin_folders.is_empty() {
+            return resolve_fs_path(&self.fs.root, path);
         }
 
         let folders = self
-            .fs_builtin_folders
+            .fs
+            .builtin_folders
             .get(builtin)
             .ok_or_else(|| format!("builtin '{builtin}' has no filesystem permission"))?;
         resolve_fs_path_in_folders(folders, path).map_err(|e| format!("{builtin}: {e}"))
@@ -403,18 +418,19 @@ impl Heap {
 
     /// Resolve the configured folder roots for a specific filesystem builtin.
     pub fn allowed_fs_folders_for(&self, builtin: &str) -> Result<Vec<PathBuf>, String> {
-        if self.fs_builtin_folders.is_empty() {
-            if self.fs_root.is_empty() {
+        if self.fs.builtin_folders.is_empty() {
+            if self.fs.root.is_empty() {
                 return Ok(Vec::new());
             }
             return Ok(vec![
-                canonicalize_with_missing_tail(Path::new(&self.fs_root))
-                    .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs_root))?,
+                canonicalize_with_missing_tail(Path::new(&self.fs.root))
+                    .map_err(|e| format!("cannot resolve fs root '{}': {e}", self.fs.root))?,
             ]);
         }
 
         let folders = self
-            .fs_builtin_folders
+            .fs
+            .builtin_folders
             .get(builtin)
             .ok_or_else(|| format!("builtin '{builtin}' has no filesystem permission"))?;
         if folders.is_empty() {

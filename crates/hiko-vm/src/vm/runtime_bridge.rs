@@ -139,8 +139,7 @@ impl VM {
         child.exec_allowed_resolution_errors = self.exec_allowed_resolution_errors.clone();
         child.set_io_limits(self.heap.io_limits());
         child.set_max_message_bytes(self.heap.max_message_bytes());
-        child.set_fs_root(self.heap.fs_root().to_string());
-        child.set_fs_builtin_folders(self.heap.fs_builtin_folders().clone());
+        child.heap.share_fs_policy(&self.heap);
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
         child.set_http_allowed_hosts_by_builtin(self.heap.http_allowed_hosts_by_builtin().clone());
         #[cfg(feature = "builtin-github")]
