@@ -51,17 +51,13 @@ The formal effects section should define:
 
 - algebraic operations, such as `perform Op v`
 - handlers, such as `handle e with ...`
-- one-shot captured continuations
-- operational reduction by capturing the evaluation context up to the nearest handler
+- provider clauses, which answer at the perform site, and abort clauses, which unwind to the handler
 - the boundary between local effect semantics and VM scheduling
 
 Important effect-semantics questions include:
 
-- which continuation segment is captured
-- where handler search stops
-- whether continuations are one-shot or multi-shot
+- where handler search stops, and which handlers are hidden while a provider clause runs
 - whether effects are local or can cross process boundaries
-- what `resume` means after a continuation has already been resumed
 - where effect semantics stops and runtime scheduling begins
 
 ## Suggested formal judgments

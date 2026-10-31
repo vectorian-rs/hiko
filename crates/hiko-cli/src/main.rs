@@ -686,8 +686,7 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         | Op::MakeCons
         | Op::Return
         | Op::Halt
-        | Op::RemoveHandler
-        | Op::Resume => {}
+        | Op::RemoveHandler => {}
     }
     Ok(())
 }

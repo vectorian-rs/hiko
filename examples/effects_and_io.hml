@@ -1,7 +1,7 @@
 (* effects_and_io.hml -- Effects + I/O working together
  *
  * Key design principle:
- *   Effects = user control flow (state, logging, generators)
+ *   Effects = requests answered by a provider the caller installs (logging)
  *   Results = recoverable errors (Std.Result)
  *   Builtins = I/O (files, http, sleep, json, etc.)
  *
@@ -50,20 +50,21 @@ val _ = remove_file nonempty_path
 
 val _ = remove_file empty_path
 
-(* ── Effect: accumulate log entries while doing I/O ─────── *)
+(* ── Effect: a log provider around I/O ─────────────────── *)
+(* The code that logs does not decide where the log goes. The provider
+ * answers each Log request and resumes at once. *)
 effect Log of string
 
-fun with_log f =
-  let
-    val logs =
-      handle
-        f ()
-      with
-        return _ => []
-      | Log msg k => msg :: with_log (fn _ => resume k ())
-  in
-    logs
-  end
+fun with_console_log f =
+  handle
+    f ()
+  with
+    return x => x
+  | Log msg k => let
+      val _ = println ("  [log] " ^ msg)
+    in
+      resume k ()
+    end
 
 fun process_files () =
   let
@@ -80,54 +81,12 @@ fun process_files () =
 
 val _ = println "\n--- Log effect interleaved with I/O ---"
 
-val logs = with_log process_files
+val _ = with_console_log process_files
 
-fun print_logs xs =
-  case xs of
-      [] => ()
-    | x :: rest =>
-      let
-        val _ = println ("  [log] " ^ x)
-      in
-        print_logs rest
-      end
+(* ── Counting needs no effect: it is a function of the list ─ *)
+val _ = println "\n--- Counting list_dir entries ---"
 
-val _ = print_logs logs
-
-(* ── Effect: state tracking across I/O operations ────────── *)
-effect Get of unit
-
-effect Put of int
-
-fun run_state init f =
-  handle
-    f ()
-  with
-    return x => x
-  | Get _ k => run_state init (fn _ => resume k init)
-  | Put n k => run_state n (fn _ => resume k ())
-
-fun count_entries xs =
-  case xs of
-      [] => perform Get ()
-    | _ :: rest =>
-      let
-        val n = perform Get ()
-        val _ = perform Put (n + 1)
-      in
-        count_entries rest
-      end
-
-fun count_files_in dir =
-  let
-    val entries = list_dir dir
-  in
-    count_entries entries
-  end
-
-val _ = println "\n--- State effect with list_dir I/O ---"
-
-val file_count = run_state 0 (fn () => count_files_in ".")
+val file_count = List.length (list_dir ".")
 
 val _ = println ("Entries in .: " ^ int_to_string file_count)
 

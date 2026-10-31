@@ -125,9 +125,8 @@ The VM root set includes:
 - value stack;
 - call-frame captures;
 - globals;
-- handler captures;
+- handler captures, including handlers hidden while a provider clause runs;
 - string cache entries;
-- blocked continuation roots;
 - request-local extra roots for objects being allocated.
 
 The runtime does not compute GC roots. Root discovery stays inside the VM layer.

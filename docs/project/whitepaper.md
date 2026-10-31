@@ -21,7 +21,9 @@ implementation stands against these aims.
    module loading.
 
 **Research track: effects.** Local algebraic effect handlers stay in the
-language as an experiment with open questions, not as a stable surface.
+language as a small, isolated experiment, not as a stable surface. Two uses
+are supported: providers (a handler answers a request and resumes at once)
+and aborts (early exit). Generators and state use closures instead.
 
 ## Principles
 
@@ -45,7 +47,7 @@ language as an experiment with open questions, not as a stable surface.
 **Bytecode and VM**
 
 - Renumber opcodes by group and add a versioned serialized bytecode format.
-- Reduce spawn cost and `Resume` cloning, and track benchmarks over time.
+- Reduce spawn cost and track benchmarks over time.
 - Decide the future of the threaded runtime and structured concurrency.
 
 **Security**
@@ -58,9 +60,8 @@ language as an experiment with open questions, not as a stable surface.
 
 **Effects (research)**
 
-- Choose one-shot or multi-shot, and deep or shallow, then make the docs and
-  tests agree.
-- Explore effect rows in types, and capabilities as runtime-handled effects.
+- Explore effect rows in types, and capabilities as runtime-handled effects,
+  for the two clause forms that remain: provider and abort.
 
 **Scope**
 

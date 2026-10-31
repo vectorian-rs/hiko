@@ -561,7 +561,6 @@ fn vm_value_kind(value: Value, heap: &Heap) -> &'static str {
             Ok(HeapObject::Tuple(_)) => "tuple",
             Ok(HeapObject::Data { .. }) => "data",
             Ok(HeapObject::Closure { .. }) => "closure",
-            Ok(HeapObject::Continuation(_)) => "continuation",
             Ok(HeapObject::Rng { .. }) => "rng",
             Ok(HeapObject::HostHandle { .. }) => "host-handle",
             Err(_) => "dangling-heap-ref",

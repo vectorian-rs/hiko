@@ -26,7 +26,6 @@ model changes.
 Execution-local state is owned by `VM`:
 
 - cancellation (`VM::request_cancellation`)
-- blocked continuation root (`blocked_continuation`)
 - slice fuel, and the process tree's shared fuel budget
 - stack, call frames, handler frames
 - per-process heap and string cache

@@ -16,15 +16,12 @@ use std::sync::Arc;
 
 use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, FunctionProto};
 use hiko_compile::op::{
-    HANDLER_CLAUSE_RESUMES, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
+    HANDLER_CLAUSE_PROVIDER, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
 };
 
 use crate::heap::Heap;
 use crate::process::ProcessFailure;
-use crate::value::{
-    BuiltinEntry, ContinuationData, Fields, GcRef, HandlerClause, HeapObject, SavedFrame,
-    SavedHandler, Value,
-};
+use crate::value::{BuiltinEntry, ClauseAction, Fields, GcRef, HandlerClause, HeapObject, Value};
 use crate::verify::{VerificationError, verify_program};
 
 mod builtins;
@@ -89,6 +86,14 @@ struct HandlerFrame {
     captures: Arc<[Value]>,
 }
 
+/// Handlers hidden while a provider clause runs: the handler whose clause
+/// it is and every handler inside it. They come back when the clause frame
+/// returns.
+struct HiddenHandlers {
+    clause_frame_idx: usize,
+    handlers: Vec<HandlerFrame>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ExecAllowedPath {
     path: PathBuf,
@@ -116,6 +121,7 @@ pub struct VM {
     output: Option<Vec<String>>,
     builtins: Vec<BuiltinEntry>,
     handlers: Vec<HandlerFrame>,
+    hidden_handlers: Vec<HiddenHandlers>,
     string_cache: HashMap<(usize, usize), GcRef>,
     /// Slice-local opcode budget for the currently active dispatch loop.
     ///
@@ -170,8 +176,6 @@ pub struct VM {
     pending_runtime_request: Option<RuntimeRequest>,
     /// Effect metadata from compiled program (name → tag).
     pub(crate) effect_metadata: Arc<[EffectMeta]>,
-    /// Saved continuation when blocked on runtime I/O. GC root.
-    blocked_continuation: Option<GcRef>,
     /// Cooperative cancellation flag. Checked at suspension points.
     cancelled: bool,
     startup_error: Option<String>,
@@ -284,6 +288,7 @@ impl VM {
             output: None,
             builtins: Vec::new(),
             handlers: Vec::with_capacity(4),
+            hidden_handlers: Vec::new(),
             string_cache: HashMap::new(),
             fuel: None,
             fuel_budget: None,
@@ -323,7 +328,6 @@ impl VM {
             github_issue_update_builtin_id: None,
             async_io: false,
             pending_runtime_request: None,
-            blocked_continuation: None,
             cancelled: false,
             startup_error,
             output_sink: None,
@@ -1328,13 +1332,13 @@ mod tests {
     }
 
     #[test]
-    fn test_effect_multiple_performs_reinstalled() {
-        // Multiple performs through a recursively reinstalled handler
+    fn test_effect_provider_handles_every_request() {
+        // A provider stays installed, so it answers every perform in the body.
         let vm = run("effect Ask of int\n\
              fun with_handler f =\n\
                handle f ()\n\
                with return x => x\n\
-                  | Ask n k => with_handler (fn () => resume k (n * 10))\n\
+                  | Ask n k => resume k (n * 10)\n\
              fun program () =\n\
                let val a = perform Ask 1\n\
                    val b = perform Ask 2\n\
@@ -1342,21 +1346,6 @@ mod tests {
                in a + b + c end\n\
              val result = with_handler program");
         assert_eq!(global_int(&vm, "result"), 60); // 10 + 20 + 30
-    }
-
-    #[test]
-    fn test_effect_generator() {
-        let vm = run("effect Yield of int
-             fun run_gen f = handle f ()
-               with return _ => 0
-                  | Yield n k => n + run_gen (fn _ => resume k ())
-             fun gen () =
-               let val _ = perform Yield 1
-                   val _ = perform Yield 2
-                   val _ = perform Yield 3
-               in () end
-             val result = run_gen gen");
-        assert_eq!(global_int(&vm, "result"), 6);
     }
 
     #[test]
@@ -1379,28 +1368,6 @@ mod tests {
             "got: {}",
             err.message
         );
-    }
-
-    #[test]
-    fn test_resume_rejects_non_continuation_without_panicking() {
-        let program = hiko_compile::chunk::CompiledProgram {
-            main: Arc::new(hiko_compile::chunk::Chunk {
-                code: vec![
-                    Op::Unit as u8,
-                    Op::Unit as u8,
-                    Op::Resume as u8,
-                    Op::Halt as u8,
-                ],
-                constants: Vec::new(),
-                spans: Vec::new(),
-            }),
-            main_n_locals: 0,
-            functions: Arc::from([]),
-            effects: Arc::from([]),
-        };
-        let mut vm = VM::new(program);
-        let err = vm.run().expect_err("invalid resume should fail");
-        assert_eq!(err.message, "resume: expected continuation");
     }
 
     #[test]
@@ -1460,7 +1427,7 @@ mod tests {
                     0,
                     0,
                     0,
-                    HANDLER_CLAUSE_RESUMES,
+                    0,
                     0,
                     0,
                     Op::Unit as u8,
@@ -1540,52 +1507,29 @@ mod tests {
     }
 
     #[test]
-    fn test_effect_code_after_resume_runs_at_top_level() {
-        // The continuation is delimited by the handle expression, so code
-        // after `resume` in the clause must run whether or not the handle
-        // is inside a function.
-        let vm = run("effect Ask of unit
-             fun fa () = handle (perform Ask () + 1)
-               with return x => x | Ask _ k => resume k 10 + 100
-             val in_fn = fa ()
-             val top = handle (perform Ask () + 1)
-               with return x => x | Ask _ k => resume k 10 + 100
-             val twice = handle (perform Ask () + 1)
-               with return x => x | Ask _ k => resume k 1 + resume k 2
-             fun twice_fn () = handle (perform Ask () + 1)
-               with return x => x | Ask _ k => resume k 1 + resume k 2
-             val twice_in_fn = twice_fn ()");
-        assert_eq!(global_int(&vm, "in_fn"), 111);
-        assert_eq!(global_int(&vm, "top"), 111);
-        assert_eq!(global_int(&vm, "twice"), 5);
-        assert_eq!(global_int(&vm, "twice_in_fn"), 5);
-    }
-
-    #[test]
-    fn test_effect_continuation_excludes_code_after_handle() {
-        // Code after a non-tail handle in the same frame is not part of the
-        // continuation and must run exactly once.
+    fn test_effect_code_after_handle_runs_once() {
+        // Code after a non-tail handle in the same frame runs exactly once.
         let vm = run("effect Ask of unit
              fun fb () = (handle (perform Ask () + 1)
-               with return x => x | Ask _ k => resume k 10 + 100) + 1000
+               with return x => x | Ask _ k => resume k 10) + 1000
              val in_fn = fb ()
              val top = (handle (perform Ask () + 1)
-               with return x => x | Ask _ k => resume k 10 + 100) + 1000
+               with return x => x | Ask _ k => resume k 10) + 1000
              fun fc y = let val a = y + 1
                in (handle (perform Ask () + a)
-                   with return x => x * 2 | Ask _ k => resume k 10 + 100) + a end
+                   with return x => x * 2 | Ask _ k => resume k 10) + a end
              val with_locals = fc 1");
-        assert_eq!(global_int(&vm, "in_fn"), 1111);
-        assert_eq!(global_int(&vm, "top"), 1111);
-        // (10 + 2) * 2 + 100 + 2
-        assert_eq!(global_int(&vm, "with_locals"), 126);
+        assert_eq!(global_int(&vm, "in_fn"), 1011);
+        assert_eq!(global_int(&vm, "top"), 1011);
+        // (10 + 2) * 2 + 2
+        assert_eq!(global_int(&vm, "with_locals"), 26);
     }
 
     #[test]
-    fn test_perform_payload_survives_gc_during_continuation_alloc() {
-        // Perform pops the payload before allocating the continuation. A GC
-        // forced by that allocation must still treat the payload as live, or
-        // the clause sees a freed (and possibly reused) heap slot.
+    fn test_perform_payload_survives_gc() {
+        // Perform pops the payload before the clause runs. A GC forced in
+        // between must still treat the payload as live, or the clause sees a
+        // freed (and possibly reused) heap slot.
         let src = "effect Ask of string
              fun f () = perform Ask (int_to_string 12345)
              val result = handle f ()
@@ -1604,30 +1548,24 @@ mod tests {
         }
     }
 
-    fn continuation_count(vm: &VM) -> usize {
-        vm.heap
-            .count_objects(|o| matches!(o, HeapObject::Continuation(_)))
-    }
-
     #[test]
-    fn test_abortive_clause_allocates_no_continuation() {
-        // The programs are small enough that no collection runs, so any
-        // continuation allocated by Perform is still in the heap afterwards.
-        for clause in ["Fail n _ => n", "Fail n k => n"] {
+    fn test_provider_allocates_nothing_per_request() {
+        // Going from 10 to 1,000 requests to one provider adds as many heap
+        // objects as the same loop without `perform` (the curried calls
+        // allocate partial applications). The programs are small enough that
+        // no collection runs.
+        let count = |requests: i64, step: &str| {
             let vm = run(&format!(
-                "effect Fail of int
-                 fun f () = 1 + perform Fail 41
-                 val result = handle f () with return x => x | {clause}"
+                "effect Ask of int
+                 fun loop i acc = if i = 0 then acc else loop (i - 1) (acc + {step})
+                 val result = handle loop {requests} 0 with return x => x | Ask n k => resume k n"
             ));
-            assert_eq!(global_int(&vm, "result"), 41, "{clause}");
-            assert_eq!(continuation_count(&vm), 0, "{clause}");
-        }
-        // Control: a clause that mentions k still captures.
-        let vm = run("effect Fail of int
-             fun f () = 1 + perform Fail 41
-             val result = handle f () with return x => x | Fail n k => resume k n");
-        assert_eq!(global_int(&vm, "result"), 42);
-        assert_eq!(continuation_count(&vm), 1);
+            assert_eq!(global_int(&vm, "result"), requests);
+            vm.heap.count_objects(|_| true)
+        };
+        let with_perform = count(1000, "perform Ask 1") - count(10, "perform Ask 1");
+        let without = count(1000, "1") - count(10, "1");
+        assert_eq!(with_perform, without);
     }
 
     #[test]
@@ -1646,7 +1584,6 @@ mod tests {
         assert_eq!(global_int(&vm, "t2"), 7);
         assert_eq!(global_int(&vm, "nt"), 114);
         assert_eq!(global_int(&vm, "top"), 8);
-        assert_eq!(continuation_count(&vm), 0);
         assert!(vm.handlers.is_empty());
     }
 
@@ -1669,13 +1606,8 @@ mod tests {
 
     #[test]
     fn test_nested_handlers_inner_aborts_outer_resumes() {
-        // The inner handle aborts with 105, then the outer clause resumes
+        // The inner handle aborts with 105, then the outer clause answers
         // the Ask in the enclosing expression with 10.
-        //
-        // Note: an inner handler that is live when an outer handler captures
-        // a continuation is not saved in that continuation (pre-existing
-        // behavior, unchanged here), so the inner handle must not span the
-        // outer perform.
         let vm = run("effect Ask of int
              effect Fail of int
              val result = handle
@@ -1683,44 +1615,96 @@ mod tests {
                  + perform Ask 1
              with return x => x | Ask n k => resume k (n * 10)");
         assert_eq!(global_int(&vm, "result"), 115);
-        assert_eq!(continuation_count(&vm), 1);
         assert!(vm.handlers.is_empty());
     }
 
     #[test]
-    fn test_abort_to_handler_installed_inside_resumed_continuation() {
-        // The outer clause resumes k. The resumed body then installs an
-        // inner handler and aborts to it.
+    fn test_abort_to_handler_installed_after_provider_returns() {
+        // The outer clause answers Ask. The body then installs an inner
+        // handler and aborts to it.
         let vm = run("effect Ask of int
              effect Fail of int
              fun body () =
                let val a = perform Ask 1
                in 1 + (handle 1 + perform Fail a with return x => x | Fail n _ => n + 100) end
              val result = handle body ()
-             with return x => x | Ask n k => resume k (n * 10) + 1000");
+             with return x => x | Ask n k => resume k (n * 10 + 1000)");
         assert_eq!(global_int(&vm, "result"), 1111);
         assert!(vm.handlers.is_empty());
     }
 
     #[test]
-    fn test_abort_from_inside_resumed_continuation() {
-        // The inner clause resumes k. Inside the resumed continuation the
-        // body performs Fail, which aborts to the outer handler and discards
-        // the pending `+ 100` in the inner clause.
+    fn test_abort_from_inside_provider_clause() {
+        // The inner provider's clause performs Fail, which aborts to the
+        // outer handler. The handlers hidden while the clause ran are
+        // discarded with it, and later handles work normally.
         let vm = run("effect Ask of int
              effect Fail of int
              fun body () =
                let val a = perform Ask 1
-                   val _ = perform Fail (a + 2)
-               in 0 end
+               in a + 1000 end
              val result = handle
-               (handle body () with return x => x | Ask n k => resume k n + 100)
+               (handle body () with return x => x | Ask n k => resume k (perform Fail (n + 2)))
              with return x => x | Fail n _ => n
              val after = handle (perform Ask 4) + 1
                with return x => x | Ask n k => resume k (n * 3)");
         assert_eq!(global_int(&vm, "result"), 3);
         assert_eq!(global_int(&vm, "after"), 13);
         assert!(vm.handlers.is_empty());
+        assert!(vm.hidden_handlers.is_empty());
+    }
+
+    #[test]
+    fn test_provider_clause_runs_outside_its_handler() {
+        // While a provider clause runs, its own handler is hidden: a perform
+        // of the same effect inside the clause reaches the outer handler.
+        let vm = run("effect Ask of int
+             val result = handle
+               (handle perform Ask 1
+                with return x => x | Ask n k => resume k (perform Ask (n + 1) * 10))
+             with return x => x | Ask n k => resume k (n + 100)");
+        assert_eq!(global_int(&vm, "result"), 1020);
+        assert!(vm.handlers.is_empty());
+        assert!(vm.hidden_handlers.is_empty());
+    }
+
+    #[test]
+    fn test_provider_clause_reads_locals_of_the_handling_function() {
+        let vm = run("effect Ask of unit
+             fun with_limit limit f = handle f () with return x => x | Ask _ k => resume k limit
+             val result = with_limit 7 (fn () => perform Ask () + perform Ask ())");
+        assert_eq!(global_int(&vm, "result"), 14);
+    }
+
+    #[test]
+    fn test_provider_clause_survives_gc() {
+        // The clause closure and the string it captures must stay alive
+        // while the handler is installed, under constant collection.
+        let src = "effect Ask of unit
+             fun with_name name f = handle f () with return x => x | Ask _ k => resume k (name ^ \"!\")
+             fun body () =
+               let val a = perform Ask ()
+                   val junk = int_to_string 999
+                   val b = perform Ask ()
+               in a ^ b end
+             val result = with_name (int_to_string 12345) body";
+        let mut completed = false;
+        for max in 1..96 {
+            let mut vm = compile_vm(src);
+            vm.set_max_heap(max);
+            match vm.run() {
+                Ok(()) => {
+                    completed = true;
+                    assert_eq!(global_str(&vm, "result"), "12345!12345!", "max_heap={max}");
+                }
+                Err(err) => assert!(
+                    err.is_heap_limit(),
+                    "max_heap={max}: unexpected error: {}",
+                    err.message
+                ),
+            }
+        }
+        assert!(completed, "no object limit let the program finish");
     }
 
     #[test]
@@ -1742,7 +1726,6 @@ mod tests {
                 Ok(()) => {
                     completed = true;
                     assert_eq!(global_str(&vm, "result"), "12345!", "max_heap={max}");
-                    assert_eq!(continuation_count(&vm), 0, "max_heap={max}");
                 }
                 Err(err) => assert!(
                     err.is_heap_limit(),
@@ -1774,25 +1757,9 @@ mod tests {
     }
 
     #[test]
-    fn test_effect_state() {
-        // State effect: get/put pattern
-        let vm = run("effect Get of unit
-             effect Put of int
-             fun run_state init f =
-               handle f ()
-               with return x => x
-                  | Get _ k => run_state init (fn _ => resume k init)
-                  | Put n k => run_state n (fn _ => resume k ())
-             val result = run_state 0 (fn _ =>
-               let val _ = perform Put 42
-               in perform Get () end)");
-        assert_eq!(global_int(&vm, "result"), 42);
-    }
-
-    #[test]
-    fn test_resume_keeps_inner_abortive_handler() {
-        // #112: `Fail` is handled inside the handler that catches `Ask`; after
-        // `resume`, the inner handler must still be installed.
+    fn test_provider_keeps_inner_abortive_handler() {
+        // #112: `Fail` is handled inside the handler that answers `Ask`;
+        // after the provider returns, the inner handler is still installed.
         let vm = run("effect Ask of int
              effect Fail of int
              fun body () = let val a = perform Ask 1 val _ = perform Fail (a + 5) in 1000 end
@@ -1803,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resume_keeps_two_inner_handlers_that_resume() {
+    fn test_provider_keeps_two_inner_providers() {
         let vm = run("effect Ask of int
              effect A of int
              effect B of int
@@ -1818,44 +1785,9 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_shot_resume_restores_inner_handler_each_time() {
-        let vm = run("effect Choose of unit
-             effect Fail of int
-             fun body () =
-               let val b = perform Choose () in
-                 if b then 1 else let val _ = perform Fail 7 in 0 end
-               end
-             val result = handle
-               (handle body () with return x => x | Fail n _ => n * 10)
-             with return x => x | Choose _ k => resume k true + resume k false");
-        assert_eq!(global_int(&vm, "result"), 1 + 70);
-    }
-
-    #[test]
-    fn test_shallow_style_resume_keeps_inner_handler() {
-        // The clause resumes under a handler it installs itself, so the
-        // catching handler is not reinstalled (see `catching_handler_depth`),
-        // but the inner `Log` handler is.
-        let vm = run("effect Yield of int
-             effect Log of int
-             fun run_gen f = handle f ()
-               with return _ => 0
-                  | Yield n k => n + run_gen (fn _ => resume k ())
-             fun gen () =
-               handle
-                 (let val _ = perform Yield 1
-                      val _ = perform Log 5
-                      val _ = perform Yield 2
-                  in () end)
-               with return x => x | Log _ k => resume k ()
-             val result = run_gen gen");
-        assert_eq!(global_int(&vm, "result"), 3);
-    }
-
-    #[test]
-    fn test_effect_resume_direct_large_loop() {
-        // Repeated direct resumes should stay correct for larger workloads,
-        // even before a dedicated tail-resume path lands.
+    fn test_provider_loop_runs_in_constant_stack() {
+        // #29: each request returns to the perform site, so a million
+        // requests stay far below the call-frame limit.
         let vm = run("effect Ask of int\n\
              fun loop n acc =\n\
                if n = 0 then acc\n\
@@ -1864,9 +1796,9 @@ mod tests {
              fun run_effect f =\n\
                handle f ()\n\
                with return x => x\n\
-                  | Ask n k => resume k n\n\
-             val result = run_effect (fn () => loop 20000 0)");
-        assert_eq!(global_int(&vm, "result"), 200010000);
+                  | Ask n k => resume k 1\n\
+             val result = run_effect (fn () => loop 1000000 0)");
+        assert_eq!(global_int(&vm, "result"), 1_000_000);
     }
 
     #[test]
@@ -1885,52 +1817,6 @@ mod tests {
                   | Ask n k => resume k n\n\
              val result = run_effect (fn () => loop 500 0)");
         assert_eq!(global_int(&vm, "result"), 125250);
-    }
-
-    #[test]
-    fn test_resume_blocked_invalid_continuation_errors() {
-        let mut vm = compile_vm("val _ = ()");
-        let bogus = vm
-            .heap
-            .alloc(HeapObject::String("not a continuation".into()))
-            .unwrap();
-        vm.blocked_continuation = Some(bogus);
-
-        let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
-        assert_eq!(err.message, "resume_blocked: expected continuation");
-        assert!(vm.blocked_continuation.is_none());
-    }
-
-    #[test]
-    fn test_resume_blocked_rejects_saved_frame_base_overflow() {
-        let mut vm = compile_vm("val _ = ()");
-        vm.stack.push(Value::Unit);
-        let cont = vm
-            .heap
-            .alloc(HeapObject::Continuation(Box::new(ContinuationData {
-                saved_frames: vec![
-                    SavedFrame {
-                        proto_idx: usize::MAX,
-                        ip: 0,
-                        base_offset: 0,
-                        captures: Arc::from([]),
-                    },
-                    SavedFrame {
-                        proto_idx: usize::MAX,
-                        ip: 0,
-                        base_offset: usize::MAX,
-                        captures: Arc::from([]),
-                    },
-                ],
-                saved_stack: vec![Value::Unit],
-                saved_handlers: Vec::new(),
-                catching_handler_depth: 0,
-            })))
-            .unwrap();
-        vm.blocked_continuation = Some(cont);
-
-        let err = vm.resume_blocked(Value::Int(1)).unwrap_err();
-        assert_eq!(err.message, "resume_blocked: saved frame base overflow");
     }
 
     #[test]
