@@ -1,8 +1,8 @@
 //! Pluggable scheduler trait and default FIFO implementation.
 
 use crate::process::Pid;
+use crate::sync::{Condvar, Mutex};
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex};
 
 /// Scheduling decisions are isolated behind this trait.
 /// The runtime calls into the scheduler; the scheduler never

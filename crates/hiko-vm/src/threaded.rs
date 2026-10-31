@@ -33,9 +33,9 @@
 //! (see [`park`]) or when a worker next dequeues it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use dashmap::{DashMap, DashSet};
+use crate::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::sync::{DashMap, DashSet};
 
 use crate::io_backend::{IoBackend, IoContext, IoResult, IoToken, ThreadPoolIoBackend};
 use crate::process::{
@@ -1250,6 +1250,10 @@ fn remove_waiter(waiters: &DashMap<Pid, Vec<Pid>>, child_pid: Pid, waiter_pid: P
         waiter_pids.is_empty()
     });
 }
+
+#[cfg(all(test, loom))]
+#[path = "threaded_loom.rs"]
+mod loom_tests;
 
 #[cfg(test)]
 mod tests {
