@@ -3,7 +3,7 @@
  * Input: 8 => 92 solutions
  *)
 
-fun safe (x, d, qs) = case qs of
+fun safe (x : int, d, qs) = case qs of
     [] => true
   | q :: rest =>
       x <> q andalso x <> q + d andalso x <> q - d

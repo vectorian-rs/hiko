@@ -1,0 +1,16 @@
+(* Fan-out of CPU-bound children: 64 processes each compute fib 22.
+ * Scales with `hiko run --workers N` up to the core count. *)
+fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+fun spawn_all (n, acc) = if n = 0 then acc else spawn_all (n - 1, spawn (fn () => fib 22) :: acc)
+
+fun await_all (pids, acc) =
+  case pids of
+      [] => acc
+    | pid :: rest => await_all (rest, acc + await_process pid)
+
+val total = await_all (spawn_all (64, []), 0)
+
+val _ = assert_eq (total, 64 * 17711, "fanout_cpu")
+
+val _ = println ("fanout_cpu = " ^ int_to_string total)

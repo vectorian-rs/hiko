@@ -1,0 +1,14 @@
+(* Spawn and await 6,000 trivial children: the cost of process creation
+ * through the threaded runtime. *)
+fun spawn_all (n, acc) = if n = 0 then acc else spawn_all (n - 1, spawn (fn () => n) :: acc)
+
+fun await_all (pids, acc) =
+  case pids of
+      [] => acc
+    | pid :: rest => await_all (rest, acc + await_process pid)
+
+val total = await_all (spawn_all (6000, []), 0)
+
+val _ = assert_eq (total, 18003000, "spawn_await")
+
+val _ = println ("spawn_await = " ^ int_to_string total)
