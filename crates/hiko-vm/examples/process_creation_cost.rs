@@ -163,12 +163,11 @@ fn benchmark<T>(name: &str, iterations: usize, mut op: impl FnMut() -> T) {
 
 fn main() {
     let program = compile_program(
+        // Top-level bindings are globals, not captures, so the four
+        // captured values are arguments of the function that builds entry4.
         "val entry0 = fn () => 41
-         val a = 1
-         val b = 2
-         val c = true
-         val d = \"cap\"
-         val entry4 = fn () => if c then if d = \"cap\" then a + b else 0 else 0",
+         fun make_entry4 a b c d = fn () => if c then if d = \"cap\" then a + b else 0 else 0
+         val entry4 = make_entry4 1 2 true \"cap\"",
     );
     let (entry0_proto_idx, empty_captures) = resolve_global_closure(&program, "entry0");
     let (entry4_proto_idx, small_captures) = resolve_global_closure(&program, "entry4");
@@ -182,6 +181,14 @@ fn main() {
         "entry4 benchmark closure should capture exactly four values"
     );
 
+    let mut policy_vm = VM::new(program.clone());
+    let dir = std::env::temp_dir().to_string_lossy().to_string();
+    let folders = ["read_file", "write_file", "list_dir", "glob", "walk_dir"]
+        .into_iter()
+        .map(|builtin| (builtin.to_string(), vec![dir.clone()]))
+        .collect();
+    policy_vm.set_fs_root(dir.clone());
+    policy_vm.set_fs_builtin_folders(folders);
     let parent_vm = VM::new(program);
 
     let iterations = 20_000;
@@ -192,6 +199,9 @@ fn main() {
     println!();
 
     benchmark("VM::create_child", iterations, || parent_vm.create_child());
+    benchmark("VM::create_child (fs policy)", iterations, || {
+        policy_vm.create_child()
+    });
     benchmark("spawn path (0 captures)", iterations, || {
         create_child_vm_from_parent(&parent_vm, entry0_proto_idx, empty_captures.clone())
             .expect("child")
