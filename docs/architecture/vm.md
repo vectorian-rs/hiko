@@ -104,9 +104,11 @@ insert is intentionally kept out of the VM layer.
 `VM::create_child`:
 
 - reuses compiled bytecode/functions/effects through `Arc`
-- rebuilds builtin/global tables for a fresh interpreter instance
-- clones immutable capability configuration (exec/fs/http)
-- pre-reserves builtin/global table capacity to reduce allocator churn
+- shares the parent's builtin table (`Arc<BuiltinTable>`); the child's global
+  table starts empty and caches a builtin or inherited global on first use
+- shares the parent's filesystem policy and its opened directory capabilities
+  (`Arc<FsPolicy>`), so no directory is reopened at spawn
+- clones the remaining capability configuration (exec/http)
 - reuses already-resolved `exec` allowlist paths instead of re-walking `PATH`
 
 `create_child_vm_from_parent`:
@@ -118,9 +120,8 @@ insert is intentionally kept out of the VM layer.
 
 That means the cost is dominated by:
 
-- builtin/global table rebuild
-- capability cloning
 - captured value deserialization
+- the child's fixed buffers (stack, frames, heap)
 
 It is not dominated by compiled-program cloning.
 
@@ -141,8 +142,12 @@ It prints:
 The example measures:
 
 - `VM::create_child`
+- `VM::create_child` from a parent with a filesystem policy
 - full spawn path with zero captures
 - full spawn path with a small capture set
+
+[`performance.md`](performance.md) has the full benchmark set and the
+before/after numbers for PR #104.
 
 These numbers are machine- and allocator-dependent, so the example is the source
 of truth. Keep this example updated when the process creation path changes.
@@ -150,15 +155,16 @@ of truth. Keep this example updated when the process creation path changes.
 ### Current sample output
 
 Sample output from `cargo run -p hiko-vm --example process_creation_cost --release`
-run on April 21, 2026 in the development environment used for this refactor:
+on October 31, 2026, Apple M1 Max:
 
 ```text
 Measuring hiko process creation costs over 20000 iterations.
 This excludes scheduler/table insertion and focuses on VM creation.
 
-VM::create_child                   7913 ns/op  104.00 alloc    0.00 realloc  104.00 free    9836.0 B/op
-spawn path (0 captures)            7897 ns/op  106.00 alloc    0.00 realloc  106.00 free   10012.0 B/op
-spawn path (4 captures)            8058 ns/op  110.00 alloc    0.00 realloc  110.00 free   10668.0 B/op
+VM::create_child                    334 ns/op    7.00 alloc    0.00 realloc    7.00 free    1856.0 B/op
+VM::create_child (fs policy)        333 ns/op    7.00 alloc    0.00 realloc    7.00 free    1856.0 B/op
+spawn path (0 captures)             389 ns/op    8.00 alloc    0.00 realloc    8.00 free    1872.0 B/op
+spawn path (4 captures)            1056 ns/op   33.00 alloc    0.00 realloc   33.00 free    3552.0 B/op
 ```
 
 Use those numbers as a baseline, not as a stable contract.

@@ -145,8 +145,9 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
 - Execution: `run()` (unbounded unless fuel is set) and `run_slice(reductions)`,
   which returns at `Done`, `Failed`, `Cancelled`, `Yielded`, `Spawn`, `Await`,
   `WaitAny`, or `Io`.
-- Process creation: about 8 µs and about 105 allocations per spawn (April 2026
-  baseline, `cargo run -p hiko-vm --example process_creation_cost --release`).
+- Process creation: about 0.4 µs and 8 allocations per spawn, with or without
+  a filesystem policy (October 2026, #104; see
+  [`performance.md`](../architecture/performance.md)).
 
 ### Efficiency gaps
 
@@ -155,10 +156,14 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   done. The filesystem half (per-file `canonicalize` plus `cap_std` checks) is
   not re-measured.
 - `HeapObject::String(String)` copies on transfer. #12 (`Arc<str>`) is open.
-- Spawn cost is dominated by rebuilding builtin and global tables per child.
-- There is no continuous benchmark baseline. `benchmarks/` has six classic
-  programs (ack, fib via effects, nqueens, primes, tak) and `hiko-vm` has
-  criterion benches, but results are not tracked over time.
+- `GetGlobal` hashes the global's name on every execution, about 6% of a loop
+  that calls a builtin. Slot-indexed globals would remove it.
+- Spawning trivial children in sequence gets slower with more workers (22 ms
+  at 1 worker, 87 ms at 8 for 6,000 children): the scheduler wakes a worker
+  per enqueue. CPU fan-out scales 4.9x at 8 workers.
+- `scripts/bench.sh` runs a reproducible benchmark set, and
+  [`performance.md`](../architecture/performance.md) records a baseline.
+  Results are not yet tracked automatically over time.
 
 ## Security
 
