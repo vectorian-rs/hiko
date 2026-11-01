@@ -128,3 +128,11 @@ pub(crate) fn extract_string_arg(
         _ => Err(format!("{name}: expected String")),
     }
 }
+
+/// Host work for one builtin call, in opcode-equivalents: `base`, plus
+/// `per_kib` for every KiB of `bytes`, rounded up. See
+/// docs/builtins/accounting-matrix.md#calibration for how the rates are
+/// measured.
+pub(crate) fn host_work(base: u64, per_kib: u64, bytes: usize) -> u64 {
+    base.saturating_add((bytes as u64).saturating_mul(per_kib).div_ceil(1024))
+}

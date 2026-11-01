@@ -104,6 +104,7 @@ pub(crate) use support::alloc_list;
     feature = "builtin-time"
 ))]
 pub(crate) use support::heap_alloc;
+pub(crate) use support::host_work;
 pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg};
 #[cfg(feature = "builtin-filesystem")]
 pub(crate) use support::{fnv1a_tag_parts, is_valid_fnv1a_tag};
@@ -347,5 +348,128 @@ mod tests {
             missing_metadata.is_empty() && missing_registration.is_empty(),
             "registered but not declared: {missing_metadata:?}; declared but not registered: {missing_registration:?}"
         );
+    }
+}
+
+/// Host work must grow with the input a builtin walks, so a large input
+/// cannot cost the same as a small one.
+#[cfg(all(
+    test,
+    feature = "builtin-string",
+    feature = "builtin-bytes",
+    feature = "builtin-regex",
+    feature = "builtin-json",
+    feature = "builtin-hash",
+    feature = "builtin-random"
+))]
+mod host_work_tests {
+    use super::test_helpers::*;
+    use super::*;
+
+    fn call(name: &str, heap: &mut Heap, arg: Value) -> Value {
+        let (_, builtin) = builtin_entries()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("no builtin {name}"));
+        builtin(&[arg], heap).unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    /// The host work one call of `name` charges, for an input built from
+    /// `n` bytes by `build`.
+    fn charged(name: &str, n: usize, build: impl Fn(&mut Heap, usize) -> Value) -> u64 {
+        let mut heap = Heap::new();
+        let arg = build(&mut heap, n);
+        let before = heap.host_work_used();
+        call(name, &mut heap, arg);
+        heap.host_work_used() - before
+    }
+
+    fn text(heap: &mut Heap, n: usize) -> Value {
+        string_arg(heap, &"a".repeat(n))
+    }
+
+    fn bytes(heap: &mut Heap, n: usize) -> Value {
+        heap_alloc(heap, HeapObject::Bytes(vec![b'a'; n].into())).unwrap()
+    }
+
+    fn json_array(heap: &mut Heap, n: usize) -> Value {
+        let items = vec!["1"; n / 2].join(",");
+        string_arg(heap, &format!("[{items}]"))
+    }
+
+    fn with_strings(heap: &mut Heap, first: Value, rest: &[&str]) -> Value {
+        let mut fields = vec![first];
+        fields.extend(rest.iter().map(|s| string_arg(heap, s)));
+        heap_alloc(heap, HeapObject::Tuple(fields.into())).unwrap()
+    }
+
+    #[test]
+    fn charges_grow_with_input_size() {
+        type Build = fn(&mut Heap, usize) -> Value;
+        let cases: &[(&str, Build)] = &[
+            ("string_length", text),
+            ("substring", |h, n| {
+                let s = text(h, n);
+                tuple3(h, s, Value::Int(n as i64 - 8), Value::Int(8))
+            }),
+            ("string_contains", |h, n| {
+                let s = text(h, n);
+                with_strings(h, s, &["zz"])
+            }),
+            ("trim", text),
+            ("to_upper", text),
+            ("to_lower", text),
+            ("split", |h, n| {
+                let s = text(h, n);
+                with_strings(h, s, &[","])
+            }),
+            ("string_replace", |h, n| {
+                let s = text(h, n);
+                with_strings(h, s, &["a", "b"])
+            }),
+            ("string_join", |h, n| {
+                let parts = (0..n / 16)
+                    .map(|_| string_arg(h, "abcdefghijklmnop"))
+                    .collect();
+                let list = alloc_list(h, parts).unwrap();
+                with_strings(h, list, &[""])
+            }),
+            ("string_to_bytes", text),
+            ("bytes_to_string", bytes),
+            ("bytes_slice", |h, n| {
+                let b = bytes(h, n);
+                tuple3(h, b, Value::Int(0), Value::Int(n as i64))
+            }),
+            ("blake3", bytes),
+            ("regex_match", |h, n| {
+                let s = text(h, n);
+                with_strings(h, s, &["z+"])
+            }),
+            ("regex_replace", |h, n| {
+                let s = text(h, n);
+                with_strings(h, s, &["a", "b"])
+            }),
+            ("json_parse", json_array),
+            ("json_length", json_array),
+            ("json_get", |h, n| {
+                let a = json_array(h, n);
+                with_strings(h, a, &["0"])
+            }),
+            ("json_to_string", |h, n| {
+                let a = json_array(h, n);
+                call("json_parse", h, a)
+            }),
+            ("random_bytes", |_, n| Value::Int(n as i64)),
+            ("rng_seed", bytes),
+        ];
+        for (name, build) in cases {
+            let small = charged(name, 16, build);
+            let large = charged(name, 64 * 1024, build);
+            // Every per-KiB rate is at least 1, so 64 KiB adds at least 64.
+            assert!(
+                large >= small + 64,
+                "{name}: charged {small} for 16 B and {large} for 64 KiB"
+            );
+        }
     }
 }

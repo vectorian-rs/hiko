@@ -1,14 +1,12 @@
 use super::*;
 
+// Host work in opcode-equivalents, from the host_work_calibration example
+// (docs/builtins/accounting-matrix.md#calibration).
 const HASH_BASE_HOST_WORK: u64 = 20;
-const HASH_PER_KIB_HOST_WORK: u64 = 1;
+const HASH_PER_KIB_HOST_WORK: u64 = 62;
 
 fn hash_work(bytes: usize) -> u64 {
-    HASH_BASE_HOST_WORK.saturating_add(
-        (bytes as u64)
-            .div_ceil(1024)
-            .saturating_mul(HASH_PER_KIB_HOST_WORK),
-    )
+    host_work(HASH_BASE_HOST_WORK, HASH_PER_KIB_HOST_WORK, bytes)
 }
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
