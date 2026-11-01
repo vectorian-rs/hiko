@@ -5,10 +5,6 @@ use super::*;
 const HASH_BASE_HOST_WORK: u64 = 20;
 const HASH_PER_KIB_HOST_WORK: u64 = 62;
 
-fn hash_work(bytes: usize) -> u64 {
-    host_work(HASH_BASE_HOST_WORK, HASH_PER_KIB_HOST_WORK, bytes)
-}
-
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[("blake3", blake3 as BuiltinFn)]
 }
@@ -21,8 +17,11 @@ pub(super) fn blake3(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         },
         _ => return Err("blake3: expected Bytes".into()),
     };
-    heap.charge_host_work(hash_work(bytes.len()))
-        .map_err(|e| format!("blake3: {e}"))?;
+    charge(
+        heap,
+        "blake3",
+        host_work(HASH_BASE_HOST_WORK, HASH_PER_KIB_HOST_WORK, bytes.len()),
+    )?;
     heap_alloc(
         heap,
         HeapObject::String(hiko_common::blake3_hex(&bytes).into()),

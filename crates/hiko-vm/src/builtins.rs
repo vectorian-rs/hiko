@@ -104,8 +104,8 @@ pub(crate) use support::alloc_list;
     feature = "builtin-time"
 ))]
 pub(crate) use support::heap_alloc;
-pub(crate) use support::host_work;
-pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg};
+pub(crate) use support::{charge, host_work};
+pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg, string_pair};
 #[cfg(feature = "builtin-filesystem")]
 pub(crate) use support::{fnv1a_tag_parts, is_valid_fnv1a_tag};
 
@@ -419,6 +419,12 @@ mod host_work_tests {
             ("trim", text),
             ("to_upper", text),
             ("to_lower", text),
+            ("to_upper", |h, n| string_arg(h, &"ß".repeat(n / 2))),
+            ("starts_with", |h, n| {
+                let s = text(h, n);
+                let prefix = text(h, n);
+                tuple2(h, s, prefix)
+            }),
             ("split", |h, n| {
                 let s = text(h, n);
                 with_strings(h, s, &[","])

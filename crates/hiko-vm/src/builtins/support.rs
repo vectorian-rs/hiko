@@ -129,10 +129,37 @@ pub(crate) fn extract_string_arg(
     }
 }
 
+/// The two string fields of a `(String, String)` argument.
+pub(crate) fn string_pair(
+    args: &[Value],
+    heap: &Heap,
+    builtin: &str,
+) -> Result<(Arc<str>, Arc<str>), String> {
+    let expected = || format!("{builtin}: expected (String, String)");
+    let (v0, v1) = match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
+            _ => return Err(expected()),
+        },
+        _ => return Err(expected()),
+    };
+    Ok((
+        extract_string_arg(&[v0], heap, builtin)?,
+        extract_string_arg(&[v1], heap, builtin)?,
+    ))
+}
+
 /// Host work for one builtin call, in opcode-equivalents: `base`, plus
 /// `per_kib` for every KiB of `bytes`, rounded up. See
 /// docs/builtins/accounting-matrix.md#calibration for how the rates are
 /// measured.
 pub(crate) fn host_work(base: u64, per_kib: u64, bytes: usize) -> u64 {
     base.saturating_add((bytes as u64).saturating_mul(per_kib).div_ceil(1024))
+}
+
+/// Charge `work` units of host work for a call of `builtin`, with the
+/// builtin's name in the error.
+pub(crate) fn charge(heap: &mut Heap, builtin: &str, work: u64) -> Result<(), String> {
+    heap.charge_host_work(work)
+        .map_err(|e| format!("{builtin}: {e}"))
 }
