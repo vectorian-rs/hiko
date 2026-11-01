@@ -622,6 +622,12 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         | Op::SetGlobal
         | Op::Jump
         | Op::JumpIfFalse
+        | Op::JumpIfNotEq
+        | Op::JumpIfEq
+        | Op::JumpIfNotLtInt
+        | Op::JumpIfNotGtInt
+        | Op::JumpIfNotLeInt
+        | Op::JumpIfNotGeInt
         | Op::CallDirect
         | Op::TailCallDirect
         | Op::Panic

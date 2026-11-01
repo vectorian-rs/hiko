@@ -432,6 +432,21 @@ fn decode_instruction(
                 delta: -1,
             }
         }
+        Op::JumpIfNotEq
+        | Op::JumpIfEq
+        | Op::JumpIfNotLtInt
+        | Op::JumpIfNotGtInt
+        | Op::JumpIfNotLeInt
+        | Op::JumpIfNotGeInt => {
+            let offset = read_i16(chunk, ip, "compare-and-branch")?;
+            let target = read_relative_target(*ip, offset, "compare-and-branch")?;
+            successors.push(target);
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 2,
+                delta: -2,
+            }
+        }
         Op::JumpIfFalse => {
             let offset = read_i16(chunk, ip, "JumpIfFalse")?;
             let target = read_relative_target(*ip, offset, "JumpIfFalse")?;
@@ -874,6 +889,43 @@ mod tests {
             Op::Halt as u8,
         ]);
         verify_program(&program).expect("JumpIfNotTag should verify");
+    }
+
+    #[test]
+    fn rejects_compare_and_branch_with_one_operand() {
+        for op in [
+            Op::JumpIfNotEq,
+            Op::JumpIfEq,
+            Op::JumpIfNotLtInt,
+            Op::JumpIfNotGtInt,
+            Op::JumpIfNotLeInt,
+            Op::JumpIfNotGeInt,
+        ] {
+            let program = empty_program(vec![
+                Op::Unit as u8,
+                op as u8,
+                0,
+                0,
+                Op::Unit as u8,
+                Op::Halt as u8,
+            ]);
+            let err = verify_program(&program).expect_err("needs two operands");
+            assert!(err.message().contains("stack"), "{op:?}: {}", err.message());
+        }
+    }
+
+    #[test]
+    fn accepts_compare_and_branch_with_two_operands() {
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::Unit as u8,
+            Op::JumpIfNotLtInt as u8,
+            0,
+            0,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ]);
+        verify_program(&program).expect("both successors have depth 0");
     }
 
     #[test]

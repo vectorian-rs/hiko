@@ -1148,20 +1148,46 @@ impl Compiler {
         fail_jumps.push((jmp, self.ctx().locals.len()));
     }
 
-    /// Emit scalar comparison: GetLocal slot, push value, eq_op, JumpIfFalse → fail.
+    /// Emit scalar comparison: GetLocal slot, push value, JumpIfNotEq → fail.
     fn emit_scalar_check(
         &mut self,
         slot: u16,
         value: Constant,
-        eq_op: Op,
         fail_jumps: &mut Vec<(usize, usize)>,
     ) -> Result<(), CompileError> {
         self.emit_get_local(slot);
         self.emit_constant(value)?;
-        self.emit(eq_op);
-        let jmp = self.emit_jump(Op::JumpIfFalse);
+        let jmp = self.emit_jump(Op::JumpIfNotEq);
         fail_jumps.push((jmp, self.ctx().locals.len()));
         Ok(())
+    }
+
+    /// Compile `cond` and a jump taken when it is false. A comparison of two
+    /// operands becomes one compare-and-branch instruction.
+    fn compile_cond_jump(&mut self, cond: &Expr) -> Result<usize, CompileError> {
+        let cond = strip_parens(cond);
+        if let ExprKind::BinOp(op, lhs, rhs) = &cond.kind
+            && !matches!(op, BinOp::Andalso | BinOp::Orelse | BinOp::Pipe)
+        {
+            let resolved = self
+                .resolve_generic_binop(*op, cond.span)
+                .unwrap_or_else(|| binop_to_op(*op));
+            let jump = match resolved {
+                Op::Eq => Some(Op::JumpIfNotEq),
+                Op::Ne => Some(Op::JumpIfEq),
+                Op::LtInt => Some(Op::JumpIfNotLtInt),
+                Op::GtInt => Some(Op::JumpIfNotGtInt),
+                Op::LeInt => Some(Op::JumpIfNotLeInt),
+                Op::GeInt => Some(Op::JumpIfNotGeInt),
+                _ => None,
+            };
+            if let Some(jump) = jump {
+                self.compile_operands(&[lhs, rhs])?;
+                return Ok(self.emit_jump(jump));
+            }
+        }
+        self.compile_expr(cond)?;
+        Ok(self.emit_jump(Op::JumpIfFalse))
     }
 
     // ── Declarations ─────────────────────────────────────────────────
@@ -2111,13 +2137,13 @@ impl Compiler {
             PatKind::Wildcard | PatKind::Var(_) | PatKind::Unit => {} // always match
 
             PatKind::IntLit(n) => {
-                self.emit_scalar_check(slot, Constant::Int(*n), Op::Eq, fail_jumps)?;
+                self.emit_scalar_check(slot, Constant::Int(*n), fail_jumps)?;
             }
             PatKind::FloatLit(f) => {
-                self.emit_scalar_check(slot, Constant::Float(*f), Op::Eq, fail_jumps)?;
+                self.emit_scalar_check(slot, Constant::Float(*f), fail_jumps)?;
             }
             PatKind::WordLit(w) => {
-                self.emit_scalar_check(slot, Constant::Word(*w), Op::Eq, fail_jumps)?;
+                self.emit_scalar_check(slot, Constant::Word(*w), fail_jumps)?;
             }
             PatKind::BoolLit(b) => {
                 // The scrutinee is already a bool: branch on it directly
@@ -2130,10 +2156,10 @@ impl Compiler {
                 fail_jumps.push((jmp, self.ctx().locals.len()));
             }
             PatKind::StringLit(s) => {
-                self.emit_scalar_check(slot, Constant::String(s.clone()), Op::Eq, fail_jumps)?;
+                self.emit_scalar_check(slot, Constant::String(s.clone()), fail_jumps)?;
             }
             PatKind::CharLit(c) => {
-                self.emit_scalar_check(slot, Constant::Char(*c), Op::Eq, fail_jumps)?;
+                self.emit_scalar_check(slot, Constant::Char(*c), fail_jumps)?;
             }
 
             PatKind::Constructor(sym, payload) => {
@@ -2535,8 +2561,7 @@ impl Compiler {
             ExprKind::Fn(pat, body) => self.compile_lambda(pat, body)?,
 
             ExprKind::If(cond, then_br, else_br) => {
-                self.compile_expr(cond)?;
-                let else_jump = self.emit_jump(Op::JumpIfFalse);
+                let else_jump = self.compile_cond_jump(cond)?;
                 self.compile_expr_inner(then_br, tail)?;
                 let end_jump = self.emit_jump(Op::Jump);
                 self.patch_jump(else_jump)?;
@@ -3044,6 +3069,45 @@ mod tests {
             );
             assert!(!proto.chunk.code.contains(&(Op::Eq as u8)), "{name}");
         }
+    }
+
+    #[test]
+    fn compile_conditions_use_compare_and_branch() {
+        let program = parse_program(
+            "fun lt n = if n < 2 then 1 else 2\n\
+             fun ge n = if n >= 2 then 1 else 2\n\
+             fun eq n = if n = 0 then 1 else 2\n\
+             fun ne n = if n <> 0 then 1 else 2\n\
+             fun lit n = case n of 0 => 1 | _ => 2\n\
+             fun flt (x : float) = if x < 1.0 then 1 else 2\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let code = |name: &str| {
+            compiled
+                .functions
+                .iter()
+                .find(|proto| proto.name.as_deref() == Some(name))
+                .expect("function proto")
+                .chunk
+                .code
+                .clone()
+        };
+        for (name, fused, unfused) in [
+            ("lt", Op::JumpIfNotLtInt, Op::LtInt),
+            ("ge", Op::JumpIfNotGeInt, Op::GeInt),
+            ("eq", Op::JumpIfNotEq, Op::Eq),
+            ("ne", Op::JumpIfEq, Op::Ne),
+            ("lit", Op::JumpIfNotEq, Op::Eq),
+        ] {
+            let code = code(name);
+            assert!(code.contains(&(fused as u8)), "{name}");
+            assert!(!code.contains(&(unfused as u8)), "{name}");
+            assert!(!code.contains(&(Op::JumpIfFalse as u8)), "{name}");
+        }
+        // Float comparisons keep the compare and the jump.
+        let code = code("flt");
+        assert!(code.contains(&(Op::LtFloat as u8)));
+        assert!(code.contains(&(Op::JumpIfFalse as u8)));
     }
 
     #[test]
