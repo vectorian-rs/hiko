@@ -59,11 +59,61 @@ latency and non-preemptive sections, see
 | Builtin display/output bridge | `print`/`println` display of arbitrary values | ✅ | ◐ display traversal/formatting not separately host-work charged | ✅ displayed bytes charged | ✅ formatted strings allocate outside/inside ordinary Rust before sink write | N/A | For latency-sensitive embedders, avoid printing extremely large structured values or set tight output/heap limits. |
 | Process-boundary helpers | `SendableValue` serialization/deserialization for captures/results | N/A (called from runtime/builtin paths) | ✅ fixed + per-KiB payload charges | N/A | ✅ size bounded by `max_message_bytes` before copying; deserialize allocates through receiving heap limits | N/A / ⚠️ host handles are non-sendable except supported AWS config sendable variants | Shape copied iteratively, depth limited; immutable leaves shared where possible. |
 
+## Calibration
+
+`cargo run --release -p hiko-vm --example host_work_calibration [filter]`
+measures what each charged builtin costs and what it charges, at inputs of
+16 B, 1 KiB, 64 KiB and 1 MiB. For each builtin and size it runs a generated
+program that calls the builtin K times and the same program with K = 0, and
+subtracts the time of the loop's own opcodes. The rest is the builtin's
+cost, expressed in opcode-equivalents: its time divided by the measured time
+of one opcode.
+
+### Before tuning (2026-11-01)
+
+Apple M1 Max, release build; one opcode took 12.3 ns. Costs and charges are
+in opcode-equivalents; per-KiB values are the slope between 16 B and 1 MiB.
+"One call at 1 MiB" is the time of one call at the largest size: a call
+cannot be interrupted, so it is the longest pause one call causes.
+
+| Builtin | Cost at 16 B | Cost per KiB | Charged at 16 B | Charged per KiB | Cost / charge at 1 MiB | One call at 1 MiB |
+|---|---|---|---|---|---|---|
+| `string_length` | 0 | 4.6 | 5 | 0.0 | 947x | 58.7µs |
+| `substring` | 11 | 35.7 | 20 | 0.0 | 1828x | 451.3µs |
+| `string_contains` | 12 | 4.0 | 10 | 0.0 | 410x | 51.0µs |
+| `starts_with` | 7 | 0.0 | 5 | 0.0 | 2x | 429.0ns |
+| `ends_with` | 7 | 0.0 | 5 | 0.0 | 2x | 455.0ns |
+| `trim` | 3 | 8.2 | 20 | 0.0 | 420x | 104.0µs |
+| `to_upper` | 5 | 15.0 | 20 | 0.0 | 770x | 190.4µs |
+| `to_lower` | 5 | 13.7 | 20 | 0.0 | 702x | 173.6µs |
+| `split` | 24 | 518.5 | 21 | 1.0 | 509x | 6.6ms |
+| `string_replace` | 19 | 81.5 | 21 | 1.0 | 80x | 1.0ms |
+| `string_join` | 13 | 109.7 | 21 | 1.1 | 101x | 1.4ms |
+| `string_to_bytes` | 2 | 7.8 | 11 | 1.0 | 8x | 98.7µs |
+| `bytes_to_string` | 7 | 42.0 | 11 | 1.0 | 42x | 531.1µs |
+| `bytes_length` | 0 | 0.0 | 5 | 0.0 | 5x | 596.0ns |
+| `bytes_get` | 3 | 0.0 | 5 | 0.0 | 2x | 424.0ns |
+| `bytes_slice` | 11 | 4.8 | 11 | 0.5 | 9x | 61.0µs |
+| `blake3` | 17 | 60.3 | 21 | 1.0 | 59x | 762.8µs |
+| `regex_match` | 683 | 1.5 | 50 | 0.0 | 44x | 27.6µs |
+| `regex_replace` | 128 | 97.9 | 100 | 0.0 | 1003x | 1.2ms |
+| `json_length` | 6 | 135.3 | 50 | 0.0 | 2771x | 1.7ms |
+| `json_get` | 33 | 137.5 | 50 | 0.0 | 2817x | 1.7ms |
+| `json_parse` | 14 | 268.6 | 100 | 0.0 | 2751x | 3.4ms |
+| `json_to_string` | 21 | 339.9 | 100 | 0.0 | 3481x | 4.3ms |
+| `random_bytes` | 105 | 420.6 | 11 | 1.0 | 417x | 5.3ms |
+| `rng_bytes` | 13 | 56.9 | 11 | 1.0 | 56x | 719.2µs |
+| `rng_seed` | 3 | 140.3 | 21 | 1.0 | 138x | 1.8ms |
+
+Most charges are flat or 1 unit per KiB, while real costs grow by 4 to 520
+units per KiB, so at 1 MiB most builtins are charged 40x to 3,500x less than
+they cost. `starts_with`, `ends_with`, `bytes_length` and `bytes_get` do not
+depend on input size and are charged about right.
+
 ## Known follow-ups
 
-1. **Calibration.** `max_host_work` constants are deliberately approximate.
-   Benchmark representative workloads before treating unit values as release
-   guidance.
+1. **Calibration.** `max_host_work` constants are approximate; see
+   [Calibration](#calibration) for measured costs. PR #129 retunes them.
 2. **Traversal-only host work.** Some directory traversal, display formatting,
    structural equality, date/time formatting, conversion parsing, and provider
    SDK work is controlled by broader limits but not individually charged with
