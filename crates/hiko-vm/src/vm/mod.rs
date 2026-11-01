@@ -1492,6 +1492,36 @@ mod tests {
     }
 
     #[test]
+    fn test_compare_and_branch_takes_both_branches() {
+        let vm = run(
+            "fun c (a, b) = (if a < b then 1 else 0) + (if a > b then 2 else 0)
+                + (if a <= b then 4 else 0) + (if a >= b then 8 else 0)
+                + (if a = b then 16 else 0) + (if a <> b then 32 else 0)
+             val lt = c (1, 2)
+             val eq = c (2, 2)
+             val gt = c (3, 2)
+             fun s x = case x of \"a\" => 1 | \"b\" => 2 | _ => 3
+             val strings = s \"a\" * 100 + s \"b\" * 10 + s \"c\"
+             fun n x = case x of 0 => 1 | 1 => 2 | _ => 3
+             val ints = n 0 * 100 + n 1 * 10 + n 7
+             val tuples = (if (1, \"a\") = (1, \"a\") then 1 else 0)
+                + (if (1, \"a\") <> (1, \"b\") then 2 else 0)
+             val chained = if 1 < 2 andalso 2 < 3 andalso not (3 < 2) then 1 else 0",
+        );
+        let int = |name: &str| match vm.get_global(name) {
+            Some(Value::Int(n)) => *n,
+            other => panic!("{name}: {other:?}"),
+        };
+        assert_eq!(int("lt"), 1 + 4 + 32);
+        assert_eq!(int("eq"), 4 + 8 + 16);
+        assert_eq!(int("gt"), 2 + 8 + 32);
+        assert_eq!(int("strings"), 123);
+        assert_eq!(int("ints"), 123);
+        assert_eq!(int("tuples"), 3);
+        assert_eq!(int("chained"), 1);
+    }
+
+    #[test]
     fn test_jump_if_not_tag_on_non_data_fails_without_panicking() {
         use hiko_compile::chunk::Chunk;
         let program = hiko_compile::chunk::CompiledProgram {

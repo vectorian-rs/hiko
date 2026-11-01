@@ -301,6 +301,32 @@ impl VM {
                         self.frames[fi].ip = target;
                     }
                 }
+                Op::JumpIfNotEq | Op::JumpIfEq => {
+                    let offset = self.read_i16()?;
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    let equal = values_equal(a, b, &self.heap);
+                    if equal == (op == Op::JumpIfEq) {
+                        self.relative_jump(fi, proto_idx, offset, op)?;
+                    }
+                }
+                Op::JumpIfNotLtInt
+                | Op::JumpIfNotGtInt
+                | Op::JumpIfNotLeInt
+                | Op::JumpIfNotGeInt => {
+                    let offset = self.read_i16()?;
+                    let b = self.pop_int()?;
+                    let a = self.pop_int()?;
+                    let holds = match op {
+                        Op::JumpIfNotLtInt => a < b,
+                        Op::JumpIfNotGtInt => a > b,
+                        Op::JumpIfNotLeInt => a <= b,
+                        _ => a >= b,
+                    };
+                    if !holds {
+                        self.relative_jump(fi, proto_idx, offset, op)?;
+                    }
+                }
                 Op::JumpIfFalse => {
                     let offset = self.read_i16()?;
                     let cond = self.pop_bool()?;
@@ -778,6 +804,28 @@ impl VM {
                 message: format!("expected String, got {v:?}"),
             }),
         }
+    }
+
+    /// Take the jump of a conditional jump instruction whose `i16` offset
+    /// was just read.
+    fn relative_jump(
+        &mut self,
+        fi: usize,
+        proto_idx: usize,
+        offset: i16,
+        op: Op,
+    ) -> Result<(), RuntimeError> {
+        let ip = self.frames[fi].ip;
+        let name = match op {
+            Op::JumpIfNotEq => "JumpIfNotEq",
+            Op::JumpIfEq => "JumpIfEq",
+            Op::JumpIfNotLtInt => "JumpIfNotLtInt",
+            Op::JumpIfNotGtInt => "JumpIfNotGtInt",
+            Op::JumpIfNotLeInt => "JumpIfNotLeInt",
+            _ => "JumpIfNotGeInt",
+        };
+        self.frames[fi].ip = self.checked_relative_ip(proto_idx, ip, offset, name)?;
+        Ok(())
     }
 
     fn scalar_eq(&mut self, eq: bool) -> Result<(), RuntimeError> {

@@ -122,6 +122,17 @@ pub enum Op {
     /// test at the head of a constructor pattern. Encoding: `u16 tag`, then
     /// an `i16` offset relative to the end of the instruction.
     JumpIfNotTag = 72,
+
+    /// Compare and branch: pop `b`, then `a`, and jump unless the comparison
+    /// holds. Encoding: an `i16` offset relative to the end of the
+    /// instruction. `JumpIfNotEq` and `JumpIfEq` use structural equality,
+    /// like `Eq`; the others compare ints, like `LtInt` and friends.
+    JumpIfNotEq = 73,
+    JumpIfEq = 74,
+    JumpIfNotLtInt = 75,
+    JumpIfNotGtInt = 76,
+    JumpIfNotLeInt = 77,
+    JumpIfNotGeInt = 78,
 }
 
 impl TryFrom<u8> for Op {
@@ -200,6 +211,12 @@ impl TryFrom<u8> for Op {
             70 => Ok(Op::MakeCons),
             71 => Ok(Op::MakeRecClosures),
             72 => Ok(Op::JumpIfNotTag),
+            73 => Ok(Op::JumpIfNotEq),
+            74 => Ok(Op::JumpIfEq),
+            75 => Ok(Op::JumpIfNotLtInt),
+            76 => Ok(Op::JumpIfNotGtInt),
+            77 => Ok(Op::JumpIfNotLeInt),
+            78 => Ok(Op::JumpIfNotGeInt),
             _ => Err(b),
         }
     }

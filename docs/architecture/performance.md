@@ -312,3 +312,23 @@ Apple M1 Max, load average about 3, hyperfine means; "before" is `main` at
 intermediate commits). A spawned child makes one allocation fewer (spawn path:
 7 instead of 8; with 4 captures 25 instead of 26), because its global table is
 no longer preallocated.
+
+### Compare and branch (PR #132)
+
+A condition such as `if n < 2` compiled to `LtInt`, which pushed a `Bool`,
+and `JumpIfFalse`, which popped it. Six instructions now compare and jump in
+one dispatch: `JumpIfNotEq` and `JumpIfEq` (structural equality, also used
+for literal patterns) and `JumpIfNot{Lt,Gt,Le,Ge}Int`.
+
+Load average about 4 to 10, 15 runs each, so the table gives minimums;
+medians moved the same way. "Before" is `main` at `d375a47`.
+
+| Benchmark | Before | After |
+|---|---|---|
+| `ack.hml` | 2.80 s | 2.61 s (-6.8%) |
+| `early_exit.hml` | 509 ms | 480 ms (-5.6%) |
+| `ec_fib.hml` | 975 ms | 926 ms (-5.0%) |
+| `global_builtin.hml` | 651 ms | 621 ms (-4.7%) |
+| `tak.hml` | 668 ms | 654 ms (-2.1%) |
+| `list_length.hml` | 2.63 s | 2.58 s (-2.1%) |
+| `fanout_cpu.hml`, `spawn_await.hml`, `nqueens.hml`, `primes.hml`, `ec_ack.hml` | | unchanged within noise |

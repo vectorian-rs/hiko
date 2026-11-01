@@ -90,7 +90,7 @@ Size by crate (lines of Rust):
 
 Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 
-- Stack-based, one byte per opcode, 71 opcodes (numbered 0 to 72; 44 and 55
+- Stack-based, one byte per opcode, 77 opcodes (numbered 0 to 78; 44 and 55
   are unused).
 - Operands are inline `u8`, `u16`, or `i16`. Jumps are relative `i16`.
 - `CompiledProgram` holds the main `Chunk`, `Arc<[FunctionProto]>`, effect
@@ -109,7 +109,7 @@ Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 | Word      | `AddWord`, `SubWord`, `MulWord`, `DivWord`, `ModWord`, `LtWord`, `GtWord`, `LeWord`, `GeWord`          |
 | Other     | `Eq`, `Ne`, `Not`, `ConcatString`                                                                      |
 | Data      | `MakeTuple`, `GetField`, `GetField0-1`, `MakeData`, `MakeCons`                                         |
-| Control   | `Jump`, `JumpIfFalse`, `JumpIfNotTag`, `Panic`, `Halt`                                                 |
+| Control   | `Jump`, `JumpIfFalse`, `JumpIfNotTag`, `JumpIfNotEq`, `JumpIfEq`, `JumpIfNot{Lt,Gt,Le,Ge}Int`, `Panic`, `Halt` |
 | Calls     | `MakeClosure`, `MakeRecClosures`, `Call`, `TailCall`, `CallDirect`, `TailCallDirect`, `Return` |
 | Effects   | `InstallHandler`, `Perform`, `RemoveHandler`                                                           |
 
@@ -124,9 +124,10 @@ Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 - Equality (`Eq`, `Ne`) is structural and generic. There are no specialised
   int/char equality opcodes, so every equality test goes through the generic
   path.
-- Constructor patterns test the tag with one `JumpIfNotTag`. Other
-  compare-and-branch sequences (for example `LtInt` then `JumpIfFalse`) are
-  still separate instructions.
+- Constructor patterns test the tag with one `JumpIfNotTag`. The condition of
+  an `if` that compares two values with `=`, `<>` or an int comparison is one
+  compare-and-branch instruction, and so is a literal pattern. Float and word
+  comparisons in conditions are still a compare followed by `JumpIfFalse`.
 
 ## VM
 
