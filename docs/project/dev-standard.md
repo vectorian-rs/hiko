@@ -13,7 +13,7 @@ This document captures the working standards for changes in the Hiko repository.
 
 ## Rust style
 
-- Run `cargo fmt` before committing.
+- Run `cargo fmt` before committing. `scripts/lint.sh` runs the formatting and clippy checks that CI runs.
 - Prefer small functions with descriptive names over large functions with hidden phases.
 - Prefer explicit error propagation with `Result` over panics in production code.
 - `unwrap`/`expect` are acceptable in tests and for truly infallible formatting into `String`; otherwise prefer contextual errors.
@@ -45,8 +45,19 @@ For cross-crate or public behavior changes, prefer:
 ```sh
 cargo check --workspace
 cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+scripts/lint.sh
 ```
+
+`scripts/lint.sh` runs `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings`, with default features and with
+`--all-features`. CI (`.github/workflows/lint.yml`) runs it on every pull
+request and on pushes to `main`. It uses Rust 1.99.1; set `RUST_TOOLCHAIN` to
+check with another toolchain.
+
+If `cargo` resolves to a mise shim, plain `cargo fmt` fails with "shim
+fallback recursion detected for cargo-fmt". Pass the toolchain explicitly
+(`cargo +1.99.1 fmt`, as `scripts/lint.sh` does) or put `~/.cargo/bin` first
+on `PATH`.
 
 Add or update tests for:
 
