@@ -14,8 +14,10 @@
 \* ## What we model
 \*
 \* Each step below is one operation on the shared table (one DashMap call in
-\* the code), or a change to a process its actor owns. The names in comments
-\* are the Rust functions they follow.
+\* the code), or a change to a process its actor owns. A step that would only
+\* move an actor to its next step is part of the step before it: it changes
+\* nothing another actor can see, so it adds interleavings but no behaviours.
+\* The names in comments are the Rust functions they follow.
 \*
 \*   - Ownership: a process is in the table, owned by one actor (a worker or
 \*     the I/O monitor), or gone (a terminated child, dropped).
@@ -109,14 +111,16 @@ vars == <<loc, st, target, akind, targets, tok, par, kids, live, tomb, waiters,
 
 \* An actor's state. pc is the next step; stack holds return labels. p is the
 \* process whose slice it handles, c the awaited child, s the wait_any list, t
-\* the I/O token, x the target of a cancel, pk the process to park, q and out
-\* the process being terminated, ktodo and k its scope-exit loop, fin the
-\* process whose waiters are woken, wtodo and cur that loop, ok the result of
-\* try_cancel_in_table, term the processes this actor has to terminate.
+\* the I/O token, x the target of a cancel, pk the process to park, q the
+\* process being terminated, ktodo and k its scope-exit loop, fin the process
+\* whose waiters are woken, wtodo and cur that loop, term the processes this
+\* actor has to terminate (with their outcomes). A field goes back to its
+\* Fresh value once no later step reads it, so that states that differ only
+\* in leftovers are one state.
 Fresh ==
     [pc |-> "idle", stack |-> <<>>, p |-> 0, c |-> 0, s |-> {}, t |-> 0,
-     x |-> 0, pk |-> 0, q |-> 0, out |-> "ok", ktodo |-> {}, k |-> 0,
-     fin |-> 0, wtodo |-> {}, cur |-> 0, ok |-> FALSE, term |-> {}]
+     x |-> 0, pk |-> 0, q |-> 0, ktodo |-> {}, k |-> 0,
+     fin |-> 0, wtodo |-> {}, cur |-> 0, term |-> {}]
 
 Init ==
     /\ loc = [p \in Pids |-> IF p = 1 THEN "table" ELSE "none"]
@@ -150,13 +154,28 @@ Return(r) ==
 
 Call(r, proc, ret) == [r EXCEPT !.pc = proc, !.stack = <<ret>> \o r.stack]
 
+\* cancel_pid(x): try_cancel_in_table(x), then "cp2" if x was not in the table.
+CallCancel(r, x, ret) ==
+    [r EXCEPT !.pc = "tc", !.x = x, !.stack = <<"cp2", ret>> \o r.stack]
+
+\* Return from try_cancel_in_table. cancel_pid stops if x was in the table.
+TcReturn(r, inTable) ==
+    IF r.stack # <<>> /\ Head(r.stack) = "cp2"
+    THEN IF inTable THEN Return(Return([r EXCEPT !.x = 0])) ELSE Return(r)
+    ELSE Return([r EXCEPT !.x = 0])
+
+\* fin is still needed when wake_join_waiters follows.
+EndWakeAny(r) ==
+    LET n == Return([r EXCEPT !.cur = 0]) IN
+    IF n.pc = "wj0" THEN n ELSE [n EXCEPT !.fin = 0]
+
+EndWakeJoin(r) == Return([r EXCEPT !.fin = 0, !.cur = 0])
+
 RemoveEverywhere(m, pid) == [y \in Pids |-> m[y] \ {pid}]
 
 \* resume(): back in the table as runnable, and queued.
 ResumeLoc(p) == [loc EXCEPT ![p] = "table"]
 ResumeSt(p) == [st EXCEPT ![p] = "runnable"]
-
-Outcome(o) == [pid : Pids, out : {o}]
 
 \* ---------------------------------------------------------------------------
 \* Workers: dequeue and slice results (worker_loop, handle_slice_result)
@@ -182,7 +201,7 @@ SliceCancelled(a) ==
     /\ wk[a].pc = "slice"
     /\ p \in creq
     /\ creq' = creq \ {p}
-    /\ wk' = [wk EXCEPT ![a].pc = "drain",
+    /\ wk' = [wk EXCEPT ![a].pc = "drain", ![a].p = 0,
                         ![a].term = {[pid |-> p, out |-> "cancelled"]}]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, queued, next_pid, next_tok>>
@@ -217,7 +236,7 @@ SliceSpawn(a) ==
 SliceFinish(a, o) ==
     LET p == wk[a].p IN
     /\ InSlice(a)
-    /\ wk' = [wk EXCEPT ![a].pc = "drain",
+    /\ wk' = [wk EXCEPT ![a].pc = "drain", ![a].p = 0,
                         ![a].term = {[pid |-> p, out |-> o]}]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
@@ -233,7 +252,7 @@ SliceAwait(a, c, kind) ==
             /\ target' = [target EXCEPT ![p] = c]
             /\ akind' = [akind EXCEPT ![p] = kind]
             /\ waiters' = [waiters EXCEPT ![c] = @ \union {p}]
-            /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].c = c,
+            /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].c = c, ![a].p = 0,
                                 ![a].stack = <<"await_recheck">>]
             /\ UNCHANGED <<loc, kids, tomb, queued>>
        ELSE \* "not live" implies "tombstone recorded" while the parent lives;
@@ -242,7 +261,7 @@ SliceAwait(a, c, kind) ==
             /\ tomb' = [tomb EXCEPT ![c] = "none"]
             /\ kids' = [kids EXCEPT ![p] = @ \ {c}]
             /\ IF fails
-               THEN /\ wk' = [wk EXCEPT ![a].pc = "drain",
+               THEN /\ wk' = [wk EXCEPT ![a].pc = "drain", ![a].p = 0,
                                         ![a].term = {[pid |-> p, out |-> "err"]}]
                     /\ UNCHANGED <<loc, st, queued>>
                ELSE /\ loc' = ResumeLoc(p)
@@ -259,8 +278,8 @@ SliceCancel(a, c) ==
     /\ InSlice(a)
     /\ c \in kids[p]
     /\ IF c \in live
-       THEN /\ wk' = [wk EXCEPT ![a].pc = "cp", ![a].x = c,
-                                ![a].stack = <<"drain", "cancel_resume">>]
+       THEN /\ wk' = [wk EXCEPT ![a] =
+                          CallCancel([@ EXCEPT !.stack = <<"cancel_resume">>], c, "drain")]
             /\ UNCHANGED <<loc, st, queued>>
        ELSE /\ loc' = ResumeLoc(p)
             /\ st' = ResumeSt(p)
@@ -295,7 +314,7 @@ SliceWaitAny(a, s) ==
        ELSE /\ st' = [st EXCEPT ![p] = "any"]
             /\ targets' = [targets EXCEPT ![p] = s]
             /\ anyw' = [y \in Pids |-> IF y \in s THEN anyw[y] \union {p} ELSE anyw[y]]
-            /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].s = s,
+            /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].s = s, ![a].p = 0,
                                 ![a].stack = <<"any_recheck">>]
             /\ UNCHANGED <<loc, queued>>
     /\ UNCHANGED <<target, akind, tok, par, kids, live, tomb, waiters, iow,
@@ -312,7 +331,7 @@ SliceIo(a) ==
     /\ tok' = [tok EXCEPT ![p] = t]
     /\ iow' = [iow EXCEPT ![t] = p]
     /\ next_tok' = next_tok + 1
-    /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].t = t,
+    /\ wk' = [wk EXCEPT ![a].pc = "park", ![a].pk = p, ![a].t = t, ![a].p = 0,
                         ![a].stack = <<"drain", "io_register">>]
     /\ UNCHANGED <<loc, target, akind, targets, par, kids, live, tomb, waiters,
                    anyw, backend, pcancel, creq, queued, next_pid>>
@@ -330,8 +349,8 @@ AwaitRecheck(a) ==
     LET c == wk[a].c IN
     /\ wk[a].pc = "await_recheck"
     /\ IF RecheckAfterPark /\ c \notin live
-       THEN wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = c], "wj0", "drain")]
-       ELSE wk' = [wk EXCEPT ![a].pc = "drain"]
+       THEN wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = c, !.c = 0], "wj0", "drain")]
+       ELSE wk' = [wk EXCEPT ![a].pc = "drain", ![a].c = 0]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
 
@@ -340,8 +359,8 @@ AnyRecheck(a) ==
     /\ IF RecheckAfterPark /\ \E y \in wk[a].s : y \notin live
        THEN \E y \in wk[a].s :
                 /\ y \notin live
-                /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = y], "wa0", "drain")]
-       ELSE wk' = [wk EXCEPT ![a].pc = "drain"]
+                /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = y, !.s = {}], "wa0", "drain")]
+       ELSE wk' = [wk EXCEPT ![a].pc = "drain", ![a].s = {}]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
 
@@ -362,8 +381,8 @@ Park2(a) ==
     /\ wk[a].pc = "park2"
     /\ IF pk \in pcancel
        THEN /\ pcancel' = pcancel \ {pk}
-            /\ wk' = [wk EXCEPT ![a].pc = "tc", ![a].x = pk]
-       ELSE /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ wk' = [wk EXCEPT ![a].pc = "tc", ![a].x = pk, ![a].pk = 0]
+       ELSE /\ wk' = [wk EXCEPT ![a] = Return([@ EXCEPT !.pk = 0])]
             /\ UNCHANGED pcancel
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, creq, queued, next_pid, next_tok>>
@@ -385,31 +404,22 @@ TryCancel(a) ==
                        THEN [y \in Pids |-> IF y \in targets[x] THEN anyw[y] \ {x} ELSE anyw[y]]
                        ELSE anyw
             /\ iow' = IF st[x] = "io" THEN [iow EXCEPT ![tok[x]] = 0] ELSE iow
-            /\ wk' = [wk EXCEPT ![a] = Return([@ EXCEPT !.ok = TRUE,
-                                !.term = @ \union {[pid |-> x, out |-> "cancelled"]}])]
+            /\ wk' = [wk EXCEPT ![a] =
+                          TcReturn([@ EXCEPT !.term = @ \union {[pid |-> x, out |-> "cancelled"]}],
+                                   TRUE)]
             /\ UNCHANGED creq
        ELSE /\ creq' = IF loc[x] = "table" /\ st[x] = "runnable"
                        THEN creq \union {x} ELSE creq
-            /\ wk' = [wk EXCEPT ![a] = Return([@ EXCEPT !.ok = (loc[x] = "table")])]
+            /\ wk' = [wk EXCEPT ![a] = TcReturn(@, loc[x] = "table")]
             /\ UNCHANGED <<loc, waiters, anyw, iow>>
     /\ UNCHANGED <<st, target, akind, targets, tok, par, kids, live, tomb,
                    backend, pcancel, queued, next_pid, next_tok>>
 
-\* cancel_pid(x)
-CancelPid(a) ==
-    /\ wk[a].pc = "cp"
-    /\ wk' = [wk EXCEPT ![a] = Call(@, "tc", "cp2")]
-    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
-                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
-
-\* Out of the table: leave a request for its owner.
+\* cancel_pid(x), x out of the table: leave a request for its owner.
 CancelPid2(a) ==
     /\ wk[a].pc = "cp2"
-    /\ IF wk[a].ok
-       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
-            /\ UNCHANGED pcancel
-       ELSE /\ pcancel' = pcancel \union {wk[a].x}
-            /\ wk' = [wk EXCEPT ![a].pc = "cp3"]
+    /\ pcancel' = pcancel \union {wk[a].x}
+    /\ wk' = [wk EXCEPT ![a].pc = "cp3"]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, creq, queued, next_pid, next_tok>>
 
@@ -420,7 +430,7 @@ CancelPid3(a) ==
     /\ wk[a].pc = "cp3"
     /\ IF x \notin live
        THEN /\ pcancel' = pcancel \ {x}
-            /\ wk' = [wk EXCEPT ![a] = Return(@)]
+            /\ wk' = [wk EXCEPT ![a] = Return([@ EXCEPT !.x = 0])]
        ELSE /\ wk' = [wk EXCEPT ![a].pc = "tc"]
             /\ UNCHANGED pcancel
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
@@ -431,27 +441,25 @@ CancelPid3(a) ==
 
 Drain(a) ==
     /\ wk[a].pc = "drain"
-    /\ IF wk[a].term = {}
-       THEN wk' = [wk EXCEPT ![a] = Return(@)]
-       ELSE \E e \in wk[a].term :
-                wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.q = e.pid, !.out = e.out,
-                                                       !.term = @ \ {e}], "f1", "drain")]
+    /\ wk[a].term = {}
+    /\ wk' = [wk EXCEPT ![a] = Return(@)]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
 
-\* 1. Record the outcome: a tombstone for a child, a terminal status for the root.
+\* Take the next termination. 1. Record the outcome: a tombstone for a child,
+\* a terminal status for the root.
 Finish1(a) ==
-    LET q == wk[a].q IN
-    /\ wk[a].pc = "f1"
-    /\ queued' = queued \ {q}
-    /\ IF par[q] # 0
-       THEN /\ loc' = [loc EXCEPT ![q] = "gone"]
-            /\ tomb' = [tomb EXCEPT ![q] = wk[a].out]
-            /\ UNCHANGED st
-       ELSE /\ loc' = [loc EXCEPT ![q] = "table"]
-            /\ st' = [st EXCEPT ![q] = IF wk[a].out = "ok" THEN "done" ELSE "failed"]
-            /\ UNCHANGED tomb
-    /\ wk' = [wk EXCEPT ![a].pc = "f2"]
+    /\ wk[a].pc = "drain"
+    /\ \E e \in wk[a].term :
+        /\ queued' = queued \ {e.pid}
+        /\ IF par[e.pid] # 0
+           THEN /\ loc' = [loc EXCEPT ![e.pid] = "gone"]
+                /\ tomb' = [tomb EXCEPT ![e.pid] = e.out]
+                /\ UNCHANGED st
+           ELSE /\ loc' = [loc EXCEPT ![e.pid] = "table"]
+                /\ st' = [st EXCEPT ![e.pid] = IF e.out = "ok" THEN "done" ELSE "failed"]
+                /\ UNCHANGED tomb
+        /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.q = e.pid, !.term = @ \ {e}], "f2", "drain")]
     /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, waiters, anyw,
                    iow, backend, pcancel, creq, next_pid, next_tok>>
 
@@ -486,12 +494,13 @@ Finish4(a) ==
 Finish5(a) ==
     /\ wk[a].pc = "f5"
     /\ IF wk[a].ktodo = {}
-       THEN wk' = [wk EXCEPT ![a].pc = "f6"]
+       THEN \* 4. Wake wait_any waiters, then await waiters.
+            wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = wk[a].q, !.q = 0], "wa0", "wj0")]
        ELSE \E k \in wk[a].ktodo :
                 LET r == [wk[a] EXCEPT !.ktodo = @ \ {k}, !.k = k] IN
                 wk' = [wk EXCEPT ![a] =
                           IF k \in live
-                          THEN Call([r EXCEPT !.x = k], "cp", "f5b")
+                          THEN CallCancel(r, k, "f5b")
                           ELSE [r EXCEPT !.pc = "f5b"]]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
@@ -499,22 +508,9 @@ Finish5(a) ==
 Finish5b(a) ==
     /\ wk[a].pc = "f5b"
     /\ tomb' = IF ReapTombstones THEN [tomb EXCEPT ![wk[a].k] = "none"] ELSE tomb
-    /\ wk' = [wk EXCEPT ![a].pc = "f5"]
+    /\ wk' = [wk EXCEPT ![a].pc = "f5", ![a].k = 0]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, waiters,
                    anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
-
-\* 4. Wake wait_any waiters, then await waiters.
-Finish6(a) ==
-    /\ wk[a].pc = "f6"
-    /\ wk' = [wk EXCEPT ![a] = Call([@ EXCEPT !.fin = wk[a].q], "wa0", "f7")]
-    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
-                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
-
-Finish7(a) ==
-    /\ wk[a].pc = "f7"
-    /\ wk' = [wk EXCEPT ![a].pc = "wj0", ![a].fin = wk[a].q]
-    /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
-                   waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
 
 \* ---------------------------------------------------------------------------
 \* wake_any_waiters(fin)
@@ -523,7 +519,7 @@ WakeAny0(a) ==
     LET fin == wk[a].fin IN
     /\ wk[a].pc = "wa0"
     /\ wk' = [wk EXCEPT ![a] =
-                 IF anyw[fin] = {} THEN Return(@)
+                 IF anyw[fin] = {} THEN EndWakeAny(@)
                  ELSE [@ EXCEPT !.pc = "wa1", !.wtodo = anyw[fin]]]
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
                    waiters, anyw, iow, backend, pcancel, creq, queued, next_pid, next_tok>>
@@ -534,7 +530,7 @@ WakeAny1(a) ==
     LET fin == wk[a].fin IN
     /\ wk[a].pc = "wa1"
     /\ IF wk[a].wtodo = {}
-       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+       THEN /\ wk' = [wk EXCEPT ![a] = EndWakeAny(@)]
             /\ UNCHANGED <<loc, anyw>>
        ELSE \E w2 \in wk[a].wtodo :
             LET r == [wk[a] EXCEPT !.wtodo = @ \ {w2}, !.cur = w2] IN
@@ -581,12 +577,12 @@ WakeJoin0(a) ==
     LET fin == wk[a].fin IN
     /\ wk[a].pc = "wj0"
     /\ IF waiters[fin] = {}
-       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+       THEN /\ wk' = [wk EXCEPT ![a] = EndWakeJoin(@)]
             /\ UNCHANGED waiters
        ELSE IF tomb[fin] = "none"
             THEN \* Reaped: its parent is gone, so nobody can still be waiting.
                  /\ waiters' = [waiters EXCEPT ![fin] = {}]
-                 /\ wk' = [wk EXCEPT ![a] = Return(@)]
+                 /\ wk' = [wk EXCEPT ![a] = EndWakeJoin(@)]
             ELSE /\ wk' = [wk EXCEPT ![a].pc = "wj1", ![a].wtodo = waiters[fin]]
                  /\ UNCHANGED waiters
     /\ UNCHANGED <<loc, st, target, akind, targets, tok, par, kids, live, tomb,
@@ -596,7 +592,7 @@ WakeJoin1(a) ==
     LET fin == wk[a].fin IN
     /\ wk[a].pc = "wj1"
     /\ IF wk[a].wtodo = {}
-       THEN /\ wk' = [wk EXCEPT ![a] = Return(@)]
+       THEN /\ wk' = [wk EXCEPT ![a] = EndWakeJoin(@)]
             /\ UNCHANGED <<loc, waiters>>
        ELSE \E w2 \in wk[a].wtodo :
             LET r == [wk[a] EXCEPT !.wtodo = @ \ {w2}, !.cur = w2] IN
@@ -679,7 +675,7 @@ MonitorDeliver(ok) ==
             /\ st' = ResumeSt(cur)
             /\ queued' = queued \union {cur}
             /\ wk' = [wk EXCEPT ![Mon] = Fresh]
-       ELSE /\ wk' = [wk EXCEPT ![Mon].pc = "drain",
+       ELSE /\ wk' = [wk EXCEPT ![Mon].pc = "drain", ![Mon].cur = 0, ![Mon].t = 0,
                                 ![Mon].term = {[pid |-> cur, out |-> "err"]}]
             /\ UNCHANGED <<loc, st, queued>>
     /\ UNCHANGED <<target, akind, targets, tok, par, kids, live, tomb, waiters,
@@ -702,10 +698,10 @@ Next ==
     \/ \E a \in Workers : SliceIo(a)
     \/ \E a \in Actors :
         \/ Park(a) \/ Park2(a)
-        \/ TryCancel(a) \/ CancelPid(a) \/ CancelPid2(a) \/ CancelPid3(a)
+        \/ TryCancel(a) \/ CancelPid2(a) \/ CancelPid3(a)
         \/ Drain(a)
         \/ Finish1(a) \/ Finish2(a) \/ Finish3(a) \/ Finish4(a) \/ Finish5(a)
-        \/ Finish5b(a) \/ Finish6(a) \/ Finish7(a)
+        \/ Finish5b(a)
         \/ WakeAny0(a) \/ WakeAny1(a) \/ WakeAny2(a) \/ WakeAny3(a)
         \/ WakeJoin0(a) \/ WakeJoin1(a) \/ WakeJoin2(a) \/ WakeJoin3(a)
         \/ AwaitRecheck(a) \/ AnyRecheck(a) \/ IoRegister(a) \/ CancelResume(a)
