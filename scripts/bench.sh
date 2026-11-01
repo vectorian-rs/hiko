@@ -75,10 +75,21 @@ bench "CPU fan-out, 64 children" \
 bench "File-read fan-out, 1,000 children" \
     -L workers 1,2,4,8 "$hiko --workers {workers} benchmarks/fanout_read.hml"
 
-# examples/benchmark.hml walks .git, which is a file in a git worktree.
-if [ -d .git ]; then
-    bench "Walk and hash .git (vs Python)" \
-        "$hiko examples/benchmark.hml" "python3 examples/benchmark.py"
+# examples/benchmark.hml walks .git. In a git worktree .git is a file, so
+# walk a copy of the repository's git directory instead. It needs every
+# filesystem builtin, so it runs under the default policy.
+git_dir=.git
+if [ ! -d .git ]; then
+    git_dir=target/bench-git
+    [ -d "$git_dir" ] || cp -R "$(git rev-parse --git-common-dir)" "$git_dir"
+fi
+sed "s|\"\\.git\"|\"$git_dir\"|" examples/benchmark.hml >target/bench-walk.hml
+sed "s|\"\\.git\"|\"$git_dir\"|" examples/benchmark.py >target/bench-walk.py
+if python3 -c "import blake3" 2>/dev/null; then
+    bench "Walk and hash $git_dir (vs Python)" \
+        "$HIKO_BIN run --config hiko.toml target/bench-walk.hml" "python3 target/bench-walk.py"
+else
+    echo "skipping the walk benchmark: python3 has no blake3 module" >&2
 fi
 
 echo "wrote $out" >&2
