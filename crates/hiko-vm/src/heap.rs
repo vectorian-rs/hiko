@@ -156,7 +156,19 @@ pub struct Heap {
     /// Optional injected stdin content for embedded runtimes.
     stdin_override: Option<String>,
     stdin_override_consumed: bool,
+    /// Serialized form of heap objects already sent to a child process, so
+    /// that spawning many children that capture the same value serializes it
+    /// once. Heap objects are immutable, so an entry stays correct until its
+    /// slot is freed or rewritten: collection and `set_closure_captures`
+    /// clear the cache, and so does a change of `max_message_bytes`, which the
+    /// cached values were checked against.
+    sent: HashMap<GcRef, std::sync::Arc<crate::sendable::SendableValue>>,
+    /// Host memory held by `sent`, bounded by [`SENT_CACHE_MAX_BYTES`].
+    sent_bytes: usize,
 }
+
+/// Host memory the cache of sent values may hold before it is cleared.
+const SENT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 impl Drop for Heap {
     fn drop(&mut self) {
@@ -209,6 +221,8 @@ impl Heap {
             aws_allow_instance_profile: false,
             stdin_override: None,
             stdin_override_consumed: false,
+            sent: HashMap::new(),
+            sent_bytes: 0,
         }
     }
 
@@ -591,6 +605,35 @@ impl Heap {
 
     pub fn set_max_message_bytes(&mut self, max: u64) {
         self.max_message_bytes = max;
+        self.forget_sent();
+    }
+
+    /// The serialized form of `r` cached by [`Heap::remember_sent`].
+    pub(crate) fn sent(&self, r: GcRef) -> Option<std::sync::Arc<crate::sendable::SendableValue>> {
+        self.sent.get(&r).cloned()
+    }
+
+    /// Cache the serialized form of `r`. A value too large for the cache is
+    /// not kept; one that does not fit next to the others clears it first.
+    pub(crate) fn remember_sent(
+        &mut self,
+        r: GcRef,
+        value: std::sync::Arc<crate::sendable::SendableValue>,
+        footprint: usize,
+    ) {
+        if footprint > SENT_CACHE_MAX_BYTES {
+            return;
+        }
+        if self.sent_bytes + footprint > SENT_CACHE_MAX_BYTES {
+            self.forget_sent();
+        }
+        self.sent_bytes += footprint;
+        self.sent.insert(r, value);
+    }
+
+    fn forget_sent(&mut self) {
+        self.sent.clear();
+        self.sent_bytes = 0;
     }
 
     pub fn max_message_bytes(&self) -> u64 {
@@ -962,13 +1005,12 @@ impl Heap {
             .get_mut(r.0 as usize)
             .and_then(|slot| slot.as_mut())
         {
-            Some(HeapObject::Closure { captures, .. }) => {
-                *captures = new_captures;
-                Ok(())
-            }
-            Some(_) => Err("set_closure_captures: not a closure"),
-            None => Err("dangling GcRef"),
+            Some(HeapObject::Closure { captures, .. }) => *captures = new_captures,
+            Some(_) => return Err("set_closure_captures: not a closure"),
+            None => return Err("dangling GcRef"),
         }
+        self.forget_sent();
+        Ok(())
     }
 
     pub fn should_collect(&self) -> bool {
@@ -998,6 +1040,8 @@ impl Heap {
 
     /// Run mark-and-sweep. `roots` is an iterator of all root GcRefs.
     pub fn collect(&mut self, roots: impl Iterator<Item = GcRef>) {
+        // Freed slots are reused, so cached serializations may go stale.
+        self.forget_sent();
         for m in self.marks.iter_mut() {
             *m = false;
         }

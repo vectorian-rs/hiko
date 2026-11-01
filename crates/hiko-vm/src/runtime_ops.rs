@@ -1,5 +1,7 @@
 //! Shared process operation logic used by both single-threaded and multi-threaded runtimes.
 
+use std::sync::Arc;
+
 use smallvec::smallvec;
 
 use crate::process::{AwaitKind, ChildOutcome, FiberJoinError, Pid, ProcessFailure};
@@ -13,7 +15,7 @@ pub fn deliver_result_to_parent(
     sendable: SendableValue,
 ) -> Result<(), ProcessFailure> {
     pop_await_placeholder(parent_vm, "deliver result")?;
-    let val = deserialize_with_heap_limit(sendable, &mut parent_vm.heap)?;
+    let val = deserialize_with_heap_limit(&sendable, &mut parent_vm.heap)?;
     parent_vm.push_value(val);
     Ok(())
 }
@@ -40,7 +42,7 @@ pub fn deliver_join_result_to_parent(
     pop_await_placeholder(parent_vm, "deliver join result")?;
     let wrapped = match result {
         Ok(sendable) => {
-            let value = deserialize_with_heap_limit(sendable, &mut parent_vm.heap)?;
+            let value = deserialize_with_heap_limit(&sendable, &mut parent_vm.heap)?;
             alloc_data_value(
                 &mut parent_vm.heap,
                 PROCESS_AWAIT_RESULT_OK_TAG,
@@ -71,9 +73,11 @@ pub fn deliver_pid_to_parent(parent_vm: &mut VM, pid: Pid) -> Result<(), Process
 ///
 /// Process creation currently has four distinct stages:
 ///
-/// 1. `VM::create_child()` clones immutable program metadata and rebuilds the
-///    builtin/global tables for a fresh interpreter instance.
-/// 2. Spawn captures are deserialized into the child heap.
+/// 1. `VM::create_child()` shares the program, builtin table and capability
+///    configuration with the parent.
+/// 2. Spawn captures are deserialized into the child heap. Captures are
+///    shared (`Arc`), because the parent sends one serialization of a value
+///    to every child that captures it.
 /// 3. `VM::setup_closure_call()` installs the initial frame for the closure.
 /// 4. The runtime wraps the VM in `Process` and inserts it into its table.
 ///
@@ -81,13 +85,13 @@ pub fn deliver_pid_to_parent(parent_vm: &mut VM, pid: Pid) -> Result<(), Process
 pub fn create_child_vm_from_parent(
     parent_vm: &VM,
     proto_idx: usize,
-    captures: Vec<SendableValue>,
+    captures: Vec<Arc<SendableValue>>,
 ) -> Result<VM, ProcessFailure> {
     let live_process_slot = parent_vm.admit_child().map_err(ProcessFailure::runtime)?;
     let mut child_vm = parent_vm.create_child();
     child_vm.set_live_process_slot(live_process_slot);
     let child_captures: Vec<Value> = captures
-        .into_iter()
+        .iter()
         .map(|v| deserialize_with_heap_limit(v, &mut child_vm.heap))
         .collect::<Result<_, _>>()?;
     child_vm.setup_closure_call(proto_idx, &child_captures);
@@ -161,12 +165,12 @@ fn alloc_heap_value(
 }
 
 fn deserialize_with_heap_limit(
-    sendable: SendableValue,
+    sendable: &SendableValue,
     heap: &mut crate::heap::Heap,
 ) -> Result<Value, ProcessFailure> {
     heap.charge_host_work(
         crate::sendable::SENDABLE_BOUNDARY_BASE_HOST_WORK
-            .saturating_add(crate::sendable::host_work_for_sendable(&sendable)),
+            .saturating_add(crate::sendable::host_work_for_sendable(sendable)),
     )
     .map_err(ProcessFailure::runtime)?;
     deserialize(sendable, heap).map_err(|e| match e {

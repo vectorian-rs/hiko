@@ -122,7 +122,7 @@ impl VM {
             .map_err(|e| RuntimeError {
                 message: format!("{name}: {e}"),
             })?;
-        let value = deserialize(sendable.clone(), &mut self.heap).map_err(|e| RuntimeError {
+        let value = deserialize(sendable, &mut self.heap).map_err(|e| RuntimeError {
             message: e.to_string(),
         })?;
         let slot = self.global_slot(name.to_string());

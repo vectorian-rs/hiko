@@ -7,6 +7,7 @@
 //! thread here, so a process is never blocked on I/O.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{
@@ -216,7 +217,7 @@ impl Runtime {
         &mut self,
         parent_pid: Pid,
         proto_idx: usize,
-        captures: Vec<SendableValue>,
+        captures: Vec<Arc<SendableValue>>,
     ) -> Result<Pid, ProcessFailure> {
         let parent = self.processes.get(&parent_pid).ok_or_else(|| {
             ProcessFailure::runtime(Self::missing_process_message("spawn", parent_pid))

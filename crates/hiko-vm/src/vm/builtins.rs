@@ -127,19 +127,23 @@ impl VM {
                                 .map_err(|e| RuntimeError {
                                     message: format!("spawn: {e}"),
                                 })?;
-                            let sendable =
-                                crate::sendable::serialize(v, &self.heap).map_err(|e| {
-                                    RuntimeError {
+                            // A value already sent to an earlier child is
+                            // reused, and its serialization is not charged again.
+                            let (sendable, fresh) =
+                                crate::sendable::serialize_shared(v, &mut self.heap).map_err(
+                                    |e| RuntimeError {
                                         message: format!("spawn: {e}"),
-                                    }
-                                })?;
-                            self.heap
-                                .charge_host_work(crate::sendable::host_work_for_sendable(
-                                    &sendable,
-                                ))
-                                .map_err(|e| RuntimeError {
-                                    message: format!("spawn: {e}"),
-                                })?;
+                                    },
+                                )?;
+                            if fresh {
+                                self.heap
+                                    .charge_host_work(crate::sendable::host_work_for_sendable(
+                                        &sendable,
+                                    ))
+                                    .map_err(|e| RuntimeError {
+                                        message: format!("spawn: {e}"),
+                                    })?;
+                            }
                             serialized.push(sendable);
                         }
                         return self.suspend_for_runtime_request(

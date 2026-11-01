@@ -1567,6 +1567,32 @@ mod tests {
         assert_eq!(output, vec!["42\n"]);
     }
 
+    /// Children that capture the same list share one serialization of it
+    /// in the parent; each still gets its own copy.
+    #[test]
+    fn test_threaded_children_capturing_the_same_list() {
+        let program = compile(
+            "fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)\n\
+             fun sum (xs, acc) = case xs of [] => acc | x :: r => sum (r, acc + x)\n\
+             fun run () =\n\
+               let\n\
+                 val xs = range (1000, [])\n\
+                 val ys = range (10, [])\n\
+                 val a = spawn (fn () => sum (xs, 0))\n\
+                 val b = spawn (fn () => sum (xs, 1))\n\
+                 val c = spawn (fn () => sum (ys, 0))\n\
+               in\n\
+                 (await_process a, await_process b, await_process c)\n\
+               end\n\
+             val (a, b, c) = run ()\n\
+             val _ = println (int_to_string a ^ \" \" ^ int_to_string b ^ \" \" ^ int_to_string c)",
+        );
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        assert_eq!(runtime.table.get_output(pid), vec!["500500 500501 55\n"]);
+    }
+
     #[test]
     fn test_threaded_many_processes() {
         let program = compile(

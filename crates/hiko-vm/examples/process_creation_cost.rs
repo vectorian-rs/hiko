@@ -1,5 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -101,7 +102,10 @@ fn compile_program(source: &str) -> CompiledProgram {
     compiled
 }
 
-fn resolve_global_closure(program: &CompiledProgram, name: &str) -> (usize, Vec<SendableValue>) {
+fn resolve_global_closure(
+    program: &CompiledProgram,
+    name: &str,
+) -> (usize, Vec<Arc<SendableValue>>) {
     let mut vm = VM::new(program.clone());
     vm.run()
         .unwrap_or_else(|err| panic!("failed to initialize benchmark globals: {}", err.message));
@@ -129,6 +133,7 @@ fn resolve_global_closure(program: &CompiledProgram, name: &str) -> (usize, Vec<
                 .copied()
                 .map(|value| {
                     serialize(value, vm.heap())
+                        .map(Arc::new)
                         .unwrap_or_else(|err| panic!("capture for '{name}' is not sendable: {err}"))
                 })
                 .collect(),
