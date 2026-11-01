@@ -201,7 +201,21 @@ Default cache location:
 ~/.hiko/lib-cache/
 ```
 
-Cache entries should be keyed by the locked identity of the module:
+A project can choose its own directory in `hiko.toml`. A relative path is
+resolved against the directory that holds `hiko.toml`:
+
+```toml
+[defaults]
+lockfile = "hiko.lock.toml"
+lib_cache = ".hiko-cache"
+```
+
+An embedder that sets `ModuleLoaderOptions::cache_dir` overrides both. The
+order is: `ModuleLoaderOptions::cache_dir`, then `[defaults] lib_cache`, then
+`~/.hiko/lib-cache/`.
+
+Cache entries are keyed by the locked identity of the module, the file name
+being `{blake3(url)}-{hash}.hml`:
 
 - resolved module URL
 - integrity hash
@@ -249,7 +263,5 @@ The remaining library/import work is operational hardening rather than deeper
 module theory:
 
 - add a lock update command for intentional dependency upgrades
-- make the remote module cache location configurable from the CLI or
-  `hiko.toml` (#54); embedders can already set `ModuleLoaderOptions::cache_dir`
 - support generated artifacts embedding exact locked content and selected policy
 - optionally include local `use` source hashes in generated artifacts for release reproducibility

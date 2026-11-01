@@ -178,6 +178,9 @@ struct ManifestDefaults {
     policy: Option<String>,
     #[serde(rename = "lockfile")]
     _lockfile: Option<String>,
+    /// Read by the compiler's module loader.
+    #[serde(rename = "lib_cache")]
+    _lib_cache: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1619,6 +1622,15 @@ val answer = inc 41
             inspection.total_static_opcodes(),
             inspection.main_static_opcodes + inspection.functions[0].static_opcodes
         );
+    }
+
+    #[test]
+    fn manifest_accepts_lib_cache() {
+        let manifest: super::ProjectManifest = toml::from_str(
+            "[defaults]\npolicy = \"p\"\nlockfile = \"hiko.lock.toml\"\nlib_cache = \".cache\"\n",
+        )
+        .expect("lib_cache is a known [defaults] key");
+        assert_eq!(manifest.defaults.policy.as_deref(), Some("p"));
     }
 
     #[test]
