@@ -3388,15 +3388,14 @@ mod tests {
              fun flt (x : float) = if x < 1.0 then 1 else 2\n",
         );
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        let code = |name: &str| {
+        let ops = |name: &str| {
             compiled
                 .functions
                 .iter()
                 .find(|proto| proto.name.as_deref() == Some(name))
                 .expect("function proto")
                 .chunk
-                .code
-                .clone()
+                .ops()
         };
         for (name, fused, unfused) in [
             ("lt", Op::JumpIfNotLtInt, Op::LtInt),
@@ -3405,15 +3404,15 @@ mod tests {
             ("ne", Op::JumpIfEq, Op::Ne),
             ("lit", Op::JumpIfNotEq, Op::Eq),
         ] {
-            let code = code(name);
-            assert!(code.contains(&(fused as u8)), "{name}");
-            assert!(!code.contains(&(unfused as u8)), "{name}");
-            assert!(!code.contains(&(Op::JumpIfFalse as u8)), "{name}");
+            let ops = ops(name);
+            assert!(ops.contains(&fused), "{name}: {ops:?}");
+            assert!(!ops.contains(&unfused), "{name}: {ops:?}");
+            assert!(!ops.contains(&Op::JumpIfFalse), "{name}: {ops:?}");
         }
         // Float comparisons keep the compare and the jump.
-        let code = code("flt");
-        assert!(code.contains(&(Op::LtFloat as u8)));
-        assert!(code.contains(&(Op::JumpIfFalse as u8)));
+        let ops = ops("flt");
+        assert!(ops.contains(&Op::LtFloat), "{ops:?}");
+        assert!(ops.contains(&Op::JumpIfFalse), "{ops:?}");
     }
 
     #[test]
