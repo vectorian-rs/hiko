@@ -1,8 +1,10 @@
 (* Pass a 10,000-character string to builtins: the cost of reading string
  * arguments. *)
-fun repeat (s, n, acc) = if n = 0 then acc else repeat (s, n - 1, acc ^ s)
+fun copies (s, n, acc) = if n = 0 then acc else copies (s, n - 1, s :: acc)
 
-val text = repeat ("0123456789", 1000, "")
+fun repeat (s, n) = string_join (copies (s, n, []), "")
+
+val text = repeat ("0123456789", 1000)
 
 fun loop (n, acc) =
   if n = 0 then acc
