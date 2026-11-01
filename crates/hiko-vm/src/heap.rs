@@ -105,6 +105,77 @@ pub struct CapFsCandidate {
     pub relative_path: PathBuf,
 }
 
+/// Open `path` beneath `dir` for reading. Every file read through a
+/// filesystem policy goes through here.
+///
+/// On macOS, cap-std checks each path component itself, with several
+/// syscalls per component; that made reading a file through a filesystem
+/// policy about four times slower than `std::fs::read`. macOS 15 can enforce
+/// the same rule in the kernel with `O_RESOLVE_BENEATH`, in one `openat`, so
+/// it is tried first. Any failure, including an escape, falls back to
+/// cap-std, so errors are reported exactly as before.
+#[cfg(feature = "builtin-filesystem")]
+pub(crate) fn open_for_read(
+    dir: &cap_std::fs::Dir,
+    path: &std::path::Path,
+) -> std::io::Result<cap_std::fs::File> {
+    #[cfg(target_os = "macos")]
+    if let Some(file) = beneath::open_read(dir, path) {
+        return Ok(file);
+    }
+    dir.open(path)
+}
+
+#[cfg(all(feature = "builtin-filesystem", target_os = "macos"))]
+pub(crate) mod beneath {
+    use rustix::fs::{Mode, OFlags, openat};
+    use std::os::fd::AsFd;
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    /// `O_RESOLVE_BENEATH` from `<sys/fcntl.h>`; rustix names it only for
+    /// FreeBSD.
+    const RESOLVE_BENEATH: OFlags = OFlags::from_bits_retain(0x0000_1000);
+
+    /// Open `path` read-only, resolved by the kernel strictly beneath `dir`.
+    /// `None` when the kernel does not enforce the flag or the open fails.
+    pub(crate) fn open_read(dir: &cap_std::fs::Dir, path: &Path) -> Option<cap_std::fs::File> {
+        if !supported(dir) {
+            return None;
+        }
+        let fd = openat(
+            dir.as_fd(),
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | RESOLVE_BENEATH,
+            Mode::empty(),
+        )
+        .ok()?;
+        // Like cap-std's `open`, this also opens a directory; reading it
+        // then fails.
+        Some(cap_std::fs::File::from_std(std::fs::File::from(fd)))
+    }
+
+    /// Whether the kernel enforces `O_RESOLVE_BENEATH`: `..` must open
+    /// without the flag and fail with it. A kernel that ignored the unknown
+    /// flag would open it both times, and the fast path stays off. (macOS 15
+    /// fails an escape with `EACCES`, although open(2) documents
+    /// `ENOTCAPABLE`.)
+    pub(crate) fn supported(dir: &cap_std::fs::Dir) -> bool {
+        static SUPPORTED: OnceLock<bool> = OnceLock::new();
+        *SUPPORTED.get_or_init(|| {
+            let open_parent = |extra| {
+                openat(
+                    dir.as_fd(),
+                    "..",
+                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | extra,
+                    Mode::empty(),
+                )
+            };
+            open_parent(OFlags::empty()).is_ok() && open_parent(RESOLVE_BENEATH).is_err()
+        })
+    }
+}
+
 pub struct Heap {
     objects: Vec<Option<HeapObject>>,
     object_bytes: Vec<usize>,

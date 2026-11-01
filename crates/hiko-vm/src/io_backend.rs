@@ -925,7 +925,7 @@ fn cap_read_to_string(
 ) -> Result<(String, u64), String> {
     let mut last_err = None;
     for candidate in candidates {
-        match candidate.dir.open(&candidate.relative_path) {
+        match crate::heap::open_for_read(&candidate.dir, &candidate.relative_path) {
             Ok(file) => match read_to_string_limited(file, max_bytes, "file read") {
                 Ok(contents) => return Ok(contents),
                 Err(err) => last_err = Some(std::io::Error::other(err)),

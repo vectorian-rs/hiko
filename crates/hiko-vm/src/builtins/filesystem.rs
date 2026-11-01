@@ -52,78 +52,6 @@ fn cap_io<T>(
     ))
 }
 
-/// Open `path` beneath `dir` for reading.
-///
-/// On macOS, cap-std checks each path component itself, with several
-/// syscalls per component; that made reading a file through a filesystem
-/// policy about four times slower than `std::fs::read`. macOS 15 can enforce
-/// the same rule in the kernel with `O_RESOLVE_BENEATH`, in one `openat`, so
-/// it is tried first. Any failure, including an escape, falls back to
-/// cap-std, so errors are reported exactly as before.
-fn open_for_read(
-    dir: &cap_std::fs::Dir,
-    path: &std::path::Path,
-) -> std::io::Result<cap_std::fs::File> {
-    #[cfg(target_os = "macos")]
-    if let Some(file) = beneath::open_read(dir, path) {
-        return Ok(file);
-    }
-    dir.open(path)
-}
-
-#[cfg(target_os = "macos")]
-mod beneath {
-    use rustix::fs::{Mode, OFlags, openat};
-    use std::os::fd::AsFd;
-    use std::path::Path;
-    use std::sync::OnceLock;
-
-    /// `O_RESOLVE_BENEATH` from `<sys/fcntl.h>`; rustix names it only for
-    /// FreeBSD.
-    const RESOLVE_BENEATH: OFlags = OFlags::from_bits_retain(0x0000_1000);
-
-    /// Open `path` read-only, resolved by the kernel strictly beneath `dir`.
-    /// `None` when the kernel does not enforce the flag or the open fails.
-    pub(super) fn open_read(dir: &cap_std::fs::Dir, path: &Path) -> Option<cap_std::fs::File> {
-        if !supported(dir) {
-            return None;
-        }
-        let fd = openat(
-            dir.as_fd(),
-            path,
-            OFlags::RDONLY | OFlags::CLOEXEC | RESOLVE_BENEATH,
-            Mode::empty(),
-        )
-        .ok()?;
-        let file = std::fs::File::from(fd);
-        // `openat` also opens directories read-only; cap-std reports those.
-        if file.metadata().ok()?.is_dir() {
-            return None;
-        }
-        Some(cap_std::fs::File::from_std(file))
-    }
-
-    /// Whether the kernel enforces `O_RESOLVE_BENEATH`: `..` must open
-    /// without the flag and fail with it. A kernel that ignored the unknown
-    /// flag would open it both times, and the fast path stays off. (macOS 15
-    /// fails an escape with `EACCES`, although open(2) documents
-    /// `ENOTCAPABLE`.)
-    pub(super) fn supported(dir: &cap_std::fs::Dir) -> bool {
-        static SUPPORTED: OnceLock<bool> = OnceLock::new();
-        *SUPPORTED.get_or_init(|| {
-            let open_parent = |extra| {
-                openat(
-                    dir.as_fd(),
-                    "..",
-                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | extra,
-                    Mode::empty(),
-                )
-            };
-            open_parent(OFlags::empty()).is_ok() && open_parent(RESOLVE_BENEATH).is_err()
-        })
-    }
-}
-
 fn cap_read_limited(
     builtin: &str,
     path: &str,
@@ -135,7 +63,7 @@ fn cap_read_limited(
         .map_err(|e| format!("{builtin}: {e}"))?;
     let mut last_err = None;
     for candidate in candidates {
-        match open_for_read(&candidate.dir, &candidate.relative_path) {
+        match crate::heap::open_for_read(&candidate.dir, &candidate.relative_path) {
             Ok(file) => match crate::io_backend::read_to_bytes_limited(file, max_bytes, builtin) {
                 Ok(value) => return Ok(value),
                 Err(err) => last_err = Some(std::io::Error::other(err)),
@@ -917,7 +845,7 @@ mod tests {
         symlink("../..", root.join("sub/upup")).unwrap();
         let dir = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
         assert!(
-            beneath::supported(&dir),
+            crate::heap::beneath::supported(&dir),
             "macOS 15 enforces O_RESOLVE_BENEATH"
         );
 
@@ -938,15 +866,22 @@ mod tests {
         for (path, allowed) in cases {
             let path = std::path::Path::new(path);
             assert_eq!(
-                beneath::open_read(&dir, path).is_some(),
+                crate::heap::beneath::open_read(&dir, path).is_some(),
                 allowed,
                 "O_RESOLVE_BENEATH, {path:?}"
             );
             assert_eq!(dir.open(path).is_ok(), allowed, "cap-std, {path:?}");
-            assert_eq!(open_for_read(&dir, path).is_ok(), allowed, "{path:?}");
+            assert_eq!(
+                crate::heap::open_for_read(&dir, path).is_ok(),
+                allowed,
+                "{path:?}"
+            );
         }
-        // A directory is not a readable file on either path.
-        assert!(beneath::open_read(&dir, std::path::Path::new("sub")).is_none());
+        // Both open a directory, and reading it fails.
+        let sub = std::path::Path::new("sub");
+        assert!(dir.open(sub).is_ok());
+        let mut file = crate::heap::beneath::open_read(&dir, sub).unwrap();
+        assert!(std::io::Read::read_to_end(&mut file, &mut Vec::new()).is_err());
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
