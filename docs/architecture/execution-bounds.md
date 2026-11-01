@@ -153,7 +153,7 @@ cooperative collection point, not a preemptive collector.
 | `http_timeout_ms`, `http_connect_timeout_ms` | wall-clock duration of one HTTP call, including the body | Total time spent across many calls |
 | `exec_timeout_ms` | wall-clock duration of one `exec` call | Processes that detach from the child's process group |
 | `max_memory_bytes` | accounted heap bytes | Native resources held behind host handles |
-| `max_host_resources` / `limits.host_resources` | total and per-kind live opaque native host handles | Size of the native object behind each handle |
+| `max_host_resources` / `limits.host_resources` | total and per-kind live opaque native host handles, per process tree | Size of the native object behind each handle |
 | `max_heap` | live heap object count of one process | Object byte size |
 | `max_live_processes`, `max_spawns` | spawned processes alive at once, and spawned in total, per process tree | Work each process does (that is `max_work` and the other tree budgets) |
 | `max_message_bytes` | size of one serialized spawn capture or child result | How often values are sent |
@@ -162,10 +162,11 @@ cooperative collection point, not a preemptive collector.
 ## Budgets across process boundaries
 
 A root process and every process it spawns, directly or indirectly, form a
-process tree. Fuel (`max_work`), `max_memory_bytes`, `max_io_bytes` and
-`max_host_work` are budgets for the whole tree: each is one shared counter
-that every process in the tree charges, so spawning children cannot
-multiply a script's budget.
+process tree. Fuel (`max_work`), `max_memory_bytes`, `max_io_bytes`,
+`max_host_work`, `max_host_resources` and the per-kind
+`limits.host_resources` caps are budgets for the whole tree: each is one
+shared counter that every process in the tree charges, so spawning children
+cannot multiply a script's budget.
 
 - **Fuel.** Each scheduling slice reserves its reductions from the tree's
   budget before it runs and returns what it did not use afterwards, so
@@ -174,6 +175,10 @@ multiply a script's budget.
   can find the budget empty while another process still holds an unused
   reservation for its current slice.
 - **I/O bytes and host work** are charged to the tree as they are used.
+- **Host resources** are the live native handles in the tree. Creating one
+  charges the total and its kind. Collecting its handle, or the end of the
+  process that holds it, returns the charge. A handle sent to a child is a new
+  resource in the child.
 - **Memory** is the sum of the live heaps in the tree. A heap returns bytes to
   the tree's budget when garbage collection frees them and when its process
   ends. Each process collects only its own heap, so a process can fail with a
