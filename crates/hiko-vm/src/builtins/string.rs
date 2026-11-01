@@ -3,17 +3,40 @@ use crate::vm::{TAG_CONS, TAG_NIL};
 use std::mem::size_of;
 use std::sync::Arc;
 
+// Host work in opcode-equivalents, from the host_work_calibration example
+// (docs/builtins/accounting-matrix.md#calibration): a fixed charge per call,
+// then a charge per KiB of the bytes the builtin walks, and per part where
+// the number of parts dominates.
 const STRING_CHEAP_HOST_WORK: u64 = 5;
 const STRING_SCAN_HOST_WORK: u64 = 10;
 const STRING_ALLOC_HOST_WORK: u64 = 20;
-const STRING_PER_KIB_HOST_WORK: u64 = 1;
+const LENGTH_PER_KIB_HOST_WORK: u64 = 5;
+/// Per KiB up to the end of the result: finding a character offset walks the
+/// string from its start.
+const SUBSTRING_PER_KIB_HOST_WORK: u64 = 72;
+const CONTAINS_PER_KIB_HOST_WORK: u64 = 4;
+const TRIM_PER_KIB_HOST_WORK: u64 = 9;
+const CASE_PER_KIB_HOST_WORK: u64 = 16;
+const SPLIT_PER_KIB_HOST_WORK: u64 = 4;
+const SPLIT_PER_PART_HOST_WORK: u64 = 8;
+const REPLACE_PER_KIB_HOST_WORK: u64 = 82;
+const JOIN_PER_KIB_HOST_WORK: u64 = 8;
+const JOIN_PER_PART_HOST_WORK: u64 = 2;
 
-fn string_work(base: u64, bytes: usize) -> u64 {
-    base.saturating_add(
-        (bytes as u64)
-            .div_ceil(1024)
-            .saturating_mul(STRING_PER_KIB_HOST_WORK),
-    )
+/// The string argument at `args[0]`, or an error naming `builtin`.
+fn single_string_arg(args: &[Value], heap: &Heap, builtin: &str) -> Result<Arc<str>, String> {
+    match &args[0] {
+        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
+            HeapObject::String(s) => Ok(s.clone()),
+            _ => Err(format!("{builtin}: expected String")),
+        },
+        _ => Err(format!("{builtin}: expected String")),
+    }
+}
+
+fn charge(heap: &mut Heap, builtin: &str, work: u64) -> Result<(), String> {
+    heap.charge_host_work(work)
+        .map_err(|e| format!("{builtin}: {e}"))
 }
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
@@ -35,13 +58,13 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 pub(super) fn string_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     heap.charge_host_work(STRING_CHEAP_HOST_WORK)
         .map_err(|e| format!("string_length: {e}"))?;
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(Value::Int(s.chars().count() as i64)),
-            _ => Err("string_length: expected String".into()),
-        },
-        _ => Err("string_length: expected String".into()),
-    }
+    let s = single_string_arg(args, heap, "string_length")?;
+    charge(
+        heap,
+        "string_length",
+        host_work(0, LENGTH_PER_KIB_HOST_WORK, s.len()),
+    )?;
+    Ok(Value::Int(s.chars().count() as i64))
 }
 
 pub(super) fn substring(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -75,7 +98,19 @@ pub(super) fn substring(args: &[Value], heap: &mut Heap) -> Result<Value, String
                 .char_indices()
                 .map(|(i, _)| i)
                 .chain(std::iter::once(s.len()));
-            match (boundaries.nth(start), boundaries.nth(len - 1)) {
+            let range = (boundaries.nth(start), boundaries.nth(len - 1));
+            // Charged after the walk: its length is the end offset found, or
+            // the whole string when the range is out of bounds.
+            let walked = match range {
+                (Some(_), Some(end)) => end,
+                _ => s.len(),
+            };
+            charge(
+                heap,
+                "substring",
+                host_work(0, SUBSTRING_PER_KIB_HOST_WORK, walked),
+            )?;
+            match range {
                 (Some(begin), Some(end)) => {
                     heap_alloc(heap, HeapObject::String(Arc::from(&s[begin..end])))
                 }
@@ -110,19 +145,22 @@ pub(super) fn string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, 
         },
         _ => return Err("string_contains: expected String".into()),
     };
-    Ok(Value::Bool(a.contains(b)))
+    let walked = a.len();
+    let found = a.contains(b);
+    charge(
+        heap,
+        "string_contains",
+        host_work(0, CONTAINS_PER_KIB_HOST_WORK, walked),
+    )?;
+    Ok(Value::Bool(found))
 }
 
 pub(super) fn trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(STRING_ALLOC_HOST_WORK)
+    heap.charge_host_work(STRING_CHEAP_HOST_WORK)
         .map_err(|e| format!("trim: {e}"))?;
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.trim().into())),
-            _ => Err("trim: expected String".into()),
-        },
-        _ => Err("trim: expected String".into()),
-    }
+    let s = single_string_arg(args, heap, "trim")?;
+    charge(heap, "trim", host_work(0, TRIM_PER_KIB_HOST_WORK, s.len()))?;
+    heap_alloc(heap, HeapObject::String(s.trim().into()))
 }
 
 pub(super) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -149,9 +187,14 @@ pub(super) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         },
         _ => return Err("split: expected String".into()),
     };
-    heap.charge_host_work(string_work(0, s.len()))
+    heap.charge_host_work(host_work(0, SPLIT_PER_KIB_HOST_WORK, s.len()))
         .map_err(|e| format!("split: {e}"))?;
     let part_count = s.split(&*sep).count();
+    charge(
+        heap,
+        "split",
+        (part_count as u64).saturating_mul(SPLIT_PER_PART_HOST_WORK),
+    )?;
     let parts_bytes = part_count
         .checked_mul(size_of::<Value>())
         .ok_or_else(|| "split: part count overflow".to_string())?;
@@ -198,7 +241,7 @@ pub(super) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, S
         },
         _ => return Err("string_replace: expected String".into()),
     };
-    heap.charge_host_work(string_work(0, s.len()))
+    heap.charge_host_work(host_work(0, REPLACE_PER_KIB_HOST_WORK, s.len()))
         .map_err(|e| format!("string_replace: {e}"))?;
 
     let replacement_count = if from.is_empty() {
@@ -281,27 +324,27 @@ pub(super) fn ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, String
 }
 
 pub(super) fn to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(STRING_ALLOC_HOST_WORK)
+    heap.charge_host_work(STRING_CHEAP_HOST_WORK)
         .map_err(|e| format!("to_upper: {e}"))?;
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_uppercase().into())),
-            _ => Err("to_upper: expected String".into()),
-        },
-        _ => Err("to_upper: expected String".into()),
-    }
+    let s = single_string_arg(args, heap, "to_upper")?;
+    charge(
+        heap,
+        "to_upper",
+        host_work(0, CASE_PER_KIB_HOST_WORK, s.len()),
+    )?;
+    heap_alloc(heap, HeapObject::String(s.to_uppercase().into()))
 }
 
 pub(super) fn to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(STRING_ALLOC_HOST_WORK)
+    heap.charge_host_work(STRING_CHEAP_HOST_WORK)
         .map_err(|e| format!("to_lower: {e}"))?;
-    match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_lowercase().into())),
-            _ => Err("to_lower: expected String".into()),
-        },
-        _ => Err("to_lower: expected String".into()),
-    }
+    let s = single_string_arg(args, heap, "to_lower")?;
+    charge(
+        heap,
+        "to_lower",
+        host_work(0, CASE_PER_KIB_HOST_WORK, s.len()),
+    )?;
+    heap_alloc(heap, HeapObject::String(s.to_lowercase().into()))
 }
 
 pub(super) fn string_join(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -339,8 +382,11 @@ pub(super) fn string_join(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         Ok(())
     })?;
 
-    heap.charge_host_work(string_work(0, output_len))
-        .map_err(|e| format!("string_join: {e}"))?;
+    heap.charge_host_work(
+        host_work(0, JOIN_PER_KIB_HOST_WORK, output_len)
+            .saturating_add((count as u64).saturating_mul(JOIN_PER_PART_HOST_WORK)),
+    )
+    .map_err(|e| format!("string_join: {e}"))?;
     heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(output_len))
         .map_err(|e| format!("string_join: {e}"))?;
 

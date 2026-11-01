@@ -3,8 +3,13 @@ use ::regex::Regex;
 use std::borrow::Cow;
 use std::mem::size_of;
 
-const REGEX_MATCH_HOST_WORK: u64 = 50;
-const REGEX_REPLACE_HOST_WORK: u64 = 100;
+// Host work in opcode-equivalents, from the host_work_calibration example
+// (docs/builtins/accounting-matrix.md#calibration). The fixed part is mostly
+// compiling the pattern, which happens on every call.
+const REGEX_MATCH_HOST_WORK: u64 = 700;
+const REGEX_MATCH_PER_KIB_HOST_WORK: u64 = 2;
+const REGEX_REPLACE_HOST_WORK: u64 = 130;
+const REGEX_REPLACE_PER_KIB_HOST_WORK: u64 = 98;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -25,11 +30,13 @@ pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_ref(),
+            HeapObject::String(s) => s.clone(),
             _ => return Err("regex_match: expected String".into()),
         },
         _ => return Err("regex_match: expected String".into()),
     };
+    heap.charge_host_work(host_work(0, REGEX_MATCH_PER_KIB_HOST_WORK, s.len()))
+        .map_err(|e| format!("regex_match: {e}"))?;
     let pattern = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_ref(),
@@ -38,7 +45,7 @@ pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         _ => return Err("regex_match: expected String".into()),
     };
     let re = Regex::new(pattern).map_err(|e| format!("regex_match: {e}"))?;
-    Ok(Value::Bool(re.is_match(s)))
+    Ok(Value::Bool(re.is_match(&s)))
 }
 
 pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -53,11 +60,13 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_ref(),
+            HeapObject::String(s) => s.clone(),
             _ => return Err("regex_replace: expected String".into()),
         },
         _ => return Err("regex_replace: expected String".into()),
     };
+    heap.charge_host_work(host_work(0, REGEX_REPLACE_PER_KIB_HOST_WORK, s.len()))
+        .map_err(|e| format!("regex_replace: {e}"))?;
     let pattern = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_ref(),
@@ -73,7 +82,7 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
         _ => return Err("regex_replace: expected String".into()),
     };
     let re = Regex::new(pattern).map_err(|e| format!("regex_replace: {e}"))?;
-    let replaced = re.replace_all(s, replacement);
+    let replaced = re.replace_all(&s, replacement);
     let output_len = match &replaced {
         Cow::Borrowed(text) => text.len(),
         Cow::Owned(text) => text.len(),

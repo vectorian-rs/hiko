@@ -1,16 +1,14 @@
 use super::*;
 
+// Host work in opcode-equivalents, from the host_work_calibration example
+// (docs/builtins/accounting-matrix.md#calibration).
 const BYTES_CHEAP_HOST_WORK: u64 = 5;
 const BYTES_ALLOC_HOST_WORK: u64 = 10;
-const BYTES_PER_KIB_HOST_WORK: u64 = 1;
-
-fn bytes_work(base: u64, bytes: usize) -> u64 {
-    base.saturating_add(
-        (bytes as u64)
-            .div_ceil(1024)
-            .saturating_mul(BYTES_PER_KIB_HOST_WORK),
-    )
-}
+/// UTF-8 validation and copy.
+const TO_STRING_PER_KIB_HOST_WORK: u64 = 42;
+const TO_BYTES_PER_KIB_HOST_WORK: u64 = 8;
+/// Per KiB of the slice copied.
+const SLICE_PER_KIB_HOST_WORK: u64 = 10;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -42,8 +40,12 @@ pub(super) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, 
         },
         _ => return Err("bytes_to_string: expected Bytes".into()),
     };
-    heap.charge_host_work(bytes_work(BYTES_ALLOC_HOST_WORK, byte_len))
-        .map_err(|e| format!("bytes_to_string: {e}"))?;
+    heap.charge_host_work(host_work(
+        BYTES_ALLOC_HOST_WORK,
+        TO_STRING_PER_KIB_HOST_WORK,
+        byte_len,
+    ))
+    .map_err(|e| format!("bytes_to_string: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => heap_alloc(
@@ -64,8 +66,12 @@ pub(super) fn string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
         },
         _ => return Err("string_to_bytes: expected String".into()),
     };
-    heap.charge_host_work(bytes_work(BYTES_ALLOC_HOST_WORK, byte_len))
-        .map_err(|e| format!("string_to_bytes: {e}"))?;
+    heap.charge_host_work(host_work(
+        BYTES_CHEAP_HOST_WORK,
+        TO_BYTES_PER_KIB_HOST_WORK,
+        byte_len,
+    ))
+    .map_err(|e| format!("string_to_bytes: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => heap_alloc(heap, HeapObject::Bytes(s.as_bytes().into())),
@@ -119,7 +125,7 @@ pub(super) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let bytes = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::Bytes(b) => b,
+            HeapObject::Bytes(b) => b.clone(),
             _ => return Err("bytes_slice: expected Bytes".into()),
         },
         _ => return Err("bytes_slice: expected Bytes".into()),
@@ -136,10 +142,10 @@ pub(super) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let end = (start + len).min(bytes.len());
     let start = start.min(bytes.len());
-    let output = bytes[start..end].to_vec();
-    heap.charge_host_work(bytes_work(0, output.len()))
+    heap.charge_host_work(host_work(0, SLICE_PER_KIB_HOST_WORK, end - start))
         .map_err(|e| format!("bytes_slice: {e}"))?;
-    heap_alloc(heap, HeapObject::Bytes(output.into()))
+    let output: std::sync::Arc<[u8]> = std::sync::Arc::from(&bytes[start..end]);
+    heap_alloc(heap, HeapObject::Bytes(output))
 }
 
 #[cfg(test)]

@@ -1,18 +1,16 @@
 use super::*;
 use smallvec::smallvec;
 
-const RANDOM_BYTES_BASE_HOST_WORK: u64 = 10;
-const RANDOM_BYTES_PER_KIB_HOST_WORK: u64 = 1;
-const RNG_SEED_HOST_WORK: u64 = 10;
+// Host work in opcode-equivalents, from the host_work_calibration example
+// (docs/builtins/accounting-matrix.md#calibration).
+/// `random_bytes` reads the operating system's generator.
+const RANDOM_BYTES_BASE_HOST_WORK: u64 = 105;
+const RANDOM_BYTES_PER_KIB_HOST_WORK: u64 = 421;
+const RNG_BYTES_BASE_HOST_WORK: u64 = 15;
+const RNG_BYTES_PER_KIB_HOST_WORK: u64 = 57;
+const RNG_SEED_HOST_WORK: u64 = 5;
+const RNG_SEED_PER_KIB_HOST_WORK: u64 = 140;
 const RNG_INT_HOST_WORK: u64 = 5;
-
-fn byte_work(bytes: usize) -> u64 {
-    RANDOM_BYTES_BASE_HOST_WORK.saturating_add(
-        (bytes as u64)
-            .div_ceil(1024)
-            .saturating_mul(RANDOM_BYTES_PER_KIB_HOST_WORK),
-    )
-}
 
 /// Reserve an output buffer of `n` bytes, failing with an error instead of
 /// aborting when `n` exceeds the memory limit or cannot be allocated.
@@ -38,8 +36,12 @@ pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Str
     match &args[0] {
         Value::Int(n) if *n >= 0 => {
             let n = *n as usize;
-            heap.charge_host_work(byte_work(n))
-                .map_err(|e| format!("random_bytes: {e}"))?;
+            heap.charge_host_work(host_work(
+                RANDOM_BYTES_BASE_HOST_WORK,
+                RANDOM_BYTES_PER_KIB_HOST_WORK,
+                n,
+            ))
+            .map_err(|e| format!("random_bytes: {e}"))?;
             let mut buf = reserve_output(heap, n, "random_bytes")?;
             buf.resize(n, 0);
             dryoc::rng::copy_randombytes(&mut buf);
@@ -68,8 +70,12 @@ pub(super) fn rng_seed(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         },
         _ => return Err("rng_seed: expected Bytes".into()),
     };
-    heap.charge_host_work(RNG_SEED_HOST_WORK.saturating_add(byte_work(seed_bytes.len())))
-        .map_err(|e| format!("rng_seed: {e}"))?;
+    heap.charge_host_work(host_work(
+        RNG_SEED_HOST_WORK,
+        RNG_SEED_PER_KIB_HOST_WORK,
+        seed_bytes.len(),
+    ))
+    .map_err(|e| format!("rng_seed: {e}"))?;
     let mut state: u64 = 0;
     let mut inc: u64 = 1;
     for (i, &b) in seed_bytes.iter().enumerate() {
@@ -104,8 +110,12 @@ pub(super) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String
         Value::Int(n) if n >= 0 => n as usize,
         _ => return Err("rng_bytes: expected non-negative Int".into()),
     };
-    heap.charge_host_work(byte_work(n))
-        .map_err(|e| format!("rng_bytes: {e}"))?;
+    heap.charge_host_work(host_work(
+        RNG_BYTES_BASE_HOST_WORK,
+        RNG_BYTES_PER_KIB_HOST_WORK,
+        n,
+    ))
+    .map_err(|e| format!("rng_bytes: {e}"))?;
     let mut output = reserve_output(heap, n, "rng_bytes")?;
     while output.len() < n {
         let (word, new_state) = pcg_next(state, inc);

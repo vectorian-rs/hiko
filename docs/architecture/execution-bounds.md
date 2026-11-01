@@ -58,6 +58,19 @@ A slice does the following:
 A reduction is currently one VM opcode dispatch. Host work inside one opcode or
 builtin is not subdivided into reductions.
 
+### The host-work unit
+
+One unit of host work is the time of about one opcode dispatch, measured on
+the reference machine (12 ns on an Apple M1 Max), so `max_fuel` and
+`max_host_work` budgets are comparable: a budget of N either way is roughly
+N × 12 ns of work. Each builtin charges a fixed amount per call plus an
+amount per KiB of what it walks (and, for `split` and `string_join`, per
+part), with rates measured by the `host_work_calibration` example; see
+[the calibration table](../builtins/accounting-matrix.md#calibration). The
+rates are averages for the measured input shapes: a call can cost up to
+about twice its charge, or much less on input where the builtin stops early
+(a `string_contains` that finds its match at the start).
+
 ## Runtime boundaries
 
 The runtime sees these boundaries via `RunResult`:
@@ -147,7 +160,7 @@ cooperative collection point, not a preemptive collector.
 | --- | --- | --- |
 | `max_work` / `max_fuel` | VM opcode dispatches across execution | Native builtin CPU time inside one opcode |
 | `run_slice(reductions)` | one scheduling slice's opcode dispatch budget | Native builtin, GC, or sync host-call duration once entered |
-| `max_host_work` | approximate CPU-bound builtin/host work units | Wall-clock time exactly |
+| `max_host_work` | CPU-bound builtin work, in opcode-equivalents (see [The host-work unit](#the-host-work-unit)) | Wall-clock time exactly, or the length of one call |
 | `max_io_bytes` | stdin/stdout, HTTP/file/exec payload bytes, async completion bytes | Number of requests unless separate capability policy denies them |
 | `max_http_response_bytes`, `max_file_read_bytes`, `max_exec_output_bytes` | bytes read by one HTTP response, file read, or exec stream | Cumulative bytes across calls (that is `max_io_bytes`) |
 | `http_timeout_ms`, `http_connect_timeout_ms` | wall-clock duration of one HTTP call, including the body | Total time spent across many calls |
@@ -324,6 +337,11 @@ For latency-sensitive use:
 6. Set `max_host_resources` and per-kind `limits.host_resources` caps when scripts can create native handles such as AWS clients.
 7. Use the runtime-managed async I/O path for operations that may block.
 8. Treat sync HTTP/file/exec builtins as bounded but non-preemptive host calls.
+   The longest pause one call of a CPU-bound builtin causes is in the
+   "One call at 1 MiB" column of the
+   [calibration table](../builtins/accounting-matrix.md#calibration); it
+   grows linearly with the input, which `max_file_read_bytes`,
+   `max_http_response_bytes` and `max_memory_bytes` bound.
 9. Size process heaps so local GC pauses are acceptable for your application.
 
 A practical starting point for agent/tool workloads is:
@@ -347,6 +365,10 @@ aws_config = 8
 aws_s3_client = 8
 aws_sqs_client = 8
 ```
+
+With the calibrated unit, `max_host_work = 10_000_000` is about 0.12 s of
+builtin work on the reference machine: for example, parsing about 37 MiB of
+JSON.
 
 Then tune using representative scripts. Increase `max_work` for pure Hiko loops,
 `max_host_work` for CPU-heavy builtins, `max_io_bytes` for large payloads,
