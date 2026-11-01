@@ -148,17 +148,12 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
 - Execution: `run()` (unbounded unless fuel is set) and `run_slice(reductions)`,
   which returns at `Done`, `Failed`, `Cancelled`, `Yielded`, `Spawn`, `Await`,
   `WaitAny`, or `Io`.
-- Process creation: about 0.4 µs and 8 allocations per spawn, with or without
-  a filesystem policy (October 2026, #104; see
+- Process creation: about 0.4 µs and 7 allocations per spawn, with or without
+  a filesystem policy (October 2026, #104 and #124; see
   [`performance.md`](../architecture/performance.md)).
 
 ### Efficiency gaps
 
-- `examples/benchmark.hml` is about 2.2x slower than the equivalent Python
-  script, mostly in system time (#81, #82). The opcode-density half of #82 is
-  done. The filesystem half (per-file `canonicalize` plus `cap_std` checks) is
-  not re-measured.
-- `HeapObject::String(String)` copies on transfer. #12 (`Arc<str>`) is open.
 - Spawning trivial children in sequence gets slower with more workers (22 ms
   at 1 worker, 87 ms at 8 for 6,000 children): the scheduler wakes a worker
   per enqueue. CPU fan-out scales 4.9x at 8 workers.
@@ -327,22 +322,20 @@ been taken.
 
 ## Issue triage
 
-| Issue                                        | Class         | Status                                                       |
-| -------------------------------------------- | ------------- | ------------------------------------------------------------ |
-| #80 Host resource accounting                 | Security      | Implemented in `c2ef46e`, `d3d0fe7`. Close.                  |
-| #54, #55 Module cache, manifest, lockfile    | Security      | Implemented. Close or reduce to remaining items.             |
-| #82 Filesystem I/O and opcode density        | VM            | Opcode half done. Re-measure filesystem half.                |
-| #81 CLI run vs Python                        | VM            | Open.                                                        |
-| #75 Performance predictability               | VM / Security | Open: benchmark harness, constant tuning, per-op I/O limits. |
-| #12 `Arc<str>` strings                       | VM            | Open.                                                        |
-| #40 Broadcast cloning                        | VM            | Done in #104: one serialization per value sent to many children. |
-| #47 Work-stealing scheduler                  | VM            | Open. Depends on keeping the threaded runtime.               |
-| #25 Loom tests                               | Security      | Open. Depends on keeping the threaded runtime.               |
-| #48, #74 Effect typing                       | Research      | Open.                                                        |
-| #29, #30 Tail-resume, deep resume            | Research      | Done in #121.                                                |
-| #10 Isolated-process runtime with effects    | Research      | Tracking issue.                                              |
-| #59 Bundle modules and policy into artifacts | Security      | Open.                                                        |
-| #53, #56, #57, #85 Harness and agent runtime | Out of focus  | Close or move with the harness.                              |
+| Issue                                        | Class         | Status                                                                                       |
+| -------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------- |
+| #54 Module cache directory setting           | Security      | Cache implemented. Remaining: choose the directory from the CLI or `hiko.toml`.             |
+| #59 Bundle modules and policy into artifacts | Security      | Open. Needs a decision on whether generated artifacts stay.                                 |
+| #48, #74 Effect typing                       | Research      | Open.                                                                                        |
+| #10 Isolated-process runtime with effects    | Research      | Tracking issue.                                                                              |
+| #53, #56, #57, #85 Harness and agent runtime | Out of focus  | Close or move with the harness.                                                              |
+
+Closed since the first snapshot: #12 (`Arc<str>` strings, #125), #25 (Loom
+tests, #103), #29 and #30 (effects, #121), #40, #47, #81 and #82 (#104), #55
+(manifest and lockfile), #75 (host-work calibration, #129), #80 (tree-wide
+host resource limits, #128). Not covered by #75's closing: tail-latency
+percentiles are not measured; `scripts/bench.sh` reports means, minimums and
+maximums.
 
 ## Suggested cleanup order
 
