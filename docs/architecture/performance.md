@@ -266,6 +266,25 @@ What each change removed from a call such as `ack (m - 1, 1)`:
 Fusing the opcode fetch at the top of the dispatch loop into the same helper
 made every benchmark about 15% slower and was not kept.
 
+### Regex cache (#135)
+
+`regex_match` and `regex_replace` compiled their pattern on every call. A
+cache shared by the process tree keeps up to 32 compiled patterns (each
+under 256 KiB of program and 256 KiB of lazy DFA). Host work is charged as
+before, so a cache hit costs the same budget as compiling.
+
+| Benchmark | Before | After |
+|---|---|---|
+| `regex_loop.hml` (12,000 calls, one pattern) | 163 ms | 9.3 ms |
+
+The first version returned clones of the cached `Regex`. A clone gets its
+own search cache and allocates it again on its first search, so cache hits
+were barely faster than compiling (53 ms). Entries are now `Arc<Regex>`.
+
+Also measured in #135 and not kept: decoding opcodes from a 256-entry table
+instead of `Op::try_from`'s `match`. It made `ack`, `tak`, `early_exit` and
+`ec_ack` 2-3% faster and `list_length` 4.5% slower, repeatably.
+
 ### Interpreter (after, one process)
 
 | Benchmark | Time |
