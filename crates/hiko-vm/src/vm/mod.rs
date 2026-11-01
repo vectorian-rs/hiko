@@ -153,8 +153,12 @@ pub struct VM {
     pub(crate) heap: Heap,
     pub(crate) stack: Vec<Value>,
     frames: Vec<CallFrame>,
-    globals: Vec<Value>,
-    global_names: HashMap<String, usize>,
+    /// Global values by slot; `None` until this VM defines or loads the
+    /// global. Grown to `global_names.len()` on first use, so a child that
+    /// reads no globals allocates nothing for them.
+    globals: Vec<Option<Value>>,
+    /// VM name of each global slot, from the compiled program.
+    global_names: Arc<[Arc<str>]>,
     /// Globals this VM defined with `SetGlobal`, by slot.
     defined_globals: HashMap<usize, child_globals::DefinedGlobal>,
     /// Globals inherited from the parent process, loaded on first use.
@@ -295,8 +299,8 @@ impl VM {
             heap: Heap::new(),
             stack: Vec::with_capacity(32),
             frames: Vec::with_capacity(16),
-            globals: Vec::with_capacity(program.main.constants.len()),
-            global_names: HashMap::new(),
+            globals: Vec::new(),
+            global_names: program.globals,
             defined_globals: HashMap::new(),
             inherited_globals: None,
             spawn_snapshot: None,
@@ -459,15 +463,19 @@ impl VM {
     /// The compiler stores a binding that shadows an earlier one, or a
     /// builtin, as `name$1`, `name$2`, ...
     pub fn get_global(&self, name: &str) -> Option<&Value> {
-        let mut slot = self.global_names.get(name);
+        let value_of = |global: &str| {
+            let slot = self.global_names.iter().position(|g| **g == *global)?;
+            self.globals.get(slot)?.as_ref()
+        };
+        let mut value = value_of(name);
         for n in 1.. {
-            match self.global_names.get(&format!("{name}${n}")) {
-                Some(found) => slot = Some(found),
+            match value_of(&format!("{name}${n}")) {
+                Some(found) => value = Some(found),
                 None => break,
             }
         }
-        match slot {
-            Some(&slot) => Some(&self.globals[slot]),
+        match value {
+            Some(value) => Some(value),
             None => self
                 .builtins
                 .by_name
@@ -646,6 +654,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
 
         let err = match VM::try_new(program) {
@@ -666,6 +675,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
 
         let mut vm = VM::new(program);
@@ -701,6 +711,7 @@ mod tests {
             main_n_locals: 2,
             functions: Arc::from([]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
 
         let mut vm = VM::new(program);
@@ -725,6 +736,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
 
         let mut vm = VM::new(program);
@@ -1386,6 +1398,7 @@ mod tests {
                 main_n_locals: 0,
                 functions: Arc::from([]),
                 effects: Arc::from([]),
+                globals: Arc::from([]),
             };
             assert!(
                 verify_program(&program).is_err(),
@@ -1451,6 +1464,7 @@ mod tests {
                 name: "Test".into(),
                 tag: 0,
             }]),
+            globals: Arc::from([]),
         };
         let mut vm = VM::try_new(program).expect("program should verify");
         let err = vm.run().expect_err("stale handler should fail");
@@ -1473,6 +1487,7 @@ mod tests {
                 main_n_locals: 0,
                 functions: Arc::from([]),
                 effects: Arc::from([]),
+                globals: Arc::from([Arc::from("abs_int")]),
             };
             let mut vm = VM::try_new(program).expect("program should verify");
             let err = vm.run().expect_err("wrong builtin arity should fail");
@@ -1840,6 +1855,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
         let mut vm = VM::new(program);
         for _ in 0..DEFAULT_MAX_HANDLER_FRAMES {

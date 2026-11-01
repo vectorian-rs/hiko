@@ -128,25 +128,18 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::GetGlobal => {
-                    let idx = self.read_u16()? as usize;
-                    let name = self.read_const_string(proto_idx, idx)?;
-                    let slot = match self.global_names.get(name) {
-                        Some(&slot) => slot,
-                        None => {
-                            let name = name.to_string();
-                            self.load_global(&name)?
-                        }
+                    let slot = self.read_u16()? as usize;
+                    let val = match self.globals.get(slot) {
+                        Some(&Some(val)) => val,
+                        _ => self.load_global(slot)?,
                     };
-                    let val = self.globals[slot];
                     self.push(val)?;
                 }
                 Op::SetGlobal => {
-                    let idx = self.read_u16()? as usize;
-                    let name = self.read_const_string(proto_idx, idx)?.to_string();
+                    let slot = self.read_u16()? as usize;
                     let val = self.pop()?;
-                    let slot = self.global_slot(name.clone());
-                    self.globals[slot] = val;
-                    self.note_global_defined(slot, &name);
+                    *self.global_mut(slot) = Some(val);
+                    self.note_global_defined(slot);
                 }
 
                 Op::Pop => {

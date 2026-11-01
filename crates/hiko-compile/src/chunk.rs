@@ -49,6 +49,9 @@ pub struct CompiledProgram {
     pub functions: Arc<[FunctionProto]>,
     /// Effect name → tag mapping for runtime-handled effect resolution.
     pub effects: Arc<[EffectMeta]>,
+    /// VM name of each global slot. `GetGlobal` and `SetGlobal` take a slot;
+    /// a name that the program never binds is a builtin.
+    pub globals: Arc<[Arc<str>]>,
 }
 
 impl Chunk {

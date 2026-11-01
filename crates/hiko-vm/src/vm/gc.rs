@@ -85,7 +85,7 @@ impl VM {
             .stack
             .iter()
             .chain(self.frames.iter().flat_map(|f| f.captures.iter()))
-            .chain(self.globals.iter())
+            .chain(self.globals.iter().flatten())
             .chain(self.handlers.iter().flat_map(|h| h.captures.iter()))
             .chain(
                 self.hidden_handlers
