@@ -4,13 +4,16 @@ use std::mem::size_of;
 // Host work in opcode-equivalents, from the host_work_calibration example
 // (docs/builtins/accounting-matrix.md#calibration). Every builtin that takes
 // JSON text parses all of it, so each charges per KiB of the text;
-// `json_to_string` charges per KiB of the text it produces.
-const JSON_PARSE_HOST_WORK: u64 = 15;
-const JSON_PARSE_PER_KIB_HOST_WORK: u64 = 540;
-const JSON_SERIALIZE_HOST_WORK: u64 = 20;
-const JSON_SERIALIZE_PER_KIB_HOST_WORK: u64 = 680;
-const JSON_ACCESS_HOST_WORK: u64 = 20;
-const JSON_ACCESS_PER_KIB_HOST_WORK: u64 = 276;
+// `json_to_string` charges per KiB of the text it produces. The rates are
+// for the densest JSON (one-character tokens), since the cost follows the
+// number of tokens: text with longer tokens is charged up to about 4x what
+// it costs.
+const JSON_PARSE_HOST_WORK: u64 = 45;
+const JSON_PARSE_PER_KIB_HOST_WORK: u64 = 2_180;
+const JSON_SERIALIZE_HOST_WORK: u64 = 55;
+const JSON_SERIALIZE_PER_KIB_HOST_WORK: u64 = 2_410;
+const JSON_ACCESS_HOST_WORK: u64 = 45;
+const JSON_ACCESS_PER_KIB_HOST_WORK: u64 = 780;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -23,8 +26,6 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 }
 
 pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(JSON_PARSE_HOST_WORK)
-        .map_err(|e| format!("json_parse: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -32,25 +33,34 @@ pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         },
         _ => return Err("json_parse: expected String".into()),
     };
-    heap.charge_host_work(host_work(0, JSON_PARSE_PER_KIB_HOST_WORK, json_str.len()))
-        .map_err(|e| format!("json_parse: {e}"))?;
+    charge(
+        heap,
+        "json_parse",
+        host_work(
+            JSON_PARSE_HOST_WORK,
+            JSON_PARSE_PER_KIB_HOST_WORK,
+            json_str.len(),
+        ),
+    )?;
     let parsed: serde_json::Value =
         serde_json::from_str(&json_str).map_err(|e| format!("json_parse: {e}"))?;
     json_to_hiko(&parsed, heap)
 }
 
 pub(super) fn json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(JSON_SERIALIZE_HOST_WORK)
-        .map_err(|e| format!("json_to_string: {e}"))?;
+    // The fixed part first, so a spent budget fails before serializing; the
+    // size of the text is known only afterwards.
+    charge(heap, "json_to_string", JSON_SERIALIZE_HOST_WORK)?;
     let result = hiko_to_json_string(args[0], heap)?;
-    heap.charge_host_work(host_work(0, JSON_SERIALIZE_PER_KIB_HOST_WORK, result.len()))
-        .map_err(|e| format!("json_to_string: {e}"))?;
+    charge(
+        heap,
+        "json_to_string",
+        host_work(0, JSON_SERIALIZE_PER_KIB_HOST_WORK, result.len()),
+    )?;
     heap_alloc(heap, HeapObject::String(result.into()))
 }
 
 pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(JSON_ACCESS_HOST_WORK)
-        .map_err(|e| format!("json_get: {e}"))?;
     let (v0, v1) = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
@@ -65,8 +75,15 @@ pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         },
         _ => return Err("json_get: expected String".into()),
     };
-    heap.charge_host_work(host_work(0, JSON_ACCESS_PER_KIB_HOST_WORK, json_str.len()))
-        .map_err(|e| format!("json_get: {e}"))?;
+    charge(
+        heap,
+        "json_get",
+        host_work(
+            JSON_ACCESS_HOST_WORK,
+            JSON_ACCESS_PER_KIB_HOST_WORK,
+            json_str.len(),
+        ),
+    )?;
     let path = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.as_ref(),
@@ -97,8 +114,6 @@ pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
 }
 
 pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(JSON_ACCESS_HOST_WORK)
-        .map_err(|e| format!("json_keys: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -106,8 +121,15 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
         },
         _ => return Err("json_keys: expected String".into()),
     };
-    heap.charge_host_work(host_work(0, JSON_ACCESS_PER_KIB_HOST_WORK, json_str.len()))
-        .map_err(|e| format!("json_keys: {e}"))?;
+    charge(
+        heap,
+        "json_keys",
+        host_work(
+            JSON_ACCESS_HOST_WORK,
+            JSON_ACCESS_PER_KIB_HOST_WORK,
+            json_str.len(),
+        ),
+    )?;
 
     let parsed: serde_json::Value =
         serde_json::from_str(&json_str).map_err(|e| format!("json_keys: {e}"))?;
@@ -133,8 +155,6 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
 }
 
 pub(super) fn json_length(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(JSON_ACCESS_HOST_WORK)
-        .map_err(|e| format!("json_length: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => s.clone(),
@@ -142,8 +162,15 @@ pub(super) fn json_length(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         },
         _ => return Err("json_length: expected String".into()),
     };
-    heap.charge_host_work(host_work(0, JSON_ACCESS_PER_KIB_HOST_WORK, json_str.len()))
-        .map_err(|e| format!("json_length: {e}"))?;
+    charge(
+        heap,
+        "json_length",
+        host_work(
+            JSON_ACCESS_HOST_WORK,
+            JSON_ACCESS_PER_KIB_HOST_WORK,
+            json_str.len(),
+        ),
+    )?;
 
     let parsed: serde_json::Value =
         serde_json::from_str(&json_str).map_err(|e| format!("json_length: {e}"))?;

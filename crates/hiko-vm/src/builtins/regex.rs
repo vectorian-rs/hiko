@@ -4,12 +4,15 @@ use std::borrow::Cow;
 use std::mem::size_of;
 
 // Host work in opcode-equivalents, from the host_work_calibration example
-// (docs/builtins/accounting-matrix.md#calibration). The fixed part is mostly
-// compiling the pattern, which happens on every call.
-const REGEX_MATCH_HOST_WORK: u64 = 700;
+// (docs/builtins/accounting-matrix.md#calibration). The pattern is compiled
+// on every call: the fixed part covers a short pattern (a literal compiles
+// in about 700 units, a character class in about 2,800), and longer patterns
+// pay per KiB. The text costs little to scan; `regex_replace` also builds
+// its output.
+const REGEX_HOST_WORK: u64 = 1_500;
+const REGEX_PATTERN_PER_KIB_HOST_WORK: u64 = 11_500;
 const REGEX_MATCH_PER_KIB_HOST_WORK: u64 = 2;
-const REGEX_REPLACE_HOST_WORK: u64 = 130;
-const REGEX_REPLACE_PER_KIB_HOST_WORK: u64 = 98;
+const REGEX_REPLACE_PER_KIB_HOST_WORK: u64 = 130;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -18,71 +21,43 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     ]
 }
 
+fn regex_work(per_kib: u64, text: &str, pattern: &str) -> u64 {
+    host_work(REGEX_HOST_WORK, per_kib, text.len()).saturating_add(host_work(
+        0,
+        REGEX_PATTERN_PER_KIB_HOST_WORK,
+        pattern.len(),
+    ))
+}
+
 pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(REGEX_MATCH_HOST_WORK)
-        .map_err(|e| format!("regex_match: {e}"))?;
-    let (v0, v1) = match &args[0] {
-        Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::Tuple(t) if t.len() >= 2 => (t[0], t[1]),
-            _ => return Err("regex_match: expected (String, String)".into()),
-        },
-        _ => return Err("regex_match: expected (String, String)".into()),
-    };
-    let s = match v0 {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("regex_match: expected String".into()),
-        },
-        _ => return Err("regex_match: expected String".into()),
-    };
-    heap.charge_host_work(host_work(0, REGEX_MATCH_PER_KIB_HOST_WORK, s.len()))
-        .map_err(|e| format!("regex_match: {e}"))?;
-    let pattern = match v1 {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_ref(),
-            _ => return Err("regex_match: expected String".into()),
-        },
-        _ => return Err("regex_match: expected String".into()),
-    };
-    let re = Regex::new(pattern).map_err(|e| format!("regex_match: {e}"))?;
+    let (s, pattern) = string_pair(args, heap, "regex_match")?;
+    charge(
+        heap,
+        "regex_match",
+        regex_work(REGEX_MATCH_PER_KIB_HOST_WORK, &s, &pattern),
+    )?;
+    let re = Regex::new(&pattern).map_err(|e| format!("regex_match: {e}"))?;
     Ok(Value::Bool(re.is_match(&s)))
 }
 
 pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    heap.charge_host_work(REGEX_REPLACE_HOST_WORK)
-        .map_err(|e| format!("regex_replace: {e}"))?;
-    let (v0, v1, v2) = match &args[0] {
+    let expected = || "regex_replace: expected (String, String, String)".to_string();
+    let fields = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::Tuple(t) if t.len() >= 3 => (t[0], t[1], t[2]),
-            _ => return Err("regex_replace: expected (String, String, String)".into()),
+            HeapObject::Tuple(t) if t.len() >= 3 => [t[0], t[1], t[2]],
+            _ => return Err(expected()),
         },
-        _ => return Err("regex_replace: expected (String, String, String)".into()),
+        _ => return Err(expected()),
     };
-    let s = match v0 {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
-            _ => return Err("regex_replace: expected String".into()),
-        },
-        _ => return Err("regex_replace: expected String".into()),
-    };
-    heap.charge_host_work(host_work(0, REGEX_REPLACE_PER_KIB_HOST_WORK, s.len()))
-        .map_err(|e| format!("regex_replace: {e}"))?;
-    let pattern = match v1 {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_ref(),
-            _ => return Err("regex_replace: expected String".into()),
-        },
-        _ => return Err("regex_replace: expected String".into()),
-    };
-    let replacement = match v2 {
-        Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_ref(),
-            _ => return Err("regex_replace: expected String".into()),
-        },
-        _ => return Err("regex_replace: expected String".into()),
-    };
-    let re = Regex::new(pattern).map_err(|e| format!("regex_replace: {e}"))?;
-    let replaced = re.replace_all(&s, replacement);
+    let [s, pattern, replacement] = fields.map(|v| extract_string_arg(&[v], heap, "regex_replace"));
+    let (s, pattern, replacement) = (s?, pattern?, replacement?);
+    charge(
+        heap,
+        "regex_replace",
+        regex_work(REGEX_REPLACE_PER_KIB_HOST_WORK, &s, &pattern),
+    )?;
+    let re = Regex::new(&pattern).map_err(|e| format!("regex_replace: {e}"))?;
+    let replaced = re.replace_all(&s, &*replacement);
     let output_len = match &replaced {
         Cow::Borrowed(text) => text.len(),
         Cow::Owned(text) => text.len(),
@@ -120,7 +95,7 @@ mod tests {
     #[test]
     fn regex_match_respects_host_work_limit() {
         let mut heap = Heap::new();
-        heap.set_max_host_work(REGEX_MATCH_HOST_WORK - 1);
+        heap.set_max_host_work(REGEX_HOST_WORK - 1);
         let s = string_arg(&mut heap, "hello world");
         let pat = string_arg(&mut heap, r"hello \w+");
         let arg = tuple2(&mut heap, s, pat);
@@ -136,7 +111,7 @@ mod tests {
         let pat = string_arg(&mut heap, r"hello \w+");
         let arg = tuple2(&mut heap, s, pat);
         regex_match(&[arg], &mut heap).unwrap();
-        assert!(heap.host_work_used() >= REGEX_MATCH_HOST_WORK);
+        assert!(heap.host_work_used() >= REGEX_HOST_WORK);
     }
 
     #[test]
