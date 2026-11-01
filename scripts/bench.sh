@@ -67,6 +67,8 @@ bench "Interpreter" "$@"
 bench "Spawn and await 6,000 children" \
     -L workers 1,8 "$hiko --workers {workers} benchmarks/spawn_await.hml"
 
+bench "One list shared by 200 children" "$hiko benchmarks/spawn_shared.hml"
+
 bench "CPU fan-out, 64 children" \
     -L workers 1,2,4,8 "$hiko --workers {workers} benchmarks/fanout_cpu.hml"
 
