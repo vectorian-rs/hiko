@@ -249,6 +249,7 @@ The remaining library/import work is operational hardening rather than deeper
 module theory:
 
 - add a lock update command for intentional dependency upgrades
-- make the remote module cache location configurable
+- make the remote module cache location configurable from the CLI or
+  `hiko.toml` (#54); embedders can already set `ModuleLoaderOptions::cache_dir`
 - support generated artifacts embedding exact locked content and selected policy
 - optionally include local `use` source hashes in generated artifacts for release reproducibility
