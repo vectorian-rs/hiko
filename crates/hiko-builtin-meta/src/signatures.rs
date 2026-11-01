@@ -98,8 +98,6 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "file_exists" | "is_dir" | "is_file" => "string -> bool",
         "list_dir" | "glob" | "walk_dir" => "string -> string list",
         "remove_file" | "create_dir" => "string -> unit",
-        "read_file_tagged" => "string * int * int -> string",
-        "edit_file_tagged" => "string * string -> string",
         "path_join" => "string * string -> string",
 
         // HTTP

@@ -247,16 +247,6 @@ folders = ["./workspace"]
 enabled = true
 folders = ["./workspace"]
 
-# Hashline-style tagged read builtin.
-[capabilities.filesystem.read_file_tagged]
-enabled = true
-folders = ["./workspace"]
-
-# Hashline edit builtin.
-[capabilities.filesystem.edit_file_tagged]
-enabled = true
-folders = ["./workspace"]
-
 [capabilities.filesystem.glob]
 enabled = true
 folders = ["./workspace"]
