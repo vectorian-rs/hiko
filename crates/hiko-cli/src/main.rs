@@ -690,7 +690,6 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         | Op::GeWord
         | Op::ConcatString
         | Op::Not
-        | Op::GetTag
         | Op::GetLocal0
         | Op::GetLocal1
         | Op::GetLocal2

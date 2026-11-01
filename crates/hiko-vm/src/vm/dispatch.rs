@@ -267,25 +267,6 @@ impl VM {
                     let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
                     self.push(val)?;
                 }
-                Op::GetTag => {
-                    let val = self.pop()?;
-                    match val {
-                        Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Data { tag, .. } => self.push(Value::Int(*tag as i64))?,
-                            _ => {
-                                return Err(RuntimeError {
-                                    message: "GetTag: expected data value".into(),
-                                });
-                            }
-                        },
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "GetTag: expected data value".into(),
-                            });
-                        }
-                    }
-                }
-
                 Op::Jump => {
                     let offset = self.read_i16()?;
                     let ip = self.frames[fi].ip;

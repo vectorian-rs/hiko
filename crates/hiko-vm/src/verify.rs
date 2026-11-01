@@ -377,13 +377,7 @@ fn decode_instruction(
                 delta: -1,
             }
         }
-        Op::Neg
-        | Op::NegFloat
-        | Op::Not
-        | Op::GetField
-        | Op::GetField0
-        | Op::GetField1
-        | Op::GetTag => {
+        Op::Neg | Op::NegFloat | Op::Not | Op::GetField | Op::GetField0 | Op::GetField1 => {
             if matches!(op, Op::GetField) {
                 let idx = read_u8(chunk, ip, "GetField")? as usize;
                 let _ = idx;

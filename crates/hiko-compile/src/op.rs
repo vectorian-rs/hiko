@@ -77,7 +77,6 @@ pub enum Op {
     GetField = 42,
 
     MakeData = 43,
-    GetTag = 44,
 
     Jump = 45,
     JumpIfFalse = 46,
@@ -174,7 +173,6 @@ impl TryFrom<u8> for Op {
             41 => Ok(Op::MakeTuple),
             42 => Ok(Op::GetField),
             43 => Ok(Op::MakeData),
-            44 => Ok(Op::GetTag),
             45 => Ok(Op::Jump),
             46 => Ok(Op::JumpIfFalse),
             47 => Ok(Op::MakeClosure),
