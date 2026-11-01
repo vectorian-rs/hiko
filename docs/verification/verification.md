@@ -166,8 +166,8 @@ Current TLA+ files:
     needs weak fairness per actor (otherwise the I/O monitor may be starved
     while a process yields forever, which the runtime never does), and `tla`
     cannot evaluate `WF`.
-  - With `MaxProcesses = 2`: 101,703 reachable states, 212,804 transitions,
-    depth 60, no violations (21 minutes with `tla`).
+  - With `MaxProcesses = 2`: 41,310 reachable states, 87,366 transitions,
+    depth 50, no violations (6 minutes with `tla`).
   - Abstracts bytecode and values; the leftmost-winner rule of `wait_any` is
     `WaitAnyLeftmost.tla`'s job.
 
@@ -205,9 +205,10 @@ Current TLA+ files:
 - [`specs/tla/broken/ThreadedSchedulerNoRecheck.cfg`](../../specs/tla/broken/ThreadedSchedulerNoRecheck.cfg)
   and [`ThreadedSchedulerNoReap.cfg`](../../specs/tla/broken/ThreadedSchedulerNoReap.cfg)
   - Run `ThreadedSchedulerImpl.tla` with the recheck after parking turned off,
-    or with scope exit not reaping children's tombstones. Both must fail, and
-    do: without the recheck, after 13,333 states a parent stays parked on a
-    child that is gone (`NoLostWakeup`); without reaping, after 4,462 states
+    or with scope exit not reaping children's tombstones, and without I/O
+    (neither bug involves it). Both must fail, and do: without the recheck,
+    after 4,159 states a parent stays parked on a child that is gone
+    (`NoLostWakeup`); without reaping, after 1,950 states
     a child's tombstone outlives its terminated parent
     (`BoundedTombstones`).
 
@@ -221,8 +222,10 @@ These are focused traces/examples for specific interleavings.
 ### Running the checks
 
 - TLA+: `hiko run scripts/check_tla.hml` runs every maintained model and the
-  negative checks, with `ThreadedSchedulerImpl` limited to 10,000 states. The
-  full threaded scheduler check takes about 20 minutes:
+  negative checks in about two minutes, with `ThreadedSchedulerImpl` limited
+  to 5,000 states. Each check must finish within the policy's
+  `exec_timeout_ms` (60 seconds). The full threaded scheduler check takes
+  about 6 minutes:
 
   ```sh
   tla specs/tla/ThreadedSchedulerImpl.tla \
