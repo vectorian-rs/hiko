@@ -38,11 +38,6 @@ fn test_stdlib_date() {
 }
 
 #[test]
-fn test_stdlib_hashline() {
-    run_hiko_file("../../tests/run/test_hashline.hml");
-}
-
-#[test]
 fn test_stdlib_wrappers() {
     run_hiko_file("../../tests/run/test_std_wrappers.hml");
 }

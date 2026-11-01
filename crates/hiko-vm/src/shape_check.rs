@@ -1100,21 +1100,6 @@ mod tests {
         vec![heap_string(heap, &format!("{dir}/*.txt"))]
     }
 
-    fn read_file_tagged_args(heap: &mut Heap) -> Vec<Value> {
-        let path = temp_path("tagged.txt");
-        std::fs::write(&path, "alpha\nbeta\n").unwrap();
-        let path = heap_string(heap, &path);
-        vec![heap_tuple(heap, vec![path, Value::Int(0), Value::Int(0)])]
-    }
-
-    fn edit_file_tagged_args(heap: &mut Heap) -> Vec<Value> {
-        let path = temp_path("edit-tagged.txt");
-        std::fs::write(&path, "alpha\n").unwrap();
-        let path = heap_string(heap, &path);
-        let edits = heap_string(heap, "");
-        vec![heap_tuple(heap, vec![path, edits])]
-    }
-
     fn bytes_get_args(heap: &mut Heap) -> Vec<Value> {
         let bytes = heap_bytes(heap, &[10, 20, 30]);
         vec![heap_tuple(heap, vec![bytes, Value::Int(1)])]
@@ -1496,14 +1481,6 @@ mod tests {
             BuiltinShapeCase {
                 name: "is_file",
                 args: file_exists_arg,
-            },
-            BuiltinShapeCase {
-                name: "read_file_tagged",
-                args: read_file_tagged_args,
-            },
-            BuiltinShapeCase {
-                name: "edit_file_tagged",
-                args: edit_file_tagged_args,
             },
             BuiltinShapeCase {
                 name: "glob",

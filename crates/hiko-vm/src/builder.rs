@@ -216,11 +216,10 @@ impl VMBuilder {
             "is_file",
             "list_dir",
             "path_join",
-            "read_file_tagged",
             "glob",
             "walk_dir",
         ];
-        let fs_write = ["write_file", "create_dir", "edit_file_tagged"];
+        let fs_write = ["write_file", "create_dir"];
         let fs_delete = ["remove_file"];
 
         let folders = vec![policy.root.clone()];

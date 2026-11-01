@@ -25,10 +25,6 @@ enabled = true
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.read_file_tagged]
-enabled = true
-folders = ["."]
-
 [capabilities.filesystem.file_exists]
 enabled = true
 folders = ["."]

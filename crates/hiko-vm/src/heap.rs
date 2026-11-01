@@ -1265,8 +1265,6 @@ const FILESYSTEM_BUILTIN_NAMES: &[&str] = &[
     "create_dir",
     "is_dir",
     "is_file",
-    "read_file_tagged",
-    "edit_file_tagged",
     "glob",
     "walk_dir",
 ];

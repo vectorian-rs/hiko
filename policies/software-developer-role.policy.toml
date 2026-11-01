@@ -267,14 +267,6 @@ folders = ["."]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.read_file_tagged]
-enabled = true
-folders = ["."]
-
-[capabilities.filesystem.edit_file_tagged]
-enabled = true
-folders = ["."]
-
 [capabilities.filesystem.glob]
 enabled = true
 folders = ["."]

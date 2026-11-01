@@ -106,8 +106,6 @@ pub(crate) use support::alloc_list;
 pub(crate) use support::heap_alloc;
 pub(crate) use support::{charge, host_work};
 pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg, string_pair};
-#[cfg(feature = "builtin-filesystem")]
-pub(crate) use support::{fnv1a_tag_parts, is_valid_fnv1a_tag};
 
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
 pub(crate) use json_value::json_to_hiko;
