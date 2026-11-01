@@ -334,7 +334,7 @@ been taken.
 | #81 CLI run vs Python                        | VM            | Open.                                                        |
 | #75 Performance predictability               | VM / Security | Open: benchmark harness, constant tuning, per-op I/O limits. |
 | #12 `Arc<str>` strings                       | VM            | Open.                                                        |
-| #40 Broadcast cloning                        | VM            | Open. Depends on keeping the threaded runtime.               |
+| #40 Broadcast cloning                        | VM            | Done in #104: one serialization per value sent to many children. |
 | #47 Work-stealing scheduler                  | VM            | Open. Depends on keeping the threaded runtime.               |
 | #25 Loom tests                               | Security      | Open. Depends on keeping the threaded runtime.               |
 | #48, #74 Effect typing                       | Research      | Open.                                                        |
