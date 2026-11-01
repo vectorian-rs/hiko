@@ -427,6 +427,17 @@ fn decode_instruction(
                 delta: 0,
             }
         }
+        Op::JumpIfNotTag => {
+            read_u16(chunk, ip, "JumpIfNotTag")?;
+            let offset = read_i16(chunk, ip, "JumpIfNotTag")?;
+            let target = read_relative_target(*ip, offset, "JumpIfNotTag")?;
+            successors.push(target);
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 1,
+                delta: -1,
+            }
+        }
         Op::JumpIfFalse => {
             let offset = read_i16(chunk, ip, "JumpIfFalse")?;
             let target = read_relative_target(*ip, offset, "JumpIfFalse")?;
@@ -849,6 +860,63 @@ mod tests {
                 err.message()
             );
         }
+    }
+
+    #[test]
+    fn accepts_jump_if_not_tag_with_both_successors() {
+        // Unit; JumpIfNotTag 1 +1; Unit; Halt. Both paths reach Halt with
+        // the same depth only if the fall-through pushes one value, so
+        // this checks the pop and both successors.
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::JumpIfNotTag as u8,
+            1,
+            0,
+            0,
+            0,
+            Op::Unit as u8,
+            Op::Pop as u8,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ]);
+        verify_program(&program).expect("JumpIfNotTag should verify");
+    }
+
+    #[test]
+    fn rejects_jump_if_not_tag_on_empty_stack() {
+        let program = empty_program(vec![
+            Op::JumpIfNotTag as u8,
+            1,
+            0,
+            0,
+            0,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("nothing to pop");
+        assert!(err.message().contains("JumpIfNotTag"), "{}", err.message());
+    }
+
+    #[test]
+    fn rejects_jump_if_not_tag_into_an_operand() {
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::JumpIfNotTag as u8,
+            1,
+            0,
+            1,
+            0,
+            Op::Jump as u8,
+            0,
+            0,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("target is inside Jump's operand");
+        assert!(
+            err.message().contains("instruction boundary"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]

@@ -107,6 +107,15 @@ impl Chunk {
         pos
     }
 
+    /// Emit `JumpIfNotTag tag` with a placeholder offset; patch it like a jump.
+    pub fn emit_tag_jump(&mut self, tag: u16) -> usize {
+        self.emit_op(Op::JumpIfNotTag);
+        self.emit_u16(tag);
+        let pos = self.code.len();
+        self.emit_i16(0);
+        pos
+    }
+
     /// Patch a previously emitted jump to point to the current position.
     ///
     /// Only the relative offset has to fit in `i16`; the absolute positions

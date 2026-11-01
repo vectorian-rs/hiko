@@ -1472,6 +1472,34 @@ mod tests {
     }
 
     #[test]
+    fn test_jump_if_not_tag_on_non_data_fails_without_panicking() {
+        use hiko_compile::chunk::Chunk;
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(Chunk {
+                code: vec![
+                    Op::Unit as u8,
+                    Op::JumpIfNotTag as u8,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Op::Unit as u8,
+                    Op::Halt as u8,
+                ],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+            globals: Arc::from([]),
+        };
+        let mut vm = VM::try_new(program).expect("program should verify");
+        let err = vm.run().expect_err("unit is not a data value");
+        assert_eq!(err.message, "JumpIfNotTag: expected data value");
+    }
+
+    #[test]
     fn test_builtin_call_with_wrong_arity_fails_without_panicking() {
         use hiko_compile::chunk::Chunk;
         for arity in [0u8, 2] {

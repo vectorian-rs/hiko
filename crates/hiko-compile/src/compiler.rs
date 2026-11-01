@@ -1141,20 +1141,11 @@ impl Compiler {
         Ok(self.add_local("_tmp".to_string()))
     }
 
-    /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
-    fn emit_tag_check(
-        &mut self,
-        slot: u16,
-        tag: i64,
-        fail_jumps: &mut Vec<(usize, usize)>,
-    ) -> Result<(), CompileError> {
+    /// Emit tag check: GetLocal slot, JumpIfNotTag tag → fail.
+    fn emit_tag_check(&mut self, slot: u16, tag: u16, fail_jumps: &mut Vec<(usize, usize)>) {
         self.emit_get_local(slot);
-        self.emit(Op::GetTag);
-        self.emit_constant(Constant::Int(tag))?;
-        self.emit(Op::Eq);
-        let jmp = self.emit_jump(Op::JumpIfFalse);
+        let jmp = self.chunk().emit_tag_jump(tag);
         fail_jumps.push((jmp, self.ctx().locals.len()));
-        Ok(())
     }
 
     /// Emit scalar comparison: GetLocal slot, push value, eq_op, JumpIfFalse → fail.
@@ -2151,7 +2142,7 @@ impl Compiler {
                     .constructor_tags
                     .get(&name)
                     .ok_or_else(|| CompileError::codegen(format!("unknown constructor: {name}")))?;
-                self.emit_tag_check(slot, tag as i64, fail_jumps)?;
+                self.emit_tag_check(slot, tag, fail_jumps);
                 if let Some(sub_pat) = payload {
                     // Need to test sub-pattern against field 0
                     // Push temp to get a slot, then pop after testing
@@ -2166,7 +2157,7 @@ impl Compiler {
             }
 
             PatKind::Cons(hd, tl) => {
-                self.emit_tag_check(slot, 1, fail_jumps)?; // Cons = tag 1
+                self.emit_tag_check(slot, 1, fail_jumps); // Cons = tag 1
                 self.emit_field_extract_test(slot, 0, hd, fail_jumps)?;
                 self.emit_field_extract_test(slot, 1, tl, fail_jumps)?;
             }
@@ -2176,7 +2167,7 @@ impl Compiler {
                     pats.is_empty(),
                     "non-empty list pattern should be desugared to Cons"
                 );
-                self.emit_tag_check(slot, 0, fail_jumps)?; // Nil = tag 0
+                self.emit_tag_check(slot, 0, fail_jumps); // Nil = tag 0
             }
 
             PatKind::As(_, sub_pat) => {
@@ -3031,6 +3022,28 @@ mod tests {
             .expect("function proto");
         assert!(!proto.chunk.code.contains(&(Op::Eq as u8)));
         assert!(proto.chunk.code.contains(&(Op::Not as u8)));
+    }
+
+    #[test]
+    fn compile_constructor_patterns_test_tags_with_one_jump() {
+        let program = parse_program(
+            "datatype t = A | B of int\n\
+             fun f x = case x of A => 0 | B n => n\n\
+             fun len xs = case xs of [] => 0 | _ :: rest => 1 + len rest\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        for name in ["f", "len"] {
+            let proto = compiled
+                .functions
+                .iter()
+                .find(|proto| proto.name.as_deref() == Some(name))
+                .expect("function proto");
+            assert!(
+                proto.chunk.code.contains(&(Op::JumpIfNotTag as u8)),
+                "{name}"
+            );
+            assert!(!proto.chunk.code.contains(&(Op::Eq as u8)), "{name}");
+        }
     }
 
     #[test]

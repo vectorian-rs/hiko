@@ -292,6 +292,28 @@ impl VM {
                     let target = self.checked_relative_ip(proto_idx, ip, offset, "Jump")?;
                     self.frames[fi].ip = target;
                 }
+                Op::JumpIfNotTag => {
+                    let tag = self.read_u16()?;
+                    let offset = self.read_i16()?;
+                    let actual = match self.pop()? {
+                        Value::Heap(r) => match self.heap_get(r)? {
+                            HeapObject::Data { tag, .. } => Some(*tag),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let Some(actual) = actual else {
+                        return Err(RuntimeError {
+                            message: "JumpIfNotTag: expected data value".into(),
+                        });
+                    };
+                    if actual != tag {
+                        let ip = self.frames[fi].ip;
+                        let target =
+                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfNotTag")?;
+                        self.frames[fi].ip = target;
+                    }
+                }
                 Op::JumpIfFalse => {
                     let offset = self.read_i16()?;
                     let cond = self.pop_bool()?;

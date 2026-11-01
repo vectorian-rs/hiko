@@ -634,6 +634,9 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         Op::MakeData => {
             skip_bytes(code, ip, 3)?;
         }
+        Op::JumpIfNotTag => {
+            skip_bytes(code, ip, 4)?;
+        }
         Op::MakeClosure => {
             let _proto_idx = read_u16(code, ip)?;
             let n_captures = read_u8(code, ip)? as usize;
