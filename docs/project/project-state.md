@@ -237,7 +237,7 @@ These are the questions the research track should answer, in rough order:
 2. **Deep or shallow.** Answered (#121): a provider stays installed for later
    requests (deep) and runs with its handler hidden.
 3. **Effect rows in types.** Function types do not record effects, so
-   unhandled effects are runtime errors (#48, #74).
+   unhandled effects are runtime errors (#48).
    [`effects-design.md`](../rnd/effects-design.md) lists strategies A to F.
 4. **Effects and capabilities.** Whether host capabilities become effects
    handled by the runtime, so a policy is a top-level handler. This is the
@@ -327,14 +327,14 @@ been taken.
 | -------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------- |
 | #54 Module cache directory setting           | Security      | Cache implemented. Remaining: choose the directory from the CLI or `hiko.toml`.             |
 | #59 Bundle modules and policy into artifacts | Security      | Open. Needs a decision on whether generated artifacts stay.                                 |
-| #48, #74 Effect typing                       | Research      | Open.                                                                                        |
-| #10 Isolated-process runtime with effects    | Research      | Tracking issue.                                                                              |
-| #53, #56, #57, #85 Harness and agent runtime | Out of focus  | Close or move with the harness.                                                              |
+| #48 Effect typing for provider and aborts    | Research      | Open. Merges #74; scoped to the two clause forms from #121.                                  |
 
 Closed since the first snapshot: #12 (`Arc<str>` strings, #125), #25 (Loom
 tests, #103), #29 and #30 (effects, #121), #40, #47, #81 and #82 (#104), #55
 (manifest and lockfile), #75 (host-work calibration, #129), #80 (tree-wide
-host resource limits, #128). Not covered by #75's closing: tail-latency
+host resource limits, #128), #10 (the isolated-process runtime it tracked is
+built), #74 (merged into #48). Closed as out of focus: #53, #56, #57 (harness)
+and #85 (Pi agent runtime, not in this repo). Not covered by #75's closing: tail-latency
 percentiles are not measured; `scripts/bench.sh` reports means, minimums and
 maximums.
 
