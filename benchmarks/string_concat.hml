@@ -1,0 +1,16 @@
+(* Build strings with ^ and string_join: the cost of creating new strings. *)
+fun build (n, acc) =
+  if n = 0 then acc else build (n - 1, int_to_string n ^ "," :: acc)
+
+fun total (xs, acc) =
+  case xs of
+      [] => acc
+    | x :: rest => total (rest, acc + string_length (x ^ x))
+
+val parts = build (200000, [])
+
+val joined = string_join (parts, ";")
+
+val n = total (parts, 0) + string_length joined
+
+val _ = println ("string_concat = " ^ int_to_string n)

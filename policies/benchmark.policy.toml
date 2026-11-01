@@ -17,6 +17,12 @@ enabled = true
 [capabilities.string.string_length]
 enabled = true
 
+[capabilities.string.substring]
+enabled = true
+
+[capabilities.string.string_join]
+enabled = true
+
 [capabilities.math.abs_int]
 enabled = true
 
