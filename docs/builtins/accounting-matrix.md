@@ -113,53 +113,70 @@ depend on input size and are charged about right.
 ### After tuning (PR #129)
 
 Each builtin now charges a fixed amount plus a rate per KiB of what it walks
-(`split` and `string_join` also per part), from the slopes above. The
-constants are next to each builtin in `crates/hiko-vm/src/builtins/`.
+(`split` and `string_join` also per part, `string_replace` also per KiB of
+output, the regex builtins also per KiB of pattern). The constants are next
+to each builtin in `crates/hiko-vm/src/builtins/`.
 
-| Builtin | Cost / charge at 1 KiB | Cost / charge at 1 MiB | One call at 1 MiB |
+The rates are upper bounds: each is set from the most expensive input shape
+measured, and the table includes those shapes (`name/shape`): one-character
+JSON tokens, a regex with no literal to search for, a long pattern,
+replacement output larger than the input, a long prefix, and non-ASCII case
+mapping. One opcode took 9.6 ns on this run.
+
+| Builtin (input shape) | Cost / charge at 1 KiB | Cost / charge at 1 MiB | One call at 1 MiB |
 |---|---|---|---|
-| `string_length` | 5 / 10 | 4587 / 5125 | 57.0µs |
-| `substring` | 48 / 57 | 36255 / 36885 | 448.8µs |
-| `string_contains` | 11 / 14 | 4060 / 4106 | 50.5µs |
-| `starts_with` | 7 / 5 | 10 / 5 | 440.0ns |
-| `ends_with` | 7 / 5 | 11 / 5 | 457.0ns |
-| `trim` | 9 / 14 | 8514 / 9221 | 105.6µs |
-| `to_upper` | 14 / 21 | 13149 / 16389 | 163.0µs |
-| `to_lower` | 14 / 21 | 12988 / 16389 | 161.0µs |
-| `split` | 454 / 544 | 531703 / 528412 | 6.6ms |
-| `string_replace` | 98 / 102 | 83571 / 83988 | 1.0ms |
-| `string_join` | 107 / 157 | 113605 / 139796 | 1.4ms |
-| `string_to_bytes` | 8 / 13 | 8411 / 8197 | 104.3µs |
-| `bytes_to_string` | 50 / 52 | 43345 / 43018 | 536.5µs |
-| `bytes_length` | 0 / 5 | 57 / 5 | 1.0µs |
-| `bytes_get` | 3 / 5 | 6 / 5 | 394.0ns |
-| `bytes_slice` | 14 / 15 | 4652 / 5130 | 57.9µs |
-| `blake3` | 136 / 82 | 59849 / 63508 | 740.7µs |
-| `regex_match` | 692 / 702 | 2101 / 2748 | 26.3µs |
-| `regex_replace` | 240 / 228 | 109053 / 100482 | 1.3ms |
-| `json_length` | 124 / 159 | 108647 / 141333 | 1.3ms |
-| `json_get` | 155 / 160 | 105765 / 141334 | 1.3ms |
-| `json_parse` | 281 / 286 | 285619 / 276496 | 3.5ms |
-| `json_to_string` | 346 / 361 | 313946 / 348181 | 3.9ms |
-| `random_bytes` | 422 / 526 | 439118 / 431209 | 5.4ms |
-| `rng_bytes` | 71 / 72 | 58991 / 58383 | 730.1µs |
-| `rng_seed` | 141 / 145 | 141673 / 143365 | 1.8ms |
-| `rng_int` | 7 / 5 | 7 / 5 | 403.0ns |
-| `json_keys` | 145 / 160 | 105599 / 141334 | 1.3ms |
+| `string_length` | 5 / 10 | 4479 / 5125 | 43.0µs |
+| `substring` | 46 / 57 | 33725 / 36885 | 322.4µs |
+| `string_contains` | 12 / 14 | 4130 / 4106 | 39.7µs |
+| `string_contains/needle` | 7 / 11 | 40 / 11 | 627.0ns |
+| `starts_with` | 8 / 6 | 40 / 6 | 633.0ns |
+| `starts_with/long` | 8 / 8 | 3320 / 3077 | 32.0µs |
+| `ends_with` | 8 / 6 | 26 / 6 | 494.0ns |
+| `trim` | 9 / 14 | 9228 / 9221 | 88.4µs |
+| `to_upper` | 16 / 21 | 15593 / 16389 | 149.2µs |
+| `to_upper/unicode` | 928 / 965 | 967638 / 983045 | 9.2ms |
+| `to_lower` | 16 / 21 | 15825 / 16389 | 151.4µs |
+| `to_lower/unicode` | 532 / 555 | 548354 / 563205 | 5.2ms |
+| `split` | 439 / 544 | 481376 / 528412 | 4.6ms |
+| `string_replace` | 98 / 124 | 84428 / 106516 | 806.7µs |
+| `string_replace/grow` | 221 / 184 | 209499 / 167956 | 2.0ms |
+| `string_join` | 104 / 157 | 109170 / 139796 | 1.0ms |
+| `string_to_bytes` | 9 / 13 | 9356 / 8197 | 89.6µs |
+| `bytes_to_string` | 49 / 52 | 45052 / 43018 | 430.6µs |
+| `bytes_length` | 0 / 5 | 0 / 5 | 226.0ns |
+| `bytes_get` | 4 / 5 | 9 / 5 | 332.0ns |
+| `bytes_slice` | 15 / 15 | 4409 / 5130 | 42.4µs |
+| `blake3` | 133 / 82 | 59762 / 63508 | 571.1µs |
+| `regex_match` | 699 / 1525 | 2078 / 3571 | 20.1µs |
+| `regex_match/class` | 2740 / 1581 | 4199 / 3627 | 40.4µs |
+| `regex_match/pattern` | 16430 / 13001 | fails (over the regex size limit) | - |
+| `regex_replace` | 234 / 1642 | 99290 / 134632 | 948.7µs |
+| `regex_replace/grow` | 248 / 1642 | 118689 / 134632 | 1.1ms |
+| `json_length` | 579 / 826 | 758212 / 798766 | 7.2ms |
+| `json_get` | 643 / 831 | 755214 / 798771 | 7.2ms |
+| `json_parse` | 1798 / 2228 | 2230301 / 2232368 | 21.3ms |
+| `json_to_string` | 1938 / 2468 | 2602148 / 2467898 | 24.9ms |
+| `random_bytes` | 421 / 526 | 431710 / 431209 | 4.1ms |
+| `rng_bytes` | 70 / 72 | 60260 / 58383 | 575.9µs |
+| `rng_seed` | 138 / 145 | 141616 / 143365 | 1.4ms |
+| `rng_int` | 7 / 5 | 7 / 5 | 310.0ns |
+| `json_keys` | 600 / 831 | 828257 / 798771 | 7.9ms |
 
-Every charge is within 2x of the measured cost at 1 KiB and 1 MiB, except
-`bytes_length` and `ends_with` at 1 MiB. Those two cost the same at every
-size, and the difference (under 1 µs) is measurement noise. The rates are
-for the measured input shapes:
-
-- `string_contains`, `regex_match` and similar scans charge for the whole
-  input, even when they stop early.
-- `string_replace` and `regex_replace` were measured with one match per
-  16 bytes; input with few matches costs less than it is charged.
-- `regex_match`'s fixed charge is mostly compiling the pattern, which happens
-  on every call; a long or complex pattern costs more.
-- `substring` charges per KiB up to the end of the result, because it walks
-  the string from the start to find character offsets.
+- Most charges are within 1.3x of the measured cost.
+- **Cheaper shapes are overcharged.** JSON with longer tokens costs up to
+  about 4x less per KiB than one-character tokens. A regex with a literal
+  prefix compiles in about 700 units against a fixed charge of 1,500, so
+  short regex calls are charged 2x to 7x their cost.
+- **Under the bound by up to 1.7x:** a character-class regex on short input
+  (2,740 against 1,581), and `string_replace` with output much larger than
+  its input. A pattern over the regex crate's compiled-size limit (about
+  10 MiB compiled) fails instead of compiling, which bounds compile time.
+- **Constant-cost builtins** (`starts_with` with a short prefix, `ends_with`,
+  `bytes_get`, `rng_int`) differ by under 1 µs, which is measurement noise.
+- **Charged after the work:** `json_to_string` charges per KiB of the text it
+  produced, and `substring` per KiB up to the end of the result, because
+  those sizes are known only afterwards. Both charge their fixed part first,
+  so a spent budget stops them before they start.
 
 ## Known follow-ups
 
