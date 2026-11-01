@@ -412,6 +412,9 @@ struct FuncCtx {
     /// Slot of the continuation variable when this function is a provider
     /// clause; `resume k e` in its tail position returns `e`.
     provider_cont_slot: Option<u16>,
+    /// Proto index reserved for this function before its body was compiled,
+    /// so calls inside the body can be direct.
+    reserved_proto: Option<u16>,
 }
 
 impl FuncCtx {
@@ -427,6 +430,7 @@ impl FuncCtx {
             string_constants: HashMap::new(),
             scalar_constants: HashMap::new(),
             provider_cont_slot: None,
+            reserved_proto: None,
         }
     }
 }
@@ -682,6 +686,9 @@ pub struct Compiler {
     /// Global name -> proto_idx of the capture-free function it is currently
     /// bound to, for `CallDirect`. Every global rebinding clears the entry.
     global_protos: HashMap<String, u16>,
+    /// Proto index the next `push_new_function` compiles into (see
+    /// `reserve_proto`).
+    pending_reserved_proto: Option<u16>,
     /// Source name -> VM global name of the top-level binding in scope. A
     /// binding that shadows an earlier one, or a builtin, gets a fresh name
     /// (`x$1`, `x$2`, ...), so code compiled earlier keeps its binding.
@@ -766,6 +773,7 @@ impl Compiler {
             module_cache_dir: None,
             loader_options,
             global_protos: HashMap::new(),
+            pending_reserved_proto: None,
             global_bindings: HashMap::new(),
             global_slots: HashMap::new(),
             global_names: Vec::new(),
@@ -874,7 +882,24 @@ impl Compiler {
     }
 
     fn push_new_function(&mut self, name: Option<String>) {
-        self.func_stack.push(FuncCtx::new(name, 1));
+        let mut ctx = FuncCtx::new(name, 1);
+        ctx.reserved_proto = self.pending_reserved_proto.take();
+        self.func_stack.push(ctx);
+    }
+
+    /// Reserve a proto index for a function whose body is not compiled yet,
+    /// so calls to it can be compiled first. The next `push_new_function`
+    /// compiles into it.
+    fn reserve_proto(&mut self) -> Result<u16, CompileError> {
+        let idx = checked_u16(self.functions.len(), "functions")?;
+        self.functions.push(FunctionProto {
+            name: None,
+            arity: 0,
+            n_captures: 0,
+            n_locals: 0,
+            chunk: Chunk::default(),
+        });
+        Ok(idx)
     }
 
     // ── Variable resolution ──────────────────────────────────────────
@@ -1201,17 +1226,29 @@ impl Compiler {
             DeclKind::Fun(bindings) => {
                 // `fun` is recursive: inside the bodies, these names refer to
                 // the new bindings, never to an earlier global function.
+                // Top-level functions capture nothing, so their protos are
+                // reserved first and calls within the group are direct.
+                let mut members = Vec::with_capacity(bindings.len());
                 for binding in bindings {
                     let name = self.interner.resolve(binding.name).to_string();
-                    self.forget_global_proto(&name);
                     self.declare_global(&name);
+                    let proto_idx = self.reserve_proto()?;
+                    self.global_protos.insert(name.clone(), proto_idx);
+                    members.push((name, proto_idx));
                 }
-                for binding in bindings {
+                for (binding, (name, proto_idx)) in bindings.iter().zip(&members) {
+                    self.pending_reserved_proto = Some(*proto_idx);
                     let closure = self.compile_fun_binding(binding)?;
+                    if closure.proto_idx != *proto_idx || closure.n_captures != 0 {
+                        return Err(CompileError::codegen(format!(
+                            "top-level function `{name}` was compiled with captures"
+                        )));
+                    }
                     self.emit_make_closure(&closure);
-                    let name = self.interner.resolve(binding.name).to_string();
-                    self.emit_set_declared_global(&name)?;
-                    self.register_global_proto(&name);
+                    self.emit_set_declared_global(name)?;
+                    // Setting the global forgets the direct-call target; the
+                    // global now holds exactly this function.
+                    self.global_protos.insert(name.clone(), *proto_idx);
                 }
                 Ok(())
             }
@@ -2013,8 +2050,17 @@ impl Compiler {
             n_locals: checked_u16(func_ctx.max_locals, "local slots")?,
             chunk: func_ctx.chunk,
         };
-        let proto_idx = checked_u16(self.functions.len(), "functions")?;
-        self.functions.push(proto);
+        let proto_idx = match func_ctx.reserved_proto {
+            Some(idx) => {
+                self.functions[idx as usize] = proto;
+                idx
+            }
+            None => {
+                let idx = checked_u16(self.functions.len(), "functions")?;
+                self.functions.push(proto);
+                idx
+            }
+        };
         Ok(PendingClosure {
             proto_idx,
             n_captures,
@@ -2859,16 +2905,16 @@ mod tests {
     fn compile_emits_quick_local_and_field_opcodes() {
         let program = parse_program("val (a, b) = (1, 2)\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        assert!(compiled.main.code.contains(&(Op::GetLocal0 as u8)));
-        assert!(compiled.main.code.contains(&(Op::GetField0 as u8)));
-        assert!(compiled.main.code.contains(&(Op::GetField1 as u8)));
+        assert!(compiled.main.ops().contains(&Op::GetLocal0));
+        assert!(compiled.main.ops().contains(&Op::GetField0));
+        assert!(compiled.main.ops().contains(&Op::GetField1));
     }
 
     #[test]
     fn compile_emits_make_cons_for_cons_expression() {
         let program = parse_program("val xs = 1 :: []\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        assert!(compiled.main.code.contains(&(Op::MakeCons as u8)));
+        assert!(compiled.main.ops().contains(&Op::MakeCons));
     }
 
     /// First instruction of the function named `name`.
@@ -2979,7 +3025,6 @@ mod tests {
             "fun g x = x + 1\nval a = g 1\nfun h g = g 10\nval g = fn x => x * 2\nval b = g 2\n",
         );
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        let call_direct = Op::CallDirect as u8;
         let h = compiled
             .functions
             .iter()
@@ -2989,15 +3034,63 @@ mod tests {
         assert_eq!(
             compiled
                 .main
-                .code
+                .ops()
                 .iter()
-                .filter(|&&b| b == call_direct)
+                .filter(|&&op| op == Op::CallDirect)
                 .count(),
             1,
             "expected exactly one CallDirect in main (for `g 1`, not `g 2`)"
         );
         // ... but the parameter `g` inside `h` shadows it.
-        assert!(!h.chunk.code.contains(&call_direct));
+        assert!(!h.chunk.ops().contains(&Op::CallDirect));
+    }
+
+    fn proto<'a>(compiled: &'a CompiledProgram, name: &str) -> &'a FunctionProto {
+        compiled
+            .functions
+            .iter()
+            .find(|proto| proto.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no function {name}"))
+    }
+
+    /// A top-level function's calls to itself, and between members of its
+    /// `fun ... and ...` group, are direct.
+    #[test]
+    fn compile_recursive_top_level_calls_directly() {
+        let program = parse_program(
+            "fun fact n = if n = 0 then 1 else n * fact (n - 1)\n\
+             fun loop (n, acc) = if n = 0 then acc else loop (n - 1, acc + 1)\n\
+             fun even n = if n = 0 then true else odd (n - 1)\n\
+             and odd n = if n = 0 then false else even (n - 1)\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        assert!(
+            proto(&compiled, "fact")
+                .chunk
+                .ops()
+                .contains(&Op::CallDirect)
+        );
+        assert!(
+            proto(&compiled, "loop")
+                .chunk
+                .ops()
+                .contains(&Op::TailCallDirect)
+        );
+        for name in ["even", "odd"] {
+            let ops = proto(&compiled, name).chunk.ops();
+            assert!(ops.contains(&Op::TailCallDirect), "{name}");
+            assert!(!ops.contains(&Op::GetGlobal), "{name}");
+        }
+    }
+
+    /// A body that rebinds the name stops the direct calls: the inner `fact`
+    /// is a parameter.
+    #[test]
+    fn compile_recursive_call_respects_shadowing() {
+        let program = parse_program("fun fact fact = fact 1\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let ops = proto(&compiled, "fact").chunk.ops();
+        assert!(!ops.contains(&Op::CallDirect) && !ops.contains(&Op::TailCallDirect));
     }
 
     #[test]
@@ -3020,8 +3113,8 @@ mod tests {
             .iter()
             .find(|proto| proto.name.as_deref() == Some("f"))
             .expect("function proto");
-        assert!(!proto.chunk.code.contains(&(Op::Eq as u8)));
-        assert!(proto.chunk.code.contains(&(Op::Not as u8)));
+        assert!(!proto.chunk.ops().contains(&Op::Eq));
+        assert!(proto.chunk.ops().contains(&Op::Not));
     }
 
     #[test]
@@ -3038,11 +3131,8 @@ mod tests {
                 .iter()
                 .find(|proto| proto.name.as_deref() == Some(name))
                 .expect("function proto");
-            assert!(
-                proto.chunk.code.contains(&(Op::JumpIfNotTag as u8)),
-                "{name}"
-            );
-            assert!(!proto.chunk.code.contains(&(Op::Eq as u8)), "{name}");
+            assert!(proto.chunk.ops().contains(&Op::JumpIfNotTag), "{name}");
+            assert!(!proto.chunk.ops().contains(&Op::Eq), "{name}");
         }
     }
 
