@@ -1,0 +1,15 @@
+(* 10,000 regex_match calls with one pattern and 2,000 regex_replace calls:
+ * the cost of compiling a pattern that is used again and again. *)
+fun count (n, acc) =
+  if n = 0 then acc
+  else count (n - 1, if regex_match ("order-" ^ int_to_string n, "^order-[0-9]+$") then acc + 1 else acc)
+
+fun replace_all (n, acc) =
+  if n = 0 then acc
+  else replace_all (n - 1, acc + string_length (regex_replace ("a1b22c333", "[0-9]+", "#")))
+
+val total = count (10000, 0) + replace_all (2000, 0)
+
+val _ = assert_eq (total, 10000 + 2000 * 6, "regex_loop")
+
+val _ = println ("regex_loop = " ^ int_to_string total)
