@@ -59,7 +59,8 @@ bench() {
 set --
 for f in benchmarks/ack.hml benchmarks/tak.hml benchmarks/nqueens.hml \
     benchmarks/primes.hml benchmarks/ec_ack.hml benchmarks/ec_fib.hml \
-    benchmarks/early_exit.hml; do
+    benchmarks/early_exit.hml benchmarks/global_builtin.hml \
+    benchmarks/list_length.hml; do
     set -- "$@" "$hiko $f"
 done
 bench "Interpreter" "$@"
