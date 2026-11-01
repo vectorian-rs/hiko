@@ -406,7 +406,7 @@ impl VM {
                         proto_idx,
                         ip: 0,
                         base: arg_start,
-                        captures: Arc::from([]),
+                        captures: self.no_captures.clone(),
                     });
                 }
 
@@ -425,7 +425,7 @@ impl VM {
                     self.stack.truncate(base + arity);
                     self.frames[fi].ip = 0;
                     self.frames[fi].proto_idx = proto_idx;
-                    self.frames[fi].captures = Arc::from([]);
+                    self.frames[fi].captures = self.no_captures.clone();
                 }
 
                 Op::Return => {

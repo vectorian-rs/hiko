@@ -178,6 +178,9 @@ pub struct VM {
     /// Reused buffer for `ConcatString`, so a concatenation allocates only
     /// the new string's shared payload.
     concat_buf: String,
+    /// The captures of a function called with `CallDirect`, which has none.
+    /// Shared, because `Arc::from([])` allocates on every call.
+    no_captures: Arc<[Value]>,
     /// Slice-local opcode budget for the currently active dispatch loop.
     ///
     /// This value is intentionally transient. `run_slice` installs it from the
@@ -317,6 +320,7 @@ impl VM {
             hidden_handlers: Vec::new(),
             string_cache: HashMap::new(),
             concat_buf: String::new(),
+            no_captures: Arc::from([]),
             fuel: None,
             fuel_budget: None,
             live_process_slot: None,
