@@ -16,6 +16,8 @@ The script needs [hyperfine](https://github.com/sharkdp/hyperfine). It runs:
 |---|---|
 | `process_creation_cost` example | Time and allocations to create a child VM, with and without a filesystem policy. |
 | `benchmarks/{ack,tak,nqueens,primes,ec_ack,ec_fib,early_exit}.hml` | Single-process interpreter speed. |
+| `benchmarks/global_builtin.hml` | A loop calling a builtin through a global 3,000,000 times. |
+| `benchmarks/list_length.hml` | The length of a 100,000-element list, 100 times: constructor pattern matches. |
 | `benchmarks/spawn_await.hml` | Spawn and await 6,000 trivial children through the threaded runtime, at 1 and 8 workers. |
 | `benchmarks/fanout_cpu.hml` | 64 children computing `fib 22`, at 1, 2, 4 and 8 workers. |
 | `benchmarks/fanout_read.hml` | 1,000 children each reading `README.md`, at 1, 2, 4 and 8 workers. |
@@ -210,6 +212,37 @@ scales the work between requests:
 | `nqueens.hml` (8) | 35 ms |
 | `primes.hml` | 5 ms |
 
-These did not change in PR #104. A loop that calls a builtin through a global
-spends about 6% of its time on `GetGlobal`, which hashes the global's name on
-every execution; resolving globals to slots at compile time would remove that.
+These did not change in PR #104; see below for PR #124.
+
+### Bytecode dispatch (PR #124)
+
+Two per-instruction costs that the compiler can resolve ahead of time:
+
+- **Global slots.** `GetGlobal` and `SetGlobal` took a constant-pool index of
+  the global's name, and dispatch hashed the name on every execution. The
+  compiler now gives each global a slot (`CompiledProgram::globals`), and a
+  loaded slot is an index and a branch. Children still resolve builtins and
+  inherited top-level values on first use.
+- **One-instruction tag test.** A constructor pattern tested its tag with
+  `GetTag; Const; Eq; JumpIfFalse`. It is now one `JumpIfNotTag`, and `GetTag`
+  is gone.
+
+Apple M1 Max, load average about 3, hyperfine means; "before" is `main` at
+`f322f68`.
+
+| Benchmark | Before | After |
+|---|---|---|
+| `global_builtin.hml` | 1.054 s | 0.896 s (-15%) |
+| `list_length.hml` | 4.44 s | 3.53 s (-21%) |
+| `early_exit.hml` | 0.762 s | 0.657 s (-14%) |
+| `fanout_cpu.hml`, 1 worker | 520 ms | 452 ms (-13%) |
+| `nqueens.hml` | 45 ms | 42 ms (-7%) |
+| `ec_fib.hml` | 1.300 s | 1.246 s (-4%) |
+| `ack.hml`, `tak.hml`, `ec_ack.hml`, `primes.hml` | | unchanged within 1% |
+| `spawn_await.hml`, `spawn_shared.hml` | | unchanged within noise |
+
+`global_builtin` gained all of its 15% from the global slots and
+`list_length` all of its 21% from `JumpIfNotTag` (measured on the
+intermediate commits). A spawned child makes one allocation fewer (spawn path:
+7 instead of 8; with 4 captures 25 instead of 26), because its global table is
+no longer preallocated.

@@ -90,10 +90,12 @@ Size by crate (lines of Rust):
 
 Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 
-- Stack-based, one byte per opcode, 71 opcodes (numbered 0 to 70).
+- Stack-based, one byte per opcode, 71 opcodes (numbered 0 to 72; 44 and 55
+  are unused).
 - Operands are inline `u8`, `u16`, or `i16`. Jumps are relative `i16`.
-- `CompiledProgram` holds the main `Chunk`, `Arc<[FunctionProto]>`, and effect
-  metadata. Each `FunctionProto` records name, arity, capture count, and
+- `CompiledProgram` holds the main `Chunk`, `Arc<[FunctionProto]>`, effect
+  metadata, and the global table (the VM name of each global slot).
+  `GetGlobal` and `SetGlobal` take a slot. Each `FunctionProto` records name, arity, capture count, and
   maximum local slots. Child processes share the program through `Arc`.
 - Each `Chunk` holds code bytes, a constant pool (int, float, word, string,
   char), and an offset-to-span table.
@@ -106,8 +108,8 @@ Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 | Float     | `AddFloat`, `SubFloat`, `MulFloat`, `DivFloat`, `NegFloat`, `LtFloat`, `GtFloat`, `LeFloat`, `GeFloat` |
 | Word      | `AddWord`, `SubWord`, `MulWord`, `DivWord`, `ModWord`, `LtWord`, `GtWord`, `LeWord`, `GeWord`          |
 | Other     | `Eq`, `Ne`, `Not`, `ConcatString`                                                                      |
-| Data      | `MakeTuple`, `GetField`, `GetField0-1`, `MakeData`, `GetTag`, `MakeCons`                               |
-| Control   | `Jump`, `JumpIfFalse`, `Panic`, `Halt`                                                                 |
+| Data      | `MakeTuple`, `GetField`, `GetField0-1`, `MakeData`, `MakeCons`                                         |
+| Control   | `Jump`, `JumpIfFalse`, `JumpIfNotTag`, `Panic`, `Halt`                                                 |
 | Calls     | `MakeClosure`, `MakeRecClosures`, `Call`, `TailCall`, `CallDirect`, `TailCallDirect`, `Return` |
 | Effects   | `InstallHandler`, `Perform`, `RemoveHandler`                                                           |
 
@@ -122,8 +124,9 @@ Source: `crates/hiko-compile/src/op.rs`, `crates/hiko-compile/src/chunk.rs`.
 - Equality (`Eq`, `Ne`) is structural and generic. There are no specialised
   int/char equality opcodes, so every equality test goes through the generic
   path.
-- No superinstructions for compare-and-branch (for example `LtIntJumpIfFalse`).
-  Loops and pattern matches pay for a separate compare and jump.
+- Constructor patterns test the tag with one `JumpIfNotTag`. Other
+  compare-and-branch sequences (for example `LtInt` then `JumpIfFalse`) are
+  still separate instructions.
 
 ## VM
 
@@ -156,8 +159,6 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   done. The filesystem half (per-file `canonicalize` plus `cap_std` checks) is
   not re-measured.
 - `HeapObject::String(String)` copies on transfer. #12 (`Arc<str>`) is open.
-- `GetGlobal` hashes the global's name on every execution, about 6% of a loop
-  that calls a builtin. Slot-indexed globals would remove it.
 - Spawning trivial children in sequence gets slower with more workers (22 ms
   at 1 worker, 87 ms at 8 for 6,000 children): the scheduler wakes a worker
   per enqueue. CPU fan-out scales 4.9x at 8 workers.
