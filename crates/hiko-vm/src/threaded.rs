@@ -434,7 +434,10 @@ impl ThreadedRuntime {
         // Monitor: poll I/O completions and check for termination
         let cx = self.ctx();
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // Wakes as soon as the backend reports a completion, so a process
+            // waiting on I/O does not also wait for the next tick.
+            self.io_backend
+                .wait_for_completions(std::time::Duration::from_millis(1));
 
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
