@@ -17,14 +17,24 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 
 pub(super) fn int_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Int(n) => heap_alloc(heap, HeapObject::String(n.to_string())),
+        Value::Int(n) => {
+            // Format on the stack: going through a `String` would allocate
+            // twice for one shared `Arc<str>`.
+            use std::io::Write as _;
+            let mut buf = [0u8; 20]; // i64::MIN has 20 characters
+            let mut cursor = std::io::Cursor::new(&mut buf[..]);
+            write!(cursor, "{n}").expect("an i64 fits in 20 bytes");
+            let len = cursor.position() as usize;
+            let text = std::str::from_utf8(&buf[..len]).expect("formatted digits are ASCII");
+            heap_alloc(heap, HeapObject::String(text.into()))
+        }
         _ => Err("int_to_string: expected Int".into()),
     }
 }
 
 pub(super) fn float_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Float(f) => heap_alloc(heap, HeapObject::String(f.to_string())),
+        Value::Float(f) => heap_alloc(heap, HeapObject::String(f.to_string().into())),
         _ => Err("float_to_string: expected Float".into()),
     }
 }
@@ -90,7 +100,7 @@ pub(super) fn int_to_word(args: &[Value], _heap: &mut Heap) -> Result<Value, Str
 
 pub(super) fn word_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
-        Value::Word(w) => heap_alloc(heap, HeapObject::String(w.to_string())),
+        Value::Word(w) => heap_alloc(heap, HeapObject::String(w.to_string().into())),
         _ => Err("word_to_string: expected Word".into()),
     }
 }

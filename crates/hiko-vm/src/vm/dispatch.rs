@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Largest `ConcatString` buffer a VM keeps between concatenations.
+const CONCAT_BUF_KEEP_BYTES: usize = 4096;
+
 /// A member of a `MakeRecClosures` group that captures other members.
 struct RecClosurePatch {
     /// Position of the closure in the group.
@@ -228,19 +231,22 @@ impl VM {
                 Op::ConcatString => {
                     let b_ref = self.pop_string_ref()?;
                     let a_ref = self.pop_string_ref()?;
-                    let a_s = match self.heap_get(a_ref)? {
-                        HeapObject::String(s) => s.as_str(),
-                        _ => "",
-                    };
-                    let b_s = match self.heap_get(b_ref)? {
-                        HeapObject::String(s) => s.as_str(),
-                        _ => "",
-                    };
-                    let mut result = String::with_capacity(a_s.len() + b_s.len());
-                    result.push_str(a_s);
-                    result.push_str(b_s);
-                    let val = self.alloc_string(result)?;
-                    self.push(val)?;
+                    // An `Arc<str>` cannot be built in place, so building a
+                    // `String` and converting it would allocate twice.
+                    let mut buf = std::mem::take(&mut self.concat_buf);
+                    buf.clear();
+                    for r in [a_ref, b_ref] {
+                        if let HeapObject::String(s) = self.heap_get(r)? {
+                            buf.push_str(s);
+                        }
+                    }
+                    let val = self.alloc(HeapObject::String(Arc::from(buf.as_str())));
+                    // Keep a small buffer for the next concatenation, but do
+                    // not hold on to a large one outside the heap's accounting.
+                    if buf.capacity() <= CONCAT_BUF_KEEP_BYTES {
+                        self.concat_buf = buf;
+                    }
+                    self.push(val?)?;
                 }
                 Op::Not => {
                     let b = self.pop_bool()?;

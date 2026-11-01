@@ -14,14 +14,14 @@ pub(super) fn path_join(args: &[Value], heap: &mut Heap) -> Result<Value, String
     };
     let a = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("path_join: expected String".into()),
         },
         _ => return Err("path_join: expected String".into()),
     };
     let b = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("path_join: expected String".into()),
         },
         _ => return Err("path_join: expected String".into()),
@@ -29,6 +29,6 @@ pub(super) fn path_join(args: &[Value], heap: &mut Heap) -> Result<Value, String
     let joined = std::path::Path::new(&a).join(&b);
     heap_alloc(
         heap,
-        HeapObject::String(joined.to_string_lossy().to_string()),
+        HeapObject::String(joined.to_string_lossy().to_string().into()),
     )
 }

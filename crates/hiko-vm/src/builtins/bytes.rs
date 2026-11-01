@@ -48,7 +48,7 @@ pub(super) fn bytes_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, 
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::Bytes(b) => heap_alloc(
                 heap,
-                HeapObject::String(String::from_utf8_lossy(b).into_owned()),
+                HeapObject::String(String::from_utf8_lossy(b).into_owned().into()),
             ),
             _ => Err("bytes_to_string: expected Bytes".into()),
         },
@@ -68,7 +68,7 @@ pub(super) fn string_to_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
         .map_err(|e| format!("string_to_bytes: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::Bytes(s.as_bytes().to_vec())),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::Bytes(s.as_bytes().into())),
             _ => Err("string_to_bytes: expected String".into()),
         },
         _ => Err("string_to_bytes: expected String".into()),
@@ -139,7 +139,7 @@ pub(super) fn bytes_slice(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     let output = bytes[start..end].to_vec();
     heap.charge_host_work(bytes_work(0, output.len()))
         .map_err(|e| format!("bytes_slice: {e}"))?;
-    heap_alloc(heap, HeapObject::Bytes(output))
+    heap_alloc(heap, HeapObject::Bytes(output.into()))
 }
 
 #[cfg(test)]
@@ -148,13 +148,13 @@ mod tests {
     use super::*;
 
     fn bytes_arg(heap: &mut Heap, data: &[u8]) -> Value {
-        heap_alloc(heap, HeapObject::Bytes(data.to_vec())).unwrap()
+        heap_alloc(heap, HeapObject::Bytes(data.into())).unwrap()
     }
 
     fn heap_bytes(value: Value, heap: &Heap) -> Vec<u8> {
         match value {
             Value::Heap(r) => match heap.get(r).unwrap() {
-                HeapObject::Bytes(b) => b.clone(),
+                HeapObject::Bytes(b) => b.to_vec(),
                 other => panic!("expected bytes, got {other:?}"),
             },
             other => panic!("expected heap bytes, got {other:?}"),

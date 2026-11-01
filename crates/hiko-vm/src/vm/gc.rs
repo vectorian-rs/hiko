@@ -28,7 +28,7 @@ impl VM {
     }
 
     pub(super) fn alloc_string(&mut self, s: String) -> Result<Value, RuntimeError> {
-        self.alloc(HeapObject::String(s))
+        self.alloc(HeapObject::String(s.into()))
     }
 
     pub(super) fn checked_relative_ip(

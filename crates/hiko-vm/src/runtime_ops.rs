@@ -131,7 +131,7 @@ fn encode_join_error(
 }
 
 fn alloc_string_value(heap: &mut crate::heap::Heap, text: String) -> Result<Value, ProcessFailure> {
-    alloc_heap_value(heap, HeapObject::String(text))
+    alloc_heap_value(heap, HeapObject::String(text.into()))
 }
 
 fn alloc_tuple_value(

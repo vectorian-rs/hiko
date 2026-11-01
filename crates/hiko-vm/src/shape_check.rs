@@ -921,11 +921,11 @@ mod tests {
     }
 
     fn heap_string(heap: &mut Heap, text: &str) -> Value {
-        Value::Heap(heap.alloc(HeapObject::String(text.to_string())).unwrap())
+        Value::Heap(heap.alloc(HeapObject::String(text.into())).unwrap())
     }
 
     fn heap_bytes(heap: &mut Heap, bytes: &[u8]) -> Value {
-        Value::Heap(heap.alloc(HeapObject::Bytes(bytes.to_vec())).unwrap())
+        Value::Heap(heap.alloc(HeapObject::Bytes(bytes.into())).unwrap())
     }
 
     fn heap_tuple(heap: &mut Heap, fields: Vec<Value>) -> Value {

@@ -249,7 +249,7 @@ impl VM {
                         message: format!("http_get: {e}"),
                     })?;
                 Some(crate::io_backend::IoRequest::HttpGet {
-                    url,
+                    url: url.to_string(),
                     max_response: self.heap.http_response_limit(),
                     timeouts: self.heap.io_limits().http_timeouts(),
                 })
@@ -296,12 +296,12 @@ impl VM {
                                 })?;
                         Some(crate::io_backend::IoRequest::CapReadFile {
                             candidates,
-                            path,
+                            path: path.to_string(),
                             max_bytes: self.heap.file_read_limit(),
                         })
                     } else {
                         Some(crate::io_backend::IoRequest::ReadFile {
-                            path,
+                            path: path.to_string(),
                             max_bytes: self.heap.file_read_limit(),
                         })
                     }
@@ -326,7 +326,9 @@ impl VM {
                             .map_err(|e| RuntimeError {
                                 message: format!("aws_config_sso_profile: {e}"),
                             })?;
-                        Some(crate::io_backend::IoRequest::AwsConfigSsoProfile { profile })
+                        Some(crate::io_backend::IoRequest::AwsConfigSsoProfile {
+                            profile: profile.to_string(),
+                        })
                     } else if self.builtins.ids.aws_config_instance_profile_builtin_id
                         == Some(builtin_id)
                     {

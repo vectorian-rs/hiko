@@ -20,7 +20,7 @@ pub(super) fn json_parse(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         .map_err(|e| format!("json_parse: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("json_parse: expected String".into()),
         },
         _ => return Err("json_parse: expected String".into()),
@@ -34,7 +34,7 @@ pub(super) fn json_to_string(args: &[Value], heap: &mut Heap) -> Result<Value, S
     heap.charge_host_work(JSON_SERIALIZE_HOST_WORK)
         .map_err(|e| format!("json_to_string: {e}"))?;
     let result = hiko_to_json_string(args[0], heap)?;
-    heap_alloc(heap, HeapObject::String(result))
+    heap_alloc(heap, HeapObject::String(result.into()))
 }
 
 pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -49,14 +49,14 @@ pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     };
     let json_str = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("json_get: expected String".into()),
         },
         _ => return Err("json_get: expected String".into()),
     };
     let path = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("json_get: expected String".into()),
         },
         _ => return Err("json_get: expected String".into()),
@@ -80,7 +80,7 @@ pub(super) fn json_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         other => other.to_string(),
     };
 
-    heap_alloc(heap, HeapObject::String(result))
+    heap_alloc(heap, HeapObject::String(result.into()))
 }
 
 pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -88,7 +88,7 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
         .map_err(|e| format!("json_keys: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("json_keys: expected String".into()),
         },
         _ => return Err("json_keys: expected String".into()),
@@ -107,7 +107,7 @@ pub(super) fn json_keys(args: &[Value], heap: &mut Heap) -> Result<Value, String
                 .map_err(|e| format!("json_keys: {e}"))?;
             let mut keys = Vec::with_capacity(map.len());
             for k in map.keys() {
-                keys.push(heap_alloc(heap, HeapObject::String(k.clone()))?);
+                keys.push(heap_alloc(heap, HeapObject::String(k.as_str().into()))?);
             }
             keys
         }
@@ -122,7 +122,7 @@ pub(super) fn json_length(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         .map_err(|e| format!("json_length: {e}"))?;
     let json_str = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("json_length: expected String".into()),
         },
         _ => return Err("json_length: expected String".into()),

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
@@ -18,7 +19,7 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     ]
 }
 
-fn string_arg(args: &[Value], heap: &Heap, name: &str) -> Result<String, String> {
+fn string_arg(args: &[Value], heap: &Heap, name: &str) -> Result<Arc<str>, String> {
     match args.first() {
         Some(Value::Heap(r)) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(s.clone()),
@@ -96,12 +97,12 @@ pub(super) fn read_file(args: &[Value], heap: &mut Heap) -> Result<Value, String
     let (contents, io_bytes) = if heap.has_cap_fs_policy() {
         cap_read_to_string_limited("read_file", &path, heap, max_bytes)?
     } else {
-        let file = std::fs::File::open(&path).map_err(|e| format!("read_file: {e}"))?;
+        let file = std::fs::File::open(&*path).map_err(|e| format!("read_file: {e}"))?;
         crate::io_backend::read_to_string_limited(file, max_bytes, "read_file")?
     };
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("read_file: {e}"))?;
-    heap_alloc(heap, HeapObject::String(contents))
+    heap_alloc(heap, HeapObject::String(contents.into()))
 }
 
 pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -110,12 +111,12 @@ pub(super) fn read_file_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, 
     let (contents, io_bytes) = if heap.has_cap_fs_policy() {
         cap_read_limited("read_file_bytes", &path, heap, max_bytes)?
     } else {
-        let file = std::fs::File::open(&path).map_err(|e| format!("read_file_bytes: {e}"))?;
+        let file = std::fs::File::open(&*path).map_err(|e| format!("read_file_bytes: {e}"))?;
         crate::io_backend::read_to_bytes_limited(file, max_bytes, "read_file_bytes")?
     };
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("read_file_bytes: {e}"))?;
-    heap_alloc(heap, HeapObject::Bytes(contents))
+    heap_alloc(heap, HeapObject::Bytes(contents.into()))
 }
 
 pub(super) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -128,14 +129,14 @@ pub(super) fn write_file(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     };
     let path = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("write_file: expected String".into()),
         },
         _ => return Err("write_file: expected String".into()),
     };
     let contents = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("write_file: expected String".into()),
         },
         _ => return Err("write_file: expected String".into()),
@@ -162,7 +163,7 @@ pub(super) fn file_exists(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
             candidate.dir.exists(&candidate.relative_path)
         })))
     } else {
-        Ok(Value::Bool(std::path::Path::new(&path).exists()))
+        Ok(Value::Bool(std::path::Path::new(&*path).exists()))
     }
 }
 
@@ -172,7 +173,7 @@ pub(super) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         cap_io("list_dir", &path, heap, |dir, path| dir.read_dir(path))?
     } else {
         cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .and_then(|dir| dir.read_dir(&path))
+            .and_then(|dir| dir.read_dir(&*path))
             .map_err(|e| format!("list_dir: {e}"))?
     };
     let mut entries = Vec::new();
@@ -181,7 +182,7 @@ pub(super) fn list_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         let text = entry.file_name().to_string_lossy().to_string();
         heap.charge_io_bytes(text.len() as u64)
             .map_err(|e| format!("list_dir: {e}"))?;
-        entries.push(heap_alloc(heap, HeapObject::String(text))?);
+        entries.push(heap_alloc(heap, HeapObject::String(text.into()))?);
     }
     alloc_list(heap, entries)
 }
@@ -193,7 +194,7 @@ pub(super) fn remove_file(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
             dir.remove_file(path)
         })?;
     } else {
-        std::fs::remove_file(&path).map_err(|e| format!("remove_file: {e}"))?;
+        std::fs::remove_file(&*path).map_err(|e| format!("remove_file: {e}"))?;
     }
     Ok(Value::Unit)
 }
@@ -205,7 +206,7 @@ pub(super) fn create_dir(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
             dir.create_dir_all(path)
         })?;
     } else {
-        std::fs::create_dir_all(&path).map_err(|e| format!("create_dir: {e}"))?;
+        std::fs::create_dir_all(&*path).map_err(|e| format!("create_dir: {e}"))?;
     }
     Ok(Value::Unit)
 }
@@ -220,7 +221,7 @@ pub(super) fn is_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             candidate.dir.is_dir(&candidate.relative_path)
         })))
     } else {
-        Ok(Value::Bool(std::path::Path::new(&path).is_dir()))
+        Ok(Value::Bool(std::path::Path::new(&*path).is_dir()))
     }
 }
 
@@ -234,7 +235,7 @@ pub(super) fn is_file(args: &[Value], heap: &mut Heap) -> Result<Value, String> 
             candidate.dir.is_file(&candidate.relative_path)
         })))
     } else {
-        Ok(Value::Bool(std::path::Path::new(&path).is_file()))
+        Ok(Value::Bool(std::path::Path::new(&*path).is_file()))
     }
 }
 
@@ -301,7 +302,7 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     };
     let path = match v_path {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("read_file_tagged: expected String for path".into()),
         },
         _ => return Err("read_file_tagged: expected String for path".into()),
@@ -357,7 +358,7 @@ pub(super) fn read_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
         out.push_str(&format!("{}:{}\t{}\n", i + 1, tag, line.text));
     }
 
-    heap_alloc(heap, HeapObject::String(out))
+    heap_alloc(heap, HeapObject::String(out.into()))
 }
 
 pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -370,14 +371,14 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     };
     let path = match v_path {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("edit_file_tagged: expected String for path".into()),
         },
         _ => return Err("edit_file_tagged: expected String for path".into()),
     };
     let edits_raw = match v_edits {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("edit_file_tagged: expected String for edits".into()),
         },
         _ => return Err("edit_file_tagged: expected String for edits".into()),
@@ -472,7 +473,7 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
 
     if !errors.is_empty() {
         let msg = format!("REJECTED: {}", errors.join("; "));
-        return heap_alloc(heap, HeapObject::String(msg));
+        return heap_alloc(heap, HeapObject::String(msg.into()));
     }
 
     let default_ending = default_line_ending(&lines).to_string();
@@ -522,13 +523,13 @@ pub(super) fn edit_file_tagged(args: &[Value], heap: &mut Heap) -> Result<Value,
     }
 
     let msg = format!("Applied {} edit(s) to {}", edits.len(), path);
-    heap_alloc(heap, HeapObject::String(msg))
+    heap_alloc(heap, HeapObject::String(msg.into()))
 }
 
 pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let pattern = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("glob: expected String".into()),
         },
         _ => return Err("glob: expected String".into()),
@@ -622,7 +623,7 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
                     if seen.insert(text.clone()) {
                         heap.charge_io_bytes(text.len() as u64)
                             .map_err(|e| format!("glob: {e}"))?;
-                        paths.push(heap_alloc(heap, HeapObject::String(text))?);
+                        paths.push(heap_alloc(heap, HeapObject::String(text.into()))?);
                     }
                 }
             }
@@ -637,7 +638,7 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         if seen.insert(text.clone()) {
             heap.charge_io_bytes(text.len() as u64)
                 .map_err(|e| format!("glob: {e}"))?;
-            paths.push(heap_alloc(heap, HeapObject::String(text))?);
+            paths.push(heap_alloc(heap, HeapObject::String(text.into()))?);
         }
     }
     alloc_list(heap, paths)
@@ -646,7 +647,7 @@ pub(super) fn glob(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
 pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let dir = match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("walk_dir: expected String".into()),
         },
         _ => return Err("walk_dir: expected String".into()),
@@ -761,7 +762,7 @@ pub(super) fn walk_dir(args: &[Value], heap: &mut Heap) -> Result<Value, String>
     for f in files {
         heap.charge_io_bytes(f.len() as u64)
             .map_err(|e| format!("walk_dir: {e}"))?;
-        values.push(heap_alloc(heap, HeapObject::String(f))?);
+        values.push(heap_alloc(heap, HeapObject::String(f.into()))?);
     }
     alloc_list(heap, values)
 }
@@ -783,7 +784,7 @@ mod tests {
 
     fn string_value(heap: &mut Heap, text: &str) -> Value {
         Value::Heap(
-            heap.alloc(HeapObject::String(text.to_string()))
+            heap.alloc(HeapObject::String(text.into()))
                 .expect("allocate string"),
         )
     }

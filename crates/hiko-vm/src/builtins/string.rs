@@ -1,6 +1,7 @@
 use super::*;
 use crate::vm::{TAG_CONS, TAG_NIL};
 use std::mem::size_of;
+use std::sync::Arc;
 
 const STRING_CHEAP_HOST_WORK: u64 = 5;
 const STRING_SCAN_HOST_WORK: u64 = 10;
@@ -55,7 +56,7 @@ pub(super) fn substring(args: &[Value], heap: &mut Heap) -> Result<Value, String
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s,
+            HeapObject::String(s) => s.clone(),
             _ => return Err("substring: expected String".into()),
         },
         _ => return Err("substring: expected String".into()),
@@ -65,11 +66,20 @@ pub(super) fn substring(args: &[Value], heap: &mut Heap) -> Result<Value, String
             let start = usize::try_from(start)
                 .map_err(|_| "substring: negative start index".to_string())?;
             let len = usize::try_from(len).map_err(|_| "substring: negative length".to_string())?;
-            let result: String = s.chars().skip(start).take(len).collect();
-            if result.chars().count() < len {
-                Err("substring: out of bounds".to_string())
-            } else {
-                heap_alloc(heap, HeapObject::String(result))
+            if len == 0 {
+                return heap_alloc(heap, HeapObject::String("".into()));
+            }
+            // Byte offsets of the `start`-th and `(start + len)`-th character
+            // boundaries, so the result is copied once, from a slice.
+            let mut boundaries = s
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain(std::iter::once(s.len()));
+            match (boundaries.nth(start), boundaries.nth(len - 1)) {
+                (Some(begin), Some(end)) => {
+                    heap_alloc(heap, HeapObject::String(Arc::from(&s[begin..end])))
+                }
+                _ => Err("substring: out of bounds".to_string()),
             }
         }
         _ => Err("substring: expected (String, Int, Int)".into()),
@@ -88,14 +98,14 @@ pub(super) fn string_contains(args: &[Value], heap: &mut Heap) -> Result<Value, 
     };
     let a = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("string_contains: expected String".into()),
         },
         _ => return Err("string_contains: expected String".into()),
     };
     let b = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("string_contains: expected String".into()),
         },
         _ => return Err("string_contains: expected String".into()),
@@ -108,7 +118,7 @@ pub(super) fn trim(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         .map_err(|e| format!("trim: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.trim().to_string())),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.trim().into())),
             _ => Err("trim: expected String".into()),
         },
         _ => Err("trim: expected String".into()),
@@ -141,7 +151,7 @@ pub(super) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     };
     heap.charge_host_work(string_work(0, s.len()))
         .map_err(|e| format!("split: {e}"))?;
-    let part_count = s.split(&sep).count();
+    let part_count = s.split(&*sep).count();
     let parts_bytes = part_count
         .checked_mul(size_of::<Value>())
         .ok_or_else(|| "split: part count overflow".to_string())?;
@@ -149,10 +159,10 @@ pub(super) fn split(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         .map_err(|e| format!("split: {e}"))?;
 
     let mut parts = Vec::with_capacity(part_count);
-    for p in s.split(&sep) {
+    for p in s.split(&*sep) {
         heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(p.len()))
             .map_err(|e| format!("split: {e}"))?;
-        parts.push(heap_alloc(heap, HeapObject::String(p.to_string()))?);
+        parts.push(heap_alloc(heap, HeapObject::String(p.into()))?);
     }
     alloc_list(heap, parts)
 }
@@ -197,7 +207,7 @@ pub(super) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, S
             .checked_add(1)
             .ok_or_else(|| "string_replace: replacement count overflow".to_string())?
     } else {
-        s.matches(&from).count()
+        s.matches(&*from).count()
     };
     let removed_bytes = replacement_count
         .checked_mul(from.len())
@@ -213,7 +223,7 @@ pub(super) fn string_replace(args: &[Value], heap: &mut Heap) -> Result<Value, S
     heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(output_len))
         .map_err(|e| format!("string_replace: {e}"))?;
 
-    heap_alloc(heap, HeapObject::String(s.replace(&from, &to)))
+    heap_alloc(heap, HeapObject::String(s.replace(&*from, &to).into()))
 }
 
 pub(super) fn starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
@@ -228,14 +238,14 @@ pub(super) fn starts_with(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("starts_with: expected String".into()),
         },
         _ => return Err("starts_with: expected String".into()),
     };
     let prefix = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("starts_with: expected String".into()),
         },
         _ => return Err("starts_with: expected String".into()),
@@ -255,14 +265,14 @@ pub(super) fn ends_with(args: &[Value], heap: &mut Heap) -> Result<Value, String
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("ends_with: expected String".into()),
         },
         _ => return Err("ends_with: expected String".into()),
     };
     let suffix = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("ends_with: expected String".into()),
         },
         _ => return Err("ends_with: expected String".into()),
@@ -275,7 +285,7 @@ pub(super) fn to_upper(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         .map_err(|e| format!("to_upper: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_uppercase())),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_uppercase().into())),
             _ => Err("to_upper: expected String".into()),
         },
         _ => Err("to_upper: expected String".into()),
@@ -287,7 +297,7 @@ pub(super) fn to_lower(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         .map_err(|e| format!("to_lower: {e}"))?;
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_lowercase())),
+            HeapObject::String(s) => heap_alloc(heap, HeapObject::String(s.to_lowercase().into())),
             _ => Err("to_lower: expected String".into()),
         },
         _ => Err("to_lower: expected String".into()),
@@ -345,7 +355,7 @@ pub(super) fn string_join(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         output.push_str(part);
         Ok(())
     })?;
-    heap_alloc(heap, HeapObject::String(output))
+    heap_alloc(heap, HeapObject::String(output.into()))
 }
 
 fn for_each_join_part(
@@ -456,6 +466,26 @@ mod tests {
         let result = substring(&[arg], &mut heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("out of bounds"));
+    }
+
+    #[test]
+    fn substring_at_and_past_the_end() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "hé");
+        for (start, len, expected) in [
+            (2, 0, Some("")),
+            (5, 0, Some("")),
+            (1, 1, Some("é")),
+            (2, 1, None),
+            (1, 2, None),
+        ] {
+            let arg = tuple3(&mut heap, s, Value::Int(start), Value::Int(len));
+            let result = substring(&[arg], &mut heap);
+            match expected {
+                Some(text) => assert_eq!(heap_string(result.unwrap(), &heap), text),
+                None => assert!(result.unwrap_err().contains("out of bounds")),
+            }
+        }
     }
 
     #[test]
@@ -760,7 +790,7 @@ mod proptests {
 
     /// Allocate a Hiko String on the heap and return its Value.
     fn alloc_str(heap: &mut Heap, s: &str) -> Value {
-        let r = heap.alloc(HeapObject::String(s.to_string())).unwrap();
+        let r = heap.alloc(HeapObject::String(s.into())).unwrap();
         Value::Heap(r)
     }
 
@@ -768,7 +798,7 @@ mod proptests {
     fn extract_str(heap: &Heap, val: Value) -> String {
         match val {
             Value::Heap(r) => match heap.get(r).unwrap() {
-                HeapObject::String(s) => s.clone(),
+                HeapObject::String(s) => s.to_string(),
                 other => panic!("expected String, got {other:?}"),
             },
             other => panic!("expected Heap value, got {other:?}"),

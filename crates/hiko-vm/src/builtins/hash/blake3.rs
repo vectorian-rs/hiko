@@ -25,7 +25,10 @@ pub(super) fn blake3(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     };
     heap.charge_host_work(hash_work(bytes.len()))
         .map_err(|e| format!("blake3: {e}"))?;
-    heap_alloc(heap, HeapObject::String(hiko_common::blake3_hex(&bytes)))
+    heap_alloc(
+        heap,
+        HeapObject::String(hiko_common::blake3_hex(&bytes).into()),
+    )
 }
 
 #[cfg(test)]
@@ -33,7 +36,7 @@ mod tests {
     use super::*;
 
     fn bytes_arg(heap: &mut Heap, data: &[u8]) -> Value {
-        heap_alloc(heap, HeapObject::Bytes(data.to_vec())).unwrap()
+        heap_alloc(heap, HeapObject::Bytes(data.into())).unwrap()
     }
 
     #[test]
