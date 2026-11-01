@@ -22,6 +22,9 @@ The script needs [hyperfine](https://github.com/sharkdp/hyperfine). It runs:
 | `benchmarks/read_sequential.hml` | One process reading `README.md` 1,000 times in sequence: the round trip of an async I/O request. |
 | `benchmarks/fanout_read_sequential.hml` | 32 children each reading `README.md` 100 times in sequence, at 1, 2, 4 and 8 workers. |
 | `benchmarks/spawn_shared.hml` | One 10,000-element list sent to 200 children, as a capture and as a top-level binding. |
+| `benchmarks/string_concat.hml` | 200,000 `^` and one `string_join`: the cost of building new strings. |
+| `benchmarks/string_args.hml` | A 10,000-character string passed to builtins 400,000 times. |
+| `benchmarks/spawn_strings.hml` | A 100,000-character string sent to 200 children and back. |
 | `benchmarks/fanout_hash.hml` | Walk `.git` once, then 32 children each read and BLAKE3-hash a 32nd of the files, at 1, 2, 4 and 8 workers. |
 | `examples/benchmark.hml` vs `examples/benchmark.py` | Walk `.git` and hash every file, against Python. |
 | `fs_open_cost` example | Open and read every file under a directory with `std::fs`, cap-std, and `O_RESOLVE_BENEATH`. |
@@ -197,6 +200,34 @@ scales the work between requests:
   concurrent at one worker and stay flat. Their time is now kernel time: 32
   backend threads opening the same file use about 800 ms of system time in a
   120 ms run.
+
+### Shared strings and bytes (#12)
+
+Strings and bytes are `Arc<str>` / `Arc<[u8]>` in the heap, the same types
+`SendableValue` uses, so crossing a process boundary shares the payload
+instead of copying it twice. `main` at `f322f68` against PR #125, hyperfine
+means of 15 to 20 runs:
+
+| Benchmark | Before | After |
+|---|---|---|
+| `spawn_strings.hml` | 17.3 ms | 11.6 ms |
+| `string_concat.hml` | 302 ms | 301 ms |
+| `string_args.hml` | 272 ms | 275 ms |
+
+- **Building strings.** An `Arc<str>` cannot be built in place without
+  `unsafe`, so converting a new `String` copies it again. A first version
+  that did this everywhere made `string_concat` about 10% slower. `^` now
+  builds into a buffer the VM reuses, `int_to_string` formats on the stack,
+  and `substring` copies one slice, so each allocates once, as before. Other
+  builtins still convert a `String`; their cost is dominated by the work that
+  produced it.
+- **Builtin arguments.** `string_length` and `substring` already read their
+  argument in place, so `string_args` does not change. The helpers that did
+  copy (`extract_string_arg`, the filesystem `string_arg`) serve paths and
+  URLs, where the copy is small next to the I/O.
+- **No regressions** beyond noise in the same A/B run: `ack`, `tak`,
+  `nqueens`, `ec_fib`, `spawn_shared`, `spawn_await`, `fanout_hash` at 8
+  workers, and `benchmark.hml`.
 
 ### Interpreter (after, one process)
 
