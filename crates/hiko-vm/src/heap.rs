@@ -213,6 +213,9 @@ pub struct Heap {
     host_resource_kind_budgets: HashMap<String, Arc<SharedBudget>>,
     /// Filesystem policy, shared with child processes.
     fs: Arc<FsPolicy>,
+    /// Compiled regexes, shared with child processes.
+    #[cfg(feature = "builtin-regex")]
+    regex_cache: Arc<crate::builtins::RegexCache>,
     /// Allowed HTTP hosts (empty = unrestricted).
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
@@ -293,6 +296,8 @@ impl Heap {
             host_resource_budget: None,
             host_resource_kind_budgets: HashMap::new(),
             fs: Arc::default(),
+            #[cfg(feature = "builtin-regex")]
+            regex_cache: Arc::default(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
             github_issue_allowed_repos: HashMap::new(),
@@ -362,6 +367,18 @@ impl Heap {
     /// capabilities.
     pub fn share_fs_policy(&mut self, parent: &Heap) {
         self.fs = Arc::clone(&parent.fs);
+    }
+
+    /// Use `parent`'s regex cache, so a process tree compiles each pattern
+    /// once.
+    #[cfg(feature = "builtin-regex")]
+    pub fn share_regex_cache(&mut self, parent: &Heap) {
+        self.regex_cache = Arc::clone(&parent.regex_cache);
+    }
+
+    #[cfg(feature = "builtin-regex")]
+    pub(crate) fn regex_cache(&self) -> &crate::builtins::RegexCache {
+        &self.regex_cache
     }
 
     #[cfg(feature = "builtin-filesystem")]

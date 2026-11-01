@@ -157,6 +157,8 @@ mod process;
 mod random;
 #[cfg(feature = "builtin-regex")]
 mod regex;
+#[cfg(feature = "builtin-regex")]
+pub(crate) use regex::RegexCache;
 #[cfg(feature = "builtin-stdio")]
 mod stdio;
 #[cfg(feature = "builtin-string")]
