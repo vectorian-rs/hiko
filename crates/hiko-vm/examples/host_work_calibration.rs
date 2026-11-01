@@ -78,11 +78,20 @@ const INPUTS: &[(&str, &[&str], &str)] = &[
         "val chunks = copies (\"abcdefghijklmnop\", N, [])",
     ),
     ("text", &["chunks"], "val text = string_join (chunks, \"\")"),
+    (
+        "utext",
+        &["copies"],
+        // 16 bytes of characters whose case mapping is not ASCII.
+        "val utext = string_join (copies (\"ßﬃéüßﬃé\", N, []), \"\")",
+    ),
     ("bytes", &["text"], "val bytes = string_to_bytes text"),
     (
         "json_array",
         &["copies"],
-        "val json_array = \"[\" ^ string_join (copies (\"1234567\", N, []), \",\") ^ \"]\"",
+        // One-character tokens: the densest JSON, and the most expensive per
+        // KiB, since parsing cost follows the number of tokens. 8 * N items
+        // of 2 bytes make the text about the nominal size.
+        "val json_array = \"[\" ^ string_join (copies (\"1\", 8 * N, []), \",\") ^ \"]\"",
     ),
     (
         "json_object",
@@ -109,13 +118,21 @@ const CALLS: &[(&str, &str)] = &[
     ("string_length", "string_length text"),
     ("substring", "substring (text, SIZE / 2, 8)"),
     ("string_contains", "string_contains (text, \"zz\")"),
+    ("string_contains/needle", "string_contains (\"x\", text)"),
     ("starts_with", "starts_with (text, \"abc\")"),
+    ("starts_with/long", "starts_with (text, text)"),
     ("ends_with", "ends_with (text, \"nop\")"),
     ("trim", "trim text"),
     ("to_upper", "to_upper text"),
+    ("to_upper/unicode", "to_upper utext"),
     ("to_lower", "to_lower text"),
+    ("to_lower/unicode", "to_lower utext"),
     ("split", "split (text, \"p\")"),
     ("string_replace", "string_replace (text, \"a\", \"b\")"),
+    (
+        "string_replace/grow",
+        "string_replace (text, \"a\", \"0123456789abcdef\")",
+    ),
     ("string_join", "string_join (chunks, \",\")"),
     ("string_to_bytes", "string_to_bytes text"),
     ("bytes_to_string", "bytes_to_string bytes"),
@@ -124,7 +141,15 @@ const CALLS: &[(&str, &str)] = &[
     ("bytes_slice", "bytes_slice (bytes, 0, SIZE / 2)"),
     ("blake3", "blake3 bytes"),
     ("regex_match", "regex_match (text, \"z+\")"),
+    // No literal to search for, so the matcher runs over every byte.
+    ("regex_match/class", "regex_match (text, \"[0-9]+x\")"),
+    // A pattern of SIZE bytes: compiling it is the cost.
+    ("regex_match/pattern", "regex_match (\"x\", text)"),
     ("regex_replace", "regex_replace (text, \"a\", \"b\")"),
+    (
+        "regex_replace/grow",
+        "regex_replace (text, \"a\", \"0123456789abcdef\")",
+    ),
     ("json_length", "json_length json_array"),
     ("json_get", "json_get (json_object, \"k.0\")"),
     ("json_parse", "(json_parse json_array : int list)"),
@@ -150,8 +175,9 @@ fn compile(source: &str) -> CompiledProgram {
     compiled
 }
 
-/// Run `program` and return the best of five runs.
-fn run(program: &CompiledProgram) -> Run {
+/// Run `program` and return the best of five runs, or the error it fails
+/// with (a regex over the compiled-size limit, for example).
+fn try_run(program: &CompiledProgram) -> Result<Run, String> {
     let mut best: Option<Run> = None;
     for _ in 0..5 {
         let mut vm = VMBuilder::new(program.clone()).with_all().build();
@@ -161,7 +187,7 @@ fn run(program: &CompiledProgram) -> Run {
         // `run_slice` charges the fuel budget, so the budget counts opcodes.
         match vm.run_slice(u64::MAX / 4) {
             RunResult::Done => {}
-            other => panic!("program did not finish: {other:?}"),
+            other => return Err(format!("{other:?}")),
         }
         let time = start.elapsed();
         let run = Run {
@@ -174,7 +200,11 @@ fn run(program: &CompiledProgram) -> Run {
             best = Some(run);
         }
     }
-    best.expect("three runs")
+    Ok(best.expect("five runs"))
+}
+
+fn run(program: &CompiledProgram) -> Run {
+    try_run(program).unwrap_or_else(|e| panic!("program did not finish: {e}"))
 }
 
 /// Add `name` and the inputs it is built from to `out`, dependencies first.
@@ -237,7 +267,13 @@ fn main() {
         for size in SIZES {
             let base = run(&program_for(call, size, 0));
             let mut k = (BYTES_PER_MEASUREMENT / size).clamp(20, 20_000);
-            let mut full = run(&program_for(call, size, k));
+            let mut full = match try_run(&program_for(call, size, 1)) {
+                Ok(_) => run(&program_for(call, size, k)),
+                Err(e) => {
+                    println!("{name:16} {size:>8} fails: {e}");
+                    continue;
+                }
+            };
             let measured = full.time.saturating_sub(base.time);
             if measured < MIN_MEASURED && k < MAX_CALLS {
                 let scale = TARGET_MEASURED.as_secs_f64() / measured.as_secs_f64().max(1e-6);
