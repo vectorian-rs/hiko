@@ -178,6 +178,9 @@ pub struct VM {
     /// Reused buffer for `ConcatString`, so a concatenation allocates only
     /// the new string's shared payload.
     concat_buf: String,
+    /// The captures of a function called with `CallDirect`, which has none.
+    /// Shared, because `Arc::from([])` allocates on every call.
+    no_captures: Arc<[Value]>,
     /// Slice-local opcode budget for the currently active dispatch loop.
     ///
     /// This value is intentionally transient. `run_slice` installs it from the
@@ -208,18 +211,29 @@ pub struct VM {
     output_sink: Option<Arc<dyn OutputSink>>,
 }
 
+/// Equality of two values that are not both heap values.
+fn scalars_equal(a: Value, b: Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Word(x), Value::Word(y)) => x == y,
+        (Value::Pid(x), Value::Pid(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Char(x), Value::Char(y)) => x == y,
+        (Value::Unit, Value::Unit) => true,
+        _ => false,
+    }
+}
+
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
+    // Comparing scalars, the common case, must not allocate the worklist.
+    if !matches!((a, b), (Value::Heap(_), Value::Heap(_))) {
+        return scalars_equal(a, b);
+    }
     let mut worklist = vec![(a, b)];
 
     while let Some((left, right)) = worklist.pop() {
         match (left, right) {
-            (Value::Int(x), Value::Int(y)) if x == y => {}
-            (Value::Word(x), Value::Word(y)) if x == y => {}
-            (Value::Pid(x), Value::Pid(y)) if x == y => {}
-            (Value::Float(x), Value::Float(y)) if x == y => {}
-            (Value::Bool(x), Value::Bool(y)) if x == y => {}
-            (Value::Char(x), Value::Char(y)) if x == y => {}
-            (Value::Unit, Value::Unit) => {}
             (Value::Heap(ra), Value::Heap(rb)) => {
                 if ra == rb {
                     continue;
@@ -253,6 +267,7 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
                     _ => return false,
                 }
             }
+            (left, right) if scalars_equal(left, right) => {}
             _ => return false,
         }
     }
@@ -317,6 +332,7 @@ impl VM {
             hidden_handlers: Vec::new(),
             string_cache: HashMap::new(),
             concat_buf: String::new(),
+            no_captures: Arc::from([]),
             fuel: None,
             fuel_budget: None,
             live_process_slot: None,
@@ -1584,6 +1600,52 @@ mod tests {
                     err.message
                 ),
             }
+        }
+    }
+
+    /// A call with a written-out tuple to a function that takes a tuple
+    /// passes the components as arguments: no tuple is built.
+    #[test]
+    fn test_flat_tuple_call_allocates_nothing() {
+        let count = |n: i64| {
+            let vm = run(&format!(
+                "fun loop (i, acc) = if i = 0 then acc else loop (i - 1, acc + 1)
+                 val result = loop ({n}, 0)"
+            ));
+            assert_eq!(global_int(&vm, "result"), n);
+            vm.heap.count_objects(|_| true)
+        };
+        assert_eq!(count(1000), count(10));
+    }
+
+    /// The same function still works with a tuple value, as a value, with
+    /// several clauses, and when a later binding shadows it.
+    #[test]
+    fn test_flat_tuple_function_other_calls() {
+        let vm = run("fun add (a, b) = a + b
+             val pair = (1, 2)
+             val from_value = add pair
+             val f = add
+             val through_value = f (3, 4)
+             fun apply (g, x) = g x
+             val passed = apply (add, (5, 6))
+             fun pick (0, y) = y
+               | pick (x, _) = x * 10
+             val first = pick (0, 7)
+             val second = pick (3, 7)
+             val before = add (1, 1)
+             val add = fn (a, b) => a * b
+             val after = add (2, 5)");
+        for (name, expected) in [
+            ("from_value", 3),
+            ("through_value", 7),
+            ("passed", 11),
+            ("first", 7),
+            ("second", 30),
+            ("before", 2),
+            ("after", 10),
+        ] {
+            assert_eq!(global_int(&vm, name), expected, "{name}");
         }
     }
 

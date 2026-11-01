@@ -9,6 +9,10 @@ pub struct Chunk {
     pub constants: Vec<Constant>,
     /// Maps bytecode offsets to source spans (sorted by offset).
     pub spans: Vec<(usize, Span)>,
+    /// Offset of every instruction, so tests can tell opcodes from operand
+    /// bytes.
+    #[cfg(test)]
+    pub(crate) op_starts: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +60,18 @@ pub struct CompiledProgram {
 
 impl Chunk {
     pub fn emit_op(&mut self, op: Op) {
+        #[cfg(test)]
+        self.op_starts.push(self.code.len());
         self.code.push(op as u8);
+    }
+
+    /// The opcodes of this chunk, in order, without their operands.
+    #[cfg(test)]
+    pub(crate) fn ops(&self) -> Vec<Op> {
+        self.op_starts
+            .iter()
+            .map(|&i| Op::try_from(self.code[i]).expect("valid opcode"))
+            .collect()
     }
 
     /// Record a source span for the current bytecode position.

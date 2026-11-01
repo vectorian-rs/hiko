@@ -406,7 +406,7 @@ impl VM {
                         proto_idx,
                         ip: 0,
                         base: arg_start,
-                        captures: Arc::from([]),
+                        captures: self.no_captures.clone(),
                     });
                 }
 
@@ -425,7 +425,7 @@ impl VM {
                     self.stack.truncate(base + arity);
                     self.frames[fi].ip = 0;
                     self.frames[fi].proto_idx = proto_idx;
-                    self.frames[fi].captures = Arc::from([]);
+                    self.frames[fi].captures = self.no_captures.clone();
                 }
 
                 Op::Return => {
@@ -915,43 +915,38 @@ impl VM {
             })
     }
 
-    fn current_code(&self) -> Result<&[u8], RuntimeError> {
-        let proto_idx = self
-            .frames
-            .last()
+    /// The next `N` operand bytes of the current instruction, advancing the
+    /// frame's `ip` past them. The frame and its code are looked up once;
+    /// they are separate fields, so no `&self` method borrows both.
+    fn read_operand<const N: usize>(&mut self) -> Result<[u8; N], RuntimeError> {
+        let frame = self.frames.last_mut().ok_or_else(|| RuntimeError {
+            message: "call frame underflow".into(),
+        })?;
+        let code = if frame.proto_idx == usize::MAX {
+            &self.main_chunk.code
+        } else {
+            &self
+                .protos
+                .get(frame.proto_idx)
+                .ok_or_else(|| Self::unknown_proto_error(frame.proto_idx))?
+                .chunk
+                .code
+        };
+        let bytes = code
+            .get(frame.ip..frame.ip + N)
             .ok_or_else(|| RuntimeError {
-                message: "call frame underflow".into(),
-            })?
-            .proto_idx;
-        Ok(&self.chunk_for_checked(proto_idx)?.code)
+                message: format!("truncated bytecode: expected {N}-byte operand"),
+            })?;
+        frame.ip += N;
+        Ok(bytes.try_into().expect("slice of length N"))
     }
 
     fn read_u8(&mut self) -> Result<u8, RuntimeError> {
-        let fi = self.current_frame_index()?;
-        let ip = self.frames[fi].ip;
-        let code = self.current_code()?;
-        if ip >= code.len() {
-            return Err(RuntimeError {
-                message: "truncated bytecode: expected u8 operand".into(),
-            });
-        }
-        let val = code[ip];
-        self.frames[fi].ip += 1;
-        Ok(val)
+        self.read_operand::<1>().map(|[b]| b)
     }
 
     fn read_u16(&mut self) -> Result<u16, RuntimeError> {
-        let fi = self.current_frame_index()?;
-        let ip = self.frames[fi].ip;
-        let code = self.current_code()?;
-        if ip + 1 >= code.len() {
-            return Err(RuntimeError {
-                message: "truncated bytecode: expected u16 operand".into(),
-            });
-        }
-        let val = u16::from_le_bytes([code[ip], code[ip + 1]]);
-        self.frames[fi].ip += 2;
-        Ok(val)
+        self.read_operand::<2>().map(u16::from_le_bytes)
     }
 
     fn read_i16(&mut self) -> Result<i16, RuntimeError> {
