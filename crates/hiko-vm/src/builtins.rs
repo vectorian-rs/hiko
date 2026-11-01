@@ -253,7 +253,7 @@ pub(super) mod test_helpers {
     pub fn heap_string(value: Value, heap: &Heap) -> String {
         match value {
             Value::Heap(r) => match heap.get(r).unwrap() {
-                HeapObject::String(text) => text.clone(),
+                HeapObject::String(text) => text.to_string(),
                 other => panic!("expected string, got {other:?}"),
             },
             other => panic!("expected heap string, got {other:?}"),

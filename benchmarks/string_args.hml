@@ -1,0 +1,13 @@
+(* Pass a 10,000-character string to builtins: the cost of reading string
+ * arguments. *)
+fun copies (s, n, acc) = if n = 0 then acc else copies (s, n - 1, s :: acc)
+
+fun repeat (s, n) = string_join (copies (s, n, []), "")
+
+val text = repeat ("0123456789", 1000)
+
+fun loop (n, acc) =
+  if n = 0 then acc
+  else loop (n - 1, acc + string_length text + string_length (substring (text, n mod 100, 10)))
+
+val _ = println ("string_args = " ^ int_to_string (loop (200000, 0)))

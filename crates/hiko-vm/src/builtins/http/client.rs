@@ -17,8 +17,8 @@ fn collect_headers<'a>(
 ) -> Result<Value, String> {
     let mut header_values: Vec<Value> = Vec::new();
     for (k, v) in header_pairs {
-        let k = heap_alloc(heap, HeapObject::String(k.to_string()))?;
-        let v = heap_alloc(heap, HeapObject::String(v.to_string()))?;
+        let k = heap_alloc(heap, HeapObject::String(k.into()))?;
+        let v = heap_alloc(heap, HeapObject::String(v.into()))?;
         let pair = heap_alloc(heap, HeapObject::Tuple(smallvec![k, v]))?;
         header_values.push(pair);
     }
@@ -86,7 +86,7 @@ pub(super) fn http_get(args: &[Value], heap: &mut Heap) -> Result<Value, String>
         crate::io_backend::read_to_string_limited(reader, heap.http_response_limit(), "http_get")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http_get: {e}"))?;
-    let body = heap_alloc(heap, HeapObject::String(body_str))?;
+    let body = heap_alloc(heap, HeapObject::String(body_str.into()))?;
     heap_alloc(heap, HeapObject::Tuple(smallvec![status, headers, body]))
 }
 
@@ -97,7 +97,7 @@ pub(super) fn http(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
         crate::io_backend::read_to_string_limited(reader, heap.http_response_limit(), "http")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http: {e}"))?;
-    let resp_body = heap_alloc(heap, HeapObject::String(body_str))?;
+    let resp_body = heap_alloc(heap, HeapObject::String(body_str.into()))?;
     heap_alloc(
         heap,
         HeapObject::Tuple(smallvec![status, resp_headers, resp_body]),
@@ -146,7 +146,7 @@ pub(super) fn http_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Strin
         crate::io_backend::read_to_bytes_limited(reader, heap.http_response_limit(), "http_bytes")?;
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("http_bytes: {e}"))?;
-    let resp_body = heap_alloc(heap, HeapObject::Bytes(buf))?;
+    let resp_body = heap_alloc(heap, HeapObject::Bytes(buf.into()))?;
     heap_alloc(
         heap,
         HeapObject::Tuple(smallvec![status, resp_headers, resp_body]),

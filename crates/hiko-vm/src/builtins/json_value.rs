@@ -84,7 +84,7 @@ pub(crate) fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<V
             }
         }
         serde_json::Value::String(s) => {
-            let sv = heap_alloc(heap, HeapObject::String(s.clone()))?;
+            let sv = heap_alloc(heap, HeapObject::String(s.as_str().into()))?;
             heap_alloc(
                 heap,
                 HeapObject::Data {
@@ -112,7 +112,7 @@ pub(crate) fn json_to_hiko(val: &serde_json::Value, heap: &mut Heap) -> Result<V
             check_value_vec_capacity(heap, "json_parse", map.len())?;
             let mut pairs = Vec::with_capacity(map.len());
             for (k, v) in map {
-                let key = heap_alloc(heap, HeapObject::String(k.clone()))?;
+                let key = heap_alloc(heap, HeapObject::String(k.as_str().into()))?;
                 let val = json_to_hiko(v, heap)?;
                 pairs.push(heap_alloc(heap, HeapObject::Tuple(smallvec![key, val]))?);
             }

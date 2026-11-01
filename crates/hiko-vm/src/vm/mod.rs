@@ -171,6 +171,9 @@ pub struct VM {
     handlers: Vec<HandlerFrame>,
     hidden_handlers: Vec<HiddenHandlers>,
     string_cache: HashMap<(usize, usize), GcRef>,
+    /// Reused buffer for `ConcatString`, so a concatenation allocates only
+    /// the new string's shared payload.
+    concat_buf: String,
     /// Slice-local opcode budget for the currently active dispatch loop.
     ///
     /// This value is intentionally transient. `run_slice` installs it from the
@@ -309,6 +312,7 @@ impl VM {
             handlers: Vec::with_capacity(4),
             hidden_handlers: Vec::new(),
             string_cache: HashMap::new(),
+            concat_buf: String::new(),
             fuel: None,
             fuel_budget: None,
             live_process_slot: None,
@@ -763,7 +767,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no global: {name}"))
         {
             Value::Heap(r) => match vm.heap.get(*r).unwrap() {
-                HeapObject::String(s) => s.clone(),
+                HeapObject::String(s) => s.to_string(),
                 v => panic!("expected String for {name}, got {v:?}"),
             },
             v => panic!("expected String for {name}, got {v:?}"),
@@ -783,7 +787,7 @@ mod tests {
                     HeapObject::Data { tag, fields } if *tag == TAG_CONS => {
                         match fields[0] {
                             Value::Heap(item_ref) => match vm.heap.get(item_ref).unwrap() {
-                                HeapObject::String(s) => values.push(s.clone()),
+                                HeapObject::String(s) => values.push(s.to_string()),
                                 v => panic!("expected String item for {name}, got {v:?}"),
                             },
                             v => panic!("expected String item for {name}, got {v:?}"),
@@ -1927,18 +1931,20 @@ mod tests {
         let mut child = vm.create_child();
         child
             .heap
-            .alloc(HeapObject::String("x".repeat(600)))
+            .alloc(HeapObject::String("x".repeat(600).into()))
             .unwrap();
         assert!(budget.used() >= used_by_parent + 600);
         let err = vm
             .heap
-            .alloc(HeapObject::String("y".repeat(600)))
+            .alloc(HeapObject::String("y".repeat(600).into()))
             .unwrap_err();
         assert!(err.to_string().contains("memory limit exceeded"), "{err}");
 
         drop(child);
         assert_eq!(budget.used(), used_by_parent);
-        vm.heap.alloc(HeapObject::String("y".repeat(600))).unwrap();
+        vm.heap
+            .alloc(HeapObject::String("y".repeat(600).into()))
+            .unwrap();
     }
 
     #[test]

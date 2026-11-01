@@ -52,7 +52,7 @@ fn expect_string_ref(value: Value, heap: &Heap, message: String) -> Result<GcRef
 
 fn heap_string_ref(heap: &Heap, r: GcRef) -> Result<&str, String> {
     match heap.get(r).map_err(|e| e.to_string())? {
-        HeapObject::String(s) => Ok(s.as_str()),
+        HeapObject::String(s) => Ok(s.as_ref()),
         _ => Err("expected String".into()),
     }
 }

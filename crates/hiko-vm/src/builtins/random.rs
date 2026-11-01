@@ -43,7 +43,7 @@ pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Str
             let mut buf = reserve_output(heap, n, "random_bytes")?;
             buf.resize(n, 0);
             dryoc::rng::copy_randombytes(&mut buf);
-            heap_alloc(heap, HeapObject::Bytes(buf))
+            heap_alloc(heap, HeapObject::Bytes(buf.into()))
         }
         Value::Int(_) => Err("random_bytes: length must be non-negative".into()),
         _ => Err("random_bytes: expected Int".into()),
@@ -117,7 +117,7 @@ pub(super) fn rng_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, String
             output.push(b);
         }
     }
-    let bytes_val = heap_alloc(heap, HeapObject::Bytes(output))?;
+    let bytes_val = heap_alloc(heap, HeapObject::Bytes(output.into()))?;
     let rng_val = heap_alloc(heap, HeapObject::Rng { state, inc })?;
     heap_alloc(heap, HeapObject::Tuple(smallvec![bytes_val, rng_val]))
 }
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn rng_bytes_huge_length_is_an_error_not_an_abort() {
         let mut heap = Heap::new();
-        let seed = heap_alloc(&mut heap, HeapObject::Bytes(vec![1, 2, 3])).unwrap();
+        let seed = heap_alloc(&mut heap, HeapObject::Bytes(vec![1, 2, 3].into())).unwrap();
         let rng = rng_seed(&[seed], &mut heap).unwrap();
         let args = heap_alloc(
             &mut heap,

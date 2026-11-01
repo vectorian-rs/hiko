@@ -28,10 +28,10 @@ pub(super) fn read_line(_args: &[Value], heap: &mut Heap) -> Result<Value, Strin
     }
     heap.charge_io_bytes(io_bytes)
         .map_err(|e| format!("read_line: {e}"))?;
-    heap_alloc(heap, HeapObject::String(line))
+    heap_alloc(heap, HeapObject::String(line.into()))
 }
 
 pub(super) fn read_stdin(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let input = heap.read_stdin()?;
-    heap_alloc(heap, HeapObject::String(input))
+    heap_alloc(heap, HeapObject::String(input.into()))
 }

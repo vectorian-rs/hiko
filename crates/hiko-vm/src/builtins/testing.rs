@@ -11,7 +11,7 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 pub(super) fn panic(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Err(s.clone()),
+            HeapObject::String(s) => Err(s.to_string()),
             _ => Err("panic: expected String".into()),
         },
         _ => Err("panic: expected String".into()),
@@ -49,7 +49,7 @@ pub(super) fn assert_eq(args: &[Value], heap: &mut Heap) -> Result<Value, String
     } else {
         let msg = match v2 {
             Value::Heap(r) => match heap.get(r) {
-                Ok(HeapObject::String(s)) => s.clone(),
+                Ok(HeapObject::String(s)) => s.to_string(),
                 _ => String::new(),
             },
             _ => String::new(),

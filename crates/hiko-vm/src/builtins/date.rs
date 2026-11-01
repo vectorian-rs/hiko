@@ -34,6 +34,7 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
 static TEMPORAL_PARSER: DateTimeParser = DateTimeParser::new();
 
 fn alloc_string(heap: &mut Heap, text: impl Into<String>) -> Result<Value, String> {
+    let text: String = text.into();
     heap_alloc(heap, HeapObject::String(text.into()))
 }
 
@@ -52,7 +53,7 @@ fn make_bool_string_pair(
 fn extract_string_value(value: Value, heap: &Heap, name: &str) -> Result<String, String> {
     match value {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => Ok(s.clone()),
+            HeapObject::String(s) => Ok(s.to_string()),
             _ => Err(format!("{name}: expected String")),
         },
         _ => Err(format!("{name}: expected String")),
@@ -382,7 +383,7 @@ pub(super) fn format(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
 
 pub(super) fn parse_rfc3339(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     let input = extract_string_arg(args, heap, "date_parse_rfc3339")?;
-    match TEMPORAL_PARSER.parse_timestamp(&input) {
+    match TEMPORAL_PARSER.parse_timestamp(&*input) {
         Ok(timestamp) => match extract_rfc3339_offset(&input) {
             Ok(tz) => make_bool_string_pair(heap, true, timestamp.to_zoned(tz).to_string()),
             Err(_) => make_bool_string_pair(heap, false, ""),
@@ -406,7 +407,7 @@ mod tests {
     fn heap_string(value: Value, heap: &Heap) -> String {
         match value {
             Value::Heap(r) => match heap.get(r).unwrap() {
-                HeapObject::String(text) => text.clone(),
+                HeapObject::String(text) => text.to_string(),
                 other => panic!("expected string, got {other:?}"),
             },
             other => panic!("expected heap string, got {other:?}"),

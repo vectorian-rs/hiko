@@ -126,7 +126,9 @@ impl HostResource {
 /// Heap-allocated objects managed by the GC.
 #[derive(Debug)]
 pub enum HeapObject {
-    String(String),
+    /// Immutable text. The payload is shared, not copied, when the string is
+    /// sent to another process or read by a builtin.
+    String(Arc<str>),
     Tuple(Fields),
     Data {
         tag: u16,
@@ -136,7 +138,8 @@ pub enum HeapObject {
         proto_idx: usize,
         captures: Arc<[Value]>,
     },
-    Bytes(Vec<u8>),
+    /// Immutable bytes, shared like `String`.
+    Bytes(Arc<[u8]>),
     /// Opaque native host resource. The actual Rust object lives in the VM heap's host-resource table.
     HostHandle {
         kind: HostHandleKind,
@@ -172,7 +175,9 @@ impl HeapObject {
     ///
     /// This is a first-pass accounting model for VM memory limits. It counts
     /// the object storage itself plus directly owned dynamic buffers, but it
-    /// deliberately does not attempt to de-duplicate shared `Arc` payloads.
+    /// deliberately does not attempt to de-duplicate shared `Arc` payloads:
+    /// a string or byte payload counts in full against every heap that holds
+    /// it.
     pub fn estimated_bytes(&self) -> usize {
         fn spilled_value_bytes(fields: &Fields) -> usize {
             if fields.spilled() {
@@ -187,11 +192,11 @@ impl HeapObject {
             HeapObject::HostHandle { .. } => {
                 base + size_of::<HostHandleKind>() + size_of::<HostHandleId>()
             }
-            HeapObject::String(s) => base + s.capacity(),
+            HeapObject::String(s) => base + s.len(),
             HeapObject::Tuple(fields) => base + spilled_value_bytes(fields),
             HeapObject::Data { fields, .. } => base + spilled_value_bytes(fields),
             HeapObject::Closure { .. } => base,
-            HeapObject::Bytes(bytes) => base + bytes.capacity(),
+            HeapObject::Bytes(bytes) => base + bytes.len(),
             HeapObject::Rng { .. } => base,
         }
     }

@@ -385,8 +385,8 @@ pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
             }
         };
         match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => out.push(SendableValue::String(Arc::from(s.as_str()))),
-            HeapObject::Bytes(b) => out.push(SendableValue::Bytes(Arc::from(b.as_slice()))),
+            HeapObject::String(s) => out.push(SendableValue::String(s.clone())),
+            HeapObject::Bytes(b) => out.push(SendableValue::Bytes(b.clone())),
             HeapObject::Data { tag, fields } if is_list(*tag, fields) => {
                 let items = list_items(r, heap)?;
                 tasks.push(Task::Build(Shape::List, items.len()));
@@ -540,8 +540,8 @@ fn deserialize_leaf(value: &SendableValue, heap: &mut Heap) -> Result<Value, Hea
         SendableValue::Char(c) => Ok(Value::Char(*c)),
         SendableValue::Unit => Ok(Value::Unit),
         SendableValue::Builtin(idx) => Ok(Value::Builtin(*idx)),
-        SendableValue::String(s) => Ok(Value::Heap(heap.alloc(HeapObject::String(s.to_string()))?)),
-        SendableValue::Bytes(b) => Ok(Value::Heap(heap.alloc(HeapObject::Bytes(b.to_vec()))?)),
+        SendableValue::String(s) => Ok(Value::Heap(heap.alloc(HeapObject::String(s.clone()))?)),
+        SendableValue::Bytes(b) => Ok(Value::Heap(heap.alloc(HeapObject::Bytes(b.clone()))?)),
         #[cfg(feature = "builtin-aws-config")]
         SendableValue::AwsConfigSsoProfile {
             profile,
@@ -648,7 +648,7 @@ mod tests {
     fn test_string() {
         let mut heap = Heap::new();
         let s = Value::Heap(
-            heap.alloc(HeapObject::String("hello world".to_string()))
+            heap.alloc(HeapObject::String("hello world".into()))
                 .unwrap(),
         );
         let sendable = serialize(s, &heap).unwrap();
@@ -656,7 +656,7 @@ mod tests {
         let result = deserialize(&sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
-                Ok(HeapObject::String(s)) => assert_eq!(s, "hello world"),
+                Ok(HeapObject::String(s)) => assert_eq!(&**s, "hello world"),
                 other => panic!("expected String, got {:?}", other),
             },
             other => panic!("expected Heap, got {:?}", other),
@@ -666,13 +666,13 @@ mod tests {
     #[test]
     fn test_bytes() {
         let mut heap = Heap::new();
-        let b = Value::Heap(heap.alloc(HeapObject::Bytes(vec![1, 2, 3])).unwrap());
+        let b = Value::Heap(heap.alloc(HeapObject::Bytes(vec![1, 2, 3].into())).unwrap());
         let sendable = serialize(b, &heap).unwrap();
         let mut new_heap = Heap::new();
         let result = deserialize(&sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
-                Ok(HeapObject::Bytes(b)) => assert_eq!(b, &[1, 2, 3]),
+                Ok(HeapObject::Bytes(b)) => assert_eq!(&**b, &[1, 2, 3]),
                 other => panic!("expected Bytes, got {:?}", other),
             },
             other => panic!("expected Heap, got {:?}", other),
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn test_nested_tuple_with_string() {
         let mut heap = Heap::new();
-        let s = Value::Heap(heap.alloc(HeapObject::String("hello".to_string())).unwrap());
+        let s = Value::Heap(heap.alloc(HeapObject::String("hello".into())).unwrap());
         let t = Value::Heap(
             heap.alloc(HeapObject::Tuple(smallvec![Value::Int(1), s]))
                 .unwrap(),
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn test_closure_round_trips_with_captures() {
         let mut heap = Heap::new();
-        let s = Value::Heap(heap.alloc(HeapObject::String("cap".to_string())).unwrap());
+        let s = Value::Heap(heap.alloc(HeapObject::String("cap".into())).unwrap());
         let closure = Value::Heap(
             heap.alloc(HeapObject::Closure {
                 proto_idx: 3,
@@ -844,7 +844,9 @@ mod tests {
                 let Value::Heap(sr) = captures[1] else {
                     panic!("expected string capture");
                 };
-                assert!(matches!(new_heap.get(sr).unwrap(), HeapObject::String(t) if t == "cap"));
+                assert!(
+                    matches!(new_heap.get(sr).unwrap(), HeapObject::String(t) if &**t == "cap")
+                );
             }
             _ => panic!("expected Closure"),
         }
@@ -905,8 +907,8 @@ mod tests {
     #[test]
     fn test_list_with_strings() {
         let mut heap = Heap::new();
-        let s1 = Value::Heap(heap.alloc(HeapObject::String("a".to_string())).unwrap());
-        let s2 = Value::Heap(heap.alloc(HeapObject::String("b".to_string())).unwrap());
+        let s1 = Value::Heap(heap.alloc(HeapObject::String("a".into())).unwrap());
+        let s2 = Value::Heap(heap.alloc(HeapObject::String("b".into())).unwrap());
         let nil = Value::Heap(
             heap.alloc(HeapObject::Data {
                 tag: TAG_NIL,
@@ -1155,5 +1157,33 @@ mod tests {
             &*sent,
             SendableValue::Closure { captures, .. } if matches!(captures[..], [SendableValue::Int(2)])
         ));
+    }
+
+    /// Strings and bytes cross a process boundary by sharing their payload:
+    /// the receiving heap holds the same allocation as the sending one.
+    #[test]
+    fn test_round_trip_shares_string_and_byte_payloads() {
+        let mut heap = Heap::new();
+        let text: Arc<str> = Arc::from("x".repeat(1 << 16));
+        let bytes: Arc<[u8]> = Arc::from(vec![7u8; 1 << 16]);
+        let s = heap.alloc(HeapObject::String(text.clone())).unwrap();
+        let b = heap.alloc(HeapObject::Bytes(bytes.clone())).unwrap();
+        let pair = heap
+            .alloc(HeapObject::Tuple(smallvec![Value::Heap(s), Value::Heap(b)]))
+            .unwrap();
+
+        let sendable = serialize(Value::Heap(pair), &heap).unwrap();
+        let mut child = Heap::new();
+        let Value::Heap(copy) = deserialize(&sendable, &mut child).unwrap() else {
+            panic!("expected a heap value");
+        };
+        let HeapObject::Tuple(fields) = child.get(copy).unwrap() else {
+            panic!("expected a tuple");
+        };
+        let (Value::Heap(s2), Value::Heap(b2)) = (fields[0], fields[1]) else {
+            panic!("expected heap fields");
+        };
+        assert!(matches!(child.get(s2).unwrap(), HeapObject::String(t) if Arc::ptr_eq(t, &text)));
+        assert!(matches!(child.get(b2).unwrap(), HeapObject::Bytes(t) if Arc::ptr_eq(t, &bytes)));
     }
 }

@@ -25,14 +25,14 @@ pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("regex_match: expected String".into()),
         },
         _ => return Err("regex_match: expected String".into()),
     };
     let pattern = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("regex_match: expected String".into()),
         },
         _ => return Err("regex_match: expected String".into()),
@@ -53,21 +53,21 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
     };
     let s = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("regex_replace: expected String".into()),
         },
         _ => return Err("regex_replace: expected String".into()),
     };
     let pattern = match v1 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("regex_replace: expected String".into()),
         },
         _ => return Err("regex_replace: expected String".into()),
     };
     let replacement = match v2 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.as_str(),
+            HeapObject::String(s) => s.as_ref(),
             _ => return Err("regex_replace: expected String".into()),
         },
         _ => return Err("regex_replace: expected String".into()),
@@ -80,7 +80,7 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
     };
     heap.ensure_can_allocate_bytes(size_of::<HeapObject>().saturating_add(output_len))
         .map_err(|e| format!("regex_replace: {e}"))?;
-    heap_alloc(heap, HeapObject::String(replaced.into_owned()))
+    heap_alloc(heap, HeapObject::String(replaced.into_owned().into()))
 }
 
 #[cfg(test)]

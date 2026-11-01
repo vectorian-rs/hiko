@@ -45,7 +45,7 @@ fn extract_exec_command_and_args(heap: &Heap, arg: Value) -> Result<(String, Vec
 
     let command = match v0 {
         Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
-            HeapObject::String(s) => s.clone(),
+            HeapObject::String(s) => s.to_string(),
             _ => return Err("exec: expected String for command".into()),
         },
         _ => return Err("exec: expected String for command".into()),
@@ -60,7 +60,7 @@ fn extract_exec_command_and_args(heap: &Heap, arg: Value) -> Result<(String, Vec
                 HeapObject::Data { tag, fields } if *tag == TAG_CONS && fields.len() == 2 => {
                     match fields[0] {
                         Value::Heap(sr) => match heap.get(sr).map_err(|e| e.to_string())? {
-                            HeapObject::String(s) => args.push(s.clone()),
+                            HeapObject::String(s) => args.push(s.to_string()),
                             _ => return Err("exec: args must be strings".into()),
                         },
                         _ => return Err("exec: args must be strings".into()),
@@ -208,7 +208,7 @@ impl VM {
             Value::Word(w) => format!("0w{w}"),
             Value::Pid(pid) => format!("<pid {pid}>"),
             Value::Heap(r) => match self.heap.get(*r) {
-                Ok(HeapObject::String(s)) => s.clone(),
+                Ok(HeapObject::String(s)) => s.to_string(),
                 Ok(HeapObject::Tuple(elems)) => {
                     let parts: Vec<String> = elems.iter().map(|e| self.display_value(e)).collect();
                     format!("({})", parts.join(", "))
@@ -414,12 +414,12 @@ impl VM {
         let exit_code = Value::Int(status.code().unwrap_or(-1) as i64);
         let stdout = Value::Heap(
             self.heap
-                .alloc(HeapObject::String(stdout_str))
+                .alloc(HeapObject::String(stdout_str.into()))
                 .map_err(|e| e.to_string())?,
         );
         let stderr = Value::Heap(
             self.heap
-                .alloc(HeapObject::String(stderr_str))
+                .alloc(HeapObject::String(stderr_str.into()))
                 .map_err(|e| e.to_string())?,
         );
 

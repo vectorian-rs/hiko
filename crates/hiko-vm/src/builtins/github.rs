@@ -42,7 +42,7 @@ fn extract_tuple_fields(
 fn field_string(heap: &Heap, val: Value, name: &str, field: &str) -> Result<String, String> {
     match val {
         Value::Heap(r) => match heap.get(r) {
-            Ok(HeapObject::String(s)) => Ok(s.clone()),
+            Ok(HeapObject::String(s)) => Ok(s.to_string()),
             _ => Err(format!("{name}: expected String for {field}")),
         },
         _ => Err(format!("{name}: expected String for {field}")),
@@ -65,8 +65,8 @@ fn repo_to_tuple(
     errmsg: String,
 ) -> Result<Value, String> {
     let ok_val = Value::Bool(ok);
-    let payload_ref = heap_alloc(heap, HeapObject::String(payload))?;
-    let err_ref = heap_alloc(heap, HeapObject::String(errmsg))?;
+    let payload_ref = heap_alloc(heap, HeapObject::String(payload.into()))?;
+    let err_ref = heap_alloc(heap, HeapObject::String(errmsg.into()))?;
     heap_alloc(
         heap,
         HeapObject::Tuple(smallvec![ok_val, payload_ref, err_ref]),

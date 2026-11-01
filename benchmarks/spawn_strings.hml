@@ -1,0 +1,18 @@
+(* Send a 100,000-character string to 200 children and get one back from
+ * each: the cost of strings crossing process boundaries. *)
+fun copies (s, n, acc) = if n = 0 then acc else copies (s, n - 1, s :: acc)
+
+fun repeat (s, n) = string_join (copies (s, n, []), "")
+
+fun spawn_all (text, n, acc) =
+  if n = 0 then acc else spawn_all (text, n - 1, spawn (fn () => text) :: acc)
+
+fun await_all (pids, acc) =
+  case pids of
+      [] => acc
+    | pid :: rest => await_all (rest, acc + string_length (await_process pid))
+
+fun run () =
+  let val text = repeat ("0123456789", 10000) in await_all (spawn_all (text, 200, []), 0) end
+
+val _ = println ("spawn_strings = " ^ int_to_string (run ()))

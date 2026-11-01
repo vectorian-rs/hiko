@@ -9,6 +9,7 @@ use crate::vm::{TAG_CONS, TAG_NIL};
     feature = "builtin-string"
 ))]
 use smallvec::smallvec;
+use std::sync::Arc;
 
 /// Allocate a heap object and wrap it as a Value, converting HeapLimitExceeded to String.
 #[cfg(any(
@@ -118,7 +119,7 @@ pub(crate) fn extract_string_arg(
     args: &[Value],
     heap: &Heap,
     name: &str,
-) -> Result<String, String> {
+) -> Result<Arc<str>, String> {
     match &args[0] {
         Value::Heap(r) => match heap.get(*r).map_err(|e| e.to_string())? {
             HeapObject::String(s) => Ok(s.clone()),
