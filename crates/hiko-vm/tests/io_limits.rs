@@ -222,32 +222,42 @@ fn exec_vm(script: &std::path::Path) -> VMBuilder {
 fn exec_timeout_kills_the_whole_process_group() {
     let dir = temp_dir("exec-timeout");
     let pid_file = dir.join("grandchild.pid");
-    // The script starts a grandchild, records its pid, and waits on it.
-    let script = write_script(
-        &dir,
-        "slow.sh",
-        &format!(
-            "#!/bin/sh\nsleep 60 &\necho $! > {:?}\nwait\n",
-            pid_file.to_string_lossy()
-        ),
+    // The shell starts a grandchild, records its pid, and waits on it. It runs
+    // /bin/sh directly rather than a script written here: macOS checks a new
+    // executable on its first run, which can take longer than the timeout
+    // under load, and the process would then be killed before it started the
+    // grandchild.
+    let command = format!(
+        "sleep 60 & echo $! > '{}'; wait",
+        pid_file.to_string_lossy()
     );
-    let mut vm = exec_vm(&script).exec_timeout_ms(500).build();
+    let mut vm = VMBuilder::new(compile(&format!(
+        "val _ = exec (\"/bin/sh\", [\"-c\", {command:?}])"
+    )))
+    .with_core()
+    .with_exec(hiko_vm::builder::ExecPolicy {
+        allowed: vec!["/bin/sh".to_string()],
+    })
+    .exec_timeout_ms(1000)
+    .build();
 
     let started = Instant::now();
     let err = vm.run().unwrap_err();
     let elapsed = started.elapsed();
 
     assert!(
-        err.message.contains("timed out after 500ms"),
+        err.message.contains("timed out after 1000ms"),
         "{}",
         err.message
     );
+    // Far below the grandchild's 60 seconds: the timeout ended the wait.
     assert!(
-        elapsed < Duration::from_millis(1500),
+        elapsed < Duration::from_secs(10),
         "timeout took {elapsed:?}"
     );
 
-    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    let pid = std::fs::read_to_string(&pid_file)
+        .expect("the shell did not start the grandchild within the timeout");
     let pid = pid.trim();
     // The killed grandchild is reparented and reaped by init; allow a moment.
     let gone_by = Instant::now() + Duration::from_secs(2);

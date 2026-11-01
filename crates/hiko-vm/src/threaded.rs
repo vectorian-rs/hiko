@@ -434,7 +434,10 @@ impl ThreadedRuntime {
         // Monitor: poll I/O completions and check for termination
         let cx = self.ctx();
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // Wakes as soon as the backend reports a completion, so a process
+            // waiting on I/O does not also wait for the next tick.
+            self.io_backend
+                .wait_for_completions(std::time::Duration::from_millis(1));
 
             // Poll I/O backend for completed operations
             let completions = self.io_backend.poll();
@@ -1567,6 +1570,32 @@ mod tests {
         assert_eq!(output, vec!["42\n"]);
     }
 
+    /// Children that capture the same list share one serialization of it
+    /// in the parent; each still gets its own copy.
+    #[test]
+    fn test_threaded_children_capturing_the_same_list() {
+        let program = compile(
+            "fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)\n\
+             fun sum (xs, acc) = case xs of [] => acc | x :: r => sum (r, acc + x)\n\
+             fun run () =\n\
+               let\n\
+                 val xs = range (1000, [])\n\
+                 val ys = range (10, [])\n\
+                 val a = spawn (fn () => sum (xs, 0))\n\
+                 val b = spawn (fn () => sum (xs, 1))\n\
+                 val c = spawn (fn () => sum (ys, 0))\n\
+               in\n\
+                 (await_process a, await_process b, await_process c)\n\
+               end\n\
+             val (a, b, c) = run ()\n\
+             val _ = println (int_to_string a ^ \" \" ^ int_to_string b ^ \" \" ^ int_to_string c)",
+        );
+        let runtime = ThreadedRuntime::new(2);
+        let pid = runtime.spawn_root(program);
+        runtime.run_to_completion().unwrap();
+        assert_eq!(runtime.table.get_output(pid), vec!["500500 500501 55\n"]);
+    }
+
     #[test]
     fn test_threaded_many_processes() {
         let program = compile(
@@ -1919,6 +1948,51 @@ mod tests {
         assert_eq!(output, vec!["rooted\n"]);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_child_process_keeps_parent_fs_root() {
+        // A child uses the parent's filesystem policy and its open directory
+        // capabilities: a path inside the root works, one outside does not.
+        let root = temp_path("child-root-test");
+        let _ = std::fs::create_dir_all(&root);
+        let _ = std::fs::write(root.join("data.txt"), "rooted");
+        let outside = temp_path("child-root-outside.txt");
+        let _ = std::fs::write(&outside, "secret");
+        let run = |source: &str| {
+            let runtime = ThreadedRuntime::new(2);
+            let pid = runtime.new_pid();
+            let mut vm = VM::new(compile(source));
+            vm.enable_output_capture();
+            vm.set_async_io(true);
+            vm.set_fs_root(root.to_string_lossy().to_string());
+            runtime.table.insert(Process::new(pid, vm, None));
+            runtime.scheduler.enqueue(pid);
+            let result = runtime.run_to_completion();
+            let failed = result.is_err()
+                || runtime
+                    .table
+                    .processes
+                    .iter()
+                    .any(|p| matches!(p.status, ProcessStatus::Failed(_)));
+            (runtime.table.get_output(pid), failed)
+        };
+
+        let (output, failed) = run("val child = spawn (fn () => read_file \"data.txt\")\n\
+             val _ = println (await_process child)");
+        assert!(!failed);
+        assert_eq!(output, vec!["rooted\n"]);
+
+        let (output, failed) = run(&format!(
+            "val child = spawn (fn () => read_file \"{}\")\n\
+             val _ = println (await_process child)",
+            outside.to_string_lossy()
+        ));
+        assert!(failed, "reading outside the root must fail in a child");
+        assert!(output.is_empty(), "got {output:?}");
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
     }
 
     /// Local HTTP server that answers every request with `body` after

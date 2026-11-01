@@ -32,7 +32,7 @@ pub enum RunResult {
     /// Contains `(proto_idx, serialized_captures)`.
     Spawn {
         proto_idx: usize,
-        captures: Vec<crate::sendable::SendableValue>,
+        captures: Vec<Arc<crate::sendable::SendableValue>>,
     },
     /// Process requested to await a child result.
     Await(u64),
@@ -57,7 +57,7 @@ pub enum RunResult {
 pub enum RuntimeRequest {
     Spawn {
         proto_idx: usize,
-        captures: Vec<crate::sendable::SendableValue>,
+        captures: Vec<Arc<crate::sendable::SendableValue>>,
     },
     Await(u64),
     AwaitResult(u64),
@@ -111,30 +111,20 @@ impl VM {
 
     /// Create a child VM with the same builtins and capabilities as this VM.
     ///
-    /// This is the expensive part of process creation today. The child VM
-    /// reuses immutable compiled program data via `Arc`, but it rebuilds its
-    /// builtin/global tables and clones capability configuration.
-    ///
     /// Cost model:
-    /// - `O(b)` builtin/global registration where `b = builtins.len()`
-    /// - `O(e + f + h)` capability cloning for exec/fs/http allowlists
+    /// - `O(1)` to share the compiled program, the builtin table and the
+    ///   filesystem policy (with its open directories) through `Arc`
+    /// - `O(e + h)` to clone the exec and HTTP allowlists
     /// - `O(1)` for fresh execution state (`Heap`, stack, frames, handlers)
     /// - `O(1)` to share the parent's top-level snapshot (built by the spawn
-    ///   builtin; see `child_globals`), plus `O(r)` for the `r` top-level
-    ///   bindings that rebind a builtin name
+    ///   builtin; see `child_globals`)
     /// - no Hiko heap objects are allocated here; heap objects appear later
     ///   when captures are deserialized and the closure call is installed
     ///
-    /// The wall-clock cost is therefore dominated by builtin table rebuilds and
-    /// capability cloning, not by compiled-program cloning.
+    /// See `docs/architecture/performance.md` for measured numbers.
     pub fn create_child(&self) -> VM {
         let mut child = Self::from_verified_program(self.get_program(), self.startup_error.clone());
-        child.builtins.reserve(self.builtins.len());
-        child.globals.reserve(self.globals.len());
-        child.global_names.reserve(self.global_names.len());
-        for entry in &self.builtins {
-            child.register_builtin(entry.name.clone(), entry.func);
-        }
+        child.builtins = self.builtins.clone();
         child.inherit_globals(self.spawn_snapshot.clone());
         // `exec` permissions are immutable capability data, so a child can
         // inherit the parent's resolved allowlist directly instead of
@@ -144,8 +134,7 @@ impl VM {
         child.exec_allowed_resolution_errors = self.exec_allowed_resolution_errors.clone();
         child.set_io_limits(self.heap.io_limits());
         child.set_max_message_bytes(self.heap.max_message_bytes());
-        child.set_fs_root(self.heap.fs_root().to_string());
-        child.set_fs_builtin_folders(self.heap.fs_builtin_folders().clone());
+        child.heap.share_fs_policy(&self.heap);
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
         child.set_http_allowed_hosts_by_builtin(self.heap.http_allowed_hosts_by_builtin().clone());
         #[cfg(feature = "builtin-github")]

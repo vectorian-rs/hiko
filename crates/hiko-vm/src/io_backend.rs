@@ -132,6 +132,14 @@ pub trait IoBackend: Send + Sync {
     /// Non-blocking — returns empty vec if nothing is ready.
     fn poll(&self) -> Vec<(IoToken, IoResult)>;
 
+    /// Wait until a completion may be ready, for at most `timeout`. The
+    /// runtime calls this between polls, so a backend that can signal
+    /// completions resumes the waiting process without a polling delay.
+    /// The default sleeps for `timeout`.
+    fn wait_for_completions(&self, timeout: Duration) {
+        std::thread::sleep(timeout);
+    }
+
     /// Cancel an outstanding request. The runtime calls this when the process
     /// waiting on `token` is cancelled or otherwise stops waiting.
     ///
@@ -268,19 +276,39 @@ const IDLE_WORKER_EXIT: Duration = Duration::from_secs(5);
 /// every worker.
 pub struct ThreadPoolIoBackend {
     work: Arc<WorkQueue>,
-    completed: Arc<Mutex<Vec<(IoToken, IoResult)>>>,
+    completed: Arc<Completions>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     timers: Arc<Timers>,
     timer_thread: Option<std::thread::JoinHandle<()>>,
 }
 
-type Completions = Mutex<Vec<(IoToken, IoResult)>>;
+/// Results not yet taken by the runtime, and a signal for each new one.
+#[derive(Default)]
+struct Completions {
+    results: Mutex<Vec<(IoToken, IoResult)>>,
+    ready: std::sync::Condvar,
+}
 
-fn push_completion(completed: &Completions, token: IoToken, result: IoResult) {
-    completed
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((token, result));
+impl Completions {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(IoToken, IoResult)>> {
+        self.results.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn push(&self, token: IoToken, result: IoResult) {
+        self.lock().push((token, result));
+        self.ready.notify_one();
+    }
+
+    fn take(&self) -> Vec<(IoToken, IoResult)> {
+        std::mem::take(&mut *self.lock())
+    }
+
+    fn wait(&self, timeout: Duration) {
+        let results = self.lock();
+        if results.is_empty() {
+            let _ = self.ready.wait_timeout(results, timeout);
+        }
+    }
 }
 
 /// A blocking request waiting for, or running on, a worker.
@@ -443,7 +471,7 @@ impl WorkQueue {
                 timers.cancel(job.token);
                 let (token, owner) = (job.token, job.context.owner);
                 let result = run_job(job);
-                push_completion(completed, token, result);
+                completed.push(token, result);
                 state = self.lock();
                 state.finish(owner);
                 continue;
@@ -609,8 +637,7 @@ impl Timers {
                     state.deadlines.pop();
                     let token = IoToken(raw_token);
                     match state.pending.remove(&token) {
-                        Some(TimerKind::Sleep) => push_completion(
-                            completed,
+                        Some(TimerKind::Sleep) => completed.push(
                             token,
                             IoResult::Ok {
                                 value: SendableValue::Unit,
@@ -619,11 +646,7 @@ impl Timers {
                         ),
                         Some(TimerKind::QueueDeadline) => {
                             if let Some(job) = work.remove_queued(token) {
-                                push_completion(
-                                    completed,
-                                    token,
-                                    queued_timeout_error(&job.request),
-                                );
+                                completed.push(token, queued_timeout_error(&job.request));
                             }
                         }
                         None => {}
@@ -652,7 +675,7 @@ impl ThreadPoolIoBackend {
     pub fn with_max_threads(core_threads: usize, max_threads: usize) -> Self {
         let core_threads = core_threads.max(1);
         let max_threads = max_threads.max(core_threads);
-        let completed = Arc::new(Mutex::new(Vec::new()));
+        let completed = Arc::new(Completions::default());
         let work = Arc::new(WorkQueue::new(core_threads, max_threads));
         let timers = Arc::new(Timers::new());
         let timer_thread = {
@@ -755,8 +778,11 @@ impl IoBackend for ThreadPoolIoBackend {
     }
 
     fn poll(&self) -> Vec<(IoToken, IoResult)> {
-        let mut completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *completed)
+        self.completed.take()
+    }
+
+    fn wait_for_completions(&self, timeout: Duration) {
+        self.completed.wait(timeout);
     }
 
     fn cancel(&self, token: IoToken) {
@@ -925,7 +951,7 @@ fn cap_read_to_string(
 ) -> Result<(String, u64), String> {
     let mut last_err = None;
     for candidate in candidates {
-        match candidate.dir.open(&candidate.relative_path) {
+        match crate::heap::open_for_read(&candidate.dir, &candidate.relative_path) {
             Ok(file) => match read_to_string_limited(file, max_bytes, "file read") {
                 Ok(contents) => return Ok(contents),
                 Err(err) => last_err = Some(std::io::Error::other(err)),
@@ -1534,6 +1560,44 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(backend.timers.lock().pending.contains_key(&IoToken(1)));
+    }
+
+    #[test]
+    fn test_thread_pool_wait_returns_when_a_request_completes() {
+        let backend = ThreadPoolIoBackend::new(1);
+        backend
+            .register(IoToken(1), IoRequest::Sleep(Duration::from_millis(10)))
+            .unwrap();
+        let start = std::time::Instant::now();
+        // Returns on the completion, not at the end of the timeout.
+        while backend.completed.lock().is_empty() {
+            backend.wait_for_completions(Duration::from_secs(30));
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "wait took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(backend.poll()[0].0, IoToken(1));
+    }
+
+    #[test]
+    fn test_thread_pool_wait_returns_at_once_when_a_result_is_ready() {
+        let backend = ThreadPoolIoBackend::new(1);
+        backend.completed.push(
+            IoToken(1),
+            IoResult::Ok {
+                value: SendableValue::Unit,
+                io_bytes: 0,
+            },
+        );
+        let start = std::time::Instant::now();
+        backend.wait_for_completions(Duration::from_secs(30));
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "wait took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

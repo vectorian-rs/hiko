@@ -126,8 +126,9 @@ tokio = { version = "1", features = ["rt", "time"], optional = true }
 cap-std = { version = "4", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-# Kill the process group of a timed-out `exec` child.
-rustix = { version = "1", default-features = false, features = ["process", "std"] }
+# Kill the process group of a timed-out `exec` child, and open files with
+# `O_RESOLVE_BENEATH` on macOS (see `builtins/filesystem.rs`).
+rustix = { version = "1", default-features = false, features = ["fs", "process", "std"] }
 
 [dev-dependencies]
 hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"] }

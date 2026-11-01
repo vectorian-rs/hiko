@@ -161,6 +161,8 @@ struct ScriptOptions {
     policy_name: Option<String>,
     script_path: Option<String>,
     strict: bool,
+    /// Worker threads for the threaded runtime.
+    workers: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +458,7 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
     let mut policy_name = None;
     let mut script_path = None;
     let mut strict = false;
+    let mut workers = 1;
 
     let mut i = 0;
     while i < args.len() {
@@ -465,6 +468,16 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
             i += consumed;
         } else if let Some((value, consumed)) = parse_flag_value(args, "--policy", i, usage) {
             policy_name = Some(value.to_string());
+            i += consumed;
+        } else if let Some((value, consumed)) = parse_flag_value(args, "--workers", i, usage) {
+            workers = match value.parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    eprintln!("--workers expects a positive integer, got '{value}'");
+                    eprintln!("{usage}");
+                    process::exit(1);
+                }
+            };
             i += consumed;
         } else if arg == "--strict" {
             strict = true;
@@ -494,13 +507,14 @@ fn parse_script_args(args: &[String], usage: &str, require_script: bool) -> Scri
         policy_name,
         script_path,
         strict,
+        workers,
     }
 }
 
 fn parse_run_args(args: &[String]) -> ScriptOptions {
     parse_script_args(
         args,
-        "Usage: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [file.hml]",
+        "Usage: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [--workers <n>] [file.hml]",
         false,
     )
 }
@@ -562,7 +576,9 @@ fn resolve_run_target(config: Option<&RunConfig>, script_path: Option<&str>) -> 
     {
         return entry.clone();
     }
-    eprintln!("Usage: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [file.hml]");
+    eprintln!(
+        "Usage: hiko run [--config <hiko.toml>] [--policy <name>] [--strict] [--workers <n>] [file.hml]"
+    );
     process::exit(1);
 }
 
@@ -969,7 +985,7 @@ fn run_file(options: &ScriptOptions) {
         let mut vm = config.build_vm(compiled.program);
         vm.set_output_sink(output_sink);
 
-        let runtime = ThreadedRuntime::new(1);
+        let runtime = ThreadedRuntime::new(options.workers);
         let pid = runtime.spawn_root_vm(vm);
         if let Err(message) = runtime.run_to_completion() {
             compiled.ctx.error(&message, None);
@@ -1246,6 +1262,7 @@ mod tests {
                 policy_name: None,
                 script_path: Some("script.hml".to_string()),
                 strict: false,
+                workers: 1,
             }
         );
     }
@@ -1264,6 +1281,7 @@ mod tests {
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
+                workers: 1,
             }
         );
     }
@@ -1281,6 +1299,7 @@ mod tests {
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
+                workers: 1,
             }
         );
     }
@@ -1299,6 +1318,7 @@ mod tests {
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: true,
+                workers: 1,
             }
         );
     }
@@ -1318,6 +1338,7 @@ mod tests {
                 policy_name: None,
                 script_path: Some("tools/read.hml".to_string()),
                 strict: true,
+                workers: 1,
             }
         );
     }
@@ -1456,6 +1477,7 @@ mod tests {
                 policy_name: Some("docs-writer".to_string()),
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
+                workers: 1,
             }
         );
     }
@@ -1473,6 +1495,7 @@ mod tests {
                 policy_name: Some("docs-writer".to_string()),
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
+                workers: 1,
             }
         );
     }
@@ -1497,6 +1520,7 @@ mod tests {
                 policy_name: Some("docs-writer".to_string()),
                 script_path: Some("tools/read.hml".to_string()),
                 strict: false,
+                workers: 1,
             }
         );
     }

@@ -1,0 +1,51 @@
+# Benchmark policy, used by scripts/bench.sh.
+# No fuel limit, so the interpreter benchmarks measure the interpreter, not
+# the budget. Read-only filesystem access under . for the I/O workloads.
+
+[limits]
+max_heap = 10_000_000
+
+[capabilities.stdio.print]
+enabled = true
+
+[capabilities.stdio.println]
+enabled = true
+
+[capabilities.convert.int_to_string]
+enabled = true
+
+[capabilities.string.string_length]
+enabled = true
+
+[capabilities.math.abs_int]
+enabled = true
+
+[capabilities.bytes.bytes_length]
+enabled = true
+
+[capabilities.hash.blake3]
+enabled = true
+
+[capabilities.time.monotonic_ms]
+enabled = true
+
+[capabilities.testing.assert_eq]
+enabled = true
+
+[capabilities.process.spawn]
+enabled = true
+
+[capabilities.process.await_process]
+enabled = true
+
+[capabilities.filesystem.read_file]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.read_file_bytes]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.walk_dir]
+enabled = true
+folders = ["."]

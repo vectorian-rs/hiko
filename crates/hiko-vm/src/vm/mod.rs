@@ -103,44 +103,9 @@ pub(super) struct ExecAllowedPath {
     ino: u64,
 }
 
-pub struct VM {
-    pub(crate) heap: Heap,
-    pub(crate) stack: Vec<Value>,
-    frames: Vec<CallFrame>,
-    globals: Vec<Value>,
-    global_names: HashMap<String, usize>,
-    /// Globals this VM defined with `SetGlobal`, by slot.
-    defined_globals: HashMap<usize, child_globals::DefinedGlobal>,
-    /// Globals inherited from the parent process, loaded on first use.
-    inherited_globals: Option<Arc<child_globals::GlobalSnapshot>>,
-    /// Snapshot for the next spawned child; cleared when a global is defined.
-    spawn_snapshot: Option<Arc<child_globals::GlobalSnapshot>>,
-    protos: Arc<[FunctionProto]>,
-    main_chunk: Arc<Chunk>,
-    main_n_locals: u16,
-    output: Option<Vec<String>>,
-    builtins: Vec<BuiltinEntry>,
-    handlers: Vec<HandlerFrame>,
-    hidden_handlers: Vec<HiddenHandlers>,
-    string_cache: HashMap<(usize, usize), GcRef>,
-    /// Slice-local opcode budget for the currently active dispatch loop.
-    ///
-    /// This value is intentionally transient. `run_slice` installs it from the
-    /// scheduler's reduction grant, and `create_child` does not copy it into
-    /// child VMs.
-    fuel: Option<u64>,
-    /// Persistent total fuel budget from `VMBuilder::max_fuel` / `set_fuel`.
-    ///
-    /// Unlike `fuel`, this carries across scheduling slices. Child VMs share
-    /// it, so the whole process tree draws from one budget.
-    fuel_budget: Option<Arc<crate::budget::SharedBudget>>,
-    /// This process's place in its tree's live-process count.
-    live_process_slot: Option<crate::budget::BudgetSlot>,
-    /// Live-process and total-spawn budgets for the process tree.
-    process_budgets: crate::budget::ProcessBudgets,
-    exec_allowed: Vec<String>,
-    exec_allowed_paths: Vec<ExecAllowedPath>,
-    exec_allowed_resolution_errors: Vec<String>,
+/// Builtins the VM dispatches specially, by builtin id.
+#[derive(Clone, Copy, Default)]
+struct BuiltinIds {
     exec_builtin_id: Option<u16>,
     print_builtin_id: Option<u16>,
     println_builtin_id: Option<u16>,
@@ -170,6 +135,60 @@ pub struct VM {
     github_issue_view_builtin_id: Option<u16>,
     #[cfg(feature = "builtin-github")]
     github_issue_update_builtin_id: Option<u16>,
+}
+
+/// The builtins a VM can call, with the name each is registered under.
+#[derive(Clone, Default)]
+struct BuiltinTable {
+    entries: Vec<BuiltinEntry>,
+    /// `Value::Builtin(id)` for each entry, so lookups can hand out a
+    /// reference.
+    values: Vec<Value>,
+    /// Builtin id by name; a later registration of a name replaces it.
+    by_name: HashMap<Arc<str>, u16>,
+    ids: BuiltinIds,
+}
+
+pub struct VM {
+    pub(crate) heap: Heap,
+    pub(crate) stack: Vec<Value>,
+    frames: Vec<CallFrame>,
+    globals: Vec<Value>,
+    global_names: HashMap<String, usize>,
+    /// Globals this VM defined with `SetGlobal`, by slot.
+    defined_globals: HashMap<usize, child_globals::DefinedGlobal>,
+    /// Globals inherited from the parent process, loaded on first use.
+    inherited_globals: Option<Arc<child_globals::GlobalSnapshot>>,
+    /// Snapshot for the next spawned child; cleared when a global is defined.
+    spawn_snapshot: Option<Arc<child_globals::GlobalSnapshot>>,
+    protos: Arc<[FunctionProto]>,
+    main_chunk: Arc<Chunk>,
+    main_n_locals: u16,
+    output: Option<Vec<String>>,
+    /// Shared with child processes; only a VM that is being set up
+    /// registers builtins, so the table is never copied after a spawn.
+    builtins: Arc<BuiltinTable>,
+    handlers: Vec<HandlerFrame>,
+    hidden_handlers: Vec<HiddenHandlers>,
+    string_cache: HashMap<(usize, usize), GcRef>,
+    /// Slice-local opcode budget for the currently active dispatch loop.
+    ///
+    /// This value is intentionally transient. `run_slice` installs it from the
+    /// scheduler's reduction grant, and `create_child` does not copy it into
+    /// child VMs.
+    fuel: Option<u64>,
+    /// Persistent total fuel budget from `VMBuilder::max_fuel` / `set_fuel`.
+    ///
+    /// Unlike `fuel`, this carries across scheduling slices. Child VMs share
+    /// it, so the whole process tree draws from one budget.
+    fuel_budget: Option<Arc<crate::budget::SharedBudget>>,
+    /// This process's place in its tree's live-process count.
+    live_process_slot: Option<crate::budget::BudgetSlot>,
+    /// Live-process and total-spawn budgets for the process tree.
+    process_budgets: crate::budget::ProcessBudgets,
+    exec_allowed: Vec<String>,
+    exec_allowed_paths: Vec<ExecAllowedPath>,
+    exec_allowed_resolution_errors: Vec<String>,
     /// When true, I/O builtins suspend via `RuntimeRequest::Io` instead of blocking.
     async_io: bool,
     /// Pending runtime request from a process/runtime builtin.
@@ -286,7 +305,7 @@ impl VM {
             main_n_locals: program.main_n_locals,
             main_chunk: program.main,
             output: None,
-            builtins: Vec::new(),
+            builtins: Arc::default(),
             handlers: Vec::with_capacity(4),
             hidden_handlers: Vec::new(),
             string_cache: HashMap::new(),
@@ -297,35 +316,6 @@ impl VM {
             exec_allowed: Vec::new(),
             exec_allowed_paths: Vec::new(),
             exec_allowed_resolution_errors: Vec::new(),
-            exec_builtin_id: None,
-            print_builtin_id: None,
-            println_builtin_id: None,
-            spawn_builtin_id: None,
-            await_builtin_id: None,
-            await_result_builtin_id: None,
-            cancel_builtin_id: None,
-            wait_any_builtin_id: None,
-            sleep_builtin_id: None,
-            http_get_builtin_id: None,
-            http_builtin_id: None,
-            http_json_builtin_id: None,
-            http_msgpack_builtin_id: None,
-            http_bytes_builtin_id: None,
-            read_file_builtin_id: None,
-            #[cfg(feature = "builtin-aws-config")]
-            aws_config_sso_profile_builtin_id: None,
-            #[cfg(feature = "builtin-aws-config")]
-            aws_config_instance_profile_builtin_id: None,
-            #[cfg(feature = "builtin-aws-s3")]
-            aws_s3_list_buckets_builtin_id: None,
-            #[cfg(feature = "builtin-aws-sqs")]
-            aws_sqs_list_queues_builtin_id: None,
-            #[cfg(feature = "builtin-github")]
-            github_issue_create_builtin_id: None,
-            #[cfg(feature = "builtin-github")]
-            github_issue_view_builtin_id: None,
-            #[cfg(feature = "builtin-github")]
-            github_issue_update_builtin_id: None,
             async_io: false,
             pending_runtime_request: None,
             cancelled: false,
@@ -465,8 +455,9 @@ impl VM {
         self.heap.set_host_resource_limits(limits);
     }
 
-    /// The latest top-level binding of `name`. The compiler stores a binding
-    /// that shadows an earlier one, or a builtin, as `name$1`, `name$2`, ...
+    /// The latest top-level binding of `name`, or the builtin of that name.
+    /// The compiler stores a binding that shadows an earlier one, or a
+    /// builtin, as `name$1`, `name$2`, ...
     pub fn get_global(&self, name: &str) -> Option<&Value> {
         let mut slot = self.global_names.get(name);
         for n in 1.. {
@@ -475,7 +466,14 @@ impl VM {
                 None => break,
             }
         }
-        slot.map(|&slot| &self.globals[slot])
+        match slot {
+            Some(&slot) => Some(&self.globals[slot]),
+            None => self
+                .builtins
+                .by_name
+                .get(name)
+                .map(|&id| &self.builtins.values[id as usize]),
+        }
     }
 
     pub fn get_output(&self) -> &[String] {
@@ -1199,18 +1197,12 @@ mod tests {
 
         vm.register_builtin_owned(name.clone(), builtin_answer);
 
-        let builtin_id = match vm.get_global(&name) {
-            Some(Value::Builtin(id)) => *id as usize,
-            other => panic!("expected builtin global, got {other:?}"),
-        };
-        assert_eq!(vm.builtins[builtin_id].name.as_ref(), name);
+        let builtin_id = vm.builtins.by_name[name.as_str()] as usize;
+        assert_eq!(vm.builtins.entries[builtin_id].name.as_ref(), name);
 
+        // The child shares the parent's table instead of copying it.
         let child = vm.create_child();
-        let child_builtin_id = match child.get_global(&name) {
-            Some(Value::Builtin(id)) => *id as usize,
-            other => panic!("expected builtin global in child, got {other:?}"),
-        };
-        assert_eq!(child.builtins[child_builtin_id].name.as_ref(), name);
+        assert!(Arc::ptr_eq(&vm.builtins, &child.builtins));
     }
 
     #[test]

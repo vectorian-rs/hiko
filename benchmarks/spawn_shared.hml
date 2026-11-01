@@ -1,0 +1,25 @@
+(* Send one 10,000-element list to 200 children, as a capture and as a
+ * top-level binding: the cost of a value shared by many processes. *)
+fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)
+
+val shared = range (10000, [])
+
+fun first xs = case xs of [] => 0 | x :: _ => x
+
+fun spawn_all (n, mk, acc) = if n = 0 then acc else spawn_all (n - 1, mk, spawn (mk ()) :: acc)
+
+fun await_all (pids, acc) =
+  case pids of
+      [] => acc
+    | pid :: rest => await_all (rest, acc + await_process pid)
+
+fun captured () =
+  let val xs = range (10000, []) in await_all (spawn_all (200, fn () => fn () => first xs, []), 0) end
+
+val global = await_all (spawn_all (200, fn () => fn () => first shared, []), 0)
+
+val total = captured () + global
+
+val _ = assert_eq (total, 400, "spawn_shared")
+
+val _ = println ("spawn_shared = " ^ int_to_string total)

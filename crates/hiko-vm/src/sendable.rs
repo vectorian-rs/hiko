@@ -157,6 +157,20 @@ impl SendableValue {
         total
     }
 
+    /// Host memory this value occupies: its nodes plus the payload of its
+    /// strings and bytes. This is what `max_message_bytes` limits.
+    fn footprint(&self) -> usize {
+        let mut total = 0usize;
+        let mut stack = vec![self];
+        while let Some(value) = stack.pop() {
+            total = total
+                .saturating_add(MESSAGE_NODE_BYTES as usize)
+                .saturating_add(value.own_bytes());
+            stack.extend(value.children());
+        }
+        total
+    }
+
     /// Copy a leaf. Strings, bytes and host configs share their `Arc`.
     fn clone_leaf(&self) -> Self {
         match self {
@@ -399,6 +413,28 @@ pub fn serialize(value: Value, heap: &Heap) -> Result<SendableValue, String> {
     Ok(out.pop().expect("serialize produces one value"))
 }
 
+/// Serialize a value for several recipients, such as a spawn capture that
+/// many children share.
+///
+/// The serialized form of a heap value is cached in `heap` (see
+/// [`Heap::remember_sent`]), so sending the same value again costs one
+/// lookup instead of a walk over the value. Returns the value and whether
+/// it was serialized now rather than found in the cache.
+pub fn serialize_shared(
+    value: Value,
+    heap: &mut Heap,
+) -> Result<(Arc<SendableValue>, bool), String> {
+    let Value::Heap(r) = value else {
+        return Ok((Arc::new(serialize_scalar(value)?), true));
+    };
+    if let Some(sent) = heap.sent(r) {
+        return Ok((sent, false));
+    }
+    let sendable = Arc::new(serialize(value, heap)?);
+    heap.remember_sent(r, sendable.clone(), sendable.footprint());
+    Ok((sendable, true))
+}
+
 fn serialize_scalar(value: Value) -> Result<SendableValue, String> {
     match value {
         Value::Int(n) => Ok(SendableValue::Int(n)),
@@ -439,22 +475,26 @@ fn list_items(head: GcRef, heap: &Heap) -> Result<Vec<Value>, String> {
 }
 
 /// Deserialize a SendableValue into a VM Value, allocating into the given heap.
-pub fn deserialize(msg: SendableValue, heap: &mut Heap) -> Result<Value, HeapLimitExceeded> {
-    enum Task {
-        Visit(SendableValue),
+///
+/// `msg` is only read, so one value shared by several recipients (a
+/// snapshot global, a cached spawn capture) is never copied before it is
+/// rebuilt in each recipient's heap.
+pub fn deserialize(msg: &SendableValue, heap: &mut Heap) -> Result<Value, HeapLimitExceeded> {
+    enum Task<'a> {
+        Visit(&'a SendableValue),
         Build(Shape, usize),
     }
     let mut tasks = vec![Task::Visit(msg)];
     let mut out: Vec<Value> = Vec::new();
     while let Some(task) = tasks.pop() {
         match task {
-            Task::Visit(mut value) => match value.shape() {
+            Task::Visit(value) => match value.shape() {
                 Some(shape) => {
-                    let children = value.children_mut().map(std::mem::take).unwrap_or_default();
+                    let children = value.children();
                     tasks.push(Task::Build(shape, children.len()));
-                    tasks.extend(children.into_iter().rev().map(Task::Visit));
+                    tasks.extend(children.iter().rev().map(Task::Visit));
                 }
-                None => out.push(deserialize_leaf(&value, heap)?),
+                None => out.push(deserialize_leaf(value, heap)?),
             },
             Task::Build(Shape::List, count) => {
                 let items = take_last(&mut out, count);
@@ -539,7 +579,7 @@ mod tests {
     fn round_trip(value: Value, heap: &Heap) -> Value {
         let sendable = serialize(value, heap).expect("serialize failed");
         let mut new_heap = Heap::new();
-        deserialize(sendable, &mut new_heap).unwrap()
+        deserialize(&sendable, &mut new_heap).unwrap()
     }
 
     #[test]
@@ -613,7 +653,7 @@ mod tests {
         );
         let sendable = serialize(s, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap).unwrap();
+        let result = deserialize(&sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::String(s)) => assert_eq!(s, "hello world"),
@@ -629,7 +669,7 @@ mod tests {
         let b = Value::Heap(heap.alloc(HeapObject::Bytes(vec![1, 2, 3])).unwrap());
         let sendable = serialize(b, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap).unwrap();
+        let result = deserialize(&sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::Bytes(b)) => assert_eq!(b, &[1, 2, 3]),
@@ -651,7 +691,7 @@ mod tests {
         );
         let sendable = serialize(t, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap).unwrap();
+        let result = deserialize(&sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::Tuple(fields)) => {
@@ -710,7 +750,7 @@ mod tests {
 
         // Deserialize into new heap and verify
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap).unwrap();
+        let result = deserialize(&sendable, &mut new_heap).unwrap();
         // Walk the cons-list
         let mut cur = result;
         let mut values = vec![];
@@ -745,7 +785,7 @@ mod tests {
         );
         let sendable = serialize(data, &heap).unwrap();
         let mut new_heap = Heap::new();
-        let result = deserialize(sendable, &mut new_heap).unwrap();
+        let result = deserialize(&sendable, &mut new_heap).unwrap();
         match result {
             Value::Heap(r) => match new_heap.get(r) {
                 Ok(HeapObject::Data { tag, fields }) => {
@@ -790,7 +830,7 @@ mod tests {
             .unwrap(),
         );
         let mut new_heap = Heap::new();
-        let back = deserialize(serialize(closure, &heap).unwrap(), &mut new_heap).unwrap();
+        let back = deserialize(&serialize(closure, &heap).unwrap(), &mut new_heap).unwrap();
         let Value::Heap(r) = back else {
             panic!("expected heap closure, got {back:?}");
         };
@@ -986,7 +1026,7 @@ mod tests {
             let sendable = serialize(list, &heap).unwrap();
             assert!(matches!(&sendable, SendableValue::List(items) if items.len() == 1_000_000));
             let mut new_heap = Heap::new();
-            deserialize(sendable, &mut new_heap).unwrap();
+            deserialize(&sendable, &mut new_heap).unwrap();
             assert_eq!(new_heap.live_count(), 1_000_001);
         });
     }
@@ -1000,7 +1040,7 @@ mod tests {
             assert_eq!(sendable.estimated_bytes(), 8);
             let copy = sendable.clone();
             let mut new_heap = Heap::new();
-            deserialize(sendable, &mut new_heap).unwrap();
+            deserialize(&sendable, &mut new_heap).unwrap();
             assert_eq!(new_heap.live_count(), MAX_MESSAGE_DEPTH);
             drop(copy);
         });
@@ -1036,5 +1076,84 @@ mod tests {
             }
             other => panic!("expected Tuple, got {other:?}"),
         }
+    }
+
+    fn int_list(heap: &mut Heap, len: i64) -> Value {
+        let mut list = Value::Heap(
+            heap.alloc(HeapObject::Data {
+                tag: TAG_NIL,
+                fields: smallvec![],
+            })
+            .unwrap(),
+        );
+        for i in (0..len).rev() {
+            list = Value::Heap(
+                heap.alloc(HeapObject::Data {
+                    tag: TAG_CONS,
+                    fields: smallvec![Value::Int(i), list],
+                })
+                .unwrap(),
+            );
+        }
+        list
+    }
+
+    #[test]
+    fn test_serialize_shared_reuses_a_value_sent_before() {
+        let mut heap = Heap::new();
+        let list = int_list(&mut heap, 100);
+        let (first, fresh) = serialize_shared(list, &mut heap).unwrap();
+        assert!(fresh);
+        let (second, fresh) = serialize_shared(list, &mut heap).unwrap();
+        assert!(!fresh);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(matches!(&*second, SendableValue::List(items) if items.len() == 100));
+    }
+
+    /// A collection frees slots that new objects then reuse, so a cached
+    /// serialization must not outlive it.
+    #[test]
+    fn test_serialize_shared_does_not_reuse_a_freed_slot() {
+        let mut heap = Heap::new();
+        let old = heap.alloc(HeapObject::String("old".into())).unwrap();
+        serialize_shared(Value::Heap(old), &mut heap).unwrap();
+        heap.collect(std::iter::empty());
+        let new = heap.alloc(HeapObject::String("new".into())).unwrap();
+        assert_eq!(new, old, "the test needs the freed slot to be reused");
+        let (sent, fresh) = serialize_shared(Value::Heap(new), &mut heap).unwrap();
+        assert!(fresh);
+        assert!(matches!(&*sent, SendableValue::String(s) if &**s == "new"));
+    }
+
+    /// A cached value was checked against the limit in force when it was
+    /// cached; lowering the limit must check it again.
+    #[test]
+    fn test_serialize_shared_rechecks_a_lowered_message_limit() {
+        let mut heap = Heap::new();
+        let list = int_list(&mut heap, 1_000);
+        serialize_shared(list, &mut heap).unwrap();
+        heap.set_max_message_bytes(1_024);
+        let err = serialize_shared(list, &mut heap).unwrap_err();
+        assert!(err.contains("max_message_bytes"), "{err}");
+    }
+
+    /// `MakeRecClosures` rewrites a closure's captures after creating it.
+    #[test]
+    fn test_serialize_shared_sees_rewritten_closure_captures() {
+        let mut heap = Heap::new();
+        let closure = heap
+            .alloc(HeapObject::Closure {
+                proto_idx: 0,
+                captures: Arc::from([Value::Int(1)]),
+            })
+            .unwrap();
+        serialize_shared(Value::Heap(closure), &mut heap).unwrap();
+        heap.set_closure_captures(closure, Arc::from([Value::Int(2)]))
+            .unwrap();
+        let (sent, _) = serialize_shared(Value::Heap(closure), &mut heap).unwrap();
+        assert!(matches!(
+            &*sent,
+            SendableValue::Closure { captures, .. } if matches!(captures[..], [SendableValue::Int(2)])
+        ));
     }
 }

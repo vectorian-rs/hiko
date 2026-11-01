@@ -63,7 +63,7 @@ fn cap_read_limited(
         .map_err(|e| format!("{builtin}: {e}"))?;
     let mut last_err = None;
     for candidate in candidates {
-        match candidate.dir.open(&candidate.relative_path) {
+        match crate::heap::open_for_read(&candidate.dir, &candidate.relative_path) {
             Ok(file) => match crate::io_backend::read_to_bytes_limited(file, max_bytes, builtin) {
                 Ok(value) => return Ok(value),
                 Err(err) => last_err = Some(std::io::Error::other(err)),
@@ -818,5 +818,70 @@ mod tests {
                 .unwrap_err()
                 .contains("result exceeds max_io_bytes (3 bytes)")
         );
+    }
+
+    /// The `O_RESOLVE_BENEATH` fast path must allow and refuse exactly what
+    /// cap-std does: symlinks and `..` that stay inside are followed, and
+    /// anything that leaves the directory fails.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_resolve_beneath_matches_cap_std() {
+        use std::os::unix::fs::symlink;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("hiko-beneath-{nanos}"));
+        let root = base.join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(base.join("outside.txt"), "out").unwrap();
+        std::fs::write(root.join("inside.txt"), "in").unwrap();
+        symlink("inside.txt", root.join("link_in")).unwrap();
+        symlink("sub/../inside.txt", root.join("link_in_dotdot")).unwrap();
+        symlink("..", root.join("sub/up")).unwrap();
+        symlink("../outside.txt", root.join("link_out")).unwrap();
+        symlink(base.join("outside.txt"), root.join("link_abs_out")).unwrap();
+        symlink(root.join("inside.txt"), root.join("link_abs_in")).unwrap();
+        symlink("../..", root.join("sub/upup")).unwrap();
+        let dir = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        assert!(
+            crate::heap::beneath::supported(&dir),
+            "macOS 15 enforces O_RESOLVE_BENEATH"
+        );
+
+        let cases = [
+            ("inside.txt", true),
+            ("link_in", true),
+            ("link_in_dotdot", true),
+            ("sub/../inside.txt", true),
+            ("sub/up/inside.txt", true),
+            ("link_out", false),
+            ("link_abs_out", false),
+            ("link_abs_in", false),
+            ("../outside.txt", false),
+            ("sub/../../outside.txt", false),
+            ("sub/upup/outside.txt", false),
+            ("/etc/hosts", false),
+        ];
+        for (path, allowed) in cases {
+            let path = std::path::Path::new(path);
+            assert_eq!(
+                crate::heap::beneath::open_read(&dir, path).is_some(),
+                allowed,
+                "O_RESOLVE_BENEATH, {path:?}"
+            );
+            assert_eq!(dir.open(path).is_ok(), allowed, "cap-std, {path:?}");
+            assert_eq!(
+                crate::heap::open_for_read(&dir, path).is_ok(),
+                allowed,
+                "{path:?}"
+            );
+        }
+        // Both open a directory, and reading it fails.
+        let sub = std::path::Path::new("sub");
+        assert!(dir.open(sub).is_ok());
+        let mut file = crate::heap::beneath::open_read(&dir, sub).unwrap();
+        assert!(std::io::Read::read_to_end(&mut file, &mut Vec::new()).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
