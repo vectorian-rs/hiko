@@ -11,6 +11,9 @@
 //! global. A global that cannot be sent (for example an `Rng` value) is
 //! recorded with the reason, which the child reports if it reads that global.
 //!
+//! The parent and the child run the same compiled program, so the snapshot is
+//! keyed by global slot.
+//!
 //! Builtins are not globals of the program: a VM resolves a builtin name on
 //! first use and caches it in its own global table, after the inherited
 //! globals, so a program binding of the same name wins as in the parent.
@@ -22,28 +25,22 @@ type SnapshotEntry = Arc<Result<SendableValue, String>>;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct GlobalSnapshot {
-    values: HashMap<Arc<str>, SnapshotEntry>,
+    values: HashMap<usize, SnapshotEntry>,
 }
 
 /// A global defined by this VM's own `SetGlobal`, with its cached serialized
 /// form.
 #[derive(Debug)]
 pub(super) struct DefinedGlobal {
-    name: Arc<str>,
     sendable: Option<SnapshotEntry>,
 }
 
 impl VM {
     /// Record that `SetGlobal` wrote `slot`, invalidating its cached form.
-    pub(super) fn note_global_defined(&mut self, slot: usize, name: &str) {
+    pub(super) fn note_global_defined(&mut self, slot: usize) {
         self.spawn_snapshot = None;
-        self.defined_globals.insert(
-            slot,
-            DefinedGlobal {
-                name: Arc::from(name),
-                sendable: None,
-            },
-        );
+        self.defined_globals
+            .insert(slot, DefinedGlobal { sendable: None });
     }
 
     /// The snapshot a child spawned now inherits: everything this VM
@@ -65,7 +62,11 @@ impl VM {
             let entry = match &defined.sendable {
                 Some(entry) => entry.clone(),
                 None => {
-                    let result = serialize(self.globals[slot], &self.heap);
+                    // A defined global always holds a value.
+                    let Some(value) = self.globals[slot] else {
+                        continue;
+                    };
+                    let result = serialize(value, &self.heap);
                     if let Ok(sendable) = &result {
                         self.heap
                             .charge_host_work(crate::sendable::host_work_for_sendable(sendable))
@@ -78,7 +79,7 @@ impl VM {
                     entry
                 }
             };
-            snapshot.values.insert(defined.name.clone(), entry);
+            snapshot.values.insert(slot, entry);
         }
         self.spawn_snapshot = Some(Arc::new(snapshot));
         Ok(())
@@ -90,24 +91,25 @@ impl VM {
     }
 
     /// Resolve a global this VM has not used yet: an inherited global, else
-    /// a builtin. Cache it in the VM's global table and return its slot.
-    pub(super) fn load_global(&mut self, name: &str) -> Result<usize, RuntimeError> {
+    /// a builtin. Cache it in the VM's global table and return its value.
+    pub(super) fn load_global(&mut self, slot: usize) -> Result<Value, RuntimeError> {
+        let name = self.global_names[slot].clone();
         let inherited = self
             .inherited_globals
             .as_ref()
-            .and_then(|snapshot| snapshot.values.get(name))
+            .and_then(|snapshot| snapshot.values.get(&slot))
             .cloned();
         let Some(entry) = inherited else {
             let id = *self
                 .builtins
                 .by_name
-                .get(name)
+                .get(&name)
                 .ok_or_else(|| RuntimeError {
                     message: format!("undefined global: {name}"),
                 })?;
-            let slot = self.global_slot(name.to_string());
-            self.globals[slot] = Value::Builtin(id);
-            return Ok(slot);
+            let value = Value::Builtin(id);
+            *self.global_mut(slot) = Some(value);
+            return Ok(value);
         };
         let sendable = entry.as_ref().as_ref().map_err(|reason| RuntimeError {
             message: format!("top-level `{name}` cannot be used in a child process: {reason}"),
@@ -125,8 +127,7 @@ impl VM {
         let value = deserialize(sendable, &mut self.heap).map_err(|e| RuntimeError {
             message: e.to_string(),
         })?;
-        let slot = self.global_slot(name.to_string());
-        self.globals[slot] = value;
-        Ok(slot)
+        *self.global_mut(slot) = Some(value);
+        Ok(value)
     }
 }

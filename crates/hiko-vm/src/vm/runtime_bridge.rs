@@ -188,6 +188,7 @@ impl VM {
             main_n_locals: self.main_n_locals,
             functions: self.protos.clone(),
             effects: self.effect_metadata.clone(),
+            globals: self.global_names.clone(),
         }
     }
 

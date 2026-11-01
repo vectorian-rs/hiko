@@ -687,6 +687,9 @@ pub struct Compiler {
     /// (`x$1`, `x$2`, ...), so code compiled earlier keeps its binding.
     /// `$` cannot appear in a source identifier.
     global_bindings: HashMap<String, String>,
+    /// VM global name -> slot, and the names in slot order.
+    global_slots: HashMap<String, u16>,
+    global_names: Vec<Arc<str>>,
     /// Shared type inference context (imports add to the same environment).
     infer_ctx: InferCtx,
     /// String interner for resolving symbols from the AST.
@@ -764,6 +767,8 @@ impl Compiler {
             loader_options,
             global_protos: HashMap::new(),
             global_bindings: HashMap::new(),
+            global_slots: HashMap::new(),
+            global_names: Vec::new(),
             infer_ctx: InferCtx::new(),
             interner,
         };
@@ -795,6 +800,7 @@ impl Compiler {
                         .map(|(name, tag)| crate::chunk::EffectMeta { name, tag })
                         .collect::<Vec<_>>(),
                 ),
+                globals: Arc::from(c.global_names),
             },
             warnings,
         ))
@@ -991,10 +997,9 @@ impl Compiler {
             self.emit(Op::GetUpvalue);
             self.emit_u16(idx);
         } else {
-            let global = self.global_name(name).to_string();
-            let c = self.add_string_constant(&global)?;
+            let slot = self.global_slot(name)?;
             self.emit(Op::GetGlobal);
-            self.emit_u16(c);
+            self.emit_u16(slot);
         }
         Ok(())
     }
@@ -1034,11 +1039,23 @@ impl Compiler {
     fn emit_set_declared_global(&mut self, name: &str) -> Result<(), CompileError> {
         // The global may no longer hold the function recorded for direct calls.
         self.global_protos.remove(name);
-        let global = self.global_name(name).to_string();
-        let c = self.add_string_constant(&global)?;
+        let slot = self.global_slot(name)?;
         self.emit(Op::SetGlobal);
-        self.emit_u16(c);
+        self.emit_u16(slot);
         Ok(())
+    }
+
+    /// Slot of the global that `name` refers to here, assigned on first use.
+    fn global_slot(&mut self, name: &str) -> Result<u16, CompileError> {
+        let global = self.global_name(name);
+        if let Some(&slot) = self.global_slots.get(global) {
+            return Ok(slot);
+        }
+        let slot = checked_u16(self.global_names.len(), "globals")?;
+        let global = global.to_string();
+        self.global_names.push(Arc::from(global.as_str()));
+        self.global_slots.insert(global, slot);
+        Ok(slot)
     }
 
     /// Proto index for a `CallDirect` to `name`: only when `name` resolves to
@@ -1124,20 +1141,11 @@ impl Compiler {
         Ok(self.add_local("_tmp".to_string()))
     }
 
-    /// Emit tag check: GetLocal slot, GetTag, Const tag, Eq, JumpIfFalse → fail.
-    fn emit_tag_check(
-        &mut self,
-        slot: u16,
-        tag: i64,
-        fail_jumps: &mut Vec<(usize, usize)>,
-    ) -> Result<(), CompileError> {
+    /// Emit tag check: GetLocal slot, JumpIfNotTag tag → fail.
+    fn emit_tag_check(&mut self, slot: u16, tag: u16, fail_jumps: &mut Vec<(usize, usize)>) {
         self.emit_get_local(slot);
-        self.emit(Op::GetTag);
-        self.emit_constant(Constant::Int(tag))?;
-        self.emit(Op::Eq);
-        let jmp = self.emit_jump(Op::JumpIfFalse);
+        let jmp = self.chunk().emit_tag_jump(tag);
         fail_jumps.push((jmp, self.ctx().locals.len()));
-        Ok(())
     }
 
     /// Emit scalar comparison: GetLocal slot, push value, eq_op, JumpIfFalse → fail.
@@ -2134,7 +2142,7 @@ impl Compiler {
                     .constructor_tags
                     .get(&name)
                     .ok_or_else(|| CompileError::codegen(format!("unknown constructor: {name}")))?;
-                self.emit_tag_check(slot, tag as i64, fail_jumps)?;
+                self.emit_tag_check(slot, tag, fail_jumps);
                 if let Some(sub_pat) = payload {
                     // Need to test sub-pattern against field 0
                     // Push temp to get a slot, then pop after testing
@@ -2149,7 +2157,7 @@ impl Compiler {
             }
 
             PatKind::Cons(hd, tl) => {
-                self.emit_tag_check(slot, 1, fail_jumps)?; // Cons = tag 1
+                self.emit_tag_check(slot, 1, fail_jumps); // Cons = tag 1
                 self.emit_field_extract_test(slot, 0, hd, fail_jumps)?;
                 self.emit_field_extract_test(slot, 1, tl, fail_jumps)?;
             }
@@ -2159,7 +2167,7 @@ impl Compiler {
                     pats.is_empty(),
                     "non-empty list pattern should be desugared to Cons"
                 );
-                self.emit_tag_check(slot, 0, fail_jumps)?; // Nil = tag 0
+                self.emit_tag_check(slot, 0, fail_jumps); // Nil = tag 0
             }
 
             PatKind::As(_, sub_pat) => {
@@ -2996,9 +3004,11 @@ mod tests {
     fn compile_deduplicates_constants_per_chunk() {
         let program = parse_program("val x = 1\nval y = x + x + 1\nval s = \"x\"\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        // Int 1, and the strings "x", "y", "s" (the literal "x" shares the
-        // entry used for the global name `x`).
-        assert_eq!(compiled.main.constants.len(), 4);
+        // Int 1 and the string "x". Global names are in the global table,
+        // not the constant pool.
+        assert_eq!(compiled.main.constants.len(), 2);
+        let globals: Vec<&str> = compiled.globals.iter().map(|g| &**g).collect();
+        assert_eq!(globals, ["x", "y", "s"]);
     }
 
     #[test]
@@ -3012,6 +3022,28 @@ mod tests {
             .expect("function proto");
         assert!(!proto.chunk.code.contains(&(Op::Eq as u8)));
         assert!(proto.chunk.code.contains(&(Op::Not as u8)));
+    }
+
+    #[test]
+    fn compile_constructor_patterns_test_tags_with_one_jump() {
+        let program = parse_program(
+            "datatype t = A | B of int\n\
+             fun f x = case x of A => 0 | B n => n\n\
+             fun len xs = case xs of [] => 0 | _ :: rest => 1 + len rest\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        for name in ["f", "len"] {
+            let proto = compiled
+                .functions
+                .iter()
+                .find(|proto| proto.name.as_deref() == Some(name))
+                .expect("function proto");
+            assert!(
+                proto.chunk.code.contains(&(Op::JumpIfNotTag as u8)),
+                "{name}"
+            );
+            assert!(!proto.chunk.code.contains(&(Op::Eq as u8)), "{name}");
+        }
     }
 
     #[test]

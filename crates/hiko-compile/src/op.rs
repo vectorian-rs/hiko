@@ -77,7 +77,6 @@ pub enum Op {
     GetField = 42,
 
     MakeData = 43,
-    GetTag = 44,
 
     Jump = 45,
     JumpIfFalse = 46,
@@ -118,6 +117,11 @@ pub enum Op {
     /// u16 index`, where `source` is one of the `REC_CAPTURE_*` constants.
     /// Pushes the closures in group order.
     MakeRecClosures = 71,
+
+    /// Pops a data value and jumps unless its constructor tag is `tag`: the
+    /// test at the head of a constructor pattern. Encoding: `u16 tag`, then
+    /// an `i16` offset relative to the end of the instruction.
+    JumpIfNotTag = 72,
 }
 
 impl TryFrom<u8> for Op {
@@ -169,7 +173,6 @@ impl TryFrom<u8> for Op {
             41 => Ok(Op::MakeTuple),
             42 => Ok(Op::GetField),
             43 => Ok(Op::MakeData),
-            44 => Ok(Op::GetTag),
             45 => Ok(Op::Jump),
             46 => Ok(Op::JumpIfFalse),
             47 => Ok(Op::MakeClosure),
@@ -196,6 +199,7 @@ impl TryFrom<u8> for Op {
             69 => Ok(Op::GetField1),
             70 => Ok(Op::MakeCons),
             71 => Ok(Op::MakeRecClosures),
+            72 => Ok(Op::JumpIfNotTag),
             _ => Err(b),
         }
     }

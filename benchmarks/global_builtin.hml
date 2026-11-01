@@ -1,0 +1,9 @@
+(* A loop that calls a builtin through a global 3,000,000 times: the cost of
+ * GetGlobal on a hot path. *)
+fun loop (n, acc) = if n = 0 then acc else loop (n - 1, acc + abs_int n)
+
+val total = loop (3000000, 0)
+
+val _ = assert_eq (total, 4500001500000, "global_builtin")
+
+val _ = println ("global_builtin = " ^ int_to_string total)

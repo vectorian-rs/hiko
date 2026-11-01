@@ -10,15 +10,14 @@ impl VM {
         }
     }
 
-    pub(super) fn global_slot(&mut self, name: String) -> usize {
-        if let Some(&slot) = self.global_names.get(&name) {
-            slot
-        } else {
-            let slot = self.globals.len();
-            self.globals.push(Value::Unit);
-            self.global_names.insert(name, slot);
-            slot
+    /// The value cell of global `slot`, growing the table on first use.
+    /// The verifier checked that `slot` is in the program's global table.
+    pub(super) fn global_mut(&mut self, slot: usize) -> &mut Option<Value> {
+        if self.globals.len() <= slot {
+            self.globals
+                .resize(self.global_names.len().max(slot + 1), None);
         }
+        &mut self.globals[slot]
     }
 
     /// Register a single builtin function by name.
@@ -67,10 +66,10 @@ impl VM {
         table.by_name.insert(name.clone(), idx);
         // A global already resolved to an earlier builtin of this name now
         // refers to the new one.
-        if let Some(&slot) = self.global_names.get(name.as_ref())
-            && matches!(self.globals[slot], Value::Builtin(_))
+        if let Some(slot) = self.global_names.iter().position(|g| *g == name)
+            && let Some(Some(global @ Value::Builtin(_))) = self.globals.get_mut(slot)
         {
-            self.globals[slot] = Value::Builtin(idx);
+            *global = Value::Builtin(idx);
         }
     }
 

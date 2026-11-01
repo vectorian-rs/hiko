@@ -49,6 +49,9 @@ pub struct CompiledProgram {
     pub functions: Arc<[FunctionProto]>,
     /// Effect name → tag mapping for runtime-handled effect resolution.
     pub effects: Arc<[EffectMeta]>,
+    /// VM name of each global slot. `GetGlobal` and `SetGlobal` take a slot;
+    /// a name that the program never binds is a builtin.
+    pub globals: Arc<[Arc<str>]>,
 }
 
 impl Chunk {
@@ -99,6 +102,15 @@ impl Chunk {
     /// Emit a jump instruction, return the offset to patch later.
     pub fn emit_jump(&mut self, op: Op) -> usize {
         self.emit_op(op);
+        let pos = self.code.len();
+        self.emit_i16(0);
+        pos
+    }
+
+    /// Emit `JumpIfNotTag tag` with a placeholder offset; patch it like a jump.
+    pub fn emit_tag_jump(&mut self, tag: u16) -> usize {
+        self.emit_op(Op::JumpIfNotTag);
+        self.emit_u16(tag);
         let pos = self.code.len();
         self.emit_i16(0);
         pos

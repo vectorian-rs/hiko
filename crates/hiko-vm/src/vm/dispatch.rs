@@ -131,25 +131,18 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::GetGlobal => {
-                    let idx = self.read_u16()? as usize;
-                    let name = self.read_const_string(proto_idx, idx)?;
-                    let slot = match self.global_names.get(name) {
-                        Some(&slot) => slot,
-                        None => {
-                            let name = name.to_string();
-                            self.load_global(&name)?
-                        }
+                    let slot = self.read_u16()? as usize;
+                    let val = match self.globals.get(slot) {
+                        Some(&Some(val)) => val,
+                        _ => self.load_global(slot)?,
                     };
-                    let val = self.globals[slot];
                     self.push(val)?;
                 }
                 Op::SetGlobal => {
-                    let idx = self.read_u16()? as usize;
-                    let name = self.read_const_string(proto_idx, idx)?.to_string();
+                    let slot = self.read_u16()? as usize;
                     let val = self.pop()?;
-                    let slot = self.global_slot(name.clone());
-                    self.globals[slot] = val;
-                    self.note_global_defined(slot, &name);
+                    *self.global_mut(slot) = Some(val);
+                    self.note_global_defined(slot);
                 }
 
                 Op::Pop => {
@@ -280,30 +273,33 @@ impl VM {
                     let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
                     self.push(val)?;
                 }
-                Op::GetTag => {
-                    let val = self.pop()?;
-                    match val {
-                        Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Data { tag, .. } => self.push(Value::Int(*tag as i64))?,
-                            _ => {
-                                return Err(RuntimeError {
-                                    message: "GetTag: expected data value".into(),
-                                });
-                            }
-                        },
-                        _ => {
-                            return Err(RuntimeError {
-                                message: "GetTag: expected data value".into(),
-                            });
-                        }
-                    }
-                }
-
                 Op::Jump => {
                     let offset = self.read_i16()?;
                     let ip = self.frames[fi].ip;
                     let target = self.checked_relative_ip(proto_idx, ip, offset, "Jump")?;
                     self.frames[fi].ip = target;
+                }
+                Op::JumpIfNotTag => {
+                    let tag = self.read_u16()?;
+                    let offset = self.read_i16()?;
+                    let actual = match self.pop()? {
+                        Value::Heap(r) => match self.heap_get(r)? {
+                            HeapObject::Data { tag, .. } => Some(*tag),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let Some(actual) = actual else {
+                        return Err(RuntimeError {
+                            message: "JumpIfNotTag: expected data value".into(),
+                        });
+                    };
+                    if actual != tag {
+                        let ip = self.frames[fi].ip;
+                        let target =
+                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfNotTag")?;
+                        self.frames[fi].ip = target;
+                    }
                 }
                 Op::JumpIfFalse => {
                     let offset = self.read_i16()?;

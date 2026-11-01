@@ -50,9 +50,10 @@ The verifier is primarily a structural bytecode verifier. It currently checks:
 
 - opcode bytes decode to valid `Op` variants,
 - operands are not truncated,
-- constant-pool index bounds for `Const`, `GetGlobal`, `SetGlobal`, and
-  `Panic`,
-- string-constant requirements for global/string-constant operations,
+- constant-pool index bounds for `Const` and `Panic`,
+- string-constant requirement for `Panic`,
+- global slot bounds for `GetGlobal` and `SetGlobal` (the program's global
+  table),
 - function-prototype index bounds for `MakeClosure`, `CallDirect`, and
   `TailCallDirect`,
 - `MakeClosure` capture count matches the target function prototype,

@@ -60,6 +60,7 @@ pub fn verify_program(program: &CompiledProgram) -> Result<(), VerificationError
         None,
         &program.functions,
         &effect_tags,
+        program.globals.len(),
     )
     .map_err(|err| VerificationError::new(format!("main chunk: {err}")))?;
 
@@ -70,6 +71,7 @@ pub fn verify_program(program: &CompiledProgram) -> Result<(), VerificationError
             Some(proto),
             &program.functions,
             &effect_tags,
+            program.globals.len(),
         )
         .map_err(|err| {
             let name = proto
@@ -90,8 +92,9 @@ fn verify_chunk(
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
     effect_tags: &BTreeSet<u16>,
+    n_globals: usize,
 ) -> Result<(), String> {
-    let decoded = decode_chunk(chunk, n_locals, proto, functions, effect_tags)?;
+    let decoded = decode_chunk(chunk, n_locals, proto, functions, effect_tags, n_globals)?;
     let initial_depth = proto.map_or(0usize, |p| p.arity as usize);
     verify_stack_effects(&decoded, initial_depth)?;
     Ok(())
@@ -103,6 +106,7 @@ fn decode_chunk(
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
     effect_tags: &BTreeSet<u16>,
+    n_globals: usize,
 ) -> Result<Vec<DecodedInst>, String> {
     let mut decoded = Vec::with_capacity(chunk.code.len() / 2);
     let mut starts = BTreeSet::new();
@@ -121,6 +125,7 @@ fn decode_chunk(
             proto,
             functions,
             effect_tags,
+            n_globals,
             start,
             op,
             &mut ip,
@@ -148,6 +153,7 @@ fn decode_instruction(
     proto: Option<&FunctionProto>,
     functions: &[FunctionProto],
     effect_tags: &BTreeSet<u16>,
+    n_globals: usize,
     start: usize,
     op: Op,
     ip: &mut usize,
@@ -290,8 +296,28 @@ fn decode_instruction(
                 delta: 1,
             }
         }
-        Op::GetGlobal | Op::SetGlobal | Op::Panic => {
-            let idx = read_u16(chunk, ip, "global/string constant")? as usize;
+        Op::GetGlobal | Op::SetGlobal => {
+            let slot = read_u16(chunk, ip, "global slot")? as usize;
+            if slot >= n_globals {
+                return Err(format!(
+                    "{op:?} at offset {start} uses global slot {slot}, but the program has {n_globals} global(s)"
+                ));
+            }
+            successors.push(*ip);
+            if op == Op::GetGlobal {
+                StackRule::Exact {
+                    min_depth: 0,
+                    delta: 1,
+                }
+            } else {
+                StackRule::Exact {
+                    min_depth: 1,
+                    delta: -1,
+                }
+            }
+        }
+        Op::Panic => {
+            let idx = read_u16(chunk, ip, "string constant")? as usize;
             match chunk.constants.get(idx) {
                 Some(Constant::String(_)) => {}
                 Some(_) => {
@@ -307,18 +333,7 @@ fn decode_instruction(
                 }
             }
             successors.push(*ip);
-            match op {
-                Op::GetGlobal => StackRule::Exact {
-                    min_depth: 0,
-                    delta: 1,
-                },
-                Op::SetGlobal => StackRule::Exact {
-                    min_depth: 1,
-                    delta: -1,
-                },
-                Op::Panic => StackRule::Terminal { min_depth: 0 },
-                _ => unreachable!(),
-            }
+            StackRule::Terminal { min_depth: 0 }
         }
         Op::Pop => {
             successors.push(*ip);
@@ -362,13 +377,7 @@ fn decode_instruction(
                 delta: -1,
             }
         }
-        Op::Neg
-        | Op::NegFloat
-        | Op::Not
-        | Op::GetField
-        | Op::GetField0
-        | Op::GetField1
-        | Op::GetTag => {
+        Op::Neg | Op::NegFloat | Op::Not | Op::GetField | Op::GetField0 | Op::GetField1 => {
             if matches!(op, Op::GetField) {
                 let idx = read_u8(chunk, ip, "GetField")? as usize;
                 let _ = idx;
@@ -410,6 +419,17 @@ fn decode_instruction(
             StackRule::Exact {
                 min_depth: 0,
                 delta: 0,
+            }
+        }
+        Op::JumpIfNotTag => {
+            read_u16(chunk, ip, "JumpIfNotTag")?;
+            let offset = read_i16(chunk, ip, "JumpIfNotTag")?;
+            let target = read_relative_target(*ip, offset, "JumpIfNotTag")?;
+            successors.push(target);
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: 1,
+                delta: -1,
             }
         }
         Op::JumpIfFalse => {
@@ -733,6 +753,7 @@ mod tests {
             main_n_locals,
             functions: Arc::from([]),
             effects: Arc::from(effects),
+            globals: Arc::from([]),
         }
     }
 
@@ -775,16 +796,121 @@ mod tests {
     fn rejects_string_constant_type_mismatch() {
         let program = CompiledProgram {
             main: Arc::new(Chunk {
-                code: vec![Op::GetGlobal as u8, 0, 0, Op::Halt as u8],
+                code: vec![Op::Panic as u8, 0, 0],
                 constants: vec![Constant::Int(1)],
                 spans: Vec::new(),
             }),
             main_n_locals: 0,
             functions: Arc::from([]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("expects a string constant"));
+    }
+
+    fn global_program(code: Vec<u8>, globals: &[&str]) -> CompiledProgram {
+        CompiledProgram {
+            main: Arc::new(Chunk {
+                code,
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+            globals: globals.iter().map(|&g| Arc::from(g)).collect(),
+        }
+    }
+
+    #[test]
+    fn accepts_global_slots_in_the_table() {
+        let code = vec![
+            Op::GetGlobal as u8,
+            1,
+            0,
+            Op::SetGlobal as u8,
+            0,
+            0,
+            Op::Halt as u8,
+        ];
+        verify_program(&global_program(code, &["x", "y"])).expect("slots 0 and 1 exist");
+    }
+
+    #[test]
+    fn rejects_global_slot_outside_the_table() {
+        for op in [Op::GetGlobal, Op::SetGlobal] {
+            let mut code = vec![Op::Unit as u8, op as u8, 2, 0];
+            if op == Op::GetGlobal {
+                code.push(Op::Pop as u8);
+            }
+            code.extend([Op::Unit as u8, Op::Halt as u8]);
+            let err = verify_program(&global_program(code, &["x", "y"]))
+                .expect_err("slot 2 is out of range");
+            assert!(
+                err.message()
+                    .contains("uses global slot 2, but the program has 2 global(s)"),
+                "{op:?}: {}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_jump_if_not_tag_with_both_successors() {
+        // Unit; JumpIfNotTag 1 +1; Unit; Halt. Both paths reach Halt with
+        // the same depth only if the fall-through pushes one value, so
+        // this checks the pop and both successors.
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::JumpIfNotTag as u8,
+            1,
+            0,
+            0,
+            0,
+            Op::Unit as u8,
+            Op::Pop as u8,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ]);
+        verify_program(&program).expect("JumpIfNotTag should verify");
+    }
+
+    #[test]
+    fn rejects_jump_if_not_tag_on_empty_stack() {
+        let program = empty_program(vec![
+            Op::JumpIfNotTag as u8,
+            1,
+            0,
+            0,
+            0,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("nothing to pop");
+        assert!(err.message().contains("JumpIfNotTag"), "{}", err.message());
+    }
+
+    #[test]
+    fn rejects_jump_if_not_tag_into_an_operand() {
+        let program = empty_program(vec![
+            Op::Unit as u8,
+            Op::JumpIfNotTag as u8,
+            1,
+            0,
+            1,
+            0,
+            Op::Jump as u8,
+            0,
+            0,
+            Op::Halt as u8,
+        ]);
+        let err = verify_program(&program).expect_err("target is inside Jump's operand");
+        assert!(
+            err.message().contains("instruction boundary"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]
@@ -863,6 +989,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([function]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("GetLocal"));
@@ -886,6 +1013,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([function]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("SetLocal"));
@@ -910,6 +1038,7 @@ mod tests {
             main_n_locals: 0,
             functions: Arc::from([captured, maker]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         };
         let err = verify_program(&program).expect_err("program should fail verification");
         assert!(err.message().contains("MakeClosure"));
@@ -928,6 +1057,7 @@ mod tests {
             main_n_locals: 2,
             functions: Arc::from([member]),
             effects: Arc::from([]),
+            globals: Arc::from([]),
         }
     }
 

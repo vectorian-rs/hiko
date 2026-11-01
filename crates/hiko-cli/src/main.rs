@@ -13,7 +13,7 @@ use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use hiko_builtin_meta::{BuiltinSurface, builtin_meta, core_builtin_names};
 #[cfg(feature = "cli-hash")]
 use hiko_common::blake3_hex;
-use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
+use hiko_compile::chunk::{Chunk, CompiledProgram};
 use hiko_compile::compiler::{CompileError, Compiler};
 use hiko_compile::op::{HANDLER_CLAUSE_BYTES, Op};
 use hiko_syntax::format::{FormatError, format_source};
@@ -605,12 +605,11 @@ fn skip_bytes(code: &[u8], ip: &mut usize, n: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn read_const_string(chunk: &Chunk, idx: usize) -> Result<&str, String> {
-    match chunk.constants.get(idx) {
-        Some(Constant::String(s)) => Ok(s),
-        Some(_) => Err(format!("expected string constant at index {idx}")),
-        None => Err(format!("constant index out of bounds: {idx}")),
-    }
+fn global_name(globals: &[Arc<str>], slot: usize) -> Result<String, String> {
+    globals
+        .get(slot)
+        .map(|name| name.to_string())
+        .ok_or_else(|| format!("global slot out of bounds: {slot}"))
 }
 
 fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
@@ -634,6 +633,9 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         }
         Op::MakeData => {
             skip_bytes(code, ip, 3)?;
+        }
+        Op::JumpIfNotTag => {
+            skip_bytes(code, ip, 4)?;
         }
         Op::MakeClosure => {
             let _proto_idx = read_u16(code, ip)?;
@@ -688,7 +690,6 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
         | Op::GeWord
         | Op::ConcatString
         | Op::Not
-        | Op::GetTag
         | Op::GetLocal0
         | Op::GetLocal1
         | Op::GetLocal2
@@ -709,6 +710,7 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
 
 fn scan_chunk_globals(
     chunk: &Chunk,
+    globals: &[Arc<str>],
     defs: &mut HashSet<String>,
     reads: &mut Vec<(String, Option<Span>)>,
 ) -> Result<(), String> {
@@ -721,14 +723,12 @@ fn scan_chunk_globals(
             .map_err(|byte| format!("invalid opcode while scanning bytecode: {byte}"))?;
         match op {
             Op::GetGlobal => {
-                let idx = read_u16(code, &mut ip)? as usize;
-                let name = read_const_string(chunk, idx)?.to_string();
-                reads.push((name, chunk.span_at(offset)));
+                let slot = read_u16(code, &mut ip)? as usize;
+                reads.push((global_name(globals, slot)?, chunk.span_at(offset)));
             }
             Op::SetGlobal => {
-                let idx = read_u16(code, &mut ip)? as usize;
-                let name = read_const_string(chunk, idx)?.to_string();
-                defs.insert(name);
+                let slot = read_u16(code, &mut ip)? as usize;
+                defs.insert(global_name(globals, slot)?);
             }
             _ => advance_operands(code, &mut ip, op)?,
         }
@@ -744,9 +744,9 @@ fn strict_violations(
     let mut defs = HashSet::new();
     let mut reads = Vec::new();
 
-    scan_chunk_globals(&program.main, &mut defs, &mut reads)?;
+    scan_chunk_globals(&program.main, &program.globals, &mut defs, &mut reads)?;
     for proto in &*program.functions {
-        scan_chunk_globals(&proto.chunk, &mut defs, &mut reads)?;
+        scan_chunk_globals(&proto.chunk, &program.globals, &mut defs, &mut reads)?;
     }
 
     let mut violations = Vec::new();
