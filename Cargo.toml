@@ -8,7 +8,6 @@ members = [
     "crates/hiko-compile",
     "crates/hiko-vm",
     "crates/hiko-cli",
-    "crates/hiko-harness",
     "crates/tree-sitter-hiko",
 ]
 exclude = ["hiko-vm-*"]

@@ -17,11 +17,10 @@ stale.
 | `hiko-common` | Shared raw helpers (hashing, HTTP, and similar) used by the VM and CLI |
 | `hiko-cli` | `hiko` command: `run`, `check`, `fmt`, `lock`, `hash`, `inspect-work`, `build-vm` |
 | `hiko-docgen` | Static documentation generator for published Hiko libraries |
-| `hiko-harness` | Agentic coding tool; runs `tools/*.hml` scripts through `hiko-cli` under a policy |
 | `tree-sitter-hiko` | Tree-sitter grammar for editors |
 
 Other top-level directories: `libraries/` (Std and other package sources),
-`tools/` (harness tool scripts), `examples/`, `benchmarks/`, `policies/` (run
+`tools/` (`run_all.hml`, the test runner, and file tool scripts), `examples/`, `benchmarks/`, `policies/` (run
 policies), `specs/` (TLA+ and Quint models).
 
 ### Dependency graph
@@ -32,7 +31,6 @@ hiko-cli ──→ hiko-vm ──→ hiko-compile ──→ hiko-types ──→
                 └──────────────┴───────────────┴──→ hiko-builtin-meta
 
 hiko-common  ←── hiko-cli, hiko-vm, hiko-compile, hiko-docgen
-hiko-harness ──→ hiko-cli (as a subprocess)
 ```
 
 ## Pipeline

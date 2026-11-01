@@ -44,7 +44,6 @@ Size by crate (lines of Rust):
 | `hiko-types`        | ~2,900  | HM inference, exhaustiveness                                     |
 | `hiko-cli`          | ~2,100  | `run`, `check`, `fmt`, `lock`, `hash`                            |
 | `hiko-builtin-meta` | ~1,900  | Builtin signatures, internal module sources                      |
-| `hiko-harness`      | ~1,450  | LLM agent harness                                                |
 | `hiko-docgen`       | ~1,200  | HTML docs for libraries                                          |
 | `hiko-common`       | ~80     | Shared hash/HTTP helpers                                         |
 
@@ -266,7 +265,6 @@ been taken.
 | `hiko-common`       | Core         |                                                                                                                          |
 | `tree-sitter-hiko`  | Tooling      | Editor support. Used by `hiko-docgen`.                                                                                   |
 | `hiko-docgen`       | Tooling      | Generates the HTML under `libraries/`.                                                                                   |
-| `hiko-harness`      | Out of focus | LLM agent harness with OpenAI/Anthropic providers.                                                                       |
 
 ### Builtin domains in `hiko-vm`
 
@@ -301,7 +299,6 @@ been taken.
 | Path                               | Class           | Notes                                                                                                                           |
 | ---------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `initial.md`                       | Historical      | Original project brief. Could move to `docs/project/`.                                                                          |
-| `SYSTEM.md`, `hiko-harness.toml`   | Out of focus    | Harness system prompt and config.                                                                                               |
 | `test_hashline.hml`                | Stray           | Test file at the repository root.                                                                                               |
 | `vim-sml.zip`                      | Stray           | Binary in git.                                                                                                                  |
 | `_apalache-out/`                   | Generated       | Already in `.gitignore`. Safe to delete locally.                                                                                |
@@ -343,9 +340,9 @@ maximums.
 1. Fix the tests so they do not need a local HTTP server.
 2. Done: effects reduced to provider and abort clauses (#121).
 3. Close the finished issues (#80, #54, #55) and the out-of-focus ones.
-4. Move `hiko-harness`, AWS, GitHub, Hashline, `SYSTEM.md`, and their
-   policies, examples, and libraries out of the
-   repository.
+4. Move AWS, GitHub, Hashline, the harness tool scripts in `tools/`, and their
+   policies, examples, and libraries out of the repository. Partly done:
+   `hiko-harness`, its config and `SYSTEM.md` are removed.
 5. Decide on the threaded runtime and structured concurrency.
 6. Make `json`, `regex`, `hash`, and `date` non-default features.
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.

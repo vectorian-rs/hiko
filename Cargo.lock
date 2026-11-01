@@ -1409,16 +1409,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hiko-harness"
-version = "0.8.0"
-dependencies = [
- "serde",
- "serde_json",
- "toml",
- "ureq",
-]
-
-[[package]]
 name = "hiko-syntax"
 version = "0.8.0"
 dependencies = [
