@@ -1591,6 +1591,52 @@ mod tests {
         }
     }
 
+    /// A call with a written-out tuple to a function that takes a tuple
+    /// passes the components as arguments: no tuple is built.
+    #[test]
+    fn test_flat_tuple_call_allocates_nothing() {
+        let count = |n: i64| {
+            let vm = run(&format!(
+                "fun loop (i, acc) = if i = 0 then acc else loop (i - 1, acc + 1)
+                 val result = loop ({n}, 0)"
+            ));
+            assert_eq!(global_int(&vm, "result"), n);
+            vm.heap.count_objects(|_| true)
+        };
+        assert_eq!(count(1000), count(10));
+    }
+
+    /// The same function still works with a tuple value, as a value, with
+    /// several clauses, and when a later binding shadows it.
+    #[test]
+    fn test_flat_tuple_function_other_calls() {
+        let vm = run("fun add (a, b) = a + b
+             val pair = (1, 2)
+             val from_value = add pair
+             val f = add
+             val through_value = f (3, 4)
+             fun apply (g, x) = g x
+             val passed = apply (add, (5, 6))
+             fun pick (0, y) = y
+               | pick (x, _) = x * 10
+             val first = pick (0, 7)
+             val second = pick (3, 7)
+             val before = add (1, 1)
+             val add = fn (a, b) => a * b
+             val after = add (2, 5)");
+        for (name, expected) in [
+            ("from_value", 3),
+            ("through_value", 7),
+            ("passed", 11),
+            ("first", 7),
+            ("second", 30),
+            ("before", 2),
+            ("after", 10),
+        ] {
+            assert_eq!(global_int(&vm, name), expected, "{name}");
+        }
+    }
+
     #[test]
     fn test_provider_allocates_nothing_per_request() {
         // Going from 10 to 1,000 requests to one provider adds as many heap

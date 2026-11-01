@@ -435,6 +435,16 @@ impl FuncCtx {
     }
 }
 
+/// A top-level function whose tuple parameter is passed as separate
+/// arguments: `flat` has one parameter per component, `wrapper` takes the
+/// tuple and calls `flat`.
+#[derive(Clone, Copy)]
+struct FlatEntry {
+    wrapper: u16,
+    flat: u16,
+    width: usize,
+}
+
 /// Hashable identity of a non-string constant. Floats compare by bit
 /// pattern, so `0.0` and `-0.0` stay distinct.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -689,6 +699,10 @@ pub struct Compiler {
     /// Proto index the next `push_new_function` compiles into (see
     /// `reserve_proto`).
     pending_reserved_proto: Option<u16>,
+    /// Global name -> flat entry of a top-level function that takes one
+    /// tuple (see `flat_tuple_width`). Valid only while `global_protos` still
+    /// maps the name to the entry's wrapper.
+    global_flat_protos: HashMap<String, FlatEntry>,
     /// Source name -> VM global name of the top-level binding in scope. A
     /// binding that shadows an earlier one, or a builtin, gets a fresh name
     /// (`x$1`, `x$2`, ...), so code compiled earlier keeps its binding.
@@ -774,6 +788,7 @@ impl Compiler {
             loader_options,
             global_protos: HashMap::new(),
             pending_reserved_proto: None,
+            global_flat_protos: HashMap::new(),
             global_bindings: HashMap::new(),
             global_slots: HashMap::new(),
             global_names: Vec::new(),
@@ -1092,6 +1107,14 @@ impl Compiler {
         self.global_protos.get(name).copied()
     }
 
+    /// Flat proto for a direct call of `name` with a written-out tuple of
+    /// `width` components, while `name` is still bound to that function.
+    fn direct_flat_proto(&mut self, name: &str, width: usize) -> Option<u16> {
+        let entry = *self.global_flat_protos.get(name)?;
+        (entry.width == width && self.direct_call_proto(name) == Some(entry.wrapper))
+            .then_some(entry.flat)
+    }
+
     fn forget_global_proto(&mut self, name: &str) {
         if self.ctx().scope_depth == 0 {
             self.global_protos.remove(name);
@@ -1234,16 +1257,36 @@ impl Compiler {
                     self.declare_global(&name);
                     let proto_idx = self.reserve_proto()?;
                     self.global_protos.insert(name.clone(), proto_idx);
-                    members.push((name, proto_idx));
+                    let flat = match flat_tuple_width(binding) {
+                        Some(width) => {
+                            let flat = self.reserve_proto()?;
+                            let entry = FlatEntry {
+                                wrapper: proto_idx,
+                                flat,
+                                width,
+                            };
+                            self.global_flat_protos.insert(name.clone(), entry);
+                            Some(entry)
+                        }
+                        None => None,
+                    };
+                    members.push((name, proto_idx, flat));
                 }
-                for (binding, (name, proto_idx)) in bindings.iter().zip(&members) {
-                    self.pending_reserved_proto = Some(*proto_idx);
-                    let closure = self.compile_fun_binding(binding)?;
-                    if closure.proto_idx != *proto_idx || closure.n_captures != 0 {
-                        return Err(CompileError::codegen(format!(
-                            "top-level function `{name}` was compiled with captures"
-                        )));
-                    }
+                for (binding, (name, proto_idx, flat)) in bindings.iter().zip(&members) {
+                    let closure = match flat {
+                        Some(entry) => {
+                            self.pending_reserved_proto = Some(entry.flat);
+                            let flat_fn = self.compile_flat_fun(name, entry.width, binding)?;
+                            check_top_level_closure(name, &flat_fn, entry.flat)?;
+                            self.pending_reserved_proto = Some(*proto_idx);
+                            self.compile_flat_wrapper(name, *entry)?
+                        }
+                        None => {
+                            self.pending_reserved_proto = Some(*proto_idx);
+                            self.compile_fun_binding(binding)?
+                        }
+                    };
+                    check_top_level_closure(name, &closure, *proto_idx)?;
                     self.emit_make_closure(&closure);
                     self.emit_set_declared_global(name)?;
                     // Setting the global forgets the direct-call target; the
@@ -1868,6 +1911,55 @@ impl Compiler {
         self.compile_clausal_fn_inner(Some(&name), arity, 0, &binding.clauses)
     }
 
+    /// The flat entry of a function that takes one tuple of `width`
+    /// components: one parameter slot per component, each clause matching
+    /// its components against them.
+    fn compile_flat_fun(
+        &mut self,
+        name: &str,
+        width: usize,
+        binding: &FunBinding,
+    ) -> Result<PendingClosure, CompileError> {
+        self.push_new_function(Some(name.to_string()));
+        self.ctx_mut().arity = checked_u8(width, "tuple parameter components")?;
+        for i in 0..width {
+            self.add_local(format!("_arg{i}"));
+        }
+        self.begin_scope();
+        let branches: Vec<_> = binding
+            .clauses
+            .iter()
+            .map(|clause| {
+                let components = tuple_components(&clause.pats[0])
+                    .expect("flat_tuple_width checked every clause");
+                let parts = (0u16..).zip(components.iter()).collect();
+                (parts, &clause.body)
+            })
+            .collect();
+        self.compile_multi_case_branches(&branches, true)?;
+        self.end_scope_keep_result();
+        self.emit(Op::Return);
+        self.finish_function_proto()
+    }
+
+    /// The ordinary entry of a flattened function, for calls that pass a
+    /// tuple value: take it apart and call the flat entry.
+    fn compile_flat_wrapper(
+        &mut self,
+        name: &str,
+        entry: FlatEntry,
+    ) -> Result<PendingClosure, CompileError> {
+        self.push_new_function(Some(name.to_string()));
+        self.add_local("_arg".to_string());
+        for i in 0..entry.width {
+            self.emit_field_extract(0, i)?;
+        }
+        self.emit(Op::TailCallDirect);
+        self.emit_u16(entry.flat);
+        self.emit(Op::Return);
+        self.finish_function_proto()
+    }
+
     /// Compile a recursive group of local functions: `fun f ... and g ...`
     /// or `val rec f = fn ...` inside a `let`, `local` or function body.
     ///
@@ -2091,16 +2183,36 @@ impl Compiler {
         branches: &[(&Pat, &Expr)],
         tail: bool,
     ) -> Result<(), CompileError> {
+        let branches: Vec<_> = branches
+            .iter()
+            .map(|&(pat, body)| (vec![(scrut_slot, pat)], body))
+            .collect();
+        self.compile_multi_case_branches(&branches, tail)
+    }
+
+    /// Match each branch's patterns against their slots, all of them, and
+    /// run the first branch that matches. With one pattern per branch this
+    /// is a `case`; a flattened tuple parameter (see `flat_tuple_width`)
+    /// matches one component per parameter slot.
+    fn compile_multi_case_branches(
+        &mut self,
+        branches: &[(Vec<(u16, &Pat)>, &Expr)],
+        tail: bool,
+    ) -> Result<(), CompileError> {
         let mut end_jumps = Vec::new();
 
-        for (pat, body) in branches {
+        for (parts, body) in branches {
             let locals_before = self.ctx().locals.len();
             let depth_before = self.ctx().scope_depth;
             self.begin_scope();
 
             let mut fail_jumps: Vec<(usize, usize)> = Vec::new(); // (jump_pos, locals_at_fail)
-            self.compile_pattern_test(scrut_slot, pat, &mut fail_jumps)?;
-            self.compile_pattern_bind(scrut_slot, pat)?;
+            for &(slot, pat) in parts {
+                self.compile_pattern_test(slot, pat, &mut fail_jumps)?;
+            }
+            for &(slot, pat) in parts {
+                self.compile_pattern_bind(slot, pat)?;
+            }
 
             self.compile_expr_inner(body, tail)?;
             self.end_scope_keep_result();
@@ -2457,6 +2569,24 @@ impl Compiler {
     /// is compiled the earlier values occupy slots. Reserve those slots as
     /// unnamed locals; otherwise a `case` scrutinee, `let` binding or pattern
     /// temporary inside a later operand gets a slot index that ignores them.
+    /// The flat proto and tuple components of `func arg`, when `func` names
+    /// a function with a flat entry and `arg` is a tuple expression.
+    fn flat_call_target<'e>(&mut self, func: &Expr, arg: &'e Expr) -> Option<(u16, &'e [Expr])> {
+        let ExprKind::Var(sym) = &func.kind else {
+            return None;
+        };
+        let mut arg = arg;
+        while let ExprKind::Paren(inner) = &arg.kind {
+            arg = inner;
+        }
+        let ExprKind::Tuple(items) = &arg.kind else {
+            return None;
+        };
+        let name = self.interner.resolve(*sym).to_string();
+        let flat = self.direct_flat_proto(&name, items.len())?;
+        Some((flat, items))
+    }
+
     fn compile_operands(&mut self, operands: &[&Expr]) -> Result<(), CompileError> {
         let locals_before = self.ctx().locals.len();
         for (i, operand) in operands.iter().enumerate() {
@@ -2550,6 +2680,19 @@ impl Compiler {
                 unreachable!("desugared to if-then-else")
             }
 
+            ExprKind::App(func, arg)
+                if let Some((flat, items)) = self.flat_call_target(func, arg) =>
+            {
+                // `f (e1, ..., eN)` of a function with a flat entry: pass
+                // the components as arguments instead of building a tuple.
+                self.compile_operands(&items.iter().collect::<Vec<_>>())?;
+                self.emit(if tail {
+                    Op::TailCallDirect
+                } else {
+                    Op::CallDirect
+                });
+                self.emit_u16(flat);
+            }
             ExprKind::App(func, arg) => {
                 // Check for direct call: App(Var(name), arg) where name
                 // is a known global function with no captures
@@ -2716,6 +2859,48 @@ fn simple_pat_name(pat: &Pat, interner: &StringInterner) -> String {
         PatKind::Paren(p) | PatKind::Ann(p, _) => simple_pat_name(p, interner),
         _ => "_".to_string(),
     }
+}
+
+/// The components of a tuple pattern, under any parentheses and type
+/// annotations.
+fn tuple_components(pat: &Pat) -> Option<&[Pat]> {
+    match &pat.kind {
+        PatKind::Tuple(items) => Some(items),
+        PatKind::Paren(p) | PatKind::Ann(p, _) => tuple_components(p),
+        _ => None,
+    }
+}
+
+/// N when every clause of `binding` takes one tuple pattern of N >= 2
+/// components, so the function can take the components as N arguments.
+fn flat_tuple_width(binding: &FunBinding) -> Option<usize> {
+    let mut width = None;
+    for clause in &binding.clauses {
+        let [pat] = clause.pats.as_slice() else {
+            return None;
+        };
+        let n = tuple_components(pat)?.len();
+        if n < 2 || n > usize::from(u8::MAX) || width.is_some_and(|w| w != n) {
+            return None;
+        }
+        width = Some(n);
+    }
+    width
+}
+
+/// A top-level function compiles into its reserved proto and captures
+/// nothing, which the direct calls emitted inside its group rely on.
+fn check_top_level_closure(
+    name: &str,
+    closure: &PendingClosure,
+    reserved: u16,
+) -> Result<(), CompileError> {
+    if closure.proto_idx != reserved || closure.n_captures != 0 {
+        return Err(CompileError::codegen(format!(
+            "top-level function `{name}` was compiled with captures"
+        )));
+    }
+    Ok(())
 }
 
 fn is_simple_pat(pat: &Pat) -> bool {
@@ -3081,6 +3266,37 @@ mod tests {
             assert!(ops.contains(&Op::TailCallDirect), "{name}");
             assert!(!ops.contains(&Op::GetGlobal), "{name}");
         }
+    }
+
+    /// A function that takes one tuple gets a flat entry with a parameter
+    /// per component; written-out tuple arguments call it without building
+    /// a tuple, and the ordinary entry takes the tuple apart.
+    #[test]
+    fn compile_tuple_parameter_functions_flat() {
+        let program = parse_program(
+            "fun ack (m, n) = if m = 0 then n + 1 else if n = 0 then ack (m - 1, 1) else ack (m - 1, ack (m, n - 1))\n\
+             val r = ack (2, 3)\n\
+             val p = (2, 3)\n\
+             val s = ack p\n",
+        );
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let protos: Vec<_> = compiled
+            .functions
+            .iter()
+            .filter(|proto| proto.name.as_deref() == Some("ack"))
+            .collect();
+        let flat = protos.iter().find(|p| p.arity == 2).expect("flat entry");
+        let wrapper = protos.iter().find(|p| p.arity == 1).expect("wrapper");
+        let flat_ops = flat.chunk.ops();
+        assert!(!flat_ops.contains(&Op::MakeTuple));
+        assert!(flat_ops.contains(&Op::CallDirect) && flat_ops.contains(&Op::TailCallDirect));
+        assert!(wrapper.chunk.ops().contains(&Op::TailCallDirect));
+        // `ack (2, 3)` is flat and `ack p` goes through the wrapper, so the
+        // only tuple main builds is `p`.
+        let main = compiled.main.ops();
+        let count = |op| main.iter().filter(|&&o| o == op).count();
+        assert_eq!(count(Op::MakeTuple), 1);
+        assert_eq!(count(Op::CallDirect), 2);
     }
 
     /// A body that rebinds the name stops the direct calls: the inner `fact`
