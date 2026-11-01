@@ -149,15 +149,12 @@ impl VM {
         if let Some(max_heap) = self.heap.max_objects() {
             child.set_max_heap(max_heap);
         }
-        // Memory, I/O, host work, fuel and the spawn limits are budgets for
-        // the whole process tree: the child draws from the parent's counters.
+        // Memory, I/O, host work, host resources, fuel and the spawn limits
+        // are budgets for the whole process tree: the child draws from the
+        // parent's counters.
         child.heap.share_tree_budgets(&self.heap);
         child.fuel_budget = self.fuel_budget.clone();
         child.process_budgets = self.process_budgets.clone();
-        if let Some(max_host_resources) = self.heap.max_host_resources() {
-            child.set_max_host_resources(max_host_resources);
-        }
-        child.set_host_resource_limits(self.heap.host_resource_limits().clone());
         if self.output.is_some() {
             child.enable_output_capture();
         }

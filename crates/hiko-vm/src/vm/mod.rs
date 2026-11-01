@@ -1992,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_child_shares_host_work_and_inherits_resource_limits() {
+    fn test_create_child_shares_host_work_and_host_resource_limits() {
         let mut vm = compile_vm("val x = 1");
         vm.set_max_host_work(100);
         vm.heap.charge_host_work(30).unwrap();
@@ -2010,6 +2010,27 @@ mod tests {
             child.heap.host_resource_limits().get("aws_config"),
             Some(&1)
         );
+
+        // Host resources are counted for the tree: three in the child and
+        // one in the parent use up the limit of four.
+        for _ in 0..3 {
+            child
+                .heap
+                .alloc_host_resource(crate::value::HostResource::Unsupported)
+                .unwrap();
+        }
+        vm.heap
+            .alloc_host_resource(crate::value::HostResource::Unsupported)
+            .unwrap();
+        let err = vm
+            .heap
+            .alloc_host_resource(crate::value::HostResource::Unsupported)
+            .unwrap_err();
+        assert!(err.to_string().contains("4 resources (max 4)"), "{err}");
+        drop(child);
+        vm.heap
+            .alloc_host_resource(crate::value::HostResource::Unsupported)
+            .unwrap();
     }
 
     #[test]

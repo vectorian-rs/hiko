@@ -25,7 +25,7 @@ latency and non-preemptive sections, see
 | Host work | `max_host_work`; CPU-bound native work for builtins and process-boundary serialization/deserialization, in opcode-equivalents (see [execution-bounds.md](../architecture/execution-bounds.md#the-host-work-unit) and [Calibration](#calibration)). |
 | I/O bytes | `max_io_bytes`; stdin/stdout, file, HTTP, exec, async completion, and similar byte payload accounting. Per-call reads are also bounded by `max_http_response_bytes`, `max_file_read_bytes`, and `max_exec_output_bytes` (see [execution-bounds.md](../architecture/execution-bounds.md#per-operation-io-limits)). |
 | Heap / memory | `max_memory_bytes`, `max_heap`, allocation preflight helpers, and normal heap allocation failures. |
-| Host resources | Opaque native Rust resources behind `HeapObject::HostHandle`, such as AWS SDK config/client handles. `max_host_resources` caps total live handles; `limits.host_resources` / `VMBuilder::host_resource_limits` cap live handles per kind. Current and peak counts are tracked by the heap. |
+| Host resources | Opaque native Rust resources behind `HeapObject::HostHandle`, such as AWS SDK config/client handles. `max_host_resources` caps total live handles; `limits.host_resources` / `VMBuilder::host_resource_limits` cap live handles per kind. Both caps count the whole process tree. Current and peak counts are tracked per heap. |
 
 ## Domain matrix
 

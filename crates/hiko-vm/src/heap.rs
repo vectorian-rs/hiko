@@ -206,10 +206,11 @@ pub struct Heap {
     peak_host_resources: usize,
     /// Peak host resource counts by kind observed during this heap's lifetime.
     peak_host_resources_by_kind: HashMap<HostHandleKind, usize>,
-    /// Maximum total host resources allowed.
-    max_host_resources: Option<usize>,
-    /// Per-kind host resource limits.
-    host_resource_limits: HashMap<String, usize>,
+    /// Live host resources across the process tree, when limited. This
+    /// heap's share is `host_resources.len()`, returned on GC and on drop.
+    host_resource_budget: Option<Arc<SharedBudget>>,
+    /// Live host resources of one kind across the process tree, by kind name.
+    host_resource_kind_budgets: HashMap<String, Arc<SharedBudget>>,
     /// Filesystem policy, shared with child processes.
     fs: Arc<FsPolicy>,
     /// Allowed HTTP hosts (empty = unrestricted).
@@ -243,9 +244,18 @@ const SENT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        // A finished process stops counting against its tree's memory.
+        // A finished process stops counting against its tree's memory, and
+        // its host resources, dropped with it, against the tree's limits.
         if let Some(budget) = &self.memory_budget {
             budget.refund(self.current_bytes as u64);
+        }
+        if let Some(budget) = &self.host_resource_budget {
+            budget.refund(self.host_resources.len() as u64);
+        }
+        for (&kind, &count) in &self.host_resources_by_kind {
+            if let Some(budget) = self.host_resource_kind_budget(kind) {
+                budget.refund(count as u64);
+            }
         }
     }
 }
@@ -280,8 +290,8 @@ impl Heap {
             host_resources_by_kind: HashMap::new(),
             peak_host_resources: 0,
             peak_host_resources_by_kind: HashMap::new(),
-            max_host_resources: None,
-            host_resource_limits: HashMap::new(),
+            host_resource_budget: None,
+            host_resource_kind_budgets: HashMap::new(),
             fs: Arc::default(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
@@ -617,13 +627,20 @@ impl Heap {
             .map(|budget| usize::try_from(budget.limit()).unwrap_or(usize::MAX))
     }
 
-    /// Join `parent`'s memory, I/O and host-work budgets, so that this heap
-    /// and the parent's process tree draw from the same counters.
+    /// Join `parent`'s memory, I/O, host-work and host-resource budgets, so
+    /// that this heap and the parent's process tree draw from the same
+    /// counters.
     pub fn share_tree_budgets(&mut self, parent: &Heap) {
         debug_assert_eq!(self.current_bytes, 0, "share budgets before allocating");
+        debug_assert!(
+            self.host_resources.is_empty(),
+            "share budgets before allocating"
+        );
         self.memory_budget = parent.memory_budget.clone();
         self.io_budget = parent.io_budget.clone();
         self.host_work_budget = parent.host_work_budget.clone();
+        self.host_resource_budget = parent.host_resource_budget.clone();
+        self.host_resource_kind_budgets = parent.host_resource_kind_budgets.clone();
     }
 
     /// The process tree's memory budget, when memory is limited.
@@ -765,20 +782,58 @@ impl Heap {
         self.host_work_budget = Some(SharedBudget::with_used(max, self.host_work_used));
     }
 
+    /// Limit live host resources. Like [`Heap::set_max_bytes`], this starts a
+    /// new budget for the tree, counting this heap's live resources.
     pub fn set_max_host_resources(&mut self, max: usize) {
-        self.max_host_resources = Some(max);
+        self.host_resource_budget = Some(SharedBudget::with_used(
+            max as u64,
+            self.host_resources.len() as u64,
+        ));
     }
 
+    /// Limit live host resources per kind name. Starts new budgets, like
+    /// [`Heap::set_max_host_resources`].
     pub fn set_host_resource_limits(&mut self, limits: HashMap<String, usize>) {
-        self.host_resource_limits = limits;
+        self.host_resource_kind_budgets = limits
+            .into_iter()
+            .map(|(name, max)| {
+                let live = self
+                    .host_resources_by_kind
+                    .iter()
+                    .filter(|&(&kind, _)| Self::host_handle_kind_name(kind) == name)
+                    .map(|(_, &count)| count)
+                    .sum::<usize>();
+                (name, SharedBudget::with_used(max as u64, live as u64))
+            })
+            .collect();
     }
 
     pub fn max_host_resources(&self) -> Option<usize> {
-        self.max_host_resources
+        self.host_resource_budget
+            .as_ref()
+            .map(|budget| budget.limit() as usize)
     }
 
-    pub fn host_resource_limits(&self) -> &HashMap<String, usize> {
-        &self.host_resource_limits
+    pub fn host_resource_limits(&self) -> HashMap<String, usize> {
+        self.host_resource_kind_budgets
+            .iter()
+            .map(|(name, budget)| (name.clone(), budget.limit() as usize))
+            .collect()
+    }
+
+    fn host_resource_kind_budget(&self, kind: HostHandleKind) -> Option<&Arc<SharedBudget>> {
+        self.host_resource_kind_budgets
+            .get(Self::host_handle_kind_name(kind))
+    }
+
+    /// Return one resource of `kind` to the tree's budgets.
+    fn release_host_resource_budgets(&self, kind: HostHandleKind) {
+        if let Some(budget) = &self.host_resource_budget {
+            budget.refund(1);
+        }
+        if let Some(budget) = self.host_resource_kind_budget(kind) {
+            budget.refund(1);
+        }
     }
 
     pub fn max_host_work(&self) -> Option<u64> {
@@ -841,28 +896,28 @@ impl Heap {
     ) -> Result<Value, HeapLimitExceeded> {
         let kind = resource.kind();
 
-        // Check total host resources limit.
-        if let Some(max) = self.max_host_resources
-            && self.host_resources.len() >= max
-        {
-            return Err(HeapLimitExceeded::HostResources {
-                kind: None,
-                live: self.host_resources.len(),
-                limit: max,
-            });
+        // Charge the tree's total, then its per-kind limit; all or nothing.
+        if let Some(budget) = &self.host_resource_budget {
+            budget
+                .try_charge(1)
+                .map_err(|live| HeapLimitExceeded::HostResources {
+                    kind: None,
+                    live: live as usize,
+                    limit: budget.limit() as usize,
+                })?;
         }
-
-        // Check per-kind host resource limits.
-        let kind_name = Self::host_handle_kind_name(kind);
-        if let Some(&max) = self.host_resource_limits.get(kind_name) {
-            let current_count = *self.host_resources_by_kind.get(&kind).unwrap_or(&0);
-            if current_count >= max {
-                return Err(HeapLimitExceeded::HostResources {
-                    kind: Some(kind_name.to_string()),
-                    live: current_count,
-                    limit: max,
-                });
+        if let Some(budget) = self.host_resource_kind_budget(kind)
+            && let Err(live) = budget.try_charge(1)
+        {
+            let err = HeapLimitExceeded::HostResources {
+                kind: Some(Self::host_handle_kind_name(kind).to_string()),
+                live: live as usize,
+                limit: budget.limit() as usize,
+            };
+            if let Some(total) = &self.host_resource_budget {
+                total.refund(1);
             }
+            return Err(err);
         }
 
         let id = HostHandleId(self.next_host_handle_id);
@@ -886,6 +941,7 @@ impl Heap {
             }
             Err(err) => {
                 self.host_resources.remove(&id);
+                self.release_host_resource_budgets(kind);
                 // Decrement the count since we failed to allocate
                 let count = self.host_resources_by_kind.entry(kind).or_insert(0);
                 *count = count.saturating_sub(1);
@@ -1146,6 +1202,7 @@ impl Heap {
                 if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref()
                     && self.host_resources.remove(id).is_some()
                 {
+                    self.release_host_resource_budgets(*kind);
                     // Decrement the per-kind count. Peak counters are monotonic.
                     let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
                     *count = count.saturating_sub(1);
@@ -1716,6 +1773,97 @@ mod tests {
             1
         );
         assert_eq!(heap.host_resource_peak_count(), 1);
+    }
+
+    // The tree-budget tests use the `Unsupported` kind, which exists in every
+    // build; the AWS kinds need their features.
+    fn test_resource() -> HostResource {
+        HostResource::Unsupported
+    }
+
+    fn child_of(parent: &Heap) -> Heap {
+        let mut child = Heap::new();
+        child.share_tree_budgets(parent);
+        child
+    }
+
+    #[test]
+    fn host_resource_limit_is_shared_by_the_process_tree() {
+        let mut parent = Heap::new();
+        parent.set_max_host_resources(2);
+        let mut child = child_of(&parent);
+        let mut grandchild = child_of(&child);
+
+        parent.alloc_host_resource(test_resource()).unwrap();
+        child.alloc_host_resource(test_resource()).unwrap();
+        let err = grandchild.alloc_host_resource(test_resource()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "host resource limit exceeded: 2 resources (max 2)"
+        );
+        assert!(parent.alloc_host_resource(test_resource()).is_err());
+
+        // A process that ends returns its resources to the tree.
+        drop(child);
+        grandchild.alloc_host_resource(test_resource()).unwrap();
+        assert!(parent.alloc_host_resource(test_resource()).is_err());
+    }
+
+    #[test]
+    fn host_resource_kind_limit_is_shared_by_the_process_tree() {
+        let mut parent = Heap::new();
+        parent.set_max_host_resources(10);
+        parent.set_host_resource_limits(HashMap::from([("unsupported".to_string(), 1)]));
+        let mut child = child_of(&parent);
+
+        parent.alloc_host_resource(test_resource()).unwrap();
+        let err = child.alloc_host_resource(test_resource()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "host resource limit exceeded for unsupported: 1 resources (max 1)"
+        );
+        // The failed kind charge did not keep its charge on the total.
+        assert_eq!(parent.host_resource_budget.as_ref().unwrap().used(), 1);
+        assert_eq!(child.host_resource_count(), 0);
+    }
+
+    #[test]
+    fn collected_host_resource_returns_capacity_to_the_tree() {
+        let mut parent = Heap::new();
+        parent.set_max_host_resources(1);
+        parent.set_host_resource_limits(HashMap::from([("unsupported".to_string(), 1)]));
+        let mut child = child_of(&parent);
+
+        child.alloc_host_resource(test_resource()).unwrap();
+        assert!(parent.alloc_host_resource(test_resource()).is_err());
+        child.collect(std::iter::empty());
+        assert_eq!(child.host_resource_count(), 0);
+        parent.alloc_host_resource(test_resource()).unwrap();
+        // Per-process peaks are unchanged by the tree budget.
+        assert_eq!(child.host_resource_peak_count(), 1);
+        assert_eq!(parent.host_resource_peak_count(), 1);
+    }
+
+    #[test]
+    fn failed_host_handle_allocation_returns_its_charge() {
+        let mut heap = Heap::new();
+        heap.set_max_host_resources(5);
+        heap.set_host_resource_limits(HashMap::from([("unsupported".to_string(), 5)]));
+        heap.set_max_objects(0);
+        assert!(heap.alloc_host_resource(test_resource()).is_err());
+        assert_eq!(heap.host_resource_count(), 0);
+        assert_eq!(heap.host_resource_budget.as_ref().unwrap().used(), 0);
+        assert_eq!(heap.host_resource_kind_budgets["unsupported"].used(), 0);
+    }
+
+    #[test]
+    fn setting_host_resource_limits_counts_live_resources() {
+        let mut heap = Heap::new();
+        heap.alloc_host_resource(test_resource()).unwrap();
+        heap.set_max_host_resources(1);
+        heap.set_host_resource_limits(HashMap::from([("unsupported".to_string(), 3)]));
+        assert_eq!(heap.host_resource_kind_budgets["unsupported"].used(), 1);
+        assert!(heap.alloc_host_resource(test_resource()).is_err());
     }
 
     #[test]
