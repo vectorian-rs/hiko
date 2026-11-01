@@ -23,6 +23,12 @@ enabled = true
 [capabilities.string.string_join]
 enabled = true
 
+[capabilities.regex.regex_match]
+enabled = true
+
+[capabilities.regex.regex_replace]
+enabled = true
+
 [capabilities.math.abs_int]
 enabled = true
 

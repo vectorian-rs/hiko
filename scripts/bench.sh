@@ -73,6 +73,10 @@ bench "One list shared by 200 children" "$hiko benchmarks/spawn_shared.hml"
 bench "Strings" "$hiko benchmarks/string_concat.hml" "$hiko benchmarks/string_args.hml" \
     "$hiko benchmarks/spawn_strings.hml"
 
+bench "Regex with one pattern, 12,000 calls" "$hiko benchmarks/regex_loop.hml"
+
+bench "Local recursive helpers" "$hiko benchmarks/local_rec.hml"
+
 bench "CPU fan-out, 64 children" \
     -L workers 1,2,4,8 "$hiko --workers {workers} benchmarks/fanout_cpu.hml"
 

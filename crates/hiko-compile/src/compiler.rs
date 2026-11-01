@@ -416,6 +416,9 @@ struct FuncCtx {
     /// Proto index reserved for this function before its body was compiled,
     /// so calls inside the body can be direct.
     reserved_proto: Option<u16>,
+    /// This is the outermost function of a local recursive binding, so a
+    /// call of its own name in its body is `CallSelf`.
+    self_callable: bool,
 }
 
 impl FuncCtx {
@@ -432,6 +435,7 @@ impl FuncCtx {
             scalar_constants: HashMap::new(),
             provider_cont_slot: None,
             reserved_proto: None,
+            self_callable: false,
         }
     }
 }
@@ -702,6 +706,9 @@ pub struct Compiler {
     /// Proto index the next `push_new_function` compiles into (see
     /// `reserve_proto`).
     pending_reserved_proto: Option<u16>,
+    /// The next `push_new_function` starts a local recursive binding's
+    /// function (see `FuncCtx::self_callable`).
+    pending_self_callable: bool,
     /// Global name -> flat entry of a top-level function that takes one
     /// tuple (see `flat_tuple_width`). Valid only while `global_protos` still
     /// maps the name to the entry's wrapper.
@@ -791,6 +798,7 @@ impl Compiler {
             loader_options,
             global_protos: HashMap::new(),
             pending_reserved_proto: None,
+            pending_self_callable: false,
             global_flat_protos: HashMap::new(),
             global_bindings: HashMap::new(),
             global_slots: HashMap::new(),
@@ -902,6 +910,7 @@ impl Compiler {
     fn push_new_function(&mut self, name: Option<String>) {
         let mut ctx = FuncCtx::new(name, 1);
         ctx.reserved_proto = self.pending_reserved_proto.take();
+        ctx.self_callable = std::mem::take(&mut self.pending_self_callable);
         self.func_stack.push(ctx);
     }
 
@@ -2026,7 +2035,9 @@ impl Compiler {
         let group = first_slot..first_slot + n;
         let mut members = Vec::with_capacity(n);
         for i in 0..n {
+            self.pending_self_callable = true;
             members.push(compile_member(self, i)?);
+            self.pending_self_callable = false;
         }
 
         let recursive = members.iter().any(|m| {
@@ -2612,6 +2623,20 @@ impl Compiler {
     /// is compiled the earlier values occupy slots. Reserve those slots as
     /// unnamed locals; otherwise a `case` scrutinee, `let` binding or pattern
     /// temporary inside a later operand gets a slot index that ignores them.
+    /// Whether `func` names the function being compiled, from its own body:
+    /// a local recursive binding of one parameter, not shadowed by a local.
+    fn is_self_call(&self, func: &Expr) -> bool {
+        let ExprKind::Var(sym) = &func.kind else {
+            return false;
+        };
+        let ctx = self.ctx();
+        if !ctx.self_callable || ctx.arity != 1 {
+            return false;
+        }
+        let name = self.interner.resolve(*sym);
+        ctx.name.as_deref() == Some(name) && !ctx.locals.iter().any(|local| local.name == name)
+    }
+
     /// The flat proto and tuple components of `func arg`, when `func` names
     /// a function with a flat entry and `arg` is a tuple expression.
     fn flat_call_target<'e>(&mut self, func: &Expr, arg: &'e Expr) -> Option<(u16, &'e [Expr])> {
@@ -2723,6 +2748,12 @@ impl Compiler {
                 unreachable!("desugared to if-then-else")
             }
 
+            ExprKind::App(func, arg) if self.is_self_call(func) => {
+                // A local recursive function calling itself: same function,
+                // same captures, so no closure is looked up.
+                self.compile_expr(arg)?;
+                self.emit(if tail { Op::TailCallSelf } else { Op::CallSelf });
+            }
             ExprKind::App(func, arg)
                 if let Some((flat, items)) = self.flat_call_target(func, arg) =>
             {
@@ -3162,11 +3193,22 @@ mod tests {
                                  and od 0 = false | od k = ev (k - 1) in ev n end\n\
              fun plain n = let fun inc k = k + n in inc 1 end\n\
              fun later n = let fun a k = k + 1\n\
-                               fun b k = a (a k) in b n end\n",
+                               fun b k = a (a k) in b n end\n\
+             fun nested n = let fun go k = if k = 0 then 0 else (fn () => go (k - 1)) () in go n end\n",
         ))
         .expect("compile");
-        assert_eq!(first_op_of(&compiled, "rec_one"), Op::MakeRecClosures);
+        // `go` only calls itself, with `TailCallSelf`, so it does not need
+        // to capture itself.
+        assert_eq!(first_op_of(&compiled, "rec_one"), Op::MakeClosure);
+        let go = compiled
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some("go") && f.chunk.ops().contains(&Op::TailCallSelf));
+        assert!(go.is_some(), "rec_one's go calls itself with TailCallSelf");
+        // Mutual recursion, and a self-reference from a nested `fn`, still
+        // capture the group.
         assert_eq!(first_op_of(&compiled, "rec_two"), Op::MakeRecClosures);
+        assert_eq!(first_op_of(&compiled, "nested"), Op::MakeRecClosures);
         // No member refers to its own group: plain closures, as before.
         assert_eq!(first_op_of(&compiled, "plain"), Op::MakeClosure);
         assert_eq!(first_op_of(&compiled, "later"), Op::MakeClosure);

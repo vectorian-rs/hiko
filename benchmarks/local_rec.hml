@@ -1,0 +1,23 @@
+(* Recursive helpers defined inside a function, which capture its
+ * parameters: a tail-recursive loop and a non-tail recursion. *)
+fun sum_to n =
+  let
+    fun go (i, acc) = if i > n then acc else go (i + 1, acc + i)
+  in
+    go (1, 0)
+  end
+
+fun count_down n =
+  let
+    fun depth k = if k = 0 then 0 else 1 + depth (k - 1)
+  in
+    depth n
+  end
+
+fun repeat (k, acc) = if k = 0 then acc else repeat (k - 1, acc + count_down 10000)
+
+val total = sum_to 3000000 + repeat (100, 0)
+
+val _ = assert_eq (total, 4500001500000 + 1000000, "local_rec")
+
+val _ = println ("local_rec = " ^ int_to_string total)

@@ -135,6 +135,8 @@ impl VM {
         child.set_io_limits(self.heap.io_limits());
         child.set_max_message_bytes(self.heap.max_message_bytes());
         child.heap.share_fs_policy(&self.heap);
+        #[cfg(feature = "builtin-regex")]
+        child.heap.share_regex_cache(&self.heap);
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
         child.set_http_allowed_hosts_by_builtin(self.heap.http_allowed_hosts_by_builtin().clone());
         #[cfg(feature = "builtin-github")]

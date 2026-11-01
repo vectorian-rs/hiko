@@ -1,7 +1,8 @@
 use super::*;
-use ::regex::Regex;
+use ::regex::{Regex, RegexBuilder};
 use std::borrow::Cow;
 use std::mem::size_of;
+use std::sync::{Arc, Mutex};
 
 // Host work in opcode-equivalents, from the host_work_calibration example
 // (docs/builtins/accounting-matrix.md#calibration). The pattern is compiled
@@ -21,6 +22,62 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     ]
 }
 
+/// Patterns a process tree keeps compiled.
+const REGEX_CACHE_ENTRIES: usize = 32;
+/// Size limits for a cached regex's compiled program and lazy DFA. A
+/// pattern over them is compiled with the default limits and not cached, so
+/// the cache holds at most about `REGEX_CACHE_ENTRIES` x 512 KiB.
+const CACHED_REGEX_SIZE_LIMIT: usize = 256 * 1024;
+const CACHED_REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
+
+/// Compiled regexes shared by a process tree, most recently used first.
+/// `regex_match` and `regex_replace` compile their pattern on every call
+/// otherwise. Host work is charged as if the pattern were compiled, so the
+/// cache changes the time a call takes, not what it costs.
+#[derive(Debug, Default)]
+pub(crate) struct RegexCache {
+    // `Arc<Regex>`, not `Regex`: a cloned `Regex` gets its own search
+    // cache, which it allocates again on its first search.
+    entries: Mutex<Vec<(Arc<str>, Arc<Regex>)>>,
+}
+
+impl RegexCache {
+    /// The compiled `pattern`, from the cache or compiled now.
+    fn get(&self, pattern: &Arc<str>) -> Result<Arc<Regex>, ::regex::Error> {
+        {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(i) = entries.iter().position(|(p, _)| p == pattern) {
+                let entry = entries.remove(i);
+                let regex = entry.1.clone();
+                entries.insert(0, entry);
+                return Ok(regex);
+            }
+        }
+        // Compile without the lock, so a slow pattern does not stall other
+        // processes of the tree.
+        let regex = match RegexBuilder::new(pattern)
+            .size_limit(CACHED_REGEX_SIZE_LIMIT)
+            .dfa_size_limit(CACHED_REGEX_DFA_SIZE_LIMIT)
+            .build()
+        {
+            Ok(regex) => Arc::new(regex),
+            Err(::regex::Error::CompiledTooBig(_)) => return Regex::new(pattern).map(Arc::new),
+            Err(e) => return Err(e),
+        };
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if !entries.iter().any(|(p, _)| p == pattern) {
+            entries.insert(0, (pattern.clone(), regex.clone()));
+            entries.truncate(REGEX_CACHE_ENTRIES);
+        }
+        Ok(regex)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.lock().unwrap().len()
+    }
+}
+
 fn regex_work(per_kib: u64, text: &str, pattern: &str) -> u64 {
     host_work(REGEX_HOST_WORK, per_kib, text.len()).saturating_add(host_work(
         0,
@@ -36,7 +93,10 @@ pub(super) fn regex_match(args: &[Value], heap: &mut Heap) -> Result<Value, Stri
         "regex_match",
         regex_work(REGEX_MATCH_PER_KIB_HOST_WORK, &s, &pattern),
     )?;
-    let re = Regex::new(&pattern).map_err(|e| format!("regex_match: {e}"))?;
+    let re = heap
+        .regex_cache()
+        .get(&pattern)
+        .map_err(|e| format!("regex_match: {e}"))?;
     Ok(Value::Bool(re.is_match(&s)))
 }
 
@@ -56,7 +116,10 @@ pub(super) fn regex_replace(args: &[Value], heap: &mut Heap) -> Result<Value, St
         "regex_replace",
         regex_work(REGEX_REPLACE_PER_KIB_HOST_WORK, &s, &pattern),
     )?;
-    let re = Regex::new(&pattern).map_err(|e| format!("regex_replace: {e}"))?;
+    let re = heap
+        .regex_cache()
+        .get(&pattern)
+        .map_err(|e| format!("regex_replace: {e}"))?;
     let replaced = re.replace_all(&s, &*replacement);
     let output_len = match &replaced {
         Cow::Borrowed(text) => text.len(),
@@ -221,5 +284,50 @@ mod tests {
 
         let err = regex_replace(&[arg], &mut heap).unwrap_err();
         assert!(err.contains("regex_replace: memory limit exceeded"));
+    }
+
+    #[test]
+    fn regex_cache_reuses_a_pattern_and_stays_bounded() {
+        let cache = RegexCache::default();
+        let pattern: Arc<str> = Arc::from("^a+$");
+        assert!(cache.get(&pattern).unwrap().is_match("aaa"));
+        assert!(cache.get(&pattern).unwrap().is_match("a"));
+        assert_eq!(cache.len(), 1);
+        for i in 0..100 {
+            let pattern: Arc<str> = Arc::from(format!("^x{i}$").as_str());
+            assert!(cache.get(&pattern).unwrap().is_match(&format!("x{i}")));
+        }
+        assert_eq!(cache.len(), REGEX_CACHE_ENTRIES);
+    }
+
+    /// A pattern over the cache's size limits still compiles, with the
+    /// default limits, and is not kept.
+    #[test]
+    fn regex_cache_does_not_keep_large_patterns() {
+        let cache = RegexCache::default();
+        let pattern: Arc<str> = Arc::from(r"\w{100}");
+        assert!(cache.get(&pattern).is_ok());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn child_heap_shares_the_regex_cache() {
+        let parent = Heap::new();
+        let mut child = Heap::new();
+        child.share_regex_cache(&parent);
+        assert!(std::ptr::eq(parent.regex_cache(), child.regex_cache()));
+    }
+
+    /// A cache hit is charged like compiling the pattern.
+    #[test]
+    fn regex_cache_hit_is_charged_like_a_miss() {
+        let mut heap = Heap::new();
+        let s = string_arg(&mut heap, "abc");
+        let pat = string_arg(&mut heap, "b+");
+        let arg = tuple2(&mut heap, s, pat);
+        regex_match(&[arg], &mut heap).unwrap();
+        let first = heap.host_work_used();
+        regex_match(&[arg], &mut heap).unwrap();
+        assert_eq!(heap.host_work_used(), 2 * first);
     }
 }

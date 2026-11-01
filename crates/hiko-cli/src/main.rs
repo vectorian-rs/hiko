@@ -664,6 +664,8 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
             skip_bytes(code, ip, n_clauses * HANDLER_CLAUSE_BYTES)?;
         }
         Op::Unit
+        | Op::CallSelf
+        | Op::TailCallSelf
         | Op::True
         | Op::False
         | Op::Pop

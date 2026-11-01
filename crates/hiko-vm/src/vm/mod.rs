@@ -1679,6 +1679,32 @@ mod tests {
         }
     }
 
+    /// Local recursive functions calling themselves (`CallSelf`) keep their
+    /// captures, in tail and non-tail position, and a parameter or local
+    /// with the same name is called normally.
+    #[test]
+    fn test_local_self_calls() {
+        let vm = run("fun sum_to n =
+               let fun go (i, acc) = if i > n then acc else go (i + 1, acc + i)
+               in go (1, 0) end
+             fun depth n =
+               let fun d k = if k = 0 then 0 else 1 + d (k - 1)
+               in d n end
+             fun shadowed n =
+               let fun go go = go n
+               in go (fn x => x * 2) end
+             fun rebound n =
+               let fun go k = let val go = fn x => x + 100 in go k end
+               in go n end
+             val a = sum_to 100000
+             val b = depth 5000
+             val c = shadowed 21
+             val d = rebound 1");
+        for (name, expected) in [("a", 5000050000), ("b", 5000), ("c", 42), ("d", 101)] {
+            assert_eq!(global_int(&vm, name), expected, "{name}");
+        }
+    }
+
     #[test]
     fn test_provider_allocates_nothing_per_request() {
         // Going from 10 to 1,000 requests to one provider adds as many heap

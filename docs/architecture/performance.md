@@ -266,6 +266,41 @@ What each change removed from a call such as `ack (m - 1, 1)`:
 Fusing the opcode fetch at the top of the dispatch loop into the same helper
 made every benchmark about 15% slower and was not kept.
 
+### Regex cache (#135)
+
+`regex_match` and `regex_replace` compiled their pattern on every call. A
+cache shared by the process tree keeps up to 32 compiled patterns (each
+under 256 KiB of program and 256 KiB of lazy DFA). Host work is charged as
+before, so a cache hit costs the same budget as compiling.
+
+| Benchmark | Before | After |
+|---|---|---|
+| `regex_loop.hml` (12,000 calls, one pattern) | 163 ms | 9.3 ms |
+
+The first version returned clones of the cached `Regex`. A clone gets its
+own search cache and allocates it again on its first search, so cache hits
+were barely faster than compiling (53 ms). Entries are now `Arc<Regex>`.
+
+### Local recursive functions (#135)
+
+A function defined in `let` or `local` can capture variables, so the direct
+calls of #131 do not apply to it. Its calls to itself now compile to
+`CallSelf`/`TailCallSelf`, which reuse the running function and the current
+frame's captures instead of looking the closure up.
+
+| Benchmark | Before | After |
+|---|---|---|
+| `local_rec.hml` | 563 ms | 499 ms |
+
+Local functions are not flattened like top-level ones, so `go (i, acc)`
+still builds a tuple; that is most of what remains. The repo has few local
+recursive functions (none in `libraries/`), since functions inside a
+`structure` compile as top level.
+
+Also measured in #135 and not kept: decoding opcodes from a 256-entry table
+instead of `Op::try_from`'s `match`. It made `ack`, `tak`, `early_exit` and
+`ec_ack` 2-3% faster and `list_length` 4.5% slower, repeatably.
+
 ### Interpreter (after, one process)
 
 | Benchmark | Time |

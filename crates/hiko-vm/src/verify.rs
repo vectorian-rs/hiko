@@ -558,6 +558,21 @@ fn decode_instruction(
             }
         }
         Op::Return => StackRule::Terminal { min_depth: 1 },
+        Op::CallSelf | Op::TailCallSelf => {
+            let Some(proto) = proto else {
+                return Err(format!("{op:?} at offset {start} outside a function"));
+            };
+            let arity = proto.arity as usize;
+            if matches!(op, Op::CallSelf) {
+                successors.push(*ip);
+                StackRule::Exact {
+                    min_depth: arity,
+                    delta: 1 - arity as isize,
+                }
+            } else {
+                StackRule::Terminal { min_depth: arity }
+            }
+        }
         Op::CallDirect | Op::TailCallDirect => {
             let target_proto_idx = read_u16(chunk, ip, "direct call")? as usize;
             let target_proto = functions.get(target_proto_idx).ok_or_else(|| {
@@ -1325,5 +1340,15 @@ mod tests {
         // Opcode 55 was `Resume`; continuations are no longer values.
         let program = empty_program(vec![55, Op::Halt as u8]);
         verify_program(&program).expect_err("opcode 55 is not an instruction");
+    }
+
+    /// The main chunk is not a function, so it has nothing to call again.
+    #[test]
+    fn rejects_call_self_outside_a_function() {
+        for op in [Op::CallSelf, Op::TailCallSelf] {
+            let program = empty_program(vec![Op::Unit as u8, op as u8, Op::Halt as u8]);
+            let err = verify_program(&program).expect_err("CallSelf in main");
+            assert!(err.to_string().contains("outside a function"), "{err}");
+        }
     }
 }
