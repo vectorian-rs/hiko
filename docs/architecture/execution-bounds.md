@@ -66,10 +66,10 @@ the reference machine (12 ns on an Apple M1 Max), so `max_fuel` and
 N × 12 ns of work. Each builtin charges a fixed amount per call plus an
 amount per KiB of what it walks (and, for `split` and `string_join`, per
 part), with rates measured by the `host_work_calibration` example; see
-[the calibration table](../builtins/accounting-matrix.md#calibration). The
-rates are averages for the measured input shapes: a call can cost up to
-about twice its charge, or much less on input where the builtin stops early
-(a `string_contains` that finds its match at the start).
+[the calibration table](../builtins/accounting-matrix.md#calibration). Each
+rate is an upper bound over the input shapes measured, so most calls cost
+about their charge or less (up to about 4x less for JSON with long tokens or
+a simple regex), and a few shapes cost up to 1.7x their charge.
 
 ## Runtime boundaries
 
