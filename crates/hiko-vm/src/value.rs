@@ -31,6 +31,9 @@ pub enum Value {
 pub struct HostHandleId(pub u64);
 
 /// Runtime kind tag for an opaque host resource handle.
+// `Unsupported` keeps the type inhabited when no AWS feature is enabled; it
+// is not a non-exhaustive marker.
+#[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostHandleKind {
     #[cfg(feature = "builtin-aws-config")]
@@ -91,6 +94,9 @@ impl fmt::Debug for AwsSqsClientHandle {
 
 /// VM-owned opaque native resource. Heap values store only a small typed handle;
 /// the native Rust object is kept in the owning heap's host-resource table.
+// `Unsupported` keeps the type inhabited when no AWS feature is enabled; it
+// is not a non-exhaustive marker.
+#[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug)]
 pub enum HostResource {
     #[cfg(feature = "builtin-aws-config")]
