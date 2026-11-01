@@ -1,0 +1,49 @@
+(* Fan-out of file I/O: walk .git once, then 32 children each read and
+ * BLAKE3-hash a 32nd of the files. scripts/bench.sh points it at a copy of
+ * the git directory when .git is a file. Needs a policy that allows
+ * walk_dir and read_file_bytes there. *)
+val target_dir = ".git"
+
+val chunks = 32
+
+fun hash_all (paths, acc) =
+  case paths of
+      [] => acc
+    | path :: rest =>
+      let
+        val bytes = read_file_bytes path
+        val _ = blake3 bytes
+      in
+        hash_all (rest, acc + bytes_length bytes)
+      end
+
+(* Split the files into contiguous chunks of `size`. *)
+fun take (xs, n, acc) =
+  case xs of
+      [] => (acc, [])
+    | x :: rest => if n = 0 then (acc, xs) else take (rest, n - 1, x :: acc)
+
+fun split (xs, size) =
+  case xs of
+      [] => []
+    | _ => let val (chunk, rest) = take (xs, size, []) in chunk :: split (rest, size) end
+
+fun length (xs, n) = case xs of [] => n | _ :: rest => length (rest, n + 1)
+
+fun spawn_all (lists, acc) =
+  case lists of
+      [] => acc
+    | l :: ls => spawn_all (ls, spawn (fn () => hash_all (l, 0)) :: acc)
+
+fun await_all (pids, acc) =
+  case pids of
+      [] => acc
+    | pid :: rest => await_all (rest, acc + await_process pid)
+
+val files = walk_dir target_dir
+
+val size = (length (files, 0) + chunks - 1) / chunks
+
+val total = await_all (spawn_all (split (files, size), []), 0)
+
+val _ = println ("fanout_hash = " ^ int_to_string total)

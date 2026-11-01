@@ -75,19 +75,26 @@ bench "CPU fan-out, 64 children" \
 bench "File-read fan-out, 1,000 children" \
     -L workers 1,2,4,8 "$hiko --workers {workers} benchmarks/fanout_read.hml"
 
-# examples/benchmark.hml walks .git. In a git worktree .git is a file, so
-# walk a copy of the repository's git directory instead. It needs every
-# filesystem builtin, so it runs under the default policy.
+# The .git workloads walk .git. In a git worktree .git is a file, so they
+# walk a copy of the repository's git directory instead.
 git_dir=.git
 if [ ! -d .git ]; then
     git_dir=target/bench-git
     [ -d "$git_dir" ] || cp -R "$(git rev-parse --git-common-dir)" "$git_dir"
 fi
-sed "s|\"\\.git\"|\"$git_dir\"|" examples/benchmark.hml >target/bench-walk.hml
-sed "s|\"\\.git\"|\"$git_dir\"|" examples/benchmark.py >target/bench-walk.py
+for f in benchmarks/fanout_hash.hml examples/benchmark.hml examples/benchmark.py; do
+    sed "s|\"\\.git\"|\"$git_dir\"|" "$f" >"target/bench-$(basename "$f")"
+done
+
+bench "File-hash fan-out over $git_dir, 32 children" \
+    -L workers 1,2,4,8 "$hiko --workers {workers} target/bench-fanout_hash.hml"
+
+# benchmark.hml needs every filesystem builtin, so it runs under the default
+# policy.
 if python3 -c "import blake3" 2>/dev/null; then
     bench "Walk and hash $git_dir (vs Python)" \
-        "$HIKO_BIN run --config hiko.toml target/bench-walk.hml" "python3 target/bench-walk.py"
+        "$HIKO_BIN run --config hiko.toml target/bench-benchmark.hml" \
+        "python3 target/bench-benchmark.py"
 else
     echo "skipping the walk benchmark: python3 has no blake3 module" >&2
 fi
