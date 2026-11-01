@@ -75,6 +75,11 @@ bench "CPU fan-out, 64 children" \
 bench "File-read fan-out, 1,000 children" \
     -L workers 1,2,4,8 "$hiko --workers {workers} benchmarks/fanout_read.hml"
 
+bench "Sequential reads, 1,000 in one process" "$hiko benchmarks/read_sequential.hml"
+
+bench "Sequential-read fan-out, 32 children x 100 reads" \
+    -L workers 1,2,4,8 "$hiko --workers {workers} benchmarks/fanout_read_sequential.hml"
+
 # The .git workloads walk .git. In a git worktree .git is a file, so they
 # walk a copy of the repository's git directory instead.
 git_dir=.git
