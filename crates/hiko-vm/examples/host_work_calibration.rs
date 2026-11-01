@@ -132,6 +132,8 @@ const CALLS: &[(&str, &str)] = &[
     ("random_bytes", "random_bytes SIZE"),
     ("rng_bytes", "rng_bytes (rng, SIZE)"),
     ("rng_seed", "rng_seed bytes"),
+    ("rng_int", "rng_int (rng, 1000)"),
+    ("json_keys", "json_keys json_object"),
 ];
 
 struct Run {
