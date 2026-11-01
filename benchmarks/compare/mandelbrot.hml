@@ -1,0 +1,28 @@
+(* Count the points of a 300 x 300 grid that stay bounded for 50 iterations
+ * of z = z^2 + c. Float arithmetic. *)
+val n = 300
+val size = int_to_float n
+
+fun iter (cr : float, ci : float, zr : float, zi : float, i) =
+  if i = 50 then 1
+  else
+    let
+      val zr2 = zr * zr
+      val zi2 = zi * zi
+    in
+      if zr2 + zi2 > 4.0 then 0 else iter (cr, ci, zr2 - zi2 + cr, 2.0 * zr * zi + ci, i + 1)
+    end
+
+fun row (y, x, acc) =
+  if x = n then acc
+  else
+    let
+      val cr = 2.0 * int_to_float x / size - 1.5
+      val ci = 2.0 * int_to_float y / size - 1.0
+    in
+      row (y, x + 1, acc + iter (cr, ci, 0.0, 0.0, 0))
+    end
+
+fun rows (y, acc) = if y = n then acc else rows (y + 1, row (y, 0, acc))
+
+val _ = println (int_to_string (rows (0, 0)))

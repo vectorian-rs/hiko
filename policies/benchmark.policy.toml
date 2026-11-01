@@ -14,6 +14,15 @@ enabled = true
 [capabilities.convert.int_to_string]
 enabled = true
 
+[capabilities.convert.int_to_float]
+enabled = true
+
+[capabilities.math.floor]
+enabled = true
+
+[capabilities.math.sqrt]
+enabled = true
+
 [capabilities.string.string_length]
 enabled = true
 
