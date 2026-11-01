@@ -19,6 +19,8 @@ The script needs [hyperfine](https://github.com/sharkdp/hyperfine). It runs:
 | `benchmarks/spawn_await.hml` | Spawn and await 6,000 trivial children through the threaded runtime, at 1 and 8 workers. |
 | `benchmarks/fanout_cpu.hml` | 64 children computing `fib 22`, at 1, 2, 4 and 8 workers. |
 | `benchmarks/fanout_read.hml` | 1,000 children each reading `README.md`, at 1, 2, 4 and 8 workers. |
+| `benchmarks/read_sequential.hml` | One process reading `README.md` 1,000 times in sequence: the round trip of an async I/O request. |
+| `benchmarks/fanout_read_sequential.hml` | 32 children each reading `README.md` 100 times in sequence, at 1, 2, 4 and 8 workers. |
 | `benchmarks/spawn_shared.hml` | One 10,000-element list sent to 200 children, as a capture and as a top-level binding. |
 | `benchmarks/fanout_hash.hml` | Walk `.git` once, then 32 children each read and BLAKE3-hash a 32nd of the files, at 1, 2, 4 and 8 workers. |
 | `examples/benchmark.hml` vs `examples/benchmark.py` | Walk `.git` and hash every file, against Python. |
@@ -151,6 +153,50 @@ splitting the list, spawning). With eight passes over the files per child,
 so that the serial part matters less, 1 to 8 workers goes from 1.30 s to
 0.50 s (2.6x). Plain Rust threads reading the same files on the same machine
 reach 2.4x to 3x, so the parallel part scales as far as the OS lets it.
+
+### I/O completion latency (after)
+
+In the threaded runtime, `read_file`, HTTP requests and `sleep` are async: the
+process parks, the I/O backend runs the request on its thread pool, and the
+runtime's monitor thread queues the process again when the result arrives.
+The monitor used to sleep 1 ms between polls of the backend, so every request
+also waited for the next tick, about 1.5 ms on macOS. The backend now wakes
+the monitor when it stores a result.
+
+Measured at commit `8be4802`, load average about 12 on 10 cores; "before" is
+the same branch without that commit.
+
+| Workload | Before | After |
+|---|---|---|
+| `read_sequential.hml` (1,000 reads in one process) | 1.52 s | 39 ms |
+
+`fanout_read_sequential.hml`:
+
+| Workers | Before | After |
+|---|---|---|
+| 1 | 152 ms | 124 ms |
+| 2 | 153 ms | 122 ms |
+| 4 | 154 ms | 118 ms |
+| 8 | 163 ms | 110 ms |
+
+`fanout_read.hml`, `fanout_hash.hml`, `fanout_cpu.hml` and `spawn_await.hml`
+are unchanged within noise. `fanout_hash` uses `read_file_bytes`, which is
+not async; `fanout_read` keeps 32 requests in flight, so the delay overlapped.
+
+### What the worker count scales
+
+Async I/O does not run on the runtime's workers. Each process tree may have
+`max_concurrent_io` requests in flight (32 by default) on the I/O backend's
+pool, so I/O is already concurrent with one worker, and the worker count only
+scales the work between requests:
+
+- **CPU-bound fan-out** scales to 4.9x at 8 workers (`fanout_cpu`).
+- **File-hash fan-out**, whose reads and hashing run on the workers, scales to
+  2.1x, as far as plain Rust threads get on the same files (2.4x to 3x).
+- **Async read fan-outs** (`fanout_read`, `fanout_read_sequential`) are
+  concurrent at one worker and stay flat. Their time is now kernel time: 32
+  backend threads opening the same file use about 800 ms of system time in a
+  120 ms run.
 
 ### Interpreter (after, one process)
 
