@@ -32,7 +32,8 @@ use crate::op::{
 /// only accepted if its BLAKE3 hash matches the lockfile entry.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleLoaderOptions {
-    /// Module cache directory. `None` uses `$HOME/.hiko/lib-cache`.
+    /// Module cache directory. `None` uses the manifest's `[defaults]
+    /// lib_cache` (relative to `hiko.toml`), else `$HOME/.hiko/lib-cache`.
     pub cache_dir: Option<PathBuf>,
     /// Local package directory checked before the cache and the network.
     /// A module `Pkg.Mod` locked at version `V` is read from
@@ -468,6 +469,8 @@ struct ImportLoaderConfig {
 #[serde(deny_unknown_fields)]
 struct ImportManifestDefaults {
     lockfile: Option<String>,
+    /// Module cache directory, relative to the manifest's directory.
+    lib_cache: Option<String>,
     #[serde(default)]
     #[serde(rename = "policy")]
     _policy: Option<String>,
@@ -1615,9 +1618,23 @@ impl Compiler {
             validate_lockfile(&lockfile, lockfile_path)?;
             validate_lockfile_against_manifest(&lockfile, lockfile_path, &loader_config)?;
             self.import_lockfile = Some(lockfile);
-            self.module_cache_dir = match &self.loader_options.cache_dir {
-                Some(dir) => Some(dir.clone()),
-                None => Some(default_module_cache_dir()?),
+            // The embedder's choice, then the manifest's, then the default.
+            let manifest_cache = loader_config
+                .manifest
+                .defaults
+                .lib_cache
+                .as_ref()
+                .map(|dir| {
+                    let manifest_dir = loader_config
+                        .manifest_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."));
+                    manifest_dir.join(dir)
+                });
+            self.module_cache_dir = match (&self.loader_options.cache_dir, manifest_cache) {
+                (Some(dir), _) => Some(dir.clone()),
+                (None, Some(dir)) => Some(dir),
+                (None, None) => Some(default_module_cache_dir()?),
             };
         }
         let lockfile = self.import_lockfile.as_ref().unwrap();
@@ -3503,6 +3520,104 @@ val result = Box.get (Box.make 41)
         );
 
         let _ = std::fs::remove_file(&cache_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn manifest_lib_cache_holds_fetched_modules() {
+        let project_dir = unique_temp_dir("manifest-lib-cache");
+        write_file(
+            &project_dir.join("hiko.toml"),
+            "[defaults]\nlockfile = \"hiko.lock.toml\"\nlib_cache = \"modules-cache\"\n",
+        );
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "structure List = struct\n  val forty_two = 42\nend\n".to_string();
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let (list_url, server) = spawn_single_response_server("/modules/List.hml", module_source);
+        let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Std.List\nval answer = List.forty_two\n",
+        );
+        let compile = || {
+            let source = std::fs::read_to_string(&entry_path).expect("read source");
+            // No embedder override: the manifest's lib_cache applies.
+            Compiler::compile_file_with_options(
+                parse_program(&source),
+                &entry_path,
+                ModuleLoaderOptions::default(),
+            )
+        };
+
+        let first = compile();
+        server.join().expect("join server");
+        assert!(first.is_ok(), "first compile should fetch: {first:?}");
+        let cached = project_dir.join("modules-cache").join(format!(
+            "{}-{module_hash}.hml",
+            blake3_hex(format!("{base_url}/modules/List.hml").as_bytes())
+        ));
+        assert!(
+            cached.is_file(),
+            "expected the module in the manifest's lib_cache"
+        );
+
+        // The server has gone, so this compile can only use the cache.
+        let second = compile();
+        assert!(
+            second.is_ok(),
+            "second compile should reuse the cache: {second:?}"
+        );
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn loader_cache_dir_overrides_manifest_lib_cache() {
+        let project_dir = unique_temp_dir("lib-cache-override");
+        write_file(
+            &project_dir.join("hiko.toml"),
+            "[defaults]\nlockfile = \"hiko.lock.toml\"\nlib_cache = \"modules-cache\"\n",
+        );
+        let entry_path = project_dir.join("main.hml");
+        let module_source = "structure List = struct\n  val forty_two = 42\nend\n";
+        let module_hash = blake3_hex(module_source.as_bytes());
+        // Nothing listens here: the module must come from the cache.
+        let base_url = "http://127.0.0.1:9/Std-v0.1.0";
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(
+            &entry_path,
+            "import Std.List\nval answer = List.forty_two\n",
+        );
+        write_file(
+            &cached_module_path(
+                &entry_path,
+                &format!("{base_url}/modules/List.hml"),
+                &module_hash,
+            ),
+            module_source,
+        );
+
+        let result = compile_path(&entry_path);
+        assert!(
+            result.is_ok(),
+            "the override cache has the module: {result:?}"
+        );
+        assert!(
+            !project_dir.join("modules-cache").exists(),
+            "the manifest's lib_cache must not be used"
+        );
+
         std::fs::remove_dir_all(&project_dir).ok();
     }
 

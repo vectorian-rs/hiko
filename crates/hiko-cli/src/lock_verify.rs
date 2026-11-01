@@ -16,6 +16,9 @@ struct LockManifestDefaults {
     #[serde(default)]
     #[serde(rename = "policy")]
     _policy: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "lib_cache")]
+    _lib_cache: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -336,6 +339,17 @@ fn normalize_blake3(hash: &str) -> String {
 mod tests {
     use super::{parse_verify_args, validate_remote_base_url};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn lock_manifest_accepts_lib_cache() {
+        let manifest: super::LockProjectManifest =
+            toml::from_str("[defaults]\nlockfile = \"hiko.lock.toml\"\nlib_cache = \".cache\"\n")
+                .expect("lib_cache is a known [defaults] key");
+        assert_eq!(
+            manifest.defaults.lockfile.as_deref(),
+            Some("hiko.lock.toml")
+        );
+    }
 
     #[test]
     fn parse_verify_args_accepts_both_config_forms() {
