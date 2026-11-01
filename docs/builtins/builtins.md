@@ -99,13 +99,6 @@ builtins and is not exhaustive.
 | ----------- | --------------------------- | -------------------------------------------------------- |
 | `path_join` | `string * string -> string` | Join two path components without touching the filesystem |
 
-## Hashline (content-addressed editing)
-
-| Builtin            | Type                           | Description                              |
-| ------------------ | ------------------------------ | ---------------------------------------- |
-| `read_file_tagged` | `string * int * int -> string` | Read file with 64-bit FNV-1a line hashes |
-| `edit_file_tagged` | `string * string -> string`    | Apply hashline-based edit                |
-
 ## HTTP
 
 | Builtin        | Type                                                                                         | Description                                                        |
