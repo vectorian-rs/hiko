@@ -133,6 +133,13 @@ pub enum Op {
     JumpIfNotGtInt = 76,
     JumpIfNotLeInt = 77,
     JumpIfNotGeInt = 78,
+
+    /// Call the running function again: a local recursive function calling
+    /// itself. No operands; the arguments are the top `arity` stack values
+    /// of the current function, and the new frame reuses its captures.
+    CallSelf = 79,
+    /// `CallSelf` in tail position: reuse the current frame.
+    TailCallSelf = 80,
 }
 
 impl TryFrom<u8> for Op {
@@ -217,6 +224,8 @@ impl TryFrom<u8> for Op {
             76 => Ok(Op::JumpIfNotGtInt),
             77 => Ok(Op::JumpIfNotLeInt),
             78 => Ok(Op::JumpIfNotGeInt),
+            79 => Ok(Op::CallSelf),
+            80 => Ok(Op::TailCallSelf),
             _ => Err(b),
         }
     }

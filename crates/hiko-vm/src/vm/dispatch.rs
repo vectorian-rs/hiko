@@ -436,6 +436,36 @@ impl VM {
                     });
                 }
 
+                Op::CallSelf => {
+                    let arity = self.proto(proto_idx)?.arity as usize;
+                    let arg_start = self.stack_start_for_arity(arity, "CallSelf")?;
+                    if self.frames.len() >= DEFAULT_MAX_CALL_FRAMES {
+                        return Err(RuntimeError {
+                            message: "stack overflow".into(),
+                        });
+                    }
+                    let captures = self.frames[fi].captures.clone();
+                    self.frames.push(CallFrame {
+                        proto_idx,
+                        ip: 0,
+                        base: arg_start,
+                        captures,
+                    });
+                }
+
+                Op::TailCallSelf => {
+                    let arity = self.proto(proto_idx)?.arity as usize;
+                    let args_start = self.stack_start_for_arity(arity, "TailCallSelf")?;
+                    let base = self.frames[fi].base;
+                    for i in 0..arity {
+                        let dst = self.checked_stack_index(base, i, "TailCallSelf target")?;
+                        let src = self.checked_stack_index(args_start, i, "TailCallSelf args")?;
+                        self.stack[dst] = self.stack[src];
+                    }
+                    self.stack.truncate(base + arity);
+                    self.frames[fi].ip = 0;
+                }
+
                 Op::TailCallDirect => {
                     let proto_idx = self.read_u16()? as usize;
                     let proto = self.proto(proto_idx)?;
