@@ -231,6 +231,41 @@ means of 15 to 20 runs:
   `nqueens`, `ec_fib`, `spawn_shared`, `spawn_await`, `fanout_hash` at 8
   workers, and `benchmark.hml`.
 
+### Function calls (#131)
+
+`main` at `d375a47` against PR #131, side by side, hyperfine means of 10 runs
+under the `benchmark` policy:
+
+| Benchmark | Before | After | Speedup |
+|---|---|---|---|
+| `ack.hml` | 2.79 s | 1.21 s | 2.3x |
+| `tak.hml` | 664 ms | 261 ms | 2.5x |
+| `nqueens.hml` | 31.2 ms | 16.7 ms | 1.9x |
+| `ec_ack.hml` | 240 ms | 133 ms | 1.8x |
+| `early_exit.hml` | 506 ms | 332 ms | 1.5x |
+| `string_concat.hml` | 210 ms | 135 ms | 1.6x |
+| `ec_fib.hml` | 972 ms | 695 ms | 1.4x |
+| `fanout_cpu.hml` | 337 ms | 253 ms | 1.3x |
+| `string_args.hml` | 186 ms | 159 ms | 1.2x |
+| `spawn_await.hml`, `spawn_shared.hml`, `spawn_strings.hml`, `fanout_hash.hml`, `primes.hml` | | | within noise to 1.2x |
+
+What each change removed from a call such as `ack (m - 1, 1)`:
+
+- **A heap tuple.** A top-level function whose clauses take one tuple
+  pattern gets a flat entry with one parameter per component, and a call
+  with a tuple expression passes the components directly. The ordinary
+  entry remains for tuple values and for the function used as a value.
+- **The generic call path.** Calls between members of a top-level `fun`
+  group are `CallDirect`/`TailCallDirect`, instead of `GetGlobal` and `Call`
+  with a callee check, a closure lookup and a captures clone.
+- **Allocations.** `values_equal` no longer allocates to compare two scalars
+  (`m = 0`), and direct calls share one empty captures `Arc`.
+- **Repeated lookups.** Reading an operand finds the current frame and its
+  code once instead of three times.
+
+Fusing the opcode fetch at the top of the dispatch loop into the same helper
+made every benchmark about 15% slower and was not kept.
+
 ### Interpreter (after, one process)
 
 | Benchmark | Time |
