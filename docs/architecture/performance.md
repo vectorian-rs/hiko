@@ -278,7 +278,7 @@ intermediate commits). A spawned child makes one allocation fewer (spawn path:
 7 instead of 8; with 4 captures 25 instead of 26), because its global table is
 no longer preallocated.
 
-### Compare and branch (PR #131)
+### Compare and branch (PR #132)
 
 A condition such as `if n < 2` compiled to `LtInt`, which pushed a `Bool`,
 and `JumpIfFalse`, which popped it. Six instructions now compare and jump in
