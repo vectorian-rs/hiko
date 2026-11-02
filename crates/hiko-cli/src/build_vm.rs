@@ -34,6 +34,10 @@ pub struct BuildVmOptions {
     /// Depend on the hiko crates in this checkout instead of crates.io.
     pub hiko_path: Option<PathBuf>,
     pub out_dir: Option<PathBuf>,
+    /// Where `--lock` reads modules from before the cache and the network
+    /// (`ModuleLoaderOptions`); tests point these at the repository.
+    pub local_package_root: Option<PathBuf>,
+    pub cache_dir: Option<PathBuf>,
 }
 
 pub fn parse_args(args: &[String]) -> Result<BuildVmOptions, String> {
@@ -159,13 +163,20 @@ fn collect_sealed(
     extensions: &[&'static Extension],
 ) -> Result<Sealed, String> {
     let modules = match &options.lock {
-        Some(lock) => Compiler::locked_module_sources(lock, ModuleLoaderOptions::default())
-            .map_err(|e| {
-                format!(
-                    "cannot read the locked modules of '{}': {e:?}",
-                    lock.display()
-                )
-            })?,
+        Some(lock) => Compiler::locked_module_sources(
+            lock,
+            ModuleLoaderOptions {
+                local_package_root: options.local_package_root.clone(),
+                cache_dir: options.cache_dir.clone(),
+                ..ModuleLoaderOptions::default()
+            },
+        )
+        .map_err(|e| {
+            format!(
+                "cannot read the locked modules of '{}': {e:?}",
+                lock.display()
+            )
+        })?,
         None => Vec::new(),
     };
     let script = match &options.script {
@@ -448,6 +459,8 @@ mod tests {
             script: Some(script_project(&dir)),
             hiko_path: Some(repo()),
             out_dir: Some(dir.join("hiko-vm-sealed")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
         };
         let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
 
@@ -487,6 +500,8 @@ mod tests {
             config_path: "run.toml".into(),
             script: Some(script_project(&dir)),
             out_dir: Some(dir.join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let err = generate(&options, &config(), &[]).expect_err("Std.Option is not embedded");
@@ -501,6 +516,8 @@ mod tests {
             config_path: "run.toml".into(),
             lock: Some(repo().join("hiko.lock.toml")),
             out_dir: Some(dir.join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
@@ -524,6 +541,8 @@ mod tests {
             config_path: "run.toml".into(),
             hiko_path: Some(repo()),
             out_dir: Some(dir.join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let out = generate(&options, &github_config(), &[]).unwrap_or_else(|e| panic!("{e}"));
@@ -546,6 +565,8 @@ mod tests {
         let options = BuildVmOptions {
             config_path: "run.toml".into(),
             out_dir: Some(temp_dir("unknown-ext").join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let err = generate(&options, &config, &[]).expect_err("nope is not an extension");
@@ -560,6 +581,8 @@ mod tests {
             config_path: "run.toml".into(),
             script: Some(dir.join("main.hml")),
             out_dir: Some(dir.join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let err = generate(&options, &github_config(), &[]).expect_err("github is not linked");
@@ -573,6 +596,8 @@ mod tests {
         let options = BuildVmOptions {
             config_path: "run.toml".into(),
             out_dir: Some(temp_dir("bad-ext").join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let err =
@@ -598,6 +623,8 @@ mod tests {
             script: Some(dir.join("main.hml")),
             hiko_path: Some(repo()),
             out_dir: Some(dir.join("hiko-vm-e2e-ext")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
         let out = generate(&options, &github_config(), &[&hiko_ext_github::GITHUB])
@@ -631,6 +658,8 @@ mod tests {
             script: Some(script_project(&dir)),
             hiko_path: Some(repo()),
             out_dir: Some(dir.join("hiko-vm-e2e")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
         };
         let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
         let cargo = |dir: &Path| {
