@@ -198,17 +198,17 @@ val fn_count =
 
 | Function | Type | Description |
 |---|---|---|
-| `print` / `println` | `'a -> unit` | Output to stdout |
+| `print` / `println` | `string -> unit` | Output to stdout |
 | `int_to_string` | `int -> string` | Convert int to string |
 | `float_to_string` | `float -> string` | Convert float to string |
 | `string_to_int` | `string -> int` | Parse string to int |
 | `string_length` | `string -> int` | Character count |
-| `substring` | `(string, int, int) -> string` | Extract substring |
-| `split` | `(string, string) -> string list` | Split by delimiter |
+| `substring` | `string * int * int -> string` | Extract substring |
+| `split` | `string * string -> string list` | Split by delimiter |
 | `trim` | `string -> string` | Trim whitespace |
-| `read_file` / `write_file` | File I/O | Read/write file contents |
+| `read_file` / `write_file` | `string -> string` / `string * string -> unit` | Read/write file contents |
 | `http_get` | `string -> int * (string * string) list * string` | HTTP GET returning `(status, headers, body)` |
-| `assert` / `assert_eq` | Testing helpers | Runtime assertions |
+| `assert` / `assert_eq` | `bool * string -> unit` / `'a * 'a * string -> unit` | Runtime assertions |
 
 ## Architecture
 
@@ -231,7 +231,7 @@ Type Inference ──> Typed AST   (Algorithm W, Hindley-Milner)
 Exhaustiveness ──> Warnings    (Maranget usefulness algorithm)
   |
   v
-Compiler ──> Bytecode          (71 opcodes, two-pass pattern compilation)
+Compiler ──> Bytecode          (79 opcodes, two-pass pattern compilation)
   |
   v
 VM ──> Execution               (stack-based, mark-and-sweep GC)
@@ -262,7 +262,7 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 **Exhaustiveness Checking.** Based on Maranget's "Warnings for pattern matching" (JFP 2007). Uses the usefulness algorithm: a match is exhaustive iff the wildcard pattern is not useful against the existing clauses. Reports both missing cases and redundant clauses.
 
-**Bytecode Compiler.** Direct walk of the typed AST producing 71 opcodes. Two-pass pattern compilation (test-then-bind) with tail-call optimization propagated through `if`/`let`/`case` branches.
+**Bytecode Compiler.** Direct walk of the typed AST producing 79 opcodes. Two-pass pattern compilation (test-then-bind) with tail-call optimization propagated through `if`/`let`/`case` branches.
 
 **VM.** Stack-based with `Vec<Value>` stack and `Vec<CallFrame>` frames. `Value` is `Copy` (no Rc, no Drop), 16 bytes, passed by value. Heap objects referenced via `GcRef(u32)` indices into the GC arena.
 
