@@ -1,0 +1,67 @@
+(*!
+ * GitHub issue operations, from the hiko-ext-github extension.
+ *
+ * Each operation shells out to the `gh` CLI. The run config's
+ * `[extensions.github]` table lists the repositories each operation may use.
+ *)
+structure Issue = struct
+  type repo = string
+
+  type issue_number = int
+
+  type url = string
+
+  (*! Error message returned by the underlying `gh` invocation. *)
+  type error = string
+
+  datatype ('a, 'e) result =
+      Ok of 'a
+    | Err of 'e
+
+  (* Lift the raw (ok, payload, error) triple into a result. *)
+  fun from_raw raw =
+    case raw of
+        (true, payload, _) => Ok payload
+      | (false, _, message) => Err message
+
+  (*! Create an issue; returns its URL. *)
+  fun create repo title body = from_raw (github_issue_create (repo, title, body))
+
+  (*! View an issue; returns JSON with number, title, state and url. *)
+  fun view repo number = from_raw (github_issue_view (repo, number))
+
+  (*!
+   * Update an issue with a JSON spec. Keys: SetTitle, SetBody, AddLabel,
+   * RemoveLabel, Close, Reopen. Returns the issue as JSON.
+   *)
+  fun update repo number spec = from_raw (github_issue_update (repo, number, spec))
+
+  (*! List up to 100 open issues as a JSON array. *)
+  fun list_open repo = from_raw (github_issue_list repo)
+
+  datatype action =
+      SetTitle of string
+    | SetBody of string
+    | AddLabel of string
+    | RemoveLabel of string
+    | Close
+    | Reopen
+
+  fun action_json action =
+    case action of
+        SetTitle t => "\"SetTitle\":\"" ^ t ^ "\""
+      | SetBody b => "\"SetBody\":\"" ^ b ^ "\""
+      | AddLabel l => "\"AddLabel\":\"" ^ l ^ "\""
+      | RemoveLabel l => "\"RemoveLabel\":\"" ^ l ^ "\""
+      | Close => "\"Close\":true"
+      | Reopen => "\"Reopen\":true"
+
+  fun join_actions actions =
+    case actions of
+        [] => ""
+      | action :: [] => action_json action
+      | action :: rest => action_json action ^ "," ^ join_actions rest
+
+  (*! Build an update spec from a list of actions, applied in order. *)
+  fun update_spec actions = "{" ^ join_actions actions ^ "}"
+end
