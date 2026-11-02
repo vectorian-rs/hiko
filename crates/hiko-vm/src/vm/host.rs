@@ -44,7 +44,7 @@ impl OutputSink for StderrOutputSink {
 
 pub(super) struct ResolvedExec {
     display_command: String,
-    allowed_path: ExecAllowedPath,
+    allowed: AllowedExecutable,
     args: Vec<String>,
 }
 
@@ -130,38 +130,40 @@ fn canonicalize_exec_candidate(path: &Path) -> Option<PathBuf> {
 }
 
 /// The identity of the file at `path` now.
-fn exec_allowed_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
+fn file_identity(path: PathBuf) -> Result<FileIdentity, String> {
     let metadata = path
         .metadata()
         .map_err(|e| format!("cannot stat executable '{}': {e}", path.display()))?;
-    exec_identity(path, metadata, None)
+    identity_from(path, &metadata)
 }
 
 /// Open the executable at `path` and take its identity from the open file,
-/// which stays open in `pin`. An executable the VM may not read is allowed
-/// by identity only.
-fn pinned_exec_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
+/// which stays open. An executable the VM may not read is allowed by
+/// identity only.
+fn allowed_executable(path: PathBuf) -> Result<AllowedExecutable, String> {
     match std::fs::File::open(&path) {
         Ok(file) => {
             let metadata = file
                 .metadata()
                 .map_err(|e| format!("cannot stat executable '{}': {e}", path.display()))?;
-            exec_identity(path, metadata, Some(Arc::new(file)))
+            Ok(AllowedExecutable {
+                id: identity_from(path, &metadata)?,
+                pin: Some(Arc::new(file)),
+            })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => exec_allowed_path(path),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(AllowedExecutable {
+            id: file_identity(path)?,
+            pin: None,
+        }),
         Err(e) => Err(format!("cannot open executable '{}': {e}", path.display())),
     }
 }
 
-fn exec_identity(
-    path: PathBuf,
-    metadata: std::fs::Metadata,
-    pin: Option<Arc<std::fs::File>>,
-) -> Result<ExecAllowedPath, String> {
+fn identity_from(path: PathBuf, metadata: &std::fs::Metadata) -> Result<FileIdentity, String> {
     if !metadata.is_file() {
         return Err(format!("executable '{}' is not a file", path.display()));
     }
-    Ok(ExecAllowedPath {
+    Ok(FileIdentity {
         path,
         #[cfg(unix)]
         dev: {
@@ -179,16 +181,11 @@ fn exec_identity(
             (metadata.ctime(), metadata.ctime_nsec())
         },
         len: metadata.len(),
-        pin,
     })
 }
 
-fn resolve_exec_command(command: &str) -> Result<ExecAllowedPath, String> {
-    resolve_exec_command_path(command).and_then(exec_allowed_path)
-}
-
-fn resolve_allowed_exec_command(command: &str) -> Result<ExecAllowedPath, String> {
-    resolve_exec_command_path(command).and_then(pinned_exec_path)
+fn resolve_exec_command(command: &str) -> Result<FileIdentity, String> {
+    resolve_exec_command_path(command).and_then(file_identity)
 }
 
 fn resolve_exec_command_path(command: &str) -> Result<PathBuf, String> {
@@ -237,32 +234,30 @@ impl VM {
     }
 
     /// Set the commands `exec` may run with any arguments, and the argument
-    /// rules. Each command is resolved to a file now; a call must resolve to
-    /// the same file.
+    /// rules. Each command is resolved to a file and opened once, now; a call
+    /// must resolve to the same file.
     pub fn set_exec_policy(&mut self, allowed: Vec<String>, rules: Vec<ExecArgvRule>) {
-        let mut resolved = Vec::new();
-        let mut errors = Vec::new();
-        for command in &allowed {
-            match resolve_allowed_exec_command(command) {
-                Ok(path) => resolved.push(path),
-                Err(err) => errors.push(format!("{command}: {err}")),
-            }
-        }
-        let mut resolved_rules = Vec::new();
-        for rule in rules {
+        let any_arguments = allowed.into_iter().map(|command| ExecArgvRule {
+            argv: vec![command],
+            rest_any: true,
+        });
+        let mut opened: HashMap<String, Result<AllowedExecutable, String>> = HashMap::new();
+        let mut policy = ResolvedExecPolicy::default();
+        for rule in any_arguments.chain(rules) {
             let Some(command) = rule.argv.first() else {
-                errors.push("an argv rule is empty".to_string());
+                policy.errors.push("an argv rule is empty".to_string());
                 continue;
             };
-            match resolve_allowed_exec_command(command) {
-                Ok(path) => resolved_rules.push((rule, path)),
-                Err(err) => errors.push(format!("{command}: {err}")),
+            let executable = opened
+                .entry(command.clone())
+                .or_insert_with(|| resolve_exec_command_path(command).and_then(allowed_executable));
+            match executable {
+                Ok(executable) => policy.rules.push((rule.clone(), executable.clone())),
+                Err(err) => policy.errors.push(format!("{command}: {err}")),
             }
         }
-        self.exec_allowed = allowed;
-        self.exec_allowed_paths = resolved;
-        self.exec_rules = resolved_rules;
-        self.exec_allowed_resolution_errors = errors;
+        policy.errors.dedup();
+        self.exec_policy = Arc::new(policy);
     }
 
     /// Format a value for display in `print` / `println`.
@@ -360,43 +355,41 @@ impl VM {
                 message: "exec: the command and arguments must not contain NUL".into(),
             });
         }
-        let resolved_path = resolve_exec_command(&command).map_err(|err| RuntimeError {
+        let resolved = resolve_exec_command(&command).map_err(|err| RuntimeError {
             message: format!("exec: {err}"),
         })?;
-        let by_command = self
-            .exec_allowed_paths
+        let allowed = self
+            .exec_policy
+            .rules
             .iter()
-            .find(|allowed| **allowed == resolved_path);
-        let by_rule = || {
-            self.exec_rules
-                .iter()
-                .find(|(rule, path)| *path == resolved_path && rule.args_match(&args))
-                .map(|(_, path)| path)
-        };
-        if let Some(allowed_path) = by_command.or_else(by_rule).cloned() {
+            .find(|(rule, executable)| executable.id == resolved && rule.args_match(&args));
+        if let Some((_, allowed)) = allowed {
             Ok(ResolvedExec {
                 display_command: command,
-                allowed_path,
+                allowed: allowed.clone(),
                 args,
             })
         } else {
-            let rules: Vec<&[String]> = self
-                .exec_rules
+            let rules: Vec<String> = self
+                .exec_policy
+                .rules
                 .iter()
-                .map(|(rule, _)| rule.argv.as_slice())
+                .map(|(rule, _)| {
+                    let rest = if rule.rest_any { " ..." } else { "" };
+                    format!("{}{rest}", rule.argv.join(" "))
+                })
                 .collect();
             let mut message = format!(
-                "exec: command '{}' resolved to '{}' with arguments {:?} is not in the allowed list: {:?}, nor allowed by an argv rule: {:?}",
+                "exec: command '{}' resolved to '{}' with arguments {:?} is not in the allowed list: {:?}",
                 command,
-                resolved_path.path.display(),
+                resolved.path.display(),
                 args,
-                self.exec_allowed,
                 rules
             );
-            if !self.exec_allowed_resolution_errors.is_empty() {
+            if !self.exec_policy.errors.is_empty() {
                 message.push_str(&format!(
                     " (unresolved configured commands: {:?})",
-                    self.exec_allowed_resolution_errors
+                    self.exec_policy.errors
                 ));
             }
             Err(RuntimeError { message })
@@ -410,15 +403,15 @@ impl VM {
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
 
-        let current_path = exec_allowed_path(exec.allowed_path.path.clone())?;
-        if current_path != exec.allowed_path {
+        let allowed = &exec.allowed.id;
+        if file_identity(allowed.path.clone())? != *allowed {
             return Err(format!(
                 "exec: '{}' changed since it was allowed",
-                exec.allowed_path.path.display()
+                allowed.path.display()
             ));
         }
 
-        let mut command = Command::new(&exec.allowed_path.path);
+        let mut command = Command::new(&allowed.path);
         command
             .args(&exec.args)
             .stdout(Stdio::piped())
@@ -588,15 +581,15 @@ mod tests {
         let root = temp_dir("exec-pinned");
         let script = root.join("tool.sh");
         write_executable(&script, "#!/bin/sh\necho first\n");
-        let allowed = pinned_exec_path(script.clone()).expect("pinned identity");
+        let allowed = allowed_executable(script.clone()).expect("pinned identity");
         assert!(allowed.pin.is_some());
 
         for round in 0..50 {
             std::fs::remove_file(&script).expect("remove executable");
             write_executable(&script, "#!/bin/sh\necho secnd\n");
-            let now = exec_allowed_path(script.clone()).expect("current identity");
-            assert_ne!(allowed.ino, now.ino, "round {round}: inode reused");
-            assert_ne!(allowed, now, "round {round}");
+            let now = file_identity(script.clone()).expect("current identity");
+            assert_ne!(allowed.id.ino, now.ino, "round {round}: inode reused");
+            assert_ne!(allowed.id, now, "round {round}");
         }
 
         let _ = std::fs::remove_dir_all(root);
@@ -610,18 +603,10 @@ mod tests {
         let root = temp_dir("exec-replaced");
         let script = root.join("tool.sh");
         write_executable(&script, "#!/bin/sh\necho first\n");
-        let program = {
-            let source = format!("val _ = exec ({:?}, [])", script.to_string_lossy());
-            let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
-                .tokenize()
-                .expect("lex");
-            let program = hiko_syntax::parser::Parser::new(tokens)
-                .parse_program()
-                .expect("parse");
-            hiko_compile::compiler::Compiler::compile(program)
-                .expect("compile")
-                .0
-        };
+        let program = crate::test_support::compile_source_hermetic(&format!(
+            "val _ = exec ({:?}, [])",
+            script.to_string_lossy()
+        ));
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_exec(ExecPolicy {

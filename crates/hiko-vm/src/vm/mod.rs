@@ -164,49 +164,44 @@ impl StringCache {
     }
 }
 
-/// An allowed executable as it was when the policy was applied. `exec`
-/// refuses a command whose identity no longer matches, such as a file
-/// replaced after the check.
-///
-/// An allowed executable is held open (`pin`) for as long as the VM and its
-/// children hold the policy. An open file's inode cannot be freed, so it
-/// cannot be reused: a file created at the same path always has a different
-/// `(dev, ino)`, whatever the timestamp granularity (#160).
-#[derive(Clone, Debug)]
-pub(super) struct ExecAllowedPath {
+/// A file as it is at one moment. `exec` compares a call's program with the
+/// allowed executable this way, and checks again just before spawning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FileIdentity {
     path: PathBuf,
     #[cfg(unix)]
     dev: u64,
     #[cfg(unix)]
     ino: u64,
-    /// Status-change time (seconds, nanoseconds) and size. Linux can reuse
-    /// an inode number at once when a file is deleted and recreated; the new
-    /// file gets a new change time, but only at the file system's timestamp
-    /// granularity, which can be several milliseconds. These narrow the
-    /// window; they do not close it (see #160).
+    /// Status-change time (seconds, nanoseconds) and size, which change when
+    /// the file is written in place.
     #[cfg(unix)]
     ctime: (i64, i64),
     len: u64,
-    /// The allowed file, open. `None` for a call's command, which is only
-    /// compared, and for an executable the VM may not read (mode `--x`).
+}
+
+/// An executable the exec policy allows, as it was when the policy was
+/// applied, held open (`pin`) for as long as the VM and its children hold
+/// the policy. An open file's inode cannot be freed, so it cannot be
+/// reused: a file created at the same path always has a different
+/// `(dev, ino)`, whatever the timestamp granularity (#160).
+#[derive(Clone, Debug)]
+pub(super) struct AllowedExecutable {
+    id: FileIdentity,
+    /// `None` for an executable the VM may not read (mode `--x`).
     #[allow(dead_code, reason = "held open, not read: it keeps the inode alive")]
     pin: Option<Arc<std::fs::File>>,
 }
 
-/// Identity only: a call's command equals an allowed executable when they
-/// are the same file in the same state, pinned or not.
-impl PartialEq for ExecAllowedPath {
-    fn eq(&self, other: &Self) -> bool {
-        #[cfg(unix)]
-        let same_inode =
-            self.dev == other.dev && self.ino == other.ino && self.ctime == other.ctime;
-        #[cfg(not(unix))]
-        let same_inode = true;
-        self.path == other.path && same_inode && self.len == other.len
-    }
+/// The exec policy with each command resolved, shared with child processes.
+#[derive(Debug, Default)]
+pub(super) struct ResolvedExecPolicy {
+    /// Each rule with the executable it names. An `allowed_commands` entry
+    /// is a rule with no fixed arguments and any rest.
+    rules: Vec<(crate::builder::ExecArgvRule, AllowedExecutable)>,
+    /// Configured commands that did not resolve, for error messages.
+    errors: Vec<String>,
 }
-
-impl Eq for ExecAllowedPath {}
 
 /// How the VM dispatches a builtin call. Most builtins are `Plain`: the VM
 /// calls the function and pushes its result. The others need the VM itself
@@ -336,11 +331,7 @@ pub struct VM {
     live_process_slot: Option<crate::budget::BudgetSlot>,
     /// Live-process and total-spawn budgets for the process tree.
     process_budgets: crate::budget::ProcessBudgets,
-    exec_allowed: Vec<String>,
-    exec_allowed_paths: Vec<ExecAllowedPath>,
-    /// Argument rules with their resolved command.
-    exec_rules: Vec<(crate::builder::ExecArgvRule, ExecAllowedPath)>,
-    exec_allowed_resolution_errors: Vec<String>,
+    exec_policy: Arc<ResolvedExecPolicy>,
     /// When true, I/O builtins suspend via `RuntimeRequest::Io` instead of blocking.
     async_io: bool,
     /// Pending runtime request from a process/runtime builtin.
@@ -513,10 +504,7 @@ impl VM {
             fuel_budget: None,
             live_process_slot: None,
             process_budgets: Default::default(),
-            exec_allowed: Vec::new(),
-            exec_allowed_paths: Vec::new(),
-            exec_rules: Vec::new(),
-            exec_allowed_resolution_errors: Vec::new(),
+            exec_policy: Arc::default(),
             async_io: false,
             pending_runtime_request: None,
             cancelled: false,
