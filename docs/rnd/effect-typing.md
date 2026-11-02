@@ -242,6 +242,10 @@ escape the limit.
 
 1. **Syntax for rows in annotations:** `t ! {Log}` and `t ! {}` as proposed,
    or a `requires { ... }` clause on `fun` (effects-design.md section 3)?
+   **Decided: `t ! {...}`.** It is the notation of Eff and of the
+   Bauer–Pretnar papers, it can be written inside any type (so it can
+   express a pure argument, as `spawn` needs), and `!` is not a Hiko token
+   today. A `requires` clause cannot appear inside a type.
 2. **A handler for an effect the body never performs:** accept silently (as
    proposed) or warn?
 3. **Printed types:** show rows in `hiko check` output and in docgen, or only
