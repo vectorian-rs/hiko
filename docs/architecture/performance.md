@@ -403,7 +403,7 @@ thread's samples by the function on top of the stack):
 | `list` | 48% | 18% | 14% | 8% | 1% | - |
 | `binary_trees` | 46% | 7% | 11% | 6% | 13% | 9% |
 | `sieve` | 43% | 12% | 8% | 10% | 7% | 12% |
-| `nbody` | 50% | 10% | 7% | 11% | 3% | 7% |
+| `nbody` | 50% | 10% | 7% | 11% | 2% | 7% |
 
 The gap is interpretive overhead, not memory management. Even on
 `binary_trees`, GC and allocation take about 13%. `read_u16`, `Op::try_from`
