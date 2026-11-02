@@ -103,24 +103,56 @@ pub(super) struct ExecAllowedPath {
     ino: u64,
 }
 
-/// Builtins the VM dispatches specially, by builtin id.
-#[derive(Clone, Copy, Default)]
-struct BuiltinIds {
-    exec_builtin_id: Option<u16>,
-    print_builtin_id: Option<u16>,
-    println_builtin_id: Option<u16>,
-    spawn_builtin_id: Option<u16>,
-    await_builtin_id: Option<u16>,
-    await_result_builtin_id: Option<u16>,
-    cancel_builtin_id: Option<u16>,
-    wait_any_builtin_id: Option<u16>,
-    sleep_builtin_id: Option<u16>,
-    http_get_builtin_id: Option<u16>,
-    http_builtin_id: Option<u16>,
-    http_json_builtin_id: Option<u16>,
-    http_msgpack_builtin_id: Option<u16>,
-    http_bytes_builtin_id: Option<u16>,
-    read_file_builtin_id: Option<u16>,
+/// How the VM dispatches a builtin call. Most builtins are `Plain`: the VM
+/// calls the function and pushes its result. The others need the VM itself
+/// (output, processes, exec) or suspend for async I/O.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuiltinKind {
+    Plain,
+    Print,
+    Println,
+    Exec,
+    Spawn,
+    Await,
+    AwaitResult,
+    Cancel,
+    WaitAny,
+    Sleep,
+    HttpGet,
+    Http(HttpFormat),
+    ReadFile,
+}
+
+/// `HttpResponseFormat` without its data, so `BuiltinKind` stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HttpFormat {
+    Text,
+    Json,
+    Msgpack,
+    Bytes,
+}
+
+impl BuiltinKind {
+    fn of(name: &str) -> Self {
+        match name {
+            "print" => Self::Print,
+            "println" => Self::Println,
+            "exec" => Self::Exec,
+            "spawn" => Self::Spawn,
+            "await_process" => Self::Await,
+            "await_process_result" => Self::AwaitResult,
+            "cancel" => Self::Cancel,
+            "wait_any" => Self::WaitAny,
+            "sleep" => Self::Sleep,
+            "http_get" => Self::HttpGet,
+            "http" => Self::Http(HttpFormat::Text),
+            "http_json" => Self::Http(HttpFormat::Json),
+            "http_msgpack" => Self::Http(HttpFormat::Msgpack),
+            "http_bytes" => Self::Http(HttpFormat::Bytes),
+            "read_file" => Self::ReadFile,
+            _ => Self::Plain,
+        }
+    }
 }
 
 /// The builtins a VM can call, with the name each is registered under.
@@ -132,7 +164,8 @@ struct BuiltinTable {
     values: Vec<Value>,
     /// Builtin id by name; a later registration of a name replaces it.
     by_name: HashMap<Arc<str>, u16>,
-    ids: BuiltinIds,
+    /// Dispatch kind of each entry, by builtin id.
+    kinds: Vec<BuiltinKind>,
 }
 
 pub struct VM {
