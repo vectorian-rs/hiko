@@ -138,8 +138,8 @@ fn file_identity(path: PathBuf) -> Result<FileIdentity, String> {
 }
 
 /// Open the executable at `path` and take its identity from the open file,
-/// which stays open. An executable the VM may not read is allowed by
-/// identity only.
+/// which stays open. An executable the VM cannot open (mode `--x`, or no
+/// descriptors left) is allowed by identity only, as before #160.
 fn allowed_executable(path: PathBuf) -> Result<AllowedExecutable, String> {
     match std::fs::File::open(&path) {
         Ok(file) => {
@@ -151,11 +151,10 @@ fn allowed_executable(path: PathBuf) -> Result<AllowedExecutable, String> {
                 pin: Some(Arc::new(file)),
             })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(AllowedExecutable {
+        Err(_) => Ok(AllowedExecutable {
             id: file_identity(path)?,
             pin: None,
         }),
-        Err(e) => Err(format!("cannot open executable '{}': {e}", path.display())),
     }
 }
 
@@ -248,15 +247,17 @@ impl VM {
                 policy.errors.push("an argv rule is empty".to_string());
                 continue;
             };
-            let executable = opened
-                .entry(command.clone())
-                .or_insert_with(|| resolve_exec_command_path(command).and_then(allowed_executable));
-            match executable {
-                Ok(executable) => policy.rules.push((rule.clone(), executable.clone())),
-                Err(err) => policy.errors.push(format!("{command}: {err}")),
+            let executable = opened.entry(command.clone()).or_insert_with(|| {
+                let resolved = resolve_exec_command_path(command).and_then(allowed_executable);
+                if let Err(err) = &resolved {
+                    policy.errors.push(format!("{command}: {err}"));
+                }
+                resolved
+            });
+            if let Ok(executable) = executable {
+                policy.rules.push((rule.clone(), executable.clone()));
             }
         }
-        policy.errors.dedup();
         self.exec_policy = Arc::new(policy);
     }
 
@@ -368,6 +369,17 @@ impl VM {
                 display_command: command,
                 allowed: allowed.clone(),
                 args,
+            })
+        } else if let Some((_, changed)) =
+            self.exec_policy.rules.iter().find(|(_, executable)| {
+                executable.id != resolved && executable.id.same_file(&resolved)
+            })
+        {
+            Err(RuntimeError {
+                message: format!(
+                    "exec: '{}' changed after the exec policy was applied (its change time or size differs); it is refused until the VM is started again",
+                    changed.id.path.display()
+                ),
             })
         } else {
             let rules: Vec<String> = self
@@ -591,6 +603,45 @@ mod tests {
             assert_ne!(allowed.id.ino, now.ino, "round {round}: inode reused");
             assert_ne!(allowed.id, now, "round {round}");
         }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "builtin-exec")]
+    #[test]
+    fn exec_says_when_an_allowed_file_changed_in_place() {
+        use crate::builder::{ExecPolicy, VMBuilder};
+
+        let root = temp_dir("exec-changed");
+        let script = root.join("tool.sh");
+        write_executable(&script, "#!/bin/sh\necho first\n");
+        let program = crate::test_support::compile_source_hermetic(&format!(
+            "val _ = exec ({:?}, [])",
+            script.to_string_lossy()
+        ));
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_exec(ExecPolicy {
+                allowed: vec![script.to_string_lossy().into_owned()],
+                rules: Vec::new(),
+            })
+            .build();
+
+        // A write in place keeps the inode and changes the size.
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&script)
+            .unwrap()
+            .write_all(b"echo more\n")
+            .unwrap();
+        let err = vm.run().expect_err("a changed file must not run");
+        assert!(
+            err.message
+                .contains("changed after the exec policy was applied"),
+            "{}",
+            err.message
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

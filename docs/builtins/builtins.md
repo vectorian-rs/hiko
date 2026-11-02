@@ -209,9 +209,9 @@ rest = "any"   # default "none"
   open while it runs, so the file's inode cannot be freed and reused. A
   file created at the same path, by deleting and recreating it or by
   renaming over it, always has a different inode, and `exec` refuses it.
-  This does not depend on timestamps (#160). An executable the VM may not
-  read (mode `--x`) cannot be held open; it is checked by device, inode,
-  change time and size only.
+  This does not depend on timestamps (#160). An executable the VM cannot
+  open (mode `--x`, or no file descriptors left) is not held open; it is
+  checked by device, inode, change time and size only.
 - **Arguments match as strings, exactly.** There is no globbing, trimming or
   splitting: `"run check"` is one argument and does not match `"run",
   "check"`; an empty string is an argument. With `rest = "any"`, only
@@ -224,7 +224,10 @@ What the allowlist does **not** guarantee:
 
 - **Writes to the allowed file itself.** The check compares the file's
   change time and size, so a write that keeps the size and lands within one
-  timestamp tick of the policy can go unnoticed. Keep allowed executables
+  timestamp tick of the policy can go unnoticed. The other way round, any
+  change to the file's change time (a write, `chmod`, `touch`, a new hard
+  link, an extended attribute) makes `exec` refuse it until the VM is
+  started again, with an error that says the file changed. Keep allowed executables
   in directories, and as files, that the script's user cannot write.
 - **A replacement between the check and the spawn.** The VM checks the path
   just before it spawns, and then the OS opens the path again. A file swapped

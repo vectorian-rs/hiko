@@ -180,6 +180,18 @@ pub(super) struct FileIdentity {
     len: u64,
 }
 
+impl FileIdentity {
+    /// The same file, though its change time or size may differ: a file
+    /// written in place, or whose permissions or links changed.
+    fn same_file(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        let same_inode = self.dev == other.dev && self.ino == other.ino;
+        #[cfg(not(unix))]
+        let same_inode = true;
+        self.path == other.path && same_inode
+    }
+}
+
 /// An executable the exec policy allows, as it was when the policy was
 /// applied, held open (`pin`) for as long as the VM and its children hold
 /// the policy. An open file's inode cannot be freed, so it cannot be
@@ -188,7 +200,8 @@ pub(super) struct FileIdentity {
 #[derive(Clone, Debug)]
 pub(super) struct AllowedExecutable {
     id: FileIdentity,
-    /// `None` for an executable the VM may not read (mode `--x`).
+    /// `None` for an executable the VM could not open (mode `--x`, or no
+    /// descriptors left).
     #[allow(dead_code, reason = "held open, not read: it keeps the inode alive")]
     pin: Option<Arc<std::fs::File>>,
 }
