@@ -157,7 +157,9 @@ impl VM {
         if let Some(sink) = &self.output_sink {
             child.set_output_sink(sink.clone());
         }
-        child.heap.set_error_sink(self.heap.error_sink().cloned());
+        if let Some(sink) = &self.error_sink {
+            child.set_error_sink(sink.clone());
+        }
         // The active `fuel` field is a slice-local dispatch counter installed
         // by `run_slice`, so the child does not copy it.
         child.set_async_io(self.async_io);

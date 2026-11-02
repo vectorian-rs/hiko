@@ -24,7 +24,7 @@ use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
 use hiko_vm::extension::Extension;
 use hiko_vm::threaded::ThreadedRuntime;
-use hiko_vm::vm::StdoutOutputSink;
+use hiko_vm::vm::{StderrOutputSink, StdoutOutputSink};
 use serde::Deserialize;
 
 #[cfg(feature = "cli-lock")]
@@ -1041,6 +1041,7 @@ fn run_file(options: &ScriptOptions) {
     if let Some(config) = config.as_ref().filter(|config| config.requires_runtime()) {
         let mut vm = build_vm_or_exit(config, compiled.program);
         vm.set_output_sink(output_sink);
+        vm.set_error_sink(Arc::new(StderrOutputSink));
 
         let runtime = ThreadedRuntime::new(options.workers);
         let pid = runtime.spawn_root_vm(vm);
@@ -1063,6 +1064,7 @@ fn run_file(options: &ScriptOptions) {
         VMBuilder::new(compiled.program).with_core().build()
     };
     vm.set_output_sink(output_sink);
+    vm.set_error_sink(Arc::new(StderrOutputSink));
     if let Err(e) = vm.run() {
         let message = runtime_error_message(&e.message, &surface);
         compiled.ctx.error(&message, vm.error_span());

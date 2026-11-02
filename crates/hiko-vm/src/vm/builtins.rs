@@ -328,31 +328,36 @@ impl VM {
         let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
         let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
         self.stack.truncate(callee_pos);
-        let is_print = kind == BuiltinKind::Print;
-        let is_println = kind == BuiltinKind::Println;
-        if is_print || is_println {
-            let displayed = if is_println {
-                format!("{}\n", self.display_value(&first_arg))
-            } else {
-                self.display_value(&first_arg)
-            };
-            self.heap
-                .charge_io_bytes(displayed.len() as u64)
-                .map_err(|e| RuntimeError {
-                    message: format!("stdout: {e}"),
-                })?;
+        let (newline, to_stderr) = match kind {
+            BuiltinKind::Print => (false, false),
+            BuiltinKind::Println => (true, false),
+            BuiltinKind::Eprint => (false, true),
+            BuiltinKind::Eprintln => (true, true),
+            _ => return self.push(result),
+        };
+        let mut displayed = self.display_value(&first_arg);
+        if newline {
+            displayed.push('\n');
+        }
+        let stream = if to_stderr { "stderr" } else { "stdout" };
+        let write_error = |e: &dyn std::fmt::Display| RuntimeError {
+            message: format!("{stream}: {e}"),
+        };
+        self.heap
+            .charge_io_bytes(displayed.len() as u64)
+            .map_err(|e| write_error(&e))?;
+        let sink = if to_stderr {
+            &self.error_sink
+        } else {
             if let Some(output) = &mut self.output {
                 output.push(displayed.clone());
             }
-            if let Some(sink) = &self.output_sink {
-                sink.write(&displayed).map_err(|e| RuntimeError {
-                    message: format!("stdout: {e}"),
-                })?;
-            }
-            self.push(Value::Unit)?;
-        } else {
-            self.push(result)?;
+            &self.output_sink
+        };
+        if let Some(sink) = sink {
+            sink.write(&displayed).map_err(|e| write_error(&e))?;
         }
+        self.push(Value::Unit)?;
         Ok(())
     }
 }

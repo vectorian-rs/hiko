@@ -1570,11 +1570,11 @@ mod tests {
             ("read_line", "would block on host stdin in unit tests"),
             (
                 "eprint",
-                "writes to host stderr or the error sink; covered by tests/log_examples.rs",
+                "VM intercept writes to the error sink and returns unit; covered by tests/log_examples.rs",
             ),
             (
                 "eprintln",
-                "writes to host stderr or the error sink; covered by tests/log_examples.rs",
+                "VM intercept writes to the error sink and returns unit; covered by tests/log_examples.rs",
             ),
             ("http_get", "network I/O is policy/runtime-dependent"),
             ("http", "network I/O is policy/runtime-dependent"),

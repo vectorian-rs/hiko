@@ -223,8 +223,6 @@ pub struct Heap {
     /// Optional injected stdin content for embedded runtimes.
     stdin_override: Option<String>,
     stdin_override_consumed: bool,
-    /// Where `eprint`/`eprintln` write; the host's stderr when `None`.
-    error_sink: Option<std::sync::Arc<dyn crate::vm::OutputSink>>,
     /// Serialized form of heap objects already sent to a child process, so
     /// that spawning many children that capture the same value serializes it
     /// once. Heap objects are immutable, so an entry stays correct until its
@@ -297,18 +295,9 @@ impl Heap {
             extension_states: HashMap::new(),
             stdin_override: None,
             stdin_override_consumed: false,
-            error_sink: None,
             sent: HashMap::new(),
             sent_bytes: 0,
         }
-    }
-
-    pub fn set_error_sink(&mut self, sink: Option<std::sync::Arc<dyn crate::vm::OutputSink>>) {
-        self.error_sink = sink;
-    }
-
-    pub fn error_sink(&self) -> Option<&std::sync::Arc<dyn crate::vm::OutputSink>> {
-        self.error_sink.as_ref()
     }
 
     pub fn set_stdin_override(&mut self, input: String) {
