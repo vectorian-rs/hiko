@@ -479,3 +479,30 @@ Interleaved, 10 rounds, on AC, load average 2 to 3; "before" is `main` at
 | `compare/list`, `queens`, `mandelbrot`, `fib`, `tak`, `list_length`, `nqueens`, `ack`, `early_exit`, `global_builtin` | | | within 1% |
 
 Medians; the minimums agree.
+
+### Inlining `Op::try_from` (PR #149)
+
+The dispatch loop decodes every opcode with `Op::try_from`, which lives in
+`hiko-compile`. Without `#[inline]` (and without cross-crate LTO) it is a
+function call per instruction; the profiles showed it at 7 to 14%. It is now
+`#[inline]`.
+
+Interleaved, 10 rounds, on AC, load average 2.4 to 2.8; "before" is #149
+after the data-value change.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/fib` | 456 ms | 423 ms | -7% |
+| `global_builtin` | 283 ms | 265 ms | -7% |
+| `ack` | 1056 ms | 988 ms | -6% |
+| `compare/tak` | 248 ms | 235 ms | -5% |
+| `early_exit` | 311 ms | 296 ms | -5% |
+| `compare/binary_trees` | 1327 ms | 1259 ms | -5% |
+| `compare/nbody` | 586 ms | 567 ms | -3% |
+| `compare/queens` | 325 ms | 319 ms | -2% |
+| `list_length` | 1205 ms | 1202 ms | 0% |
+| `compare/sieve` | 521 ms | 526 ms | +1% |
+| `compare/list` | 1676 ms | 1709 ms | +2% |
+
+Medians; the minimums agree. `list` and `sieve` lose 1 to 2%, likely from the
+dispatch loop's code layout; the rest gain up to 7%.
