@@ -249,7 +249,8 @@ impl VM {
                 Op::MakeTuple => {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack_start_for_arity(arity, "MakeTuple")?;
-                    let elems: Fields = self.stack.drain(start..).collect();
+                    let elems = Fields::from_slice(&self.stack[start..]);
+                    self.stack.truncate(start);
                     let val = self.alloc(HeapObject::Tuple(elems))?;
                     self.push(val)?;
                 }
@@ -263,13 +264,15 @@ impl VM {
                     let tag = self.read_u16()?;
                     let arity = self.read_u8()? as usize;
                     let start = self.stack_start_for_arity(arity, "MakeData")?;
-                    let fields: Fields = self.stack.drain(start..).collect();
+                    let fields = Fields::from_slice(&self.stack[start..]);
+                    self.stack.truncate(start);
                     let val = self.alloc(HeapObject::Data { tag, fields })?;
                     self.push(val)?;
                 }
                 Op::MakeCons => {
-                    let start = self.stack_start_for_arity(2, "MakeCons")?;
-                    let fields: Fields = self.stack.drain(start..).collect();
+                    let tail = self.pop()?;
+                    let head = self.pop()?;
+                    let fields = Fields::from_buf([head, tail]);
                     let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
                     self.push(val)?;
                 }

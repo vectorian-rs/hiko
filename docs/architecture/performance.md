@@ -458,3 +458,24 @@ inlining into the very large `dispatch` function likely worsens register
 allocation in the hot loop. Not kept. Inlining the specific hot helpers
 (review items 2 and 3 in `docs/rnd/2026-11-vm-performance-review.md`) is
 still worth measuring on its own, and thin LTO or PGO separately.
+
+### Building data values from a slice (PR #149)
+
+`MakeTuple`, `MakeData` and `MakeCons` collected their fields with
+`self.stack.drain(start..).collect::<Fields>()`, which the profiles showed as
+`SmallVec::extend` (7 to 12% on `binary_trees`, `sieve` and `nbody`). They now
+copy the slice (`Fields::from_slice`, `Value` is `Copy`) and truncate the
+stack; `MakeCons` pops its two values into `Fields::from_buf`. The values
+still leave the stack before the allocation, as before.
+
+Interleaved, 10 rounds, on AC, load average 2 to 3; "before" is `main` at
+`df8d2a9` (after #148) plus the #149 docs.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/sieve` | 582 ms | 519 ms | -11% |
+| `compare/binary_trees` | 1404 ms | 1304 ms | -7% |
+| `compare/nbody` | 617 ms | 589 ms | -5% |
+| `compare/list`, `queens`, `mandelbrot`, `fib`, `tak`, `list_length`, `nqueens`, `ack`, `early_exit`, `global_builtin` | | | within 1% |
+
+Medians; the minimums agree.
