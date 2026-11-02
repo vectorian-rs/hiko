@@ -1,3 +1,4 @@
+(* FizzBuzz with a tuple pattern match. *)
 fun fizzbuzz n =
   let
     val f = n mod 3 = 0

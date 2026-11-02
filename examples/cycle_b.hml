@@ -1,3 +1,4 @@
+(* Must fail: the other half of the import cycle in cycle_a.hml. *)
 use "./cycle_a.hml"
 
 val b = 2

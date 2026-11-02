@@ -298,10 +298,9 @@ been taken.
 | `_apalache-out/`                   | Generated       | Already in `.gitignore`. Safe to delete locally.                                                                                |
 | `policies/`                        | Mixed           | `work-demo-*` are out of focus.                                                                                                 |
 | `tools/`                           | Core            | `run_all.hml`, the test runner.                                                                                                 |
-| `examples/`                        | Mixed           | Includes HTTP and several `benchmark_*` variants.             Needs pruning to language, VM, and security examples. |
+| `examples/`                        | Mixed           | Pruned to language, runtime and policy examples (#142). `examples/README.md` is the index.                      |
 | `benchmarks/`                      | Core            |                                                                                                                                 |
 | `specs/`                           | Core (security) |                                                                                                                                 |
-| `examples/fizzbuzz.hml`            | Uncommitted     | Contains an invalid sketch of a second `fizzbuzz`.                                                                              |
 
 ## Documentation health
 
