@@ -589,3 +589,24 @@ agree); "before" is #149's head.
 | `compare/mandelbrot` | 541 ms | 493 ms | -9% |
 | `compare/binary_trees` | 1249 ms | 1247 ms | 0% |
 | `compare/sieve` | 488 ms | 508 ms | +4% |
+
+### Allocation fixes (PR #153 work, stacked on #159)
+
+Interleaved, 8 rounds each, on AC, load average 2.5 to 3.5; each step
+against the one before.
+
+- **String equality without a worklist.** `values_equal` allocated a `Vec`
+  worklist for every comparison of two heap values; two strings now compare
+  directly, and the worklist is an inline `SmallVec`. `string_concat` -1%,
+  `string_args` 0%. Kept: it removes an allocation at no cost.
+- **String constants in per-function rows.** The string-constant cache was a
+  SipHash `HashMap<(usize, usize), GcRef>` looked up on every string
+  `Const`; it is now a vector of rows. `string_concat` 130 to 120 ms (-7.5%;
+  minimum -6.6%), `string_args` 0%. Kept.
+- **GC threshold floor 1024 to 16K objects.** Not kept: `binary_trees`,
+  `list`, `sieve`, `nbody`, `list_length`, `string_concat` and `spawn_await`
+  all within 1.7%, and a higher floor lets each process hold more garbage.
+- **Chunked heap-budget reservation.** Not done: the atomic charge it would
+  avoid runs only when `max_memory_bytes` is set, which no benchmark does,
+  and reserving in chunks would let one process take budget its siblings
+  could use near the limit.
