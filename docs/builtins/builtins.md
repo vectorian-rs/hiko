@@ -177,6 +177,44 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 | `exit`   | `int -> unit`                                   | Exit process with status code                               |
 | `panic`  | `string -> 'a`                                  | Abort with error message                                    |
 
+### Exec policy
+
+`exec` runs a program directly, with no shell, and only as the run config
+allows. There are two kinds of permission, and a call needs one of them:
+
+```toml
+[capabilities.exec.exec]
+enabled = true
+# These commands may run with any arguments.
+allowed_commands = ["git"]
+
+# This command may run only with exactly these arguments.
+[[capabilities.exec.exec.allow]]
+argv = ["mise", "run", "//cell:sre-check"]
+
+# With rest = "any", these arguments are a fixed prefix: more may follow.
+[[capabilities.exec.exec.allow]]
+argv = ["mise", "run", "//cell:logs", "--"]
+rest = "any"   # default "none"
+```
+
+- **The command matches by file, not by name.** When the VM is built, each
+  configured command (an `allowed_commands` entry, or `argv[0]` of a rule) is
+  resolved to a file: a path is used as written, and a bare name is looked
+  up in `PATH`. A call's program is resolved the same way when it runs, and
+  must be the same file (device and inode on Unix). So `./mise` or
+  `/opt/other/mise` is refused unless it is the configured file, and a
+  symlink is followed to its target. Just before spawning, the VM checks
+  that the file is still the one that was allowed.
+- **Arguments match as strings, exactly.** There is no globbing, trimming or
+  splitting: `"run check"` is one argument and does not match `"run",
+  "check"`; an empty string is an argument. With `rest = "any"`, only
+  arguments after the prefix are free.
+- A NUL in the program or an argument is refused. A rule with an empty
+  `argv`, or an empty command, is a config error.
+- Child processes have the same permissions as their parent.
+- `build-vm` writes the rules into the generated binary.
+
 ## Concurrency (threaded runtime)
 
 | Builtin         | Type                  | Description                              |

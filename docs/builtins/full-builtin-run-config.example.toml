@@ -286,12 +286,21 @@ enabled = true
 allowed_hosts = ["api.example.com"]
 
 # Command execution builtin.
-# `allowed_commands` are the only commands that may be launched.
+# `allowed_commands` may be launched with any arguments; an `allow` rule
+# allows one command only with the given arguments (`rest = "any"`: as a
+# prefix). See "Exec policy" in builtins.md.
 # The timeout is `[limits] exec_timeout_ms`.
 
 [capabilities.exec.exec]
 enabled = true
-allowed_commands = ["git", "cargo", "terraform"]
+allowed_commands = ["git", "cargo"]
+
+[[capabilities.exec.exec.allow]]
+argv = ["terraform", "plan", "-input=false"]
+
+[[capabilities.exec.exec.allow]]
+argv = ["terraform", "show", "--"]
+rest = "any"
 
 # System/testing builtins.
 [capabilities.system.exit]

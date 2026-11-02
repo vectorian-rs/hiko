@@ -313,6 +313,7 @@ target's property is "no panic"; the ones below add stronger checks.
 | `hiko-vm/fuzz` `fuzz_verify` | an encoded `CompiledProgram`, seeded from the repository's compiled programs | a program the verifier accepts runs (work 20,000, heap 20,000) to success or a `RuntimeError` |
 | `hiko-vm/fuzz` `fuzz_verify_structured` | random instruction lists | same as `fuzz_verify` |
 | `hiko-vm/fuzz` `fuzz_run_config` | TOML | an accepted run config generates `build-vm` source that parses as Rust and keeps the entry path and host-resource kinds as string literals |
+| `hiko-vm/fuzz` `fuzz_exec_argv` | an `exec` argv rule and arguments | a match means the arguments start with the rule's fixed arguments (exactly them when `rest` is `none`); the rule's own arguments match; changing a fixed argument, or adding one to an exact rule, does not match |
 
 The VM targets register only builtins with no host access (convert, string,
 regex, json, math, bytes, hash, and `print`/`println` into a sink that drops
@@ -340,6 +341,7 @@ Each target ran 30 minutes with `-max_total_time=1800`, seeded with
 | `fuzz_run_config` | 12.8 million | clean |
 | `fuzz_verify_structured` | 7.0 million | clean after fix 1 |
 | `fuzz_verify` | 6.3 million | clean after fixes 1 and 2 |
+| `fuzz_exec_argv` | 1.4 million (60 s, AE) | clean |
 
 Bugs found, each fixed with a regression test (#143):
 
