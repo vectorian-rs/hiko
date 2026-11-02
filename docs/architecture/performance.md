@@ -367,3 +367,48 @@ medians moved the same way. "Before" is `main` at `d375a47`.
 | `tak.hml` | 668 ms | 654 ms (-2.1%) |
 | `list_length.hml` | 2.63 s | 2.58 s (-2.1%) |
 | `fanout_cpu.hml`, `spawn_await.hml`, `nqueens.hml`, `primes.hml`, `ec_ack.hml` | | unchanged within noise |
+
+### Against Lua and Python (PR #146)
+
+The programs in `benchmarks/compare/` do the same work, in the same order,
+in Hiko, Lua and Python (rules in `benchmarks/compare/README.md`). Every
+implementation prints the same checksum. `scripts/compare.sh` checks the
+checksums, runs hyperfine, and writes this table.
+
+Apple M1 Max on AC power, load average about 5 to 7 (a browser tab used one
+core), 10 runs each, hyperfine means. Hiko at `65f955e` (main after #139), Lua
+5.5.0, Python 3.13.10, LuaJIT 2.1 (JIT on, as a ceiling).
+
+| Program | Hiko | Lua | Python | LuaJIT | Hiko / Lua | Hiko / Python |
+|---|---|---|---|---|---|---|
+| `binary_trees` (max depth 14) | 1454 ms | 543 ms | 300 ms | 136 ms | 2.7x | 4.8x |
+| `fib` (32) | 472 ms | 138 ms | 240 ms | 17 ms | 3.4x | 2.0x |
+| `list` (300 repetitions) | 1755 ms | 124 ms | 172 ms | 19 ms | 14.1x | 10.2x |
+| `mandelbrot` (300 x 300, 50 iterations) | 636 ms | 105 ms | 215 ms | 15 ms | 6.1x | 3.0x |
+| `nbody` (20,000 steps) | 642 ms | 97 ms | 109 ms | 17 ms | 6.6x | 5.9x |
+| `queens` (10) | 351 ms | 51 ms | 102 ms | 11 ms | 6.9x | 3.4x |
+| `sieve` (15,000) | 608 ms | 343 ms | 156 ms | 100 ms | 1.8x | 3.9x |
+| `tak` (24, 16, 8) | 257 ms | 54 ms | 82 ms | 12 ms | 4.7x | 3.1x |
+
+Hiko is 2 to 14 times slower than Lua 5.5 and 2 to 10 times slower than
+Python on every program. Start-up is not the cause: a one-line program takes
+4.9 ms in Hiko (lex, parse, type check, compile, verify, run), 3.1 ms in Lua
+and 14.4 ms in Python.
+
+Where the time goes (macOS `sample`, 1 s of each run, share of the VM
+thread's samples by the function on top of the stack):
+
+| Program | `dispatch` | `read_u16` | `Op::try_from` | stack index helpers | GC and allocation | building data values (`SmallVec::extend`) |
+|---|---|---|---|---|---|---|
+| `list` | 48% | 18% | 14% | 8% | 1% | - |
+| `binary_trees` | 46% | 7% | 11% | 6% | 13% | 9% |
+| `sieve` | 43% | 12% | 8% | 10% | 7% | 12% |
+| `nbody` | 50% | 10% | 7% | 11% | 3% | 7% |
+
+The gap is interpretive overhead, not memory management. Even on
+`binary_trees`, GC and allocation take about 13%. `read_u16`, `Op::try_from`
+and the stack index helpers are out-of-line calls on every instruction: 20 to
+40% of the time. `list` is the worst case because it is almost only calls,
+pattern matches and local reads, each a few instructions with operands.
+Next steps, in order of cost: inline those helpers, then measure
+LTO/`codegen-units = 1`/PGO on this suite, then larger dispatch changes.
