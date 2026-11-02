@@ -261,10 +261,14 @@ fn scalars_equal(a: Value, b: Value) -> bool {
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     // Comparing scalars, the common case, must not allocate the worklist.
-    if !matches!((a, b), (Value::Heap(_), Value::Heap(_))) {
+    let (Value::Heap(ra), Value::Heap(rb)) = (a, b) else {
         return scalars_equal(a, b);
+    };
+    // Two strings, the common heap case, need no worklist.
+    if let (Ok(HeapObject::String(sa)), Ok(HeapObject::String(sb))) = (heap.get(ra), heap.get(rb)) {
+        return sa == sb;
     }
-    let mut worklist = vec![(a, b)];
+    let mut worklist: smallvec::SmallVec<[(Value, Value); 8]> = smallvec::smallvec![(a, b)];
 
     while let Some((left, right)) = worklist.pop() {
         match (left, right) {
