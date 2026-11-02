@@ -102,8 +102,8 @@ impl VM {
                 }
                 Op::SetLocal => {
                     let slot = self.read_u16()? as usize;
-                    let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     let val = self.pop()?;
+                    let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     self.stack[idx] = val;
                 }
                 Op::SetLocal0 | Op::SetLocal1 | Op::SetLocal2 | Op::SetLocal3 => {
@@ -114,8 +114,8 @@ impl VM {
                         Op::SetLocal3 => 3,
                         _ => unreachable!(),
                     };
-                    let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     let val = self.pop()?;
+                    let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     self.stack[idx] = val;
                 }
                 Op::GetUpvalue => {

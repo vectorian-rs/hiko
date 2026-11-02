@@ -134,7 +134,7 @@ fn decode_chunk(
     }
 
     for inst in &decoded {
-        for target in &inst.successors {
+        for target in inst.successors.iter().chain(&inst.handler_clause_targets) {
             if !starts.contains(target) {
                 return Err(format!(
                     "control-flow target {target} does not point to an instruction boundary"
@@ -227,7 +227,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 0,
+                min_depth: slot + 1,
                 delta: 1,
             }
         }
@@ -246,7 +246,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 0,
+                min_depth: slot + 1,
                 delta: 1,
             }
         }
@@ -259,7 +259,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 1,
+                min_depth: slot + 2,
                 delta: -1,
             }
         }
@@ -278,7 +278,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 1,
+                min_depth: slot + 2,
                 delta: -1,
             }
         }
@@ -688,9 +688,11 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
             }
         }
 
-        let inst = &decoded[*by_start
-            .get(&start)
-            .expect("decoded instruction starts should be indexed")];
+        // `decode_chunk` checks every target; this is a second line of
+        // defence, so a verifier bug rejects the program instead of panicking.
+        let inst = &decoded[*by_start.get(&start).ok_or_else(|| {
+            format!("control-flow target {start} does not point to an instruction boundary")
+        })?];
 
         if let Some(slot) = inst.provider_slots.iter().find(|&&slot| slot >= depth) {
             return Err(format!(
@@ -991,7 +993,14 @@ mod tests {
     #[test]
     fn accepts_main_get_local_with_declared_local_slot() {
         let program = program_with_effects(
-            vec![Op::GetLocal as u8, 0, 0, Op::Pop as u8, Op::Halt as u8],
+            vec![
+                Op::Unit as u8,
+                Op::GetLocal as u8,
+                0,
+                0,
+                Op::Pop as u8,
+                Op::Halt as u8,
+            ],
             1,
             Vec::new(),
         );
@@ -1002,6 +1011,8 @@ mod tests {
     fn accepts_quick_local_and_make_cons_stack_rules() {
         let program = program_with_effects(
             vec![
+                Op::Unit as u8,
+                Op::Unit as u8,
                 Op::GetLocal0 as u8,
                 Op::GetLocal1 as u8,
                 Op::MakeCons as u8,
@@ -1038,6 +1049,36 @@ mod tests {
             assert!(err.message().contains("SetLocal"), "{}", err.message());
             assert!(
                 err.message().contains(&format!("local slot {slot}")),
+                "{}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_local_slot_not_yet_on_the_stack() {
+        // Found by fuzzing: these pass the slot-count check, but the slot is
+        // not on the stack (for `SetLocal`, not below its own operand).
+        let cases = [
+            (
+                vec![Op::Unit as u8, Op::SetLocal0 as u8, Op::Halt as u8],
+                "SetLocal0",
+            ),
+            (
+                vec![Op::Unit as u8, Op::SetLocal as u8, 1, 0, Op::Halt as u8],
+                "SetLocal",
+            ),
+            (
+                vec![Op::Unit as u8, Op::GetLocal1 as u8, Op::Halt as u8],
+                "GetLocal1",
+            ),
+        ];
+        for (code, op) in cases {
+            let program = program_with_effects(code, 2, Vec::new());
+            let err = verify_program(&program).expect_err("program should fail verification");
+            assert!(
+                err.message()
+                    .contains(&format!("{op} at offset 1 requires stack depth")),
                 "{}",
                 err.message()
             );
@@ -1273,6 +1314,33 @@ mod tests {
         code.extend(std::iter::repeat_n(Op::Pop as u8, clause_pops));
         code.push(Op::Halt as u8);
         program_with_effects(code, 0, vec![effect_zero()])
+    }
+
+    #[test]
+    fn rejects_handler_clause_target_inside_an_instruction() {
+        // Found by fuzzing: clause targets were not checked against
+        // instruction boundaries, and the stack pass panicked on one.
+        // Offset -3 from the end of the InstallHandler (8) is its flags byte.
+        let code = vec![
+            Op::InstallHandler as u8,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0xfd,
+            0xff,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ];
+        let program = program_with_effects(code, 0, vec![effect_zero()]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(
+            err.message()
+                .contains("control-flow target 5 does not point to an instruction boundary"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]

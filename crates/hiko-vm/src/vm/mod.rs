@@ -742,7 +742,44 @@ mod tests {
 
         let mut vm = VM::new(program);
         let err = vm.run().expect_err("invalid local stack index should fail");
+        assert!(err.message.contains("program verification failed"));
+        assert!(err.message.contains("GetLocal"));
+
+        // Without the verifier, dispatch still fails cleanly.
+        vm.startup_error = None;
+        let err = vm.run().expect_err("invalid local stack index should fail");
         assert_eq!(err.message, "GetLocal: stack index 1 out of bounds");
+    }
+
+    #[test]
+    fn test_dispatch_rejects_set_local_of_its_own_operand_without_panicking() {
+        // Found by fuzzing: `SetLocal0` with only its operand on the stack
+        // passed the slot-count check, and dispatch indexed the stack after
+        // popping that operand.
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::Unit as u8, Op::SetLocal0 as u8, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 1,
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+            globals: Arc::from([]),
+        };
+
+        let mut vm = VM::new(program);
+        let err = vm
+            .run()
+            .expect_err("SetLocal of an absent slot should fail");
+        assert!(err.message.contains("program verification failed"));
+        assert!(err.message.contains("SetLocal0"));
+
+        vm.startup_error = None;
+        let err = vm
+            .run()
+            .expect_err("SetLocal of an absent slot should fail");
+        assert_eq!(err.message, "SetLocal: stack index 0 out of bounds");
     }
 
     #[test]

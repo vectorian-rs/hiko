@@ -300,6 +300,59 @@ Reading order for runtime semantics: `ProcessLifecycle.tla` for meaning, then
 [`threaded.rs`](../../crates/hiko-vm/src/threaded.rs) for what the models do
 not cover yet.
 
+## Fuzzing
+
+Two `cargo-fuzz` crates cover the inputs a sandboxed caller controls. Each
+target's property is "no panic"; the ones below add stronger checks.
+
+| Target | Input | Property |
+|---|---|---|
+| `hiko-syntax/fuzz` `fuzz_lexer`, `fuzz_parser` | source | no panic |
+| `hiko-syntax/fuzz` `fuzz_roundtrip` | source | pretty-printed output parses and is stable |
+| `hiko-vm/fuzz` `fuzz_typecheck` | source | the type check ends, with an error or success, within `max_type_work` 200,000; a program that checks and has no imports compiles to bytecode the verifier accepts, and runs without a panic |
+| `hiko-vm/fuzz` `fuzz_verify` | an encoded `CompiledProgram`, seeded from the repository's compiled programs | a program the verifier accepts runs (work 20,000, heap 20,000) to success or a `RuntimeError` |
+| `hiko-vm/fuzz` `fuzz_verify_structured` | random instruction lists | same as `fuzz_verify` |
+| `hiko-vm/fuzz` `fuzz_run_config` | TOML | an accepted run config generates `build-vm` source that parses as Rust and keeps the entry path and host-resource kinds as string literals |
+
+The VM targets register only builtins with no host access (convert, string,
+regex, json, math, bytes, hash, and `print`/`println` into a sink that drops
+the text).
+
+Running them (nightly toolchain, `cargo install cargo-fuzz`):
+
+```sh
+cd crates/hiko-vm/fuzz
+cargo run --release --bin seed_corpus   # corpora from tests/, examples/, benchmarks/, libraries/, policies/
+cargo +nightly fuzz run fuzz_verify -- -max_total_time=1800
+```
+
+A crash found by a target gets a fix and a regression test in the normal test
+suite, not only an entry in the fuzz corpus.
+
+### Results (2026-11-02, Apple M1 Max)
+
+Each target ran 30 minutes with `-max_total_time=1800`, seeded with
+`seed_corpus` (133 sources, 123 compiled programs, 11 configs):
+
+| Target | Inputs run | Result |
+|---|---|---|
+| `fuzz_typecheck` | 1.7 million | clean |
+| `fuzz_run_config` | 12.8 million | clean |
+| `fuzz_verify_structured` | 7.0 million | clean after fix 1 |
+| `fuzz_verify` | 6.3 million | clean after fixes 1 and 2 |
+
+Bugs found, each fixed with a regression test (#143):
+
+1. **The VM panicked on a verified program.** The verifier checked only that
+   a local slot was below `n_locals`, not that it was on the stack, so
+   `Unit; SetLocal0` verified and dispatch indexed past the end of the stack.
+   The verifier now requires the stack depth to cover the slot, and dispatch
+   pops before indexing.
+2. **The verifier panicked on hostile bytecode.** Handler clause targets were
+   not checked against instruction boundaries; one inside an instruction made
+   the stack-depth pass panic. They are checked now, and the lookup that
+   panicked returns an error.
+
 ## What is covered today
 
 Current coverage is strongest around:
@@ -321,8 +374,8 @@ Those tests check the real implementation paths and complement the formal specs.
 
 Useful next verification work includes:
 
-- add fuzz targets for bytecode verification and interpreter dispatch,
 - add fuzz targets for lockfile parsing and filesystem capability path handling,
+- run the fuzz targets in CI,
 - refresh `ProcessLifecycle.qnt` to match the current TLA+ lifecycle model,
 - check `ThreadedSchedulerImpl.tla` with 3 processes (needs a faster checker),
 - bring the worker and monitor loops under Loom,
