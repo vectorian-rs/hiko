@@ -97,7 +97,7 @@ impl VM {
                 Value::Heap(r) => Some(*r),
                 _ => None,
             })
-            .chain(self.string_cache.values().copied())
+            .chain(self.string_cache.values())
             .chain(extra_roots);
         self.heap.collect(roots);
     }
