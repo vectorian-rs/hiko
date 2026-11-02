@@ -101,8 +101,8 @@ guarantees, and several are explicitly runtime concerns:
     reference known function prototypes.
 - Host builtin semantic safety.
   - The verifier does not prove builtin argument types, host capability
-    permission, filesystem safety, HTTP policy, exec policy, AWS policy, or
-    other provider-specific safety properties.
+    permission, filesystem safety, HTTP policy, exec policy, or other
+    provider-specific safety properties.
 - Reachability as a security guarantee.
   - Stack effects are propagated from the first instruction over control-flow
     successors. Structurally malformed but unreachable bytecode is still decoded,

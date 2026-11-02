@@ -81,8 +81,6 @@ also perform network I/O.
 Examples:
 
 - `Http.Client`
-- future `Aws.Config`
-- future `Aws.S3`
 - future `Dhall`
 - future IaC/provider modules
 - future database, queue, object-store, or cloud-control-plane modules
@@ -92,10 +90,9 @@ features control dependencies and compiled API. `VMBuilder` policy controls
 which operations, hosts, accounts, buckets, regions, or providers are available
 to a specific VM instance.
 
-Provider SDKs may also impose runtime-shape requirements. For example, the Rust
-AWS SDK for S3 is async and expects a Tokio runtime. `Aws.Config` and `Aws.S3`
-should therefore be designed as async/provider integrations rather than as purely
-synchronous builtin functions. The VM/runtime bridge should own how async
+Provider SDKs may also impose runtime-shape requirements; cloud SDKs are often
+async and expect their own runtime. Such modules should be designed as
+async/provider integrations rather than as purely synchronous builtin functions. The VM/runtime bridge should own how async
 provider calls are started, suspended, cancelled, and resumed.
 
 ## Two-Tier Gate Model
@@ -177,7 +174,6 @@ Recommended ownership:
 | `Std.Random` | mixed | Seeded PRNG APIs are pure core; host entropy APIs are host capability. |
 | `Hash` | pure core family | Top-level algorithm family with concrete modules such as `Hash.Blake3` and future `Hash.Sha256`. |
 | `Http` | external/provider family | Top-level protocol family; current client APIs belong under `Http.Client`. |
-| `Aws` | external/provider family | Top-level cloud-provider family; shared SDK configuration lives in `Aws.Config`, and the first planned service module is `Aws.S3`. |
 | `Dhall` | external/provider | Future config-language integration; feature and import/security policy depend on implementation. |
 
 ### Date and time
@@ -233,90 +229,12 @@ helper; it performs network I/O and needs runtime policy. The current client
 APIs should belong under `Http.Client`, leaving room for a future `Http.Server`
 domain rather than placing everything directly under `Http` or under `Std.Http`.
 
-`Aws` should be a top-level provider family. It should not be nested under
-`Std`, and policy should be service-aware rather than only host-aware. Hiko's
-public AWS modules should map closely to the Rust AWS SDK crate split:
-
-- `aws-config` maps to `Aws.Config`.
-- `aws-sdk-s3` maps to `Aws.S3`.
-- Future service crates should map the same way, such as `aws-sdk-dynamodb` to
-  `Aws.DynamoDB`.
-
-`Aws.Config` is the shared provider/session layer. It owns profile selection,
-region, behavior version, credential-source policy, SSO support, HTTP client and
-runtime integration, and the loaded AWS SDK config. Service modules such as
-`Aws.S3` consume an approved `Aws.Config` and add only service-specific client
-creation, operations, and policy such as allowed buckets, prefixes, actions, and
-body-size limits.
-
-The Rust implementation should expect the AWS client path to be async. The
-standard AWS Rust S3 crate (`aws-sdk-s3`) exposes a Tokio runtime integration via
-`rt-tokio`, so `Aws.Config` and `Aws.S3` should be planned around a
-Tokio-backed runtime bridge, request cancellation, credential loading policy, and
-bounded response/body handling instead of blocking a VM worker thread. Because
-AWS SDK versions can also affect MSRV and dependency size, AWS support should
-stay behind optional Cargo features.
-
-A good initial dependency shape for Hiko is to disable AWS SDK defaults and opt
-into the runtime/client features explicitly. For Hiko's preferred human workflow,
-SSO profile support should be enabled deliberately on `aws-config`:
-
-```toml
-aws-config = { version = "...", default-features = false, features = [
-  "default-https-client",
-  "behavior-version-latest",
-  "rt-tokio",
-  "sso",
-] }
-aws-sdk-s3 = { version = "...", default-features = false, features = [
-  "default-https-client",
-  "behavior-version-latest",
-  "rt-tokio",
-] }
-```
-
-With `default-features = false`, the `aws-config` `sso` feature is required for
-profiles that use `sso_session`, `sso_account_id`, and `sso_role_name`. The S3
-service crate does not need an SSO feature; it receives credentials through the
-loaded AWS config.
-
-This shape keeps SSO explicit while still avoiding other defaults unless Hiko
-chooses to support and policy them. In particular, keep `credentials-process` out
-by default because it executes a host command, and avoid service-crate default
-extras such as `sigv4a` until a concrete use case requires them.
-
-Hiko should not delegate AWS authentication to an unrestricted SDK default
-credential chain. Auth source selection is an `Aws.Config` policy concern, not an
-`Aws.S3` concern. `Aws.Config` should expose an explicit enum of supported auth
-methods. Initially, the only supported method should be SSO profile auth:
-
-```rust
-pub enum AwsConfigAuthMethod {
-    SsoProfile { profile: String },
-}
-```
-
-Other credential sources should only be added when Hiko has a concrete runtime
-story and policy checks for them. Sensitive sources such as environment
-variables, shared credentials files, and `credential_process` should be disabled
-unless explicitly allowed by future runtime policy. `Aws.Config` should validate
-the requested auth method, profile, account, and region before constructing the
-AWS SDK config; `Aws.S3` should then validate service-specific resource policy
-before creating or using an S3 client.
-
-The Cargo feature shape should follow the same split. `builtin-aws-config` owns
-`aws-config`; each AWS service feature depends on it and adds its own service
-crate:
-
-```toml
-builtin-aws-config = ["dep:aws-config"]
-builtin-aws-s3 = ["builtin-aws-config", "dep:aws-sdk-s3"]
-```
-
-This validates the idea that every AWS service feature requires `aws-config`:
-service crates need a loaded AWS SDK config to construct clients, and centralizing
-that requirement keeps auth/profile policy in one place instead of duplicating it
-inside each service module.
+Cloud providers follow the same pattern. Hiko had an AWS integration
+(`Aws.Config`, `Aws.S3`, `Aws.SQS`) until plan U (#140) removed it as out of
+focus. A future provider should be a top-level family, not nested under `Std`,
+behind optional Cargo features, with policy that is service-aware rather than
+only host-aware, and with credential sources chosen explicitly by policy rather
+than taken from an SDK's default chain.
 
 ## Rust Path Convention
 
@@ -333,8 +251,6 @@ crates/hiko-vm/src/builtins/std/time.rs
 crates/hiko-vm/src/builtins/std/filesystem.rs
 crates/hiko-vm/src/builtins/hash/blake3.rs
 crates/hiko-vm/src/builtins/http/client.rs
-crates/hiko-vm/src/builtins/aws/config.rs
-crates/hiko-vm/src/builtins/aws/s3.rs
 ```
 
 Implementation-only helpers should remain private support modules and do not
@@ -376,9 +292,8 @@ builtin-hash-sha256 = []
 builtin-hash = ["builtin-hash-blake3", "builtin-hash-sha256"]
 ```
 
-The same rule applies to provider families. Add `builtin-aws-config` when
-`Aws.Config` exists and add `builtin-aws-s3` when `Aws.S3` exists; do not add
-placeholder features before code or API exists.
+The same rule applies to provider families: add a provider's feature when its
+module exists, and do not add placeholder features before code or API exists.
 
 ## Adding a Builtin Checklist
 
@@ -406,8 +321,8 @@ cargo clippy -p hiko-vm --no-default-features -- -D warnings
 
 Status: partly done.
 
-- Done: provider and algorithm directories exist for `hash/` (`blake3.rs`),
-  `http/` (`client.rs`), and `aws/` (`config.rs`, `s3.rs`, `sqs.rs`).
+- Done: provider and algorithm directories exist for `hash/` (`blake3.rs`) and
+  `http/` (`client.rs`).
 - Not done: `builtins/std/` does not exist. Standard-library domains such as
   `string.rs`, `bytes.rs`, `json.rs`, `time.rs`, and `filesystem.rs` still sit
   directly under `builtins/`.
