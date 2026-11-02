@@ -83,6 +83,50 @@ pub struct EmbeddedSources {
     pub files: Option<&'static [EmbeddedFile]>,
 }
 
+/// The local files (`use "..."`) that the script at `entry` uses, directly
+/// or through other local files, keyed as [`embedded_file_path`] names them
+/// relative to the script's directory. `build-vm --script` embeds these.
+/// Sorted by key.
+pub fn local_use_files(entry: &Path) -> Result<Vec<(String, String)>, CompileError> {
+    let root = entry.parent().unwrap_or(Path::new("."));
+    let mut found = std::collections::BTreeMap::new();
+    let mut pending = vec![(
+        PathBuf::new(),
+        std::fs::read_to_string(entry).map_err(|e| {
+            CompileError::codegen(format!("cannot read '{}': {e}", entry.display()))
+        })?,
+    )];
+    while let Some((dir, source)) = pending.pop() {
+        let tokens = Lexer::new(&source, 0)
+            .tokenize()
+            .map_err(|e| CompileError::codegen(format!("lex error: {}", e.message)))?;
+        let program = Parser::new(tokens)
+            .parse_program()
+            .map_err(|e| CompileError::codegen(format!("parse error: {}", e.message)))?;
+        let program = hiko_syntax::desugar::desugar_program(program);
+        for decl in &program.decls {
+            let DeclKind::Use(path) = &decl.kind else {
+                continue;
+            };
+            let key = embedded_file_path(&dir, path)?;
+            if found.contains_key(&key) {
+                continue;
+            }
+            let file = root.join(&key);
+            let text = std::fs::read_to_string(&file).map_err(|e| {
+                CompileError::codegen(format!("cannot read local use '{}': {e}", file.display()))
+            })?;
+            let key_dir = Path::new(&key)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            found.insert(key, text.clone());
+            pending.push((key_dir, text));
+        }
+    }
+    Ok(found.into_iter().collect())
+}
+
 /// A locked module's verified source, from [`Compiler::locked_module_sources`].
 #[derive(Debug, Clone)]
 pub struct LockedModuleSource {
@@ -3459,6 +3503,22 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn local_use_files_follows_uses_relative_to_each_file() {
+        let dir = unique_temp_dir("local-use-files");
+        write_file(&dir.join("main.hml"), "use \"./lib/a.hml\"\nval x = a");
+        write_file(
+            &dir.join("lib/a.hml"),
+            "use \"./b.hml\"\nuse \"../c.hml\"\nval a = b + c",
+        );
+        write_file(&dir.join("lib/b.hml"), "val b = 1");
+        write_file(&dir.join("c.hml"), "use \"./lib/b.hml\"\nval c = 2");
+        let files = local_use_files(&dir.join("main.hml")).unwrap_or_else(|e| panic!("{e:?}"));
+        let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["c.hml", "lib/a.hml", "lib/b.hml"]);
+        assert_eq!(files[2].1, "val b = 1");
     }
 
     #[test]
