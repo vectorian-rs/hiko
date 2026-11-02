@@ -1,6 +1,11 @@
 (* tool: run_all
  * description: Run all examples and report per-example timing
  *
+ * Build hiko-cli with every builtin first; the default build leaves out
+ * regex, JSON and dates, which some examples use:
+ *
+ *   cargo build --release -p hiko-cli --features builtin-all
+ *
  * Requires an exec-enabled VM. The checked-in run config at
  * `policies/test-runner.policy.toml` already allows:
  *

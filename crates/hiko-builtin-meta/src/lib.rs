@@ -2,6 +2,8 @@
 mod bytes;
 #[cfg(feature = "builtin-convert")]
 mod convert;
+#[cfg(feature = "builtin-date")]
+mod date;
 #[cfg(feature = "builtin-env")]
 mod env;
 #[cfg(feature = "builtin-exec")]
@@ -121,6 +123,8 @@ const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     env::BUILTINS,
     #[cfg(feature = "builtin-time")]
     time::BUILTINS,
+    #[cfg(feature = "builtin-date")]
+    date::BUILTINS,
     #[cfg(feature = "builtin-process")]
     process::BUILTINS,
     #[cfg(feature = "builtin-path")]

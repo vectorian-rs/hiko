@@ -6,6 +6,13 @@ Run an example from the repository root:
 hiko run examples/hello.hml
 ```
 
+Some examples use regex, JSON or dates, which the default build leaves out.
+Build with every builtin to run them all:
+
+```sh
+cargo build --release -p hiko-cli --features builtin-all
+```
+
 `tools/run_all.hml` runs every example except the ones that must fail. Those
 are checked by `crates/hiko-cli/tests/examples.rs`. Examples that import named
 modules (`import Std.List`) fetch them from the registry in `hiko.toml`; serve

@@ -7,13 +7,12 @@ description = "hiko-compile: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
-default = ["builtin-all", "loader-all"]
-builtin-all = [
+default = ["builtin-default", "loader-all"]
+# The default build leaves out regex, JSON and dates; see PR #141.
+builtin-default = [
     "builtin-stdio",
     "builtin-convert",
     "builtin-string",
-    "builtin-regex",
-    "builtin-json",
     "builtin-math",
     "builtin-bytes",
     "builtin-hash",
@@ -27,6 +26,12 @@ builtin-all = [
     "builtin-exec",
     "builtin-system",
     "builtin-testing",
+]
+builtin-all = [
+    "builtin-default",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-date",
 ]
 loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
 loader-named-imports = []
@@ -43,6 +48,7 @@ builtin-hash = ["hiko-builtin-meta/builtin-hash", "hiko-types/builtin-hash"]
 builtin-random = ["hiko-builtin-meta/builtin-random", "hiko-types/builtin-random"]
 builtin-env = ["hiko-builtin-meta/builtin-env", "hiko-types/builtin-env"]
 builtin-time = ["hiko-builtin-meta/builtin-time", "hiko-types/builtin-time"]
+builtin-date = ["hiko-builtin-meta/builtin-date", "hiko-types/builtin-date"]
 builtin-process = ["hiko-builtin-meta/builtin-process", "hiko-types/builtin-process"]
 builtin-path = ["hiko-builtin-meta/builtin-path", "hiko-types/builtin-path"]
 builtin-filesystem = [

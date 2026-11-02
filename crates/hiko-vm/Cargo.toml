@@ -7,13 +7,12 @@ description = "hiko-vm: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
-default = ["builtin-all"]
-builtin-all = [
+default = ["builtin-default"]
+# The default build leaves out regex, JSON and dates; see PR #141.
+builtin-default = [
     "builtin-stdio",
     "builtin-convert",
     "builtin-string",
-    "builtin-regex",
-    "builtin-json",
     "builtin-math",
     "builtin-bytes",
     "builtin-hash",
@@ -27,6 +26,12 @@ builtin-all = [
     "builtin-exec",
     "builtin-system",
     "builtin-testing",
+]
+builtin-all = [
+    "builtin-default",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-date",
 ]
 builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-compile/builtin-stdio"]
 builtin-convert = ["hiko-builtin-meta/builtin-convert", "hiko-compile/builtin-convert"]
@@ -57,6 +62,10 @@ builtin-env = ["hiko-builtin-meta/builtin-env", "hiko-compile/builtin-env"]
 builtin-time = [
     "hiko-builtin-meta/builtin-time",
     "hiko-compile/builtin-time",
+]
+builtin-date = [
+    "hiko-builtin-meta/builtin-date",
+    "hiko-compile/builtin-date",
     "dep:jiff",
 ]
 builtin-process = ["hiko-builtin-meta/builtin-process", "hiko-compile/builtin-process"]

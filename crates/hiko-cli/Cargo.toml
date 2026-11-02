@@ -7,13 +7,12 @@ description = "hiko-cli: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
-default = ["builtin-all", "loader-all", "cli-hash", "cli-lock"]
-builtin-all = [
+default = ["builtin-default", "loader-all", "cli-hash", "cli-lock"]
+# The default build leaves out regex, JSON and dates; see PR #141.
+builtin-default = [
     "builtin-stdio",
     "builtin-convert",
     "builtin-string",
-    "builtin-regex",
-    "builtin-json",
     "builtin-math",
     "builtin-bytes",
     "builtin-hash",
@@ -27,6 +26,12 @@ builtin-all = [
     "builtin-exec",
     "builtin-system",
     "builtin-testing",
+]
+builtin-all = [
+    "builtin-default",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-date",
 ]
 loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
 loader-named-imports = ["hiko-compile/loader-named-imports"]
@@ -99,6 +104,12 @@ builtin-time = [
     "hiko-compile/builtin-time",
     "hiko-types/builtin-time",
     "hiko-vm/builtin-time",
+]
+builtin-date = [
+    "hiko-builtin-meta/builtin-date",
+    "hiko-compile/builtin-date",
+    "hiko-types/builtin-date",
+    "hiko-vm/builtin-date",
 ]
 builtin-process = [
     "hiko-builtin-meta/builtin-process",

@@ -26,7 +26,8 @@ use std::sync::Arc;
     feature = "builtin-regex",
     feature = "builtin-stdio",
     feature = "builtin-string",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-date"
 ))]
 pub(crate) fn heap_alloc(heap: &mut Heap, obj: HeapObject) -> Result<Value, String> {
     heap.alloc(obj).map(Value::Heap).map_err(|e| e.to_string())
@@ -110,6 +111,12 @@ pub(crate) fn extract_string_arg(
 }
 
 /// The two string fields of a `(String, String)` argument.
+#[cfg(any(
+    test,
+    feature = "builtin-date",
+    feature = "builtin-regex",
+    feature = "builtin-string"
+))]
 pub(crate) fn string_pair(
     args: &[Value],
     heap: &Heap,
@@ -133,12 +140,30 @@ pub(crate) fn string_pair(
 /// `per_kib` for every KiB of `bytes`, rounded up. See
 /// docs/builtins/accounting-matrix.md#calibration for how the rates are
 /// measured.
+#[cfg(any(
+    test,
+    feature = "builtin-bytes",
+    feature = "builtin-hash",
+    feature = "builtin-json",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-string"
+))]
 pub(crate) fn host_work(base: u64, per_kib: u64, bytes: usize) -> u64 {
     base.saturating_add((bytes as u64).saturating_mul(per_kib).div_ceil(1024))
 }
 
 /// Charge `work` units of host work for a call of `builtin`, with the
 /// builtin's name in the error.
+#[cfg(any(
+    test,
+    feature = "builtin-bytes",
+    feature = "builtin-hash",
+    feature = "builtin-json",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-string"
+))]
 pub(crate) fn charge(heap: &mut Heap, builtin: &str, work: u64) -> Result<(), String> {
     heap.charge_host_work(work)
         .map_err(|e| format!("{builtin}: {e}"))

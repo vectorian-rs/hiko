@@ -1199,8 +1199,8 @@ edition = "2024"
 
 [dependencies]
 hiko-syntax = "{version}"
-hiko-compile = "{version}"
-hiko-vm = "{version}"
+hiko-compile = {{ version = "{version}", features = ["builtin-all"] }}
+hiko-vm = {{ version = "{version}", features = ["builtin-all"] }}
 "#
     );
 

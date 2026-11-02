@@ -19,7 +19,7 @@ if ! command -v hyperfine >/dev/null 2>&1; then
 fi
 
 if [ -z "${HIKO_BIN:-}" ]; then
-    cargo build --release -p hiko-cli
+    cargo build --release -p hiko-cli --features builtin-all
     HIKO_BIN=target/release/hiko-cli
 fi
 hiko="$HIKO_BIN run --config hiko.toml --policy benchmark"
