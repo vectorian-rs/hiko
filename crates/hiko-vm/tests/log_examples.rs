@@ -5,21 +5,11 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use common::Captured;
 use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
-use hiko_vm::vm::OutputSink;
-
-#[derive(Default)]
-struct Captured(Mutex<String>);
-
-impl OutputSink for Captured {
-    fn write(&self, text: &str) -> std::io::Result<()> {
-        self.0.lock().unwrap().push_str(text);
-        Ok(())
-    }
-}
 
 /// Run `example` under the repository's default policy: (stdout, stderr).
 fn run(example: &str) -> (String, String) {
@@ -74,16 +64,7 @@ fn plain_and_effect_examples_log_the_same_lines() {
 #[test]
 fn eprint_needs_its_capability() {
     for builtin in ["eprint", "eprintln"] {
-        let source = format!("val _ = {builtin} \"x\"");
-        let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
-            .tokenize()
-            .unwrap();
-        let program = hiko_syntax::parser::Parser::new(tokens)
-            .parse_program()
-            .unwrap();
-        let compiled = hiko_compile::compiler::Compiler::compile(program)
-            .unwrap()
-            .0;
+        let compiled = common::compile_source(&format!("val _ = {builtin} \"x\""));
         let build = |toml: &str| {
             let config = RunConfig::from_toml(toml).unwrap();
             let mut vm = config
