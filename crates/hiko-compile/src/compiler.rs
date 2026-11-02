@@ -325,11 +325,7 @@ fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), C
     }
 }
 
-#[cfg(all(
-    feature = "loader-named-imports",
-    feature = "loader-http",
-    feature = "loader-integrity-blake3"
-))]
+#[cfg(feature = "loader-integrity-blake3")]
 fn write_verified_cache_file(cache_path: &Path, bytes: &[u8]) -> Result<(), CompileError> {
     let file_name = cache_path
         .file_name()
@@ -758,11 +754,7 @@ enum ResolvedImport {
         canonical: PathBuf,
         display_name: String,
     },
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     VerifiedFile {
         canonical: PathBuf,
         display_name: String,
@@ -789,11 +781,7 @@ impl ResolvedImport {
     fn key(&self) -> ImportKey {
         match self {
             Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile { canonical, .. } => ImportKey::File(canonical.clone()),
             Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
             Self::Embedded { key, .. } => key.clone(),
@@ -803,11 +791,7 @@ impl ResolvedImport {
     /// Whether the source was fetched from a remote package.
     fn is_remote(&self) -> bool {
         match self {
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile { .. } => true,
             Self::Embedded { module, .. } => *module,
             _ => false,
@@ -817,11 +801,7 @@ impl ResolvedImport {
     fn display_name(&self) -> &str {
         match self {
             Self::File { display_name, .. } => display_name,
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile { display_name, .. } => display_name,
             Self::Synthetic { display_name, .. } => display_name,
             Self::Embedded { display_name, .. } => display_name,
@@ -837,11 +817,7 @@ impl ResolvedImport {
                 let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
                 Ok((Cow::Owned(source), base_dir))
             }
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile {
                 canonical, source, ..
             } => {
@@ -875,14 +851,7 @@ pub struct Compiler {
     /// Base directory for resolving relative local file includes via `use`.
     base_dir: PathBuf,
     /// Entry file for file-based compilation. External named-import loader state is derived lazily from this.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     entry_file: Option<PathBuf>,
     /// Imports currently being loaded (for cycle detection).
     loading_imports: HashSet<ImportKey>,
@@ -897,34 +866,13 @@ pub struct Compiler {
     /// Cached desugared programs for imported modules (used between passes).
     imported_programs: HashMap<ImportKey, CachedImportedProgram>,
     /// Named module lockfile loaded lazily from the entry program's project root.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     import_lockfile: Option<ImportLockfile>,
     /// Cache directory for fetched remote modules.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     module_cache_dir: Option<PathBuf>,
     /// Caller-supplied overrides for named-import resolution.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     loader_options: ModuleLoaderOptions,
     /// Global name -> proto_idx of the capture-free function it is currently
     /// bound to, for `CallDirect`. Every global rebinding clears the entry.
@@ -995,11 +943,7 @@ impl Compiler {
     /// package root, cache, then network) and checked against its BLAKE3
     /// hash. `build-vm` embeds these in a sealed artifact. Sorted by import
     /// name.
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     pub fn locked_module_sources(
         entry_file: &Path,
         loader_options: ModuleLoaderOptions,
@@ -1856,11 +1800,7 @@ impl Compiler {
         )))
     }
 
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     fn resolve_external_named_import(
         &mut self,
         module_name: &str,
@@ -1982,11 +1922,7 @@ impl Compiler {
         })
     }
 
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     fn ensure_import_loader(
         &mut self,
         module_name: &str,
