@@ -270,9 +270,9 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::MakeCons => {
-                    let tail = self.pop()?;
-                    let head = self.pop()?;
-                    let fields = Fields::from_buf([head, tail]);
+                    let start = self.stack_start_for_arity(2, "MakeCons")?;
+                    let fields = Fields::from_buf([self.stack[start], self.stack[start + 1]]);
+                    self.stack.truncate(start);
                     let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
                     self.push(val)?;
                 }
@@ -1012,11 +1012,15 @@ impl VM {
                 .chunk
                 .code
         };
-        let bytes = code.get(frame.ip..frame.ip + N).ok_or_else(|| {
-            error_fmt(format_args!(
-                "truncated bytecode: expected {N}-byte operand"
-            ))
-        })?;
+        let bytes = frame
+            .ip
+            .checked_add(N)
+            .and_then(|end| code.get(frame.ip..end))
+            .ok_or_else(|| {
+                error_fmt(format_args!(
+                    "truncated bytecode: expected {N}-byte operand"
+                ))
+            })?;
         frame.ip += N;
         Ok(bytes.try_into().expect("slice of length N"))
     }

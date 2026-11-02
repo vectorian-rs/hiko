@@ -756,6 +756,27 @@ mod tests {
     }
 
     #[test]
+    fn test_dispatch_make_cons_underflow_names_the_opcode_and_keeps_the_stack() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::Unit as u8, Op::MakeCons as u8, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+            globals: Arc::from([]),
+        };
+        let mut vm = VM::new(program);
+        // The verifier rejects this; check dispatch on its own.
+        vm.startup_error = None;
+        let err = vm.run().expect_err("MakeCons needs two values");
+        assert_eq!(err.message, "MakeCons: stack underflow for arity 2");
+        assert_eq!(vm.stack.len(), 1, "the stack is left as it was");
+    }
+
+    #[test]
     fn test_dispatch_rejects_set_local_of_its_own_operand_without_panicking() {
         // Found by fuzzing: `SetLocal0` with only its operand on the stack
         // passed the slot-count check, and dispatch indexed the stack after
