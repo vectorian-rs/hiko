@@ -29,6 +29,8 @@ allocation take at most 13%.
 
 ## Opportunities, ranked
 
+Line references are to `main` before #149, which changed several of them.
+
 Gains are estimates from the profile shares and must be measured, interleaved
 and on AC power (`docs/architecture/performance.md`, "How to measure").
 
@@ -44,8 +46,8 @@ The root `Cargo.toml` has no `[profile.release]` and there is no
 `Op::try_from` (`hiko-compile/src/op.rs:145`) is in another crate with no
 `#[inline]`, so it cannot be inlined and shows as its own frame (7 to 14%).
 
-- Change: `lto = "fat"`, `codegen-units = 1`, `debug = "line-tables-only"`,
-  and `#[inline]` on `Op::try_from` and the `Chunk` read helpers regardless.
+- Proposed (and measured as slower, so not kept): `lto = "fat"`,
+  `codegen-units = 1`. Kept instead: `#[inline]` on `Op::try_from`.
   Keep `panic = "unwind"`: `io_backend.rs:534` relies on `catch_unwind`.
   `target-cpu` adds nothing on aarch64-apple-darwin (already apple-m1). PGO
   (`cargo-pgo`) after the rest.

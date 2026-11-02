@@ -428,7 +428,6 @@ moved the same way. "Before" is the V branch at `8b06637`, built with
 |---|---|---|
 | `global_builtin.hml` | 291.0 ms | 276.9 ms (-4.8%) |
 | `string_concat.hml` | | unchanged within noise |
-||||||| parent of 1fc12ee (docs: fat LTO and one codegen unit made the interpreter slower)
 
 ### Release profile: fat LTO and one codegen unit (PR #149, not kept)
 
@@ -514,6 +513,9 @@ dispatch loop's code layout; the rest gain up to 7%.
 and `chunk_for_checked` are now `#[inline(always)]`, and the errors they
 return are built in `#[cold] #[inline(never)]` functions, so the `format!`
 calls no longer make them too large to inline. Error messages are unchanged.
+A later commit in the same PR gave `stack_start_for_arity` and
+`callee_pos_for_arity` the same treatment; the table below was measured
+before it.
 
 Interleaved, 10 rounds, on AC, load average 2.4 to 3.5; "before" is #149
 with `Op::try_from` inlined.
