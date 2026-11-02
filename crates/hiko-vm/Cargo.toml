@@ -82,7 +82,6 @@ builtin-http = [
     "hiko-common/http",
     "dep:rmp-serde",
     "dep:serde_json",
-    "dep:url",
 ]
 builtin-exec = ["hiko-builtin-meta/builtin-exec", "hiko-compile/builtin-exec"]
 builtin-system = ["hiko-builtin-meta/builtin-system", "hiko-compile/builtin-system"]
@@ -103,7 +102,6 @@ serde_json = { version = "1", optional = true }
 regex = { version = "1", optional = true }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-url = { version = "2", optional = true }
 cap-std = { version = "4", optional = true }
 
 [target.'cfg(unix)'.dependencies]

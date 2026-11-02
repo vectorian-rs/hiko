@@ -7,5 +7,5 @@ mod timeouts;
 #[cfg(feature = "hash")]
 pub use hash::blake3_hex;
 #[cfg(feature = "http")]
-pub use http::{dispatch_ureq, http_get_text_limited};
+pub use http::{dispatch_ureq, http_get_text_limited, request_host};
 pub use timeouts::HttpTimeouts;
