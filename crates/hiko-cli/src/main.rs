@@ -27,8 +27,10 @@ use hiko_vm::threaded::ThreadedRuntime;
 use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
 
-#[cfg(feature = "cli-lock")]
+// Sealing reads every locked module through the verified loader.
+#[cfg(feature = "loader-integrity-blake3")]
 mod build_vm;
+#[cfg(feature = "cli-lock")]
 mod lock_verify;
 
 fn main() {
@@ -97,11 +99,19 @@ fn main() {
             }
         }
         "build-vm" => {
-            let options = build_vm::parse_args(&args[2..]).unwrap_or_else(|e| {
-                eprintln!("{e}");
+            #[cfg(feature = "loader-integrity-blake3")]
+            {
+                let options = build_vm::parse_args(&args[2..]).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+                build_vm(&options);
+            }
+            #[cfg(not(feature = "loader-integrity-blake3"))]
+            {
+                eprintln!("This build of hiko was compiled without the 'build-vm' command");
                 process::exit(1);
-            });
-            build_vm(&options);
+            }
         }
         other => {
             eprintln!("Unknown command: {other}");
@@ -1217,6 +1227,7 @@ fn push_unique_path(path: &Path, seen: &mut BTreeSet<PathBuf>, resolved: &mut Ve
     }
 }
 
+#[cfg(feature = "loader-integrity-blake3")]
 fn build_vm(options: &build_vm::BuildVmOptions) {
     let config = load_run_config(&options.config_path, "run config");
     let out_dir = build_vm::generate(options, &config, &linked_extensions()).unwrap_or_else(|e| {
