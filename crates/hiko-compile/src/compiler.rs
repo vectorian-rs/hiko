@@ -1760,7 +1760,9 @@ impl Compiler {
         self.resolve_external_named_import(module_name, package_name, leaf_module)
     }
 
-    #[cfg(not(feature = "loader-named-imports"))]
+    /// Remote imports need the verified loader; `loader-integrity-blake3`
+    /// enables `loader-http` and `loader-named-imports` too.
+    #[cfg(not(feature = "loader-integrity-blake3"))]
     fn resolve_external_named_import(
         &mut self,
         module_name: &str,
@@ -1768,35 +1770,7 @@ impl Compiler {
         _leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
         Err(CompileError::codegen(format!(
-            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-named-imports'"
-        )))
-    }
-
-    #[cfg(all(feature = "loader-named-imports", not(feature = "loader-http")))]
-    fn resolve_external_named_import(
-        &mut self,
-        module_name: &str,
-        _package_name: &str,
-        _leaf_module: &str,
-    ) -> Result<ResolvedImport, CompileError> {
-        Err(CompileError::codegen(format!(
-            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-http'"
-        )))
-    }
-
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        not(feature = "loader-integrity-blake3")
-    ))]
-    fn resolve_external_named_import(
-        &mut self,
-        module_name: &str,
-        _package_name: &str,
-        _leaf_module: &str,
-    ) -> Result<ResolvedImport, CompileError> {
-        Err(CompileError::codegen(format!(
-            "named remote import '{module_name}' requires BLAKE3 verification support; enable cargo feature 'loader-integrity-blake3'"
+            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-integrity-blake3'"
         )))
     }
 
