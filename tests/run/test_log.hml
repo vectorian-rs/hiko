@@ -1,0 +1,59 @@
+import Std.Option
+import Std.Log
+import Std.String
+
+fun check (actual, expected) =
+  assert_eq (actual, expected, "expected " ^ expected ^ ", got " ^ actual)
+
+(* Timestamps: the epoch, leap days, the end of a non-leap century year. *)
+val _ = check (Log.timestamp 0, "1970-01-01T00:00:00Z")
+val _ = check (Log.timestamp 951782400000, "2000-02-29T00:00:00Z")
+val _ = check (Log.timestamp 1709251199000, "2024-02-29T23:59:59Z")
+val _ = check (Log.timestamp 1793657378021, "2026-11-02T22:09:38Z")
+val _ = check (Log.timestamp 4107542399999, "2100-02-28T23:59:59Z")
+
+(* The line format: level padded to 5 columns. *)
+val _ = check (Log.format_line (1793657378021, Log.Info, "app", "started"),
+  "2026-11-02T22:09:38Z INFO  app: started")
+val _ = check (Log.format_line (0, Log.Error, "db", "lost"),
+  "1970-01-01T00:00:00Z ERROR db: lost")
+val _ = check (Log.kv "login" [("user", "ada"), ("ok", "true")], "login user=ada ok=true")
+val _ = check (Log.kv "plain" [], "plain")
+
+(* Levels *)
+val _ = assert (Log.enabled (Log.Info, Log.Warn), "warn passes info")
+val _ = assert (Log.enabled (Log.Info, Log.Info), "info passes info")
+val _ = assert (not (Log.enabled (Log.Info, Log.Debug)), "debug does not pass info")
+val _ =
+  case Log.parse_level " WARN " of
+      Option.Some Log.Warn => ()
+    | _ => assert (false, "parse_level ignores case and spaces")
+val _ =
+  case Log.parse_level "verbose" of
+      Option.None => ()
+    | _ => assert (false, "parse_level rejects unknown names")
+val _ =
+  case Log.from_env "HIKO_LOG_TEST_SURELY_UNSET" Log.Debug of
+      Log.Debug => ()
+    | _ => assert (false, "from_env falls back to the default")
+
+(* The effect: a handler sees each line at or above its level, in order. *)
+fun only_info_and_up line =
+  assert (not (String.contains "DEBUG" line), "a debug line passed an info handler")
+
+val result =
+  Log.handle_with only_info_and_up Log.Info (fn () =>
+    let
+      val _ = Log.emit_debug "app" "hidden"
+      val _ = Log.emit_info "app" "shown"
+    in
+      42
+    end)
+val _ = assert (result = 42, "handle_with returns the body's value")
+
+val _ =
+  Log.handle_with (fn line => assert (String.ends_with "WARN  app: careful" line, line)) Log.Trace
+    (fn () => Log.emit_warn "app" "careful")
+
+val discarded = Log.discard (fn () => let val _ = Log.emit_error "app" "dropped" in "done" end)
+val _ = check (discarded, "done")
