@@ -1,0 +1,17 @@
+(* A list-based prime sieve: take the head, remove its multiples from the
+ * rest, repeat. Counts the primes below 15,000. *)
+fun range (lo, hi, acc) = if hi < lo then acc else range (lo, hi - 1, hi :: acc)
+
+fun reverse (xs, acc) = case xs of [] => acc | x :: rest => reverse (rest, x :: acc)
+
+fun remove (p, xs, acc) =
+  case xs of
+      [] => reverse (acc, [])
+    | x :: rest => remove (p, rest, if x mod p = 0 then acc else x :: acc)
+
+fun sieve (xs, count) =
+  case xs of
+      [] => count
+    | p :: rest => sieve (remove (p, rest, []), count + 1)
+
+val _ = println (int_to_string (sieve (range (2, 15000, []), 0)))

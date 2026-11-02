@@ -1,0 +1,13 @@
+(* N-queens, counting all solutions; the queens placed so far are a list. *)
+fun safe (x : int, d, qs) =
+  case qs of
+      [] => true
+    | q :: rest => if x = q orelse x = q + d orelse x = q - d then false else safe (x, d + 1, rest)
+
+fun queens (n : int, k, qs) = if k = n then 1 else place (n, k, qs, 0, 0)
+
+and place (n : int, k, qs, c : int, acc) =
+  if c = n then acc
+  else place (n, k, qs, c + 1, if safe (c, 1, qs) then acc + queens (n, k + 1, c :: qs) else acc)
+
+val _ = println (int_to_string (queens (10, 0, [])))

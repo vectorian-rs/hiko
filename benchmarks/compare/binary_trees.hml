@@ -1,0 +1,20 @@
+(* Benchmarks Game binary-trees, simplified: build and check complete binary
+ * trees of depths 4, 6, ..., max, many times each. Allocation and GC. *)
+datatype tree = Leaf | Node of tree * tree
+
+fun make d = if d = 0 then Node (Leaf, Leaf) else Node (make (d - 1), make (d - 1))
+
+fun check t = case t of Leaf => 0 | Node (l, r) => 1 + check l + check r
+
+fun pow2 n = if n = 0 then 1 else 2 * pow2 (n - 1)
+
+fun repeat (d, i, acc) = if i = 0 then acc else repeat (d, i - 1, acc + check (make d))
+
+fun depths (d, max, acc) =
+  if d > max then acc else depths (d + 2, max, acc + repeat (d, pow2 (max - d + 4), 0))
+
+val max = 14
+val long_lived = make max
+val total = depths (4, max, 0) + check long_lived
+
+val _ = println (int_to_string total)

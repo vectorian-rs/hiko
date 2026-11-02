@@ -1,0 +1,23 @@
+(* Are We Fast Yet's List benchmark: Takeuchi on list lengths, with lists
+ * compared by walking them. Repeated 300 times. *)
+datatype elem = Nil | Elem of int * elem
+
+fun make_list n = if n = 0 then Nil else Elem (n, make_list (n - 1))
+
+fun length l = case l of Nil => 0 | Elem (_, rest) => 1 + length rest
+
+fun next l = case l of Nil => Nil | Elem (_, rest) => rest
+
+fun is_shorter (x, y) =
+  case y of
+      Nil => false
+    | Elem (_, ytail) => (case x of Nil => true | Elem (_, xtail) => is_shorter (xtail, ytail))
+
+fun tail (x, y, z) =
+  if is_shorter (y, x) then tail (tail (next x, y, z), tail (next y, z, x), tail (next z, x, y)) else z
+
+fun run (k, acc) =
+  if k = 0 then acc
+  else run (k - 1, acc + length (tail (make_list 15, make_list 10, make_list 6)))
+
+val _ = println (int_to_string (run (300, 0)))
