@@ -145,6 +145,8 @@ pub enum Op {
 impl TryFrom<u8> for Op {
     type Error = u8;
 
+    // Called for every instruction the VM dispatches, from another crate.
+    #[inline]
     fn try_from(b: u8) -> Result<Op, u8> {
         match b {
             0 => Ok(Op::Const),

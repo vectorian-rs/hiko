@@ -249,7 +249,8 @@ impl VM {
                 Op::MakeTuple => {
                     let arity = self.read_u8()? as usize;
                     let start = self.stack_start_for_arity(arity, "MakeTuple")?;
-                    let elems: Fields = self.stack.drain(start..).collect();
+                    let elems = Fields::from_slice(&self.stack[start..]);
+                    self.stack.truncate(start);
                     let val = self.alloc(HeapObject::Tuple(elems))?;
                     self.push(val)?;
                 }
@@ -263,13 +264,15 @@ impl VM {
                     let tag = self.read_u16()?;
                     let arity = self.read_u8()? as usize;
                     let start = self.stack_start_for_arity(arity, "MakeData")?;
-                    let fields: Fields = self.stack.drain(start..).collect();
+                    let fields = Fields::from_slice(&self.stack[start..]);
+                    self.stack.truncate(start);
                     let val = self.alloc(HeapObject::Data { tag, fields })?;
                     self.push(val)?;
                 }
                 Op::MakeCons => {
                     let start = self.stack_start_for_arity(2, "MakeCons")?;
-                    let fields: Fields = self.stack.drain(start..).collect();
+                    let fields = Fields::from_buf([self.stack[start], self.stack[start + 1]]);
+                    self.stack.truncate(start);
                     let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
                     self.push(val)?;
                 }
@@ -758,20 +761,18 @@ impl VM {
         Ok(())
     }
 
+    #[inline(always)]
     pub(super) fn push(&mut self, val: Value) -> Result<(), RuntimeError> {
         if self.stack.len() >= DEFAULT_MAX_STACK_SLOTS {
-            return Err(RuntimeError {
-                message: "stack overflow".into(),
-            });
+            return Err(error("stack overflow"));
         }
         self.stack.push(val);
         Ok(())
     }
 
+    #[inline(always)]
     fn pop(&mut self) -> Result<Value, RuntimeError> {
-        self.stack.pop().ok_or_else(|| RuntimeError {
-            message: "stack underflow".into(),
-        })
+        self.stack.pop().ok_or_else(|| error("stack underflow"))
     }
 
     fn push_field(&mut self, idx: usize) -> Result<(), RuntimeError> {
@@ -934,72 +935,73 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
+    #[inline(always)]
     fn current_frame_index(&self) -> Result<usize, RuntimeError> {
         self.frames
             .len()
             .checked_sub(1)
-            .ok_or_else(|| RuntimeError {
-                message: "call frame underflow".into(),
-            })
+            .ok_or_else(|| error("call frame underflow"))
     }
 
+    #[inline(always)]
     fn checked_stack_index(
         &self,
         base: usize,
         offset: usize,
         what: &str,
     ) -> Result<usize, RuntimeError> {
-        let idx = base.checked_add(offset).ok_or_else(|| RuntimeError {
-            message: format!("{what}: stack index overflow"),
-        })?;
-        if idx >= self.stack.len() {
-            return Err(RuntimeError {
-                message: format!("{what}: stack index {idx} out of bounds"),
-            });
+        match base.checked_add(offset) {
+            Some(idx) if idx < self.stack.len() => Ok(idx),
+            Some(idx) => Err(error_fmt(format_args!(
+                "{what}: stack index {idx} out of bounds"
+            ))),
+            None => Err(error_fmt(format_args!("{what}: stack index overflow"))),
         }
-        Ok(idx)
     }
 
+    #[inline(always)]
     fn local_stack_index(
         &self,
         frame_idx: usize,
         slot: usize,
         what: &str,
     ) -> Result<usize, RuntimeError> {
-        let frame = self.frames.get(frame_idx).ok_or_else(|| RuntimeError {
-            message: format!("{what}: frame index {frame_idx} out of bounds"),
+        let frame = self.frames.get(frame_idx).ok_or_else(|| {
+            error_fmt(format_args!(
+                "{what}: frame index {frame_idx} out of bounds"
+            ))
         })?;
         self.checked_stack_index(frame.base, slot, what)
     }
 
+    #[inline(always)]
     fn stack_start_for_arity(&self, arity: usize, what: &str) -> Result<usize, RuntimeError> {
         self.stack
             .len()
             .checked_sub(arity)
-            .ok_or_else(|| RuntimeError {
-                message: format!("{what}: stack underflow for arity {arity}"),
-            })
+            .ok_or_else(|| error_fmt(format_args!("{what}: stack underflow for arity {arity}")))
     }
 
+    #[inline(always)]
     fn callee_pos_for_arity(&self, arity: usize, what: &str) -> Result<usize, RuntimeError> {
-        let required = arity.checked_add(1).ok_or_else(|| RuntimeError {
-            message: format!("{what}: arity overflow"),
-        })?;
+        let required = arity
+            .checked_add(1)
+            .ok_or_else(|| error_fmt(format_args!("{what}: arity overflow")))?;
         self.stack
             .len()
             .checked_sub(required)
-            .ok_or_else(|| RuntimeError {
-                message: format!("{what}: stack underflow for arity {arity}"),
-            })
+            .ok_or_else(|| error_fmt(format_args!("{what}: stack underflow for arity {arity}")))
     }
 
     /// The next `N` operand bytes of the current instruction, advancing the
     /// frame's `ip` past them. The frame and its code are looked up once;
     /// they are separate fields, so no `&self` method borrows both.
+    #[inline(always)]
     fn read_operand<const N: usize>(&mut self) -> Result<[u8; N], RuntimeError> {
-        let frame = self.frames.last_mut().ok_or_else(|| RuntimeError {
-            message: "call frame underflow".into(),
-        })?;
+        let frame = self
+            .frames
+            .last_mut()
+            .ok_or_else(|| error("call frame underflow"))?;
         let code = if frame.proto_idx == usize::MAX {
             &self.main_chunk.code
         } else {
@@ -1010,24 +1012,50 @@ impl VM {
                 .chunk
                 .code
         };
-        let bytes = code
-            .get(frame.ip..frame.ip + N)
-            .ok_or_else(|| RuntimeError {
-                message: format!("truncated bytecode: expected {N}-byte operand"),
+        let bytes = frame
+            .ip
+            .checked_add(N)
+            .and_then(|end| code.get(frame.ip..end))
+            .ok_or_else(|| {
+                error_fmt(format_args!(
+                    "truncated bytecode: expected {N}-byte operand"
+                ))
             })?;
         frame.ip += N;
         Ok(bytes.try_into().expect("slice of length N"))
     }
 
+    #[inline(always)]
     fn read_u8(&mut self) -> Result<u8, RuntimeError> {
         self.read_operand::<1>().map(|[b]| b)
     }
 
+    #[inline(always)]
     fn read_u16(&mut self) -> Result<u16, RuntimeError> {
         self.read_operand::<2>().map(u16::from_le_bytes)
     }
 
+    #[inline(always)]
     fn read_i16(&mut self) -> Result<i16, RuntimeError> {
         self.read_u16().map(|v| v as i16)
+    }
+}
+
+// Errors for the helpers above, built out of line so the helpers stay small
+// enough to inline into the dispatch loop.
+
+#[cold]
+#[inline(never)]
+fn error(message: &'static str) -> RuntimeError {
+    RuntimeError {
+        message: message.into(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn error_fmt(message: std::fmt::Arguments<'_>) -> RuntimeError {
+    RuntimeError {
+        message: message.to_string(),
     }
 }

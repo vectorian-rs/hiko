@@ -563,18 +563,22 @@ impl VM {
         chunk.span_at(frame.ip.saturating_sub(1))
     }
 
+    #[cold]
+    #[inline(never)]
     fn unknown_proto_error(proto_idx: usize) -> RuntimeError {
         RuntimeError {
             message: format!("unknown function proto: {proto_idx}"),
         }
     }
 
+    #[inline(always)]
     fn proto(&self, proto_idx: usize) -> Result<&FunctionProto, RuntimeError> {
         self.protos
             .get(proto_idx)
             .ok_or_else(|| Self::unknown_proto_error(proto_idx))
     }
 
+    #[inline(always)]
     fn chunk_for_checked(&self, proto_idx: usize) -> Result<&Chunk, RuntimeError> {
         if proto_idx == usize::MAX {
             Ok(&self.main_chunk)
@@ -749,6 +753,27 @@ mod tests {
         vm.startup_error = None;
         let err = vm.run().expect_err("invalid local stack index should fail");
         assert_eq!(err.message, "GetLocal: stack index 1 out of bounds");
+    }
+
+    #[test]
+    fn test_dispatch_make_cons_underflow_names_the_opcode_and_keeps_the_stack() {
+        let program = hiko_compile::chunk::CompiledProgram {
+            main: Arc::new(hiko_compile::chunk::Chunk {
+                code: vec![Op::Unit as u8, Op::MakeCons as u8, Op::Halt as u8],
+                constants: Vec::new(),
+                spans: Vec::new(),
+            }),
+            main_n_locals: 0,
+            functions: Arc::from([]),
+            effects: Arc::from([]),
+            globals: Arc::from([]),
+        };
+        let mut vm = VM::new(program);
+        // The verifier rejects this; check dispatch on its own.
+        vm.startup_error = None;
+        let err = vm.run().expect_err("MakeCons needs two values");
+        assert_eq!(err.message, "MakeCons: stack underflow for arity 2");
+        assert_eq!(vm.stack.len(), 1, "the stack is left as it was");
     }
 
     #[test]

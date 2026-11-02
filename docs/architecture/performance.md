@@ -428,3 +428,128 @@ moved the same way. "Before" is the V branch at `8b06637`, built with
 |---|---|---|
 | `global_builtin.hml` | 291.0 ms | 276.9 ms (-4.8%) |
 | `string_concat.hml` | | unchanged within noise |
+
+### Release profile: fat LTO and one codegen unit (PR #149, not kept)
+
+`[profile.release]` with `lto = "fat"` and `codegen-units = 1`, against
+Cargo's defaults (no cross-crate LTO, 16 codegen units), both built from
+`main` after #148. Interleaved, 10 rounds each, on AC, load average about 3
+(a first run at load 10 to 30 pointed the same way).
+
+| Benchmark | Default | Fat LTO, 1 unit | Change |
+|---|---|---|---|
+| `compare/sieve` | 582 ms | 668 ms | +15% |
+| `ack` | 1017 ms | 1068 ms | +5% |
+| `early_exit` | 301 ms | 316 ms | +5% |
+| `global_builtin` | 284 ms | 296 ms | +4% |
+| `compare/fib` | 453 ms | 470 ms | +4% |
+| `compare/binary_trees` | 1408 ms | 1460 ms | +4% |
+| `compare/mandelbrot` | 602 ms | 624 ms | +4% |
+| `compare/nbody` | 616 ms | 636 ms | +3% |
+| `tak` | 250 ms | 258 ms | +3% |
+| `compare/tak`, `compare/queens`, `list_length` | | | +2.5% |
+| `compare/list` | 1677 ms | 1698 ms | +1% |
+| `ec_fib`, `string_concat` | | | -1%, 0% |
+
+Medians; the minimums move the same way. The binary is 28% smaller
+(6,449,888 to 4,658,512 bytes), but 13 of 15 programs are slower: more
+inlining into the very large `dispatch` function likely worsens register
+allocation in the hot loop. Not kept. Inlining the specific hot helpers
+(review items 2 and 3 in `docs/rnd/2026-11-vm-performance-review.md`) is
+still worth measuring on its own, and thin LTO or PGO separately.
+
+### Building data values from a slice (PR #149)
+
+`MakeTuple`, `MakeData` and `MakeCons` collected their fields with
+`self.stack.drain(start..).collect::<Fields>()`, which the profiles showed as
+`SmallVec::extend` (7 to 12% on `binary_trees`, `sieve` and `nbody`). They now
+copy the slice (`Fields::from_slice`, `Value` is `Copy`) and truncate the
+stack; `MakeCons` pops its two values into `Fields::from_buf`. The values
+still leave the stack before the allocation, as before.
+
+Interleaved, 10 rounds, on AC, load average 2 to 3; "before" is `main` at
+`df8d2a9` (after #148) plus the #149 docs.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/sieve` | 582 ms | 519 ms | -11% |
+| `compare/binary_trees` | 1404 ms | 1304 ms | -7% |
+| `compare/nbody` | 617 ms | 589 ms | -5% |
+| `compare/list`, `queens`, `mandelbrot`, `fib`, `tak`, `list_length`, `nqueens`, `ack`, `early_exit`, `global_builtin` | | | within 1% |
+
+Medians; the minimums agree.
+
+### Inlining `Op::try_from` (PR #149)
+
+The dispatch loop decodes every opcode with `Op::try_from`, which lives in
+`hiko-compile`. Without `#[inline]` (and without cross-crate LTO) it is a
+function call per instruction; the profiles showed it at 7 to 14%. It is now
+`#[inline]`.
+
+Interleaved, 10 rounds, on AC, load average 2.4 to 2.8; "before" is #149
+after the data-value change.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/fib` | 456 ms | 423 ms | -7% |
+| `global_builtin` | 283 ms | 265 ms | -7% |
+| `ack` | 1056 ms | 988 ms | -6% |
+| `compare/tak` | 248 ms | 235 ms | -5% |
+| `early_exit` | 311 ms | 296 ms | -5% |
+| `compare/binary_trees` | 1327 ms | 1259 ms | -5% |
+| `compare/nbody` | 586 ms | 567 ms | -3% |
+| `compare/queens` | 325 ms | 319 ms | -2% |
+| `list_length` | 1205 ms | 1202 ms | 0% |
+| `compare/sieve` | 521 ms | 526 ms | +1% |
+| `compare/list` | 1676 ms | 1709 ms | +2% |
+
+Medians; the minimums agree. `list` and `sieve` lose 1 to 2%, likely from the
+dispatch loop's code layout; the rest gain up to 7%.
+
+### Inlining the operand and stack helpers (PR #149)
+
+`read_operand` (and `read_u8`, `read_u16`, `read_i16`), `push`, `pop`,
+`current_frame_index`, `checked_stack_index`, `local_stack_index`, `proto`
+and `chunk_for_checked` are now `#[inline(always)]`, and the errors they
+return are built in `#[cold] #[inline(never)]` functions, so the `format!`
+calls no longer make them too large to inline. Error messages are unchanged.
+A later commit in the same PR gave `stack_start_for_arity` and
+`callee_pos_for_arity` the same treatment; the table below was measured
+before it.
+
+Interleaved, 10 rounds, on AC, load average 2.4 to 3.5; "before" is #149
+with `Op::try_from` inlined.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/list` | 1743 ms | 1403 ms | -20% |
+| `compare/nbody` | 572 ms | 464 ms | -19% |
+| `list_length` | 1216 ms | 1006 ms | -17% |
+| `compare/sieve` | 534 ms | 464 ms | -13% |
+| `compare/queens` | 322 ms | 287 ms | -11% |
+| `compare/tak` | 240 ms | 216 ms | -10% |
+| `compare/binary_trees` | 1280 ms | 1214 ms | -5% |
+| `compare/fib`, `ack`, `global_builtin` | | | within 1% |
+| `early_exit` | 294 ms | 303 ms | +3% (load 3.5) |
+
+Medians; the minimums agree. Unlike whole-program LTO, which inlined
+everything into `dispatch` and made it slower, this inlines only the small
+helpers on the hot path.
+
+### Against Lua and Python, after #149 steps 2 and 3
+
+`scripts/compare.sh`, 10 runs each, on AC, load average about 3.5, at
+`026f91b`. "#146" is the Hiko time in the first comparison above.
+
+| Program | Hiko (#146) | Hiko | Lua | Python | LuaJIT | Hiko / Lua | Hiko / Python |
+|---|---|---|---|---|---|---|---|
+| `binary_trees` | 1454 ms | 1216 ms | 496 ms | 292 ms | 133 ms | 2.5x | 4.2x |
+| `fib` | 472 ms | 433 ms | 136 ms | 235 ms | 18 ms | 3.2x | 1.8x |
+| `list` | 1755 ms | 1380 ms | 123 ms | 169 ms | 18 ms | 11.3x | 8.2x |
+| `mandelbrot` | 636 ms | 525 ms | 125 ms | 207 ms | 12 ms | 4.2x | 2.5x |
+| `nbody` | 642 ms | 464 ms | 95 ms | 109 ms | 18 ms | 4.9x | 4.3x |
+| `queens` | 351 ms | 286 ms | 50 ms | 101 ms | 11 ms | 5.7x | 2.8x |
+| `sieve` | 608 ms | 464 ms | 346 ms | 153 ms | 99 ms | 1.3x | 3.0x |
+| `tak` | 257 ms | 233 ms | 67 ms | 83 ms | 13 ms | 3.5x | 2.8x |
+
+Hiko is 8 to 28% faster than at #146, and now 1.3 to 11x slower than Lua 5.5.
