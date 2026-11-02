@@ -1,0 +1,50 @@
+[package]
+name = "hiko-vm-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+syn = { version = "2", features = ["full", "visit"] }
+hiko-builtin-meta = { path = "../../hiko-builtin-meta" }
+hiko-compile = { path = "../../hiko-compile" }
+hiko-syntax = { path = "../../hiko-syntax" }
+hiko-types = { path = "../../hiko-types" }
+hiko-vm = { path = ".." }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_typecheck"
+path = "fuzz_targets/fuzz_typecheck.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_verify"
+path = "fuzz_targets/fuzz_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_verify_structured"
+path = "fuzz_targets/fuzz_verify_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_run_config"
+path = "fuzz_targets/fuzz_run_config.rs"
+test = false
+doc = false
+bench = false
