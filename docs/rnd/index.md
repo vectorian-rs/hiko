@@ -9,6 +9,7 @@ Experimental ideas and design sketches that are not necessarily implemented.
 | [`iac-demo.md`](iac-demo.md) | R&D/design-only | Infrastructure-as-code demo sketch covering Dhall, Hiko, provider builtins, changesets, state commits, state store, and command flow. |
 | [`2026-06-vm-performance-investigation.md`](2026-06-vm-performance-investigation.md) | Dated investigation (2026-06) | Filesystem benchmark vs Python: per-file I/O policy overhead and VM bytecode density in list pattern matching, with proposed fixes. |
 | [`2026-11-vm-performance-review.md`](2026-11-vm-performance-review.md) | Dated review (2026-11) | Profiles of the cross-language suite: interpretive overhead, not GC, is the gap to Lua; ranked changes (release profile, constructor building, helper inlining, cached `ip`, allocation fixes) and where SIMD applies. |
+| [`2026-11-interpreter-research.md`](2026-11-interpreter-research.md) | Dated survey (2026-11) | Published interpreter and memory techniques mapped to Hiko: tail-call dispatch and stack caching, superinstructions and specialization, register VMs (wasmi, BEAM, Lua), verifier side tables, Perceus-style reuse, BOLT; with a suggested order. |
 
 ## Recommended use
 
