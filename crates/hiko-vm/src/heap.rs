@@ -3,7 +3,6 @@ use crate::io_limits::{IoLimits, ReadLimit};
 use crate::value::{GcRef, HeapObject, HostHandleId, HostHandleKind, HostResource, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "builtin-filesystem")]
 use std::sync::Arc;
 #[cfg(feature = "builtin-http")]
 use url::Url;
