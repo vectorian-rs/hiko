@@ -94,6 +94,9 @@ struct HiddenHandlers {
     handlers: Vec<HandlerFrame>,
 }
 
+/// An allowed executable as it was when the policy was applied. `exec`
+/// refuses a command whose identity no longer matches, such as a file
+/// replaced after the check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ExecAllowedPath {
     path: PathBuf,
@@ -101,6 +104,14 @@ pub(super) struct ExecAllowedPath {
     dev: u64,
     #[cfg(unix)]
     ino: u64,
+    /// Status-change time (seconds, nanoseconds) and size. Linux can reuse
+    /// an inode number at once when a file is deleted and recreated; the new
+    /// file gets a new change time, but only at the file system's timestamp
+    /// granularity, which can be several milliseconds. These narrow the
+    /// window; they do not close it (see #160).
+    #[cfg(unix)]
+    ctime: (i64, i64),
+    len: u64,
 }
 
 /// How the VM dispatches a builtin call. Most builtins are `Plain`: the VM
