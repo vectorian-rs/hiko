@@ -184,9 +184,10 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
   ownership, callee callability, or arity for indirect calls. These are runtime
   checks. A typed bytecode verifier (or type-preserving compilation evidence)
   would be the strongest addition for the focus.
-- **No fuzzing.** The April 2026 self-assessment grades fuzz/property testing
-  D. The parser, type checker, verifier, policy parser, and `SendableValue`
-  decoder are all untrusted-input surfaces with no fuzz targets.
+- **Fuzzing is young.** The parser, type checker, verifier, and run-config
+  parser have fuzz targets (#143, see `docs/verification/verification.md`),
+  but they do not run in CI. The `SendableValue` decoder, the lockfile parser,
+  and filesystem path handling have none.
 - **Non-preemptive host calls.** Slices bound opcode dispatch only. A builtin,
   a sync host call, or a GC cycle runs to completion once entered.
 - **Coarse I/O limits.** One global `max_io_bytes`. No per-operation limits
@@ -346,5 +347,6 @@ maximums.
    `cargo tree -p hiko-cli -e normal,build`).
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.
 8. Fix the README inconsistencies listed above.
-9. Add fuzz targets for the parser, type checker, verifier, and policy parser.
+9. Done: fuzz targets for the parser, type checker, verifier, and policy
+   parser (#143).
 10. Continue the effects research track with question 3 (effect rows).
