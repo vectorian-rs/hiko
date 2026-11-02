@@ -8,6 +8,8 @@ pub mod io_backend;
 pub mod io_limits;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(feature = "opcode-stats")]
+mod opcode_stats;
 pub mod process;
 pub mod runtime;
 pub mod runtime_ops;

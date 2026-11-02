@@ -215,6 +215,9 @@ struct BuiltinTable {
 }
 
 pub struct VM {
+    /// The previous opcode executed, for `opcode_stats`.
+    #[cfg(feature = "opcode-stats")]
+    last_op: u8,
     pub(crate) heap: Heap,
     pub(crate) stack: Vec<Value>,
     frames: Vec<CallFrame>,
@@ -400,6 +403,8 @@ impl VM {
             handlers: Vec::with_capacity(4),
             hidden_handlers: Vec::new(),
             string_cache: StringCache::default(),
+            #[cfg(feature = "opcode-stats")]
+            last_op: crate::opcode_stats::START,
             concat_buf: String::new(),
             no_captures: Arc::from([]),
             fuel: None,
@@ -644,6 +649,13 @@ impl VM {
                 message: format!("constant index out of bounds: {idx}"),
             }),
         }
+    }
+}
+
+#[cfg(feature = "opcode-stats")]
+impl Drop for VM {
+    fn drop(&mut self) {
+        crate::opcode_stats::dump();
     }
 }
 

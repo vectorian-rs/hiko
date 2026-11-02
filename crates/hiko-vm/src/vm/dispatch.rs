@@ -75,6 +75,11 @@ impl VM {
                 return Err(error("unexpected end of bytecode"));
             };
             self.frames[fi].ip = ip + 1;
+            #[cfg(feature = "opcode-stats")]
+            {
+                crate::opcode_stats::record(self.last_op, op_byte);
+                self.last_op = op_byte;
+            }
             let op = Op::try_from(op_byte).map_err(|b| RuntimeError {
                 message: format!("invalid opcode: {b}"),
             })?;
