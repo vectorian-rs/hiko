@@ -506,3 +506,30 @@ after the data-value change.
 
 Medians; the minimums agree. `list` and `sieve` lose 1 to 2%, likely from the
 dispatch loop's code layout; the rest gain up to 7%.
+
+### Inlining the operand and stack helpers (PR #149)
+
+`read_operand` (and `read_u8`, `read_u16`, `read_i16`), `push`, `pop`,
+`current_frame_index`, `checked_stack_index`, `local_stack_index`, `proto`
+and `chunk_for_checked` are now `#[inline(always)]`, and the errors they
+return are built in `#[cold] #[inline(never)]` functions, so the `format!`
+calls no longer make them too large to inline. Error messages are unchanged.
+
+Interleaved, 10 rounds, on AC, load average 2.4 to 3.5; "before" is #149
+with `Op::try_from` inlined.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/list` | 1743 ms | 1403 ms | -20% |
+| `compare/nbody` | 572 ms | 464 ms | -19% |
+| `list_length` | 1216 ms | 1006 ms | -17% |
+| `compare/sieve` | 534 ms | 464 ms | -13% |
+| `compare/queens` | 322 ms | 287 ms | -11% |
+| `compare/tak` | 240 ms | 216 ms | -10% |
+| `compare/binary_trees` | 1280 ms | 1214 ms | -5% |
+| `compare/fib`, `ack`, `global_builtin` | | | within 1% |
+| `early_exit` | 294 ms | 303 ms | +3% (load 3.5) |
+
+Medians; the minimums agree. Unlike whole-program LTO, which inlined
+everything into `dispatch` and made it slower, this inlines only the small
+helpers on the hot path.

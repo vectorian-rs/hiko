@@ -761,20 +761,18 @@ impl VM {
         Ok(())
     }
 
+    #[inline(always)]
     pub(super) fn push(&mut self, val: Value) -> Result<(), RuntimeError> {
         if self.stack.len() >= DEFAULT_MAX_STACK_SLOTS {
-            return Err(RuntimeError {
-                message: "stack overflow".into(),
-            });
+            return Err(error("stack overflow"));
         }
         self.stack.push(val);
         Ok(())
     }
 
+    #[inline(always)]
     fn pop(&mut self) -> Result<Value, RuntimeError> {
-        self.stack.pop().ok_or_else(|| RuntimeError {
-            message: "stack underflow".into(),
-        })
+        self.stack.pop().ok_or_else(|| error("stack underflow"))
     }
 
     fn push_field(&mut self, idx: usize) -> Result<(), RuntimeError> {
@@ -937,41 +935,38 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
+    #[inline(always)]
     fn current_frame_index(&self) -> Result<usize, RuntimeError> {
         self.frames
             .len()
             .checked_sub(1)
-            .ok_or_else(|| RuntimeError {
-                message: "call frame underflow".into(),
-            })
+            .ok_or_else(|| error("call frame underflow"))
     }
 
+    #[inline(always)]
     fn checked_stack_index(
         &self,
         base: usize,
         offset: usize,
         what: &str,
     ) -> Result<usize, RuntimeError> {
-        let idx = base.checked_add(offset).ok_or_else(|| RuntimeError {
-            message: format!("{what}: stack index overflow"),
-        })?;
-        if idx >= self.stack.len() {
-            return Err(RuntimeError {
-                message: format!("{what}: stack index {idx} out of bounds"),
-            });
+        match base.checked_add(offset) {
+            Some(idx) if idx < self.stack.len() => Ok(idx),
+            idx => Err(stack_index_error(what, idx)),
         }
-        Ok(idx)
     }
 
+    #[inline(always)]
     fn local_stack_index(
         &self,
         frame_idx: usize,
         slot: usize,
         what: &str,
     ) -> Result<usize, RuntimeError> {
-        let frame = self.frames.get(frame_idx).ok_or_else(|| RuntimeError {
-            message: format!("{what}: frame index {frame_idx} out of bounds"),
-        })?;
+        let frame = self
+            .frames
+            .get(frame_idx)
+            .ok_or_else(|| frame_index_error(what, frame_idx))?;
         self.checked_stack_index(frame.base, slot, what)
     }
 
@@ -999,10 +994,12 @@ impl VM {
     /// The next `N` operand bytes of the current instruction, advancing the
     /// frame's `ip` past them. The frame and its code are looked up once;
     /// they are separate fields, so no `&self` method borrows both.
+    #[inline(always)]
     fn read_operand<const N: usize>(&mut self) -> Result<[u8; N], RuntimeError> {
-        let frame = self.frames.last_mut().ok_or_else(|| RuntimeError {
-            message: "call frame underflow".into(),
-        })?;
+        let frame = self
+            .frames
+            .last_mut()
+            .ok_or_else(|| error("call frame underflow"))?;
         let code = if frame.proto_idx == usize::MAX {
             &self.main_chunk.code
         } else {
@@ -1015,22 +1012,60 @@ impl VM {
         };
         let bytes = code
             .get(frame.ip..frame.ip + N)
-            .ok_or_else(|| RuntimeError {
-                message: format!("truncated bytecode: expected {N}-byte operand"),
-            })?;
+            .ok_or_else(|| truncated_operand_error(N))?;
         frame.ip += N;
         Ok(bytes.try_into().expect("slice of length N"))
     }
 
+    #[inline(always)]
     fn read_u8(&mut self) -> Result<u8, RuntimeError> {
         self.read_operand::<1>().map(|[b]| b)
     }
 
+    #[inline(always)]
     fn read_u16(&mut self) -> Result<u16, RuntimeError> {
         self.read_operand::<2>().map(u16::from_le_bytes)
     }
 
+    #[inline(always)]
     fn read_i16(&mut self) -> Result<i16, RuntimeError> {
         self.read_u16().map(|v| v as i16)
+    }
+}
+
+// Errors for the helpers above, built out of line so the helpers stay small
+// enough to inline into the dispatch loop.
+
+#[cold]
+#[inline(never)]
+fn error(message: &'static str) -> RuntimeError {
+    RuntimeError {
+        message: message.into(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn stack_index_error(what: &str, idx: Option<usize>) -> RuntimeError {
+    let message = match idx {
+        Some(idx) => format!("{what}: stack index {idx} out of bounds"),
+        None => format!("{what}: stack index overflow"),
+    };
+    RuntimeError { message }
+}
+
+#[cold]
+#[inline(never)]
+fn frame_index_error(what: &str, frame_idx: usize) -> RuntimeError {
+    RuntimeError {
+        message: format!("{what}: frame index {frame_idx} out of bounds"),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn truncated_operand_error(n: usize) -> RuntimeError {
+    RuntimeError {
+        message: format!("truncated bytecode: expected {n}-byte operand"),
     }
 }

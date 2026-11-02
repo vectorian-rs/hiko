@@ -563,18 +563,22 @@ impl VM {
         chunk.span_at(frame.ip.saturating_sub(1))
     }
 
+    #[cold]
+    #[inline(never)]
     fn unknown_proto_error(proto_idx: usize) -> RuntimeError {
         RuntimeError {
             message: format!("unknown function proto: {proto_idx}"),
         }
     }
 
+    #[inline(always)]
     fn proto(&self, proto_idx: usize) -> Result<&FunctionProto, RuntimeError> {
         self.protos
             .get(proto_idx)
             .ok_or_else(|| Self::unknown_proto_error(proto_idx))
     }
 
+    #[inline(always)]
     fn chunk_for_checked(&self, proto_idx: usize) -> Result<&Chunk, RuntimeError> {
         if proto_idx == usize::MAX {
             Ok(&self.main_chunk)
