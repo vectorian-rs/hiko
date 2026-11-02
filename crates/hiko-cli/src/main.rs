@@ -1214,13 +1214,7 @@ fn push_unique_path(path: &Path, seen: &mut BTreeSet<PathBuf>, resolved: &mut Ve
 
 fn build_vm(options: &build_vm::BuildVmOptions) {
     let config = load_run_config(&options.config_path, "run config");
-    if !config.extensions.is_empty() {
-        eprintln!(
-            "error: build-vm does not support [extensions] yet; run the script with `hiko run` instead"
-        );
-        process::exit(1);
-    }
-    let out_dir = build_vm::generate(options, &config).unwrap_or_else(|e| {
+    let out_dir = build_vm::generate(options, &config, &linked_extensions()).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         process::exit(1);
     });

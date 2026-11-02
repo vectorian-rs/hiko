@@ -12,6 +12,14 @@ use hiko_compile::compiler::{
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_vm::config::{GeneratedProgram, RunConfig};
+use hiko_vm::extension::Extension;
+
+/// Extensions a generated crate can link: run-config name, crate, and the
+/// Rust path of its `Extension`.
+const KNOWN_EXTENSIONS: &[(&str, &str, &str)] = &[
+    ("github", "hiko-ext-github", "hiko_ext_github::GITHUB"),
+    ("aws", "hiko-ext-aws", "hiko_ext_aws::AWS"),
+];
 
 pub const USAGE: &str = "Usage: hiko build-vm <config.toml> [--lock <hiko.lock.toml>] [--script <entry.hml>] [--hiko-path <repo>] [--out <dir>]";
 
@@ -61,9 +69,44 @@ struct Sealed {
 }
 
 /// Generate the crate. Returns its directory.
-pub fn generate(options: &BuildVmOptions, config: &RunConfig) -> Result<PathBuf, String> {
+///
+/// `linked` are the extensions this `hiko` binary links: a configured one is
+/// checked with its `configure` now, and a `--script` program is compiled
+/// with them.
+pub fn generate(
+    options: &BuildVmOptions,
+    config: &RunConfig,
+    linked: &[&'static Extension],
+) -> Result<PathBuf, String> {
+    let mut extensions = Vec::new();
+    for (name, table) in &config.extensions {
+        let known = KNOWN_EXTENSIONS
+            .iter()
+            .find(|(known, _, _)| known == name)
+            .ok_or_else(|| {
+                format!("build-vm cannot link extension '{name}'; it knows github and aws")
+            })?;
+        match linked.iter().find(|e| e.name == name) {
+            Some(extension) => {
+                (extension.configure)(table).map_err(|e| format!("[extensions.{name}]: {e}"))?;
+            }
+            None if options.script.is_some() => {
+                return Err(format!(
+                    "--script with [extensions.{name}] needs a hiko built with feature ext-{name}"
+                ));
+            }
+            None => {}
+        }
+        extensions.push(*known);
+    }
+    let configured: Vec<&'static Extension> = linked
+        .iter()
+        .filter(|e| config.extensions.contains_key(e.name))
+        .copied()
+        .collect();
+
     let sealed = if options.lock.is_some() || options.script.is_some() {
-        Some(collect_sealed(options)?)
+        Some(collect_sealed(options, &configured)?)
     } else {
         None
     };
@@ -91,21 +134,30 @@ pub fn generate(options: &BuildVmOptions, config: &RunConfig) -> Result<PathBuf,
             script: sealed.script.is_some(),
         },
     };
+    let paths: Vec<(&str, &str)> = extensions.iter().map(|(n, _, p)| (*n, *p)).collect();
     write(
         &out_dir.join("src/main.rs"),
-        &config.to_rust_source_for(program),
+        &config.to_rust_source_for(program, &paths)?,
     )?;
     if let Some(sealed) = &sealed {
         write_sealed(&out_dir, sealed)?;
     }
     write(
         &out_dir.join("Cargo.toml"),
-        &cargo_toml(&name, options.hiko_path.as_deref(), sealed.as_ref())?,
+        &cargo_toml(
+            &name,
+            options.hiko_path.as_deref(),
+            sealed.as_ref(),
+            &extensions,
+        )?,
     )?;
     Ok(out_dir)
 }
 
-fn collect_sealed(options: &BuildVmOptions) -> Result<Sealed, String> {
+fn collect_sealed(
+    options: &BuildVmOptions,
+    extensions: &[&'static Extension],
+) -> Result<Sealed, String> {
     let modules = match &options.lock {
         Some(lock) => Compiler::locked_module_sources(lock, ModuleLoaderOptions::default())
             .map_err(|e| {
@@ -126,14 +178,14 @@ fn collect_sealed(options: &BuildVmOptions) -> Result<Sealed, String> {
         None => None,
     };
     let sealed = Sealed { modules, script };
-    check_sealed_program(&sealed)?;
+    check_sealed_program(&sealed, extensions)?;
     Ok(sealed)
 }
 
 /// Compile the embedded program once, now, against exactly the embedded
 /// sources, so a missing module or file fails `build-vm` instead of the
 /// artifact.
-fn check_sealed_program(sealed: &Sealed) -> Result<(), String> {
+fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> Result<(), String> {
     let Some((source, files)) = &sealed.script else {
         return Ok(());
     };
@@ -166,6 +218,7 @@ fn check_sealed_program(sealed: &Sealed) -> Result<(), String> {
         .map_err(|e| format!("the script does not parse: {}", e.message))?;
     let options = ModuleLoaderOptions {
         embedded: Some(embedded),
+        extensions: Extension::compile_surface(extensions),
         ..ModuleLoaderOptions::default()
     };
     Compiler::compile_embedded(program, options)
@@ -265,12 +318,13 @@ fn cargo_toml(
     name: &str,
     hiko_path: Option<&Path>,
     sealed: Option<&Sealed>,
+    extensions: &[(&str, &str, &str)],
 ) -> Result<String, String> {
     let version = env!("CARGO_PKG_VERSION");
-    let source = |krate: &str| -> Result<String, String> {
+    let source_in = |dir: &str, krate: &str| -> Result<String, String> {
         match hiko_path {
             Some(repo) => {
-                let dir = repo.join("crates").join(krate);
+                let dir = repo.join(dir).join(krate);
                 let dir = fs::canonicalize(&dir)
                     .map_err(|e| format!("--hiko-path: cannot find '{}': {e}", dir.display()))?;
                 Ok(format!("path = {:?}", dir.to_string_lossy()))
@@ -278,6 +332,7 @@ fn cargo_toml(
             None => Ok(format!("version = \"{version}\"")),
         }
     };
+    let source = |krate: &str| source_in("crates", krate);
     let mut toml = format!(
         "[workspace]\n\n[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nhiko-syntax = {{ {} }}\n",
         source("hiko-syntax")?
@@ -304,6 +359,13 @@ fn cargo_toml(
         source("hiko-vm")?
     )
     .unwrap();
+    for (_, krate, _) in extensions {
+        writeln!(toml, "{krate} = {{ {} }}", source_in("extensions", krate)?).unwrap();
+    }
+    if !extensions.is_empty() {
+        // The same toml as hiko-vm, for the [extensions] tables.
+        toml.push_str("toml = \"0.8\"\n");
+    }
     if sealed.is_some() {
         toml.push_str("\n[build-dependencies]\nblake3 = \"1\"\n");
     }
@@ -387,7 +449,7 @@ mod tests {
             hiko_path: Some(repo()),
             out_dir: Some(dir.join("hiko-vm-sealed")),
         };
-        let out = generate(&options, &config()).unwrap_or_else(|e| panic!("{e}"));
+        let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
 
         let main = read(out.join("src/main.rs"));
         assert!(main.contains("mod embedded;"));
@@ -427,7 +489,7 @@ mod tests {
             out_dir: Some(dir.join("out")),
             ..BuildVmOptions::default()
         };
-        let err = generate(&options, &config()).expect_err("Std.Option is not embedded");
+        let err = generate(&options, &config(), &[]).expect_err("Std.Option is not embedded");
         assert!(err.contains("not embedded in this artifact"), "{err}");
         assert!(!dir.join("out").exists(), "nothing is written on failure");
     }
@@ -441,11 +503,120 @@ mod tests {
             out_dir: Some(dir.join("out")),
             ..BuildVmOptions::default()
         };
-        let out = generate(&options, &config()).unwrap_or_else(|e| panic!("{e}"));
+        let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
         let main = read(out.join("src/main.rs"));
         assert!(main.contains("compile_file_with_options"));
         assert!(main.contains("embedded: Some(&embedded::SOURCES)"));
         assert!(read(out.join("src/embedded.rs")).contains("files: None"));
+    }
+
+    fn github_config() -> RunConfig {
+        RunConfig::from_toml(
+            "[capabilities.stdio.println]\nenabled = true\n\n[extensions.github]\nview = [\"vectorian-rs/hiko\"]\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn extensions_are_linked_and_configured_in_the_generated_crate() {
+        let dir = temp_dir("ext");
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            hiko_path: Some(repo()),
+            out_dir: Some(dir.join("out")),
+            ..BuildVmOptions::default()
+        };
+        let out = generate(&options, &github_config(), &[]).unwrap_or_else(|e| panic!("{e}"));
+        let main = read(out.join("src/main.rs"));
+        assert!(main.contains("static EXTENSIONS: &str"));
+        assert!(main.contains("vectorian-rs/hiko"));
+        assert!(main.contains("[&hiko_ext_github::GITHUB]"));
+        assert!(main.contains("Extension::compile_surface(&extensions)"));
+        assert!(
+            main.contains("builder.with_extension(extensions[0], &extension_tables[\"github\"])")
+        );
+        let cargo = read(out.join("Cargo.toml"));
+        assert!(cargo.contains("hiko-ext-github = { path = "), "{cargo}");
+        assert!(cargo.contains("toml = \"0.8\""));
+    }
+
+    #[test]
+    fn unknown_extensions_are_refused() {
+        let config = RunConfig::from_toml("[extensions.nope]\n").unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            out_dir: Some(temp_dir("unknown-ext").join("out")),
+            ..BuildVmOptions::default()
+        };
+        let err = generate(&options, &config, &[]).expect_err("nope is not an extension");
+        assert!(err.contains("cannot link extension 'nope'"), "{err}");
+    }
+
+    #[test]
+    fn script_with_an_extension_needs_it_linked_here() {
+        let dir = temp_dir("script-ext");
+        write(&dir.join("main.hml"), "val _ = println \"x\"\n").unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            script: Some(dir.join("main.hml")),
+            out_dir: Some(dir.join("out")),
+            ..BuildVmOptions::default()
+        };
+        let err = generate(&options, &github_config(), &[]).expect_err("github is not linked");
+        assert!(err.contains("feature ext-github"), "{err}");
+    }
+
+    #[cfg(feature = "ext-github")]
+    #[test]
+    fn extension_tables_are_checked_by_configure() {
+        let config = RunConfig::from_toml("[extensions.github]\nbogus = 1\n").unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            out_dir: Some(temp_dir("bad-ext").join("out")),
+            ..BuildVmOptions::default()
+        };
+        let err =
+            generate(&options, &config, &[&hiko_ext_github::GITHUB]).expect_err("unknown key");
+        assert!(err.contains("[extensions.github]"), "{err}");
+    }
+
+    /// Builds a sealed crate that links the GitHub extension (about a
+    /// minute): `cargo test -p hiko-cli --features ext-github build_vm --
+    /// --ignored`.
+    #[cfg(feature = "ext-github")]
+    #[test]
+    #[ignore]
+    fn sealed_artifact_with_an_extension_builds_and_runs() {
+        let dir = temp_dir("e2e-ext");
+        write(
+            &dir.join("main.hml"),
+            "import Github.Issue\nval _ = println \"extension linked\"\n",
+        )
+        .unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            script: Some(dir.join("main.hml")),
+            hiko_path: Some(repo()),
+            out_dir: Some(dir.join("hiko-vm-e2e-ext")),
+            ..BuildVmOptions::default()
+        };
+        let out = generate(&options, &github_config(), &[&hiko_ext_github::GITHUB])
+            .unwrap_or_else(|e| panic!("{e}"));
+        let built = std::process::Command::new(env!("CARGO"))
+            .args(["build", "--release", "--quiet"])
+            .current_dir(&out)
+            .status()
+            .unwrap();
+        assert!(built.success());
+        let run = std::process::Command::new(out.join("target/release/hiko-vm-e2e-ext"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            "extension linked\n",
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 
     /// Builds the generated crate with cargo (about a minute):
@@ -461,7 +632,7 @@ mod tests {
             hiko_path: Some(repo()),
             out_dir: Some(dir.join("hiko-vm-e2e")),
         };
-        let out = generate(&options, &config()).unwrap_or_else(|e| panic!("{e}"));
+        let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
         let cargo = |dir: &Path| {
             std::process::Command::new(env!("CARGO"))
                 .args(["build", "--release", "--quiet"])

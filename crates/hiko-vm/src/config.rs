@@ -874,13 +874,38 @@ impl RunConfig {
     }
 
     /// Generate Rust source code for a main.rs that bakes this config in.
+    ///
+    /// Extensions need their crates linked ([`RunConfig::to_rust_source_for`]);
+    /// here they are left out, so the generated VM does not register them.
     pub fn to_rust_source(&self) -> String {
-        self.to_rust_source_for(GeneratedProgram::ScriptArgument)
+        let mut config = self.clone();
+        config.extensions.clear();
+        config
+            .to_rust_source_for(GeneratedProgram::ScriptArgument, &[])
+            .expect("only extensions can make generation fail")
     }
 
     /// Like [`RunConfig::to_rust_source`], choosing where the generated
     /// binary gets its program and modules.
-    pub fn to_rust_source_for(&self, program: GeneratedProgram) -> String {
+    ///
+    /// `extensions` names the Rust path of each extension this config turns
+    /// on, such as `("github", "hiko_ext_github::GITHUB")`; the generated
+    /// crate must depend on those crates and on `toml` 0.8. A configured
+    /// extension missing from `extensions` is an error.
+    pub fn to_rust_source_for(
+        &self,
+        program: GeneratedProgram,
+        extensions: &[(&str, &str)],
+    ) -> Result<String, String> {
+        let mut paths = Vec::new();
+        for name in self.extensions.keys() {
+            let path = extensions
+                .iter()
+                .find(|(known, _)| known == name)
+                .map(|(_, path)| *path)
+                .ok_or_else(|| format!("extension '{name}' has no crate to link"))?;
+            paths.push((name.as_str(), path));
+        }
         let mut s = String::new();
         s.push_str("use hiko_vm::builder::VMBuilder;\n");
         s.push_str("use hiko_compile::compiler::{Compiler, ModuleLoaderOptions};\n");
@@ -888,6 +913,12 @@ impl RunConfig {
         s.push_str("use hiko_syntax::parser::Parser;\n\n");
         if program != GeneratedProgram::ScriptArgument {
             s.push_str("mod embedded;\n\n");
+        }
+        if !paths.is_empty() {
+            let tables = toml::to_string(&self.extensions)
+                .map_err(|e| format!("cannot write the [extensions] tables: {e}"))?;
+            s.push_str("/// The run config's `[extensions]` tables.\n");
+            s.push_str(&format!("static EXTENSIONS: &str = {tables:?};\n\n"));
         }
         s.push_str("fn main() {\n");
         if program == (GeneratedProgram::Sealed { script: true }) {
@@ -922,6 +953,19 @@ impl RunConfig {
             GeneratedProgram::Sealed { .. } => s.push_str(
                 "    let options = ModuleLoaderOptions { embedded: Some(&embedded::SOURCES), ..ModuleLoaderOptions::default() };\n",
             ),
+        }
+        if !paths.is_empty() {
+            let list = paths
+                .iter()
+                .map(|(_, path)| format!("&{path}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            s.push_str(&format!(
+                "    let extensions: [&'static hiko_vm::extension::Extension; {}] = [{list}];\n",
+                paths.len()
+            ));
+            s.push_str("    let extension_tables: toml::Table = toml::from_str(EXTENSIONS).expect(\"[extensions] tables\");\n");
+            s.push_str("    let options = ModuleLoaderOptions { extensions: hiko_vm::extension::Extension::compile_surface(&extensions), ..options };\n");
         }
         if program == (GeneratedProgram::Sealed { script: true }) {
             s.push_str(
@@ -982,6 +1026,11 @@ impl RunConfig {
             s.push_str(&format!("            .{name}({value})\n"));
         }
         s.push_str("            ;\n");
+        for (i, (name, _)) in paths.iter().enumerate() {
+            s.push_str(&format!(
+                "        let builder = builder.with_extension(extensions[{i}], &extension_tables[{name:?}]).expect(\"extension '{name}'\");\n"
+            ));
+        }
         s.push_str("        builder.build()\n");
         s.push_str("    };\n");
         s.push_str(
@@ -995,7 +1044,7 @@ impl RunConfig {
         s.push_str("        }\n");
         s.push_str("    }\n");
         s.push_str("}\n");
-        s
+        Ok(s)
     }
 }
 
