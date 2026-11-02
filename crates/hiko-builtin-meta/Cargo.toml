@@ -7,13 +7,12 @@ description = "Shared builtin metadata for hiko"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
-default = ["builtin-all"]
-builtin-all = [
+default = ["builtin-default"]
+# The default build leaves out regex, JSON and dates; see PR #141.
+builtin-default = [
     "builtin-stdio",
     "builtin-convert",
     "builtin-string",
-    "builtin-regex",
-    "builtin-json",
     "builtin-math",
     "builtin-bytes",
     "builtin-hash",
@@ -28,6 +27,12 @@ builtin-all = [
     "builtin-system",
     "builtin-testing",
 ]
+builtin-all = [
+    "builtin-default",
+    "builtin-regex",
+    "builtin-json",
+    "builtin-date",
+]
 builtin-stdio = []
 builtin-convert = []
 builtin-string = []
@@ -39,6 +44,7 @@ builtin-hash = []
 builtin-random = []
 builtin-env = []
 builtin-time = []
+builtin-date = []
 builtin-process = []
 builtin-path = []
 builtin-filesystem = []

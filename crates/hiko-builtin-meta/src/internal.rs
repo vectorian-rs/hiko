@@ -251,7 +251,7 @@ const MODULES: &[InternalBuiltinModule] = &[
     module!("System", "builtin-system", SYSTEM_SOURCE),
     module!("Time", "builtin-time", TIME_SOURCE),
     module!("Numeric", "builtin-convert", NUMERIC_SOURCE),
-    module!("Date", "builtin-time", DATE_SOURCE),
+    module!("Date", "builtin-date", DATE_SOURCE),
 ];
 
 pub fn is_internal_builtin_package(package_name: &str) -> bool {

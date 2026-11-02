@@ -32,11 +32,13 @@ fn test_stdlib_time() {
     run_hiko_file("../../tests/run/test_time.hml");
 }
 
+#[cfg(feature = "builtin-date")]
 #[test]
 fn test_stdlib_date() {
     run_hiko_file("../../tests/run/test_date.hml");
 }
 
+#[cfg(all(feature = "builtin-json", feature = "builtin-regex"))]
 #[test]
 fn test_stdlib_wrappers() {
     run_hiko_file("../../tests/run/test_std_wrappers.hml");

@@ -1,40 +1,23 @@
-#[cfg(feature = "builtin-bytes")]
 mod bytes;
-#[cfg(feature = "builtin-convert")]
 mod convert;
-#[cfg(feature = "builtin-env")]
+mod date;
 mod env;
-#[cfg(feature = "builtin-exec")]
 mod exec;
-#[cfg(feature = "builtin-filesystem")]
 mod filesystem;
-#[cfg(feature = "builtin-hash")]
 mod hash;
-#[cfg(feature = "builtin-http")]
 mod http;
 mod internal;
-#[cfg(feature = "builtin-json")]
 mod json;
-#[cfg(feature = "builtin-math")]
 mod math;
-#[cfg(feature = "builtin-path")]
 mod path;
-#[cfg(feature = "builtin-process")]
 mod process;
-#[cfg(feature = "builtin-random")]
 mod random;
-#[cfg(feature = "builtin-regex")]
 mod regex;
 mod signatures;
-#[cfg(feature = "builtin-stdio")]
 mod stdio;
-#[cfg(feature = "builtin-string")]
 mod string;
-#[cfg(feature = "builtin-system")]
 mod system;
-#[cfg(feature = "builtin-testing")]
 mod testing;
-#[cfg(feature = "builtin-time")]
 mod time;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +104,8 @@ const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     env::BUILTINS,
     #[cfg(feature = "builtin-time")]
     time::BUILTINS,
+    #[cfg(feature = "builtin-date")]
+    date::BUILTINS,
     #[cfg(feature = "builtin-process")]
     process::BUILTINS,
     #[cfg(feature = "builtin-path")]
@@ -137,12 +122,48 @@ const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     testing::BUILTINS,
 ];
 
+/// Every builtin family with the Cargo feature that compiles it in, whether
+/// or not this build enables that feature.
+const ALL_FAMILIES: &[(&str, &[BuiltinMeta])] = &[
+    ("builtin-stdio", stdio::BUILTINS),
+    ("builtin-convert", convert::BUILTINS),
+    ("builtin-string", string::BUILTINS),
+    ("builtin-regex", regex::BUILTINS),
+    ("builtin-json", json::BUILTINS),
+    ("builtin-math", math::BUILTINS),
+    ("builtin-bytes", bytes::BUILTINS),
+    ("builtin-hash", hash::BUILTINS),
+    ("builtin-random", random::BUILTINS),
+    ("builtin-env", env::BUILTINS),
+    ("builtin-time", time::BUILTINS),
+    ("builtin-date", date::BUILTINS),
+    ("builtin-process", process::BUILTINS),
+    ("builtin-path", path::BUILTINS),
+    ("builtin-filesystem", filesystem::BUILTINS),
+    ("builtin-http", http::BUILTINS),
+    ("builtin-exec", exec::BUILTINS),
+    ("builtin-system", system::BUILTINS),
+    ("builtin-testing", testing::BUILTINS),
+];
+
 pub fn builtins() -> impl Iterator<Item = &'static BuiltinMeta> {
     BUILTIN_FAMILIES.iter().flat_map(|family| family.iter())
 }
 
 pub fn builtin_meta(name: &str) -> Option<&'static BuiltinMeta> {
     builtins().find(|meta| meta.name == name)
+}
+
+/// The Cargo feature that provides `name` when this build leaves it out, so
+/// errors can say why a known builtin is unbound.
+pub fn missing_builtin_feature(name: &str) -> Option<&'static str> {
+    if builtin_meta(name).is_some() {
+        return None;
+    }
+    ALL_FAMILIES
+        .iter()
+        .find(|(_, family)| family.iter().any(|meta| meta.name == name))
+        .map(|(feature, _)| *feature)
 }
 
 pub fn capability_path_for_builtin(name: &str) -> Option<&'static str> {

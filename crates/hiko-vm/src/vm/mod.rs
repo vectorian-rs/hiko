@@ -2198,7 +2198,7 @@ mod tests {
             other => panic!("expected Int(3), got {other:?}"),
         }
         assert!(vm.get_global("epoch_ms").is_some());
-        #[cfg(feature = "builtin-time")]
+        #[cfg(feature = "builtin-date")]
         assert!(vm.get_global("date_utc_tz").is_some());
         // Filesystem and HTTP builtins should not exist
         assert!(vm.get_global("read_file").is_none());

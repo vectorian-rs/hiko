@@ -4268,6 +4268,28 @@ Prelude = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    // `import Std.Json` reaches `__Builtin.Json`, so a default build, which
+    // leaves out JSON, fails at compile time with this message.
+    #[cfg(not(feature = "builtin-json"))]
+    #[test]
+    fn named_import_reports_missing_json_feature() {
+        let project_dir = unique_temp_dir("disabled-json-builtin");
+        let entry_path = project_dir.join("main.hml");
+
+        write_file(&entry_path, "import __Builtin.Json\nval answer = 1\n");
+
+        match compile_path(&entry_path) {
+            Err(CompileError::Codegen(message)) => {
+                assert!(message.contains("__Builtin.Json"), "{message}");
+                assert!(message.contains("not available in this build"), "{message}");
+                assert!(message.contains("builtin-json"), "{message}");
+            }
+            other => panic!("expected disabled JSON builtin failure, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
     #[cfg(not(feature = "builtin-hash"))]
     #[test]
     fn named_import_reports_missing_feature_for_disabled_internal_builtin() {

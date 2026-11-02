@@ -128,6 +128,22 @@ pub fn with_http(...);
 This keeps `--no-default-features` builds small and warning-clean, and it makes
 absence of a feature a compile-time contract rather than a runtime surprise.
 
+### Default and full builds
+
+Each builtin crate has two feature sets:
+
+- `builtin-default` (the `default` feature): every domain except `regex`,
+  `json` and `date`. These three are library-sized API, and `regex` and `date`
+  bring their own dependencies (`regex`, and `jiff` with a time-zone database).
+- `builtin-all`: `builtin-default` plus `builtin-regex`, `builtin-json` and
+  `builtin-date`. Tests, CI clippy and `tools/run_all.hml` use it, and
+  `hiko build-vm` generates crates that enable it.
+
+Using a builtin that the build leaves out is a type error that names the
+feature (`builtin `json_parse` is not in this build of hiko; enable cargo
+feature `builtin-json``), and importing a `Std` module that needs one fails at
+compile time with the internal module and feature it needs.
+
 ### `VMBuilder` policy: runtime gate
 
 `VMBuilder` policy answers: "May this VM instance use this compiled builtin?"
@@ -178,8 +194,10 @@ Recommended ownership:
 
 ### Date and time
 
-`date` should be treated as part of the time domain unless it becomes a purely
-calendar-arithmetic module.
+`date` is part of the time domain, but it has its own feature: `builtin-time`
+covers `epoch`, `epoch_ms`, `monotonic_ms` and `sleep`, and `builtin-date` covers
+the `date_*` builtins behind `Std.Date`, which need `jiff` and its time-zone
+database.
 
 - Formatting/parsing fixed timestamps can live under `Std.Time` or a
   `Std.DateTime` submodule.

@@ -16,7 +16,8 @@
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-date"
 ))]
 use crate::heap::Heap;
 use crate::value::BuiltinFn;
@@ -38,7 +39,8 @@ use crate::value::BuiltinFn;
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-date"
 ))]
 use crate::value::HeapObject;
 #[cfg(any(
@@ -59,7 +61,8 @@ use crate::value::HeapObject;
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-date"
 ))]
 use crate::value::Value;
 
@@ -92,11 +95,28 @@ pub(crate) use support::alloc_list;
     feature = "builtin-regex",
     feature = "builtin-stdio",
     feature = "builtin-string",
-    feature = "builtin-time"
+    feature = "builtin-time",
+    feature = "builtin-date"
 ))]
 pub(crate) use support::heap_alloc;
+#[cfg(any(
+    test,
+    feature = "builtin-date",
+    feature = "builtin-regex",
+    feature = "builtin-string"
+))]
+pub(crate) use support::string_pair;
+#[cfg(any(
+    test,
+    feature = "builtin-bytes",
+    feature = "builtin-hash",
+    feature = "builtin-json",
+    feature = "builtin-random",
+    feature = "builtin-regex",
+    feature = "builtin-string"
+))]
 pub(crate) use support::{charge, host_work};
-pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg, string_pair};
+pub(crate) use support::{collect_list, extract_pid_list_arg, extract_string_arg};
 
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
 pub(crate) use json_value::json_to_hiko;
@@ -112,7 +132,7 @@ pub(crate) use http_args::{HttpArgRefs, extract_http_arg_refs};
 mod bytes;
 #[cfg(feature = "builtin-convert")]
 mod convert;
-#[cfg(feature = "builtin-time")]
+#[cfg(feature = "builtin-date")]
 mod date;
 #[cfg(feature = "builtin-env")]
 mod env;
@@ -192,10 +212,10 @@ fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
     _entries.extend(env::entries());
 
     #[cfg(feature = "builtin-time")]
-    {
-        _entries.extend(time::entries());
-        _entries.extend(date::entries());
-    }
+    _entries.extend(time::entries());
+
+    #[cfg(feature = "builtin-date")]
+    _entries.extend(date::entries());
 
     #[cfg(feature = "builtin-process")]
     _entries.extend(process::entries());
