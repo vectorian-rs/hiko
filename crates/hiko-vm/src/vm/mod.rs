@@ -121,6 +121,8 @@ enum BuiltinKind {
     HttpGet,
     Http(HttpFormat),
     ReadFile,
+    /// An async extension builtin, by index into `BuiltinTable::async_fns`.
+    Async(u16),
 }
 
 /// `HttpResponseFormat` without its data, so `BuiltinKind` stays `Copy`.
@@ -166,6 +168,8 @@ struct BuiltinTable {
     by_name: HashMap<Arc<str>, u16>,
     /// Dispatch kind of each entry, by builtin id.
     kinds: Vec<BuiltinKind>,
+    /// The VM-thread half of each async extension builtin.
+    async_fns: Vec<crate::extension::AsyncBuiltinFn>,
 }
 
 pub struct VM {

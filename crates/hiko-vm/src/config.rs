@@ -1,6 +1,7 @@
 #[cfg(feature = "builtin-exec")]
 use crate::builder::ExecPolicy as VmExecPolicy;
 use crate::builder::VMBuilder;
+use crate::extension::Extension;
 use crate::vm::VM;
 use hiko_builtin_meta::{
     capability_path_for_builtin as meta_capability_path_for_builtin,
@@ -8,7 +9,7 @@ use hiko_builtin_meta::{
 };
 use hiko_compile::chunk::CompiledProgram;
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path};
 
 /// Runtime/loadable run configuration.
@@ -22,6 +23,10 @@ pub struct RunConfig {
     pub limits: Limits,
     #[serde(default)]
     pub capabilities: Capabilities,
+    /// `[extensions.<name>]` tables. Each turns on the extension of that
+    /// name; the table is passed to its `configure`.
+    #[serde(default)]
+    pub extensions: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -730,6 +735,7 @@ impl Default for RunConfig {
             entry: None,
             limits: Limits::default(),
             capabilities: Capabilities::default(),
+            extensions: BTreeMap::new(),
         }
     }
 }
@@ -788,10 +794,58 @@ impl RunConfig {
         self.apply_to_builder(VMBuilder::new(program)).build()
     }
 
+    /// The extensions this config turns on, from the ones linked into the
+    /// host. A table for an extension that is not linked is an error.
+    pub fn configured_extensions(
+        &self,
+        linked: &[&'static Extension],
+    ) -> Result<Vec<&'static Extension>, String> {
+        self.extensions
+            .keys()
+            .map(|name| {
+                linked
+                    .iter()
+                    .find(|extension| extension.name == name)
+                    .copied()
+                    .ok_or_else(|| format!("extension '{name}' is not in this build of hiko"))
+            })
+            .collect()
+    }
+
+    /// Like [`RunConfig::build_vm`], with the extensions this config turns
+    /// on. Compile the program with
+    /// `Extension::compile_surface(&config.configured_extensions(linked)?)`.
+    pub fn build_vm_with_extensions(
+        &self,
+        program: CompiledProgram,
+        linked: &[&'static Extension],
+    ) -> Result<VM, String> {
+        let mut builder = self.apply_to_builder(VMBuilder::new(program));
+        for extension in self.configured_extensions(linked)? {
+            builder = builder.with_extension(extension, &self.extensions[extension.name])?;
+        }
+        Ok(builder.build())
+    }
+
     /// Return builtin names enabled by this run config, including internal
     /// runtime-support builtins that do not have a policy capability leaf.
     pub fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
         self.capabilities.enabled_builtin_names()
+    }
+
+    /// Builtin names this config enables, including those of the
+    /// extensions it turns on from `linked`.
+    pub fn enabled_builtin_names_with_extensions(
+        &self,
+        linked: &[&'static Extension],
+    ) -> BTreeSet<&'static str> {
+        let mut names = self.enabled_builtin_names();
+        for extension in linked {
+            if self.extensions.contains_key(extension.name) {
+                names.extend(extension.builtins.iter().map(|builtin| builtin.name));
+            }
+        }
+        names
     }
 
     /// Return whether this config enables process builtins that need the

@@ -37,6 +37,8 @@ pub struct InferCtx {
     open: RefCell<Vec<HashSet<String>>>,
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
+    /// Opaque types declared by extensions (see `add_opaque_type`).
+    opaque_types: Vec<String>,
     type_aliases: HashMap<String, (Vec<u32>, Type)>,
     /// Abstract type introduced by signature ascription -> implementation type name
     abstract_impls: HashMap<String, String>,
@@ -69,14 +71,17 @@ struct BuiltinTypeParser<'a> {
     chars: Vec<char>,
     pos: usize,
     vars: HashMap<&'a str, u32>,
+    /// Opaque type names an extension declared, usable like primitives.
+    opaque: &'a [String],
 }
 
 impl<'a> BuiltinTypeParser<'a> {
-    fn new(input: &'a str, vars: HashMap<&'a str, u32>) -> Self {
+    fn new(input: &'a str, vars: HashMap<&'a str, u32>, opaque: &'a [String]) -> Self {
         Self {
             chars: input.chars().collect(),
             pos: 0,
             vars,
+            opaque,
         }
     }
 
@@ -152,6 +157,9 @@ impl<'a> BuiltinTypeParser<'a> {
             return Ok(Type::Var(var));
         }
         let ident = self.ident()?;
+        if self.opaque.contains(&ident) {
+            return Ok(Type::Con(ident));
+        }
         Type::primitive(&ident).ok_or_else(|| format!("unknown type constructor '{ident}"))
     }
 
@@ -221,6 +229,7 @@ impl InferCtx {
             open: RefCell::new(vec![HashSet::new()]),
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
+            opaque_types: Vec::new(),
             type_aliases: HashMap::new(),
             abstract_impls: HashMap::new(),
             constructor_tags: HashMap::new(),
@@ -247,6 +256,35 @@ impl InferCtx {
         }
     }
 
+    /// Declare an opaque type named `name`, for values an extension creates
+    /// and consumes, such as a client handle. It resolves like a primitive in
+    /// source annotations and extension signatures.
+    pub fn add_opaque_type(&mut self, name: &str) -> Result<(), String> {
+        if Type::primitive(name).is_some() || self.type_arities.contains_key(name) {
+            return Err(format!("extension type '{name}' is already defined"));
+        }
+        self.type_arities.insert(name.to_string(), 0);
+        self.opaque_types.push(name.to_string());
+        Ok(())
+    }
+
+    /// Bind an extension builtin's type. Call `add_opaque_type` first for
+    /// any opaque type the signature names.
+    pub fn bind_extension_builtin(
+        &mut self,
+        name: &str,
+        sig: hiko_builtin_meta::BuiltinTypeSignature,
+    ) -> Result<(), String> {
+        if self.lookup(name).is_some() {
+            return Err(format!("extension builtin '{name}' is already defined"));
+        }
+        let scheme = self
+            .parse_builtin_scheme(sig)
+            .map_err(|err| format!("invalid type for extension builtin '{name}': {err}"))?;
+        self.bind(name.to_string(), scheme);
+        Ok(())
+    }
+
     fn parse_builtin_scheme(
         &mut self,
         sig: hiko_builtin_meta::BuiltinTypeSignature,
@@ -259,7 +297,7 @@ impl InferCtx {
             vars.insert(*name, var);
             scheme_vars.push(var);
         }
-        let mut parser = BuiltinTypeParser::new(sig.ty, vars);
+        let mut parser = BuiltinTypeParser::new(sig.ty, vars, &self.opaque_types);
         let ty = parser.parse()?;
         Ok(Scheme {
             vars: scheme_vars,

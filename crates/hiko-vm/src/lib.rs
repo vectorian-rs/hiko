@@ -2,6 +2,7 @@ pub mod budget;
 pub mod builder;
 pub mod builtins;
 pub mod config;
+pub mod extension;
 pub mod heap;
 pub mod io_backend;
 pub mod io_limits;

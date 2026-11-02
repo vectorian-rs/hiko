@@ -139,6 +139,9 @@ impl VM {
         child.heap.share_regex_cache(&self.heap);
         child.set_http_allowed_hosts(self.heap.http_allowed_hosts().to_vec());
         child.set_http_allowed_hosts_by_builtin(self.heap.http_allowed_hosts_by_builtin().clone());
+        for (name, state) in self.heap.extension_states() {
+            child.heap.set_extension_state(name, state.clone());
+        }
         if let Some(max_heap) = self.heap.max_objects() {
             child.set_max_heap(max_heap);
         }

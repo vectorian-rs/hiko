@@ -217,6 +217,9 @@ pub struct Heap {
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
+    /// State of each configured extension, by extension name. Child
+    /// processes share it.
+    extension_states: HashMap<&'static str, crate::extension::ExtensionState>,
     /// Optional injected stdin content for embedded runtimes.
     stdin_override: Option<String>,
     stdin_override_consumed: bool,
@@ -289,6 +292,7 @@ impl Heap {
             regex_cache: Arc::default(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
+            extension_states: HashMap::new(),
             stdin_override: None,
             stdin_override_consumed: false,
             sent: HashMap::new(),
@@ -907,6 +911,7 @@ impl Heap {
     fn host_handle_kind_name(kind: HostHandleKind) -> &'static str {
         match kind {
             HostHandleKind::Unsupported => "unsupported",
+            HostHandleKind::Extension(kind) => kind,
         }
     }
 
@@ -930,6 +935,57 @@ impl Heap {
             },
             _ => Err(format!("{context}: expected {expected_type}")),
         }
+    }
+
+    /// The native object behind an extension host handle of `kind`.
+    pub fn extension_resource<T: std::any::Any + Send + Sync>(
+        &self,
+        value: Value,
+        kind: &'static str,
+        context: &str,
+    ) -> Result<Arc<T>, String> {
+        let expected = HostHandleKind::Extension(kind);
+        let id = self.host_handle_from_value(value, expected, kind, context)?;
+        match self.get_host_resource(id, expected, kind, context)? {
+            HostResource::Extension { value, .. } => value
+                .clone()
+                .downcast::<T>()
+                .map_err(|_| format!("{context}: {kind} host handle has an unexpected type")),
+            HostResource::Unsupported => Err(format!("{context}: expected {kind}")),
+        }
+    }
+
+    /// Allocate a host handle of extension kind `kind` around `value`.
+    pub fn alloc_extension_resource(
+        &mut self,
+        kind: &'static str,
+        value: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Result<Value, String> {
+        self.alloc_host_resource(HostResource::Extension { kind, value })
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_extension_state(
+        &mut self,
+        extension: &'static str,
+        state: crate::extension::ExtensionState,
+    ) {
+        self.extension_states.insert(extension, state);
+    }
+
+    /// The state the run config gave extension `extension`, if it is
+    /// configured and of type `T`.
+    pub fn extension_state<T: std::any::Any + Send + Sync>(
+        &self,
+        extension: &str,
+    ) -> Option<Arc<T>> {
+        self.extension_states
+            .get(extension)
+            .and_then(|state| state.clone().downcast::<T>().ok())
+    }
+
+    pub fn extension_states(&self) -> &HashMap<&'static str, crate::extension::ExtensionState> {
+        &self.extension_states
     }
 
     pub fn get_host_resource(

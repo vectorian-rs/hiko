@@ -20,6 +20,22 @@ impl VM {
         &mut self.globals[slot]
     }
 
+    /// Register an async extension builtin: `prepare` runs on the VM thread
+    /// and returns a job for the I/O pool (see [`crate::extension`]).
+    pub fn register_async_builtin(
+        &mut self,
+        name: impl Into<Arc<str>>,
+        prepare: crate::extension::AsyncBuiltinFn,
+    ) {
+        let name: Arc<str> = name.into();
+        self.register_builtin(name.clone(), async_builtin_placeholder);
+        let table = Arc::make_mut(&mut self.builtins);
+        let idx = table.async_fns.len() as u16;
+        table.async_fns.push(prepare);
+        let id = table.by_name[&name] as usize;
+        table.kinds[id] = BuiltinKind::Async(idx);
+    }
+
     /// Register a single builtin function by name.
     pub fn register_builtin(&mut self, name: impl Into<Arc<str>>, func: BuiltinFn) {
         let name: Arc<str> = name.into();
@@ -81,6 +97,9 @@ impl VM {
             let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
             self.stack.truncate(callee_pos);
             return self.push(result);
+        }
+        if let BuiltinKind::Async(idx) = kind {
+            return self.call_async_builtin(builtin_id, idx, callee_pos);
         }
         let first_arg = self.stack[callee_pos + 1];
 
@@ -336,6 +355,45 @@ impl VM {
         }
         Ok(())
     }
+}
+
+impl VM {
+    /// Prepare an async extension builtin's job. Under the threaded runtime
+    /// the job runs on the I/O pool and the process suspends; otherwise it
+    /// runs here, and its result is charged as I/O the same way.
+    fn call_async_builtin(
+        &mut self,
+        builtin_id: u16,
+        idx: u16,
+        callee_pos: usize,
+    ) -> Result<(), RuntimeError> {
+        let prepare = self.builtins.async_fns[idx as usize];
+        let name = self.builtins.entries[builtin_id as usize].name.clone();
+        let args = &self.stack[callee_pos + 1..callee_pos + 2];
+        let job = prepare(args, &mut self.heap).map_err(|message| RuntimeError { message })?;
+        let job = crate::extension::ExtensionJob::new(name, job);
+        if self.async_io {
+            return self.suspend_for_runtime_request(
+                RuntimeRequest::Io(crate::io_backend::IoRequest::Extension(job)),
+                callee_pos,
+            );
+        }
+        let sendable = job.run().map_err(|message| RuntimeError { message })?;
+        let rt = |e: String| RuntimeError { message: e };
+        self.heap
+            .charge_io_bytes(sendable.estimated_bytes() as u64)
+            .map_err(|e| rt(e.to_string()))?;
+        let value = crate::sendable::deserialize(&sendable, &mut self.heap)
+            .map_err(|e| rt(e.to_string()))?;
+        self.stack.truncate(callee_pos);
+        self.push(value)
+    }
+}
+
+/// Stands in for an async builtin's function; `call_builtin` dispatches on
+/// the kind and never calls it.
+fn async_builtin_placeholder(_: &[Value], _: &mut crate::heap::Heap) -> Result<Value, String> {
+    Err("async builtin called without the VM's dispatcher".into())
 }
 
 /// The response format of an HTTP builtin kind.
