@@ -28,6 +28,9 @@ cargo build --release
 # Regex, JSON and date builtins are not in the default build
 cargo build --release -p hiko-cli --features builtin-all
 
+# GitHub and AWS are extensions (docs/architecture/extensions.md)
+cargo build --release -p hiko-cli --features ext-github,ext-aws
+
 # Run a program
 cargo run -- run examples/factorial.hml
 

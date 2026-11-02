@@ -1,0 +1,103 @@
+# Extensions
+
+An extension adds builtins, opaque types and Hiko modules from outside the
+core crates. The GitHub and AWS integrations are extensions
+(`extensions/hiko-ext-github`, `extensions/hiko-ext-aws`); the core has no
+code for either.
+
+## What an extension is
+
+`hiko_vm::extension::Extension` is a static description:
+
+```rust
+pub static GITHUB: Extension = Extension {
+    name: "github",                      // [extensions.github] in a run config
+    types: &[],                          // opaque types, such as "aws_config"
+    builtins: &[ /* ExtensionBuiltin */ ],
+    modules: &[("Github.Issue", include_str!("Issue.hml"))],
+    configure,                           // fn(&toml::Value) -> Result<ExtensionState, String>
+};
+```
+
+Each `ExtensionBuiltin` has a name, a Hiko signature in the same syntax as
+core builtin signatures, and a function:
+
+- `ExtensionFn::Sync(fn(&[Value], &mut Heap) -> Result<Value, String>)` runs
+  on the VM thread, like a core builtin.
+- `ExtensionFn::Async(fn(&[Value], &mut Heap) -> Result<AsyncJob, String>)`
+  checks its arguments and policy on the VM thread and returns a job. Under
+  the threaded runtime the job runs on the I/O pool and the process
+  suspends, like `http_get`; otherwise it runs inline. The job gets no heap
+  and returns a `SendableValue`, which is charged as I/O.
+
+## Turning one on
+
+A host links the extensions it supports. The CLI links them with cargo
+features:
+
+```sh
+cargo build --release -p hiko-cli --features ext-github,ext-aws
+```
+
+A run config turns a linked extension on with its table, which `configure`
+turns into the extension's state:
+
+```toml
+[extensions.github]
+list = ["vectorian-rs/hiko"]
+```
+
+The extension is fail-closed:
+
+- Without a table, the extension is not registered. The compiler does not
+  know its builtins or modules, so a script that uses them does not compile.
+- A table for an extension the binary does not link is an error.
+- A `configure` error stops the VM from being built. Both bundled extensions
+  reject unknown keys and default every permission to off.
+
+`hiko build-vm` rejects `[extensions]` for now; generated crates cannot link
+extensions yet.
+
+## What the core provides
+
+| Hook | Where |
+| --- | --- |
+| Opaque types and builtin signatures for the type checker | `InferCtx::add_opaque_type`, `InferCtx::bind_extension_builtin` |
+| Modules resolved by import name, before the lockfile | `ModuleLoaderOptions::extensions` (`ExtensionSurface`), built by `Extension::compile_surface` |
+| Registration of sync and async builtins | `VMBuilder::with_extension`, `VM::register_async_builtin` |
+| Configuration | `RunConfig::extensions`, `configured_extensions`, `build_vm_with_extensions` |
+| Per-extension state, shared with child processes | `Heap::extension_state::<T>(name)` |
+| Native objects behind handles | `Heap::alloc_extension_resource`, `Heap::extension_resource::<T>`, `HostHandleKind::Extension(kind)` |
+| Async work on the I/O pool | `IoRequest::Extension`, `BuiltinKind::Async` |
+
+Extension host resources count under `max_host_resources` and under a
+per-kind limit keyed by the kind name, for example:
+
+```toml
+[limits.host_resources]
+aws_s3_client = 4
+```
+
+## Writing one
+
+1. Define the builtins and their signatures. Check the policy in the
+   builtin, using the state from `Heap::extension_state`, before any side
+   effect.
+2. Put the Hiko modules next to the crate and include them with
+   `include_str!`. A module can use the extension's builtins directly. It
+   cannot rely on the project's lockfile, so it should not import `Std`
+   modules.
+3. Make `configure` reject unknown keys and default to no permissions.
+4. Test the policy without the external service: every refused call fails
+   before any I/O.
+
+`crates/hiko-vm/tests/extension.rs` is a small complete example.
+
+## Cost
+
+- **Dispatch:** a builtin call dispatches on a kind stored at registration,
+  so extension builtins cost the same as core ones (#147).
+- **Default binary:** the extension hooks add about 87 KB to the default
+  `hiko-cli` (6,743,280 to 6,830,656 bytes, macOS arm64), mostly the
+  generic run-config table parsing. The default build links no extension,
+  and its dependency tree is unchanged (153 crates).
