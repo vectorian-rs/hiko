@@ -8,6 +8,7 @@ Experimental ideas and design sketches that are not necessarily implemented.
 | [`effects-design.md`](effects-design.md) | R&D/design-only | Effects as capability requests, proposed syntax and effect rows, implementation strategies A to F, comparisons with OCaml 5, Koka, Eff, Frank, Links, and Haskell, staging plan, open questions. |
 | [`iac-demo.md`](iac-demo.md) | R&D/design-only | Infrastructure-as-code demo sketch covering Dhall, Hiko, provider builtins, changesets, state commits, state store, and command flow. |
 | [`2026-06-vm-performance-investigation.md`](2026-06-vm-performance-investigation.md) | Dated investigation (2026-06) | Filesystem benchmark vs Python: per-file I/O policy overhead and VM bytecode density in list pattern matching, with proposed fixes. |
+| [`2026-11-vm-performance-review.md`](2026-11-vm-performance-review.md) | Dated review (2026-11) | Profiles of the cross-language suite: interpretive overhead, not GC, is the gap to Lua; ranked changes (release profile, constructor building, helper inlining, cached `ip`, allocation fixes) and where SIMD applies. |
 
 ## Recommended use
 
