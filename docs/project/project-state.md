@@ -339,7 +339,11 @@ maximums.
 6. Done (#141): `json`, `regex` and `date` are non-default. The default `hiko-cli`
    release binary went from 8,973,664 to 6,743,280 bytes (−25%) and from 159 to
    153 crates (macOS arm64). `hash` stays, because the module loader already
-   links `blake3`.
+   links `blake3`. AC (#148) then dropped `url` (the HTTP allowlist now uses
+   the client's own URL parser) and `dryoc` (`random` uses `getrandom`):
+   6,743,280 to 6,449,888 bytes (−4.4%), and 45 fewer crates, 133 to 88 by
+   default and 138 to 93 with `builtin-all` (unique packages in
+   `cargo tree -p hiko-cli -e normal,build`).
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.
 8. Fix the README inconsistencies listed above.
 9. Add fuzz targets for the parser, type checker, verifier, and policy parser.

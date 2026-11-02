@@ -94,6 +94,46 @@ pub fn http_get_text_limited(
         .map_err(|e| format!("http: {e}"))
 }
 
+/// The host a request to `url` goes to, for a host allowlist check.
+///
+/// The URL is parsed with the client's own parser (`ureq::http::Uri`), so the
+/// host checked is the host `ureq` connects to. It fails closed: the scheme
+/// must be http or https, and the host must be a DNS name (ASCII letters,
+/// digits, `-`, `_` and `.`), which is lowercased, or a bracketed IPv6 address
+/// without a zone, which is returned in canonical form. Anything else, such
+/// as percent-encoded or non-ASCII hosts, is an error.
+pub fn request_host(url: &str) -> Result<String, String> {
+    let uri: ureq::http::Uri = url
+        .parse()
+        .map_err(|e| format!("invalid URL '{url}': {e}"))?;
+    let scheme = uri.scheme_str().unwrap_or("");
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return Err(format!(
+            "URL '{url}' uses unsupported scheme '{scheme}'; expected http or https"
+        ));
+    }
+    let host = match uri.host() {
+        Some(host) if !host.is_empty() => host,
+        _ => return Err(format!("URL '{url}' has no host")),
+    };
+    if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return inner
+            .parse::<std::net::Ipv6Addr>()
+            .map(|ip| format!("[{ip}]"))
+            .map_err(|_| format!("URL '{url}' has an invalid IPv6 host '{host}'"));
+    }
+    if host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        Ok(host.to_ascii_lowercase())
+    } else {
+        Err(format!(
+            "URL '{url}' has host '{host}', which is not a DNS name or IP address"
+        ))
+    }
+}
+
 fn check_module_url(url: &str) -> Result<(), String> {
     let uri: ureq::http::Uri = url
         .parse()
@@ -137,6 +177,110 @@ mod tests {
             stream.write_all(response).unwrap();
         });
         (format!("http://{addr}"), server)
+    }
+
+    /// URLs on which the `url` crate (the old allowlist parser) and the
+    /// client's parser disagreed, or that are easy to get wrong.
+    const TRICKY_URLS: &[&str] = &[
+        "http://localhost:80@evil.example/path",
+        "http://user:pw@allowed.example/",
+        "http://evil.example\\@allowed.example/",
+        "http://evil.example\\.allowed.example/",
+        "http://ALLOWED.Example/",
+        "HTTP://allowed.example/",
+        "http://allowed.example./",
+        "http://%61llowed.example/",
+        "http://allowed%2eexample/",
+        "http://b\u{fc}cher.example/",
+        "http://xn--bcher-kva.example/",
+        "http://[::1]/",
+        "http://[0:0:0:0:0:0:0:1]/",
+        "http://[fe80::1%25en0]/",
+        "http://0x7f.1/",
+        "http://2130706433/",
+        "http://127.000.000.001/",
+        "http:///path",
+        "http://:80/",
+        "http://allowed.example:80:80/",
+        "http://allowed.example#@evil.example/",
+        "http://allowed.example?@evil.example/",
+        "http://allowed.example\t.x/",
+        "http://evil.example%00.allowed.example/",
+        "https:allowed.example/",
+        "http:/allowed.example/",
+        "//allowed.example/",
+        "ftp://allowed.example/",
+        "file:///etc/passwd",
+        "http://allowed_example/",
+    ];
+
+    #[test]
+    fn request_host_is_the_host_the_client_uses() {
+        for url in TRICKY_URLS {
+            let Ok(host) = request_host(url) else {
+                continue;
+            };
+            let uri: ureq::http::Uri = url.parse().expect("accepted URLs parse");
+            let client_host = uri.host().expect("accepted URLs have a host");
+            let client_host = match client_host.strip_prefix('[') {
+                Some(v6) => format!(
+                    "[{}]",
+                    v6.trim_end_matches(']')
+                        .parse::<std::net::Ipv6Addr>()
+                        .unwrap()
+                ),
+                None => client_host.to_ascii_lowercase(),
+            };
+            assert_eq!(host, client_host, "{url}");
+        }
+    }
+
+    #[test]
+    fn request_host_accepts_and_normalizes() {
+        let cases = [
+            ("http://localhost:80@evil.example/path", "evil.example"),
+            ("http://user:pw@allowed.example/", "allowed.example"),
+            ("http://ALLOWED.Example/", "allowed.example"),
+            ("HTTP://allowed.example/", "allowed.example"),
+            ("http://allowed.example./", "allowed.example."),
+            ("http://xn--bcher-kva.example/", "xn--bcher-kva.example"),
+            ("http://[::1]/", "[::1]"),
+            ("http://[0:0:0:0:0:0:0:1]/", "[::1]"),
+            ("http://allowed.example#@evil.example/", "allowed.example"),
+            ("http://allowed.example?@evil.example/", "allowed.example"),
+            ("http://allowed_example/", "allowed_example"),
+            // Not normalized to 127.0.0.1, so an allowlist entry
+            // "127.0.0.1" does not match it.
+            ("http://0x7f.1/", "0x7f.1"),
+            ("http://2130706433/", "2130706433"),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(request_host(url).as_deref(), Ok(expected), "{url}");
+        }
+    }
+
+    #[test]
+    fn request_host_rejects_what_it_cannot_classify() {
+        for url in [
+            "http://evil.example\\@allowed.example/",
+            "http://evil.example\\.allowed.example/",
+            "http://%61llowed.example/",
+            "http://allowed%2eexample/",
+            "http://b\u{fc}cher.example/",
+            "http://[fe80::1%25en0]/",
+            "http:///path",
+            "http://:80/",
+            "http://allowed.example:80:80/",
+            "http://allowed.example\t.x/",
+            "http://evil.example%00.allowed.example/",
+            "https:allowed.example/",
+            "http:/allowed.example/",
+            "//allowed.example/",
+            "ftp://allowed.example/",
+            "file:///etc/passwd",
+        ] {
+            assert!(request_host(url).is_err(), "{url} should be rejected");
+        }
     }
 
     #[test]

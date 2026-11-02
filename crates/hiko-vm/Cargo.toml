@@ -56,7 +56,7 @@ builtin-hash = [
 builtin-random = [
     "hiko-builtin-meta/builtin-random",
     "hiko-compile/builtin-random",
-    "dep:dryoc",
+    "dep:getrandom",
 ]
 builtin-env = ["hiko-builtin-meta/builtin-env", "hiko-compile/builtin-env"]
 builtin-time = [
@@ -82,7 +82,6 @@ builtin-http = [
     "hiko-common/http",
     "dep:rmp-serde",
     "dep:serde_json",
-    "dep:url",
 ]
 builtin-exec = ["hiko-builtin-meta/builtin-exec", "hiko-compile/builtin-exec"]
 builtin-system = ["hiko-builtin-meta/builtin-system", "hiko-compile/builtin-system"]
@@ -94,7 +93,7 @@ hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = f
 hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false }
 hiko-syntax = { version = "0.8.0", path = "../hiko-syntax" }
 dashmap = "6"
-dryoc = { version = "0.7", default-features = false, optional = true }
+getrandom = { version = "0.3", optional = true }
 glob = { version = "0.3", optional = true }
 smallvec = "1"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"], optional = true }
@@ -103,7 +102,6 @@ serde_json = { version = "1", optional = true }
 regex = { version = "1", optional = true }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-url = { version = "2", optional = true }
 cap-std = { version = "4", optional = true }
 
 [target.'cfg(unix)'.dependencies]

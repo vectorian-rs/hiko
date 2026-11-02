@@ -4,8 +4,6 @@ use crate::value::{GcRef, HeapObject, HostHandleId, HostHandleKind, HostResource
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(feature = "builtin-http")]
-use url::Url;
 
 /// Error returned when a heap allocation exceeds the configured object limit.
 #[derive(Debug, Clone)]
@@ -1253,21 +1251,7 @@ pub(crate) fn resolve_fs_path_in_folders(
 pub(crate) fn parse_http_url_host(url: &str) -> Result<String, String> {
     #[cfg(feature = "builtin-http")]
     {
-        let parsed = Url::parse(url).map_err(|e| format!("invalid URL '{url}': {e}"))?;
-        match parsed.scheme() {
-            "http" | "https" => {}
-            scheme => {
-                return Err(format!(
-                    "URL '{}' uses unsupported scheme '{}'; expected http or https",
-                    url, scheme
-                ));
-            }
-        }
-
-        parsed
-            .host_str()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| format!("URL '{url}' has no host"))
+        hiko_common::request_host(url)
     }
 
     #[cfg(not(feature = "builtin-http"))]

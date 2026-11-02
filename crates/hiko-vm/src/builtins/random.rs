@@ -47,7 +47,7 @@ pub(super) fn random_bytes(args: &[Value], heap: &mut Heap) -> Result<Value, Str
             )?;
             let mut buf = reserve_output(heap, n, "random_bytes")?;
             buf.resize(n, 0);
-            dryoc::rng::copy_randombytes(&mut buf);
+            getrandom::fill(&mut buf).map_err(|e| format!("random_bytes: {e}"))?;
             heap_alloc(heap, HeapObject::Bytes(buf.into()))
         }
         Value::Int(_) => Err("random_bytes: length must be non-negative".into()),
