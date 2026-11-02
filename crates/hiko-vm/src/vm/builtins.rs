@@ -20,6 +20,22 @@ impl VM {
         &mut self.globals[slot]
     }
 
+    /// Register an async extension builtin: `prepare` runs on the VM thread
+    /// and returns a job for the I/O pool (see [`crate::extension`]).
+    pub fn register_async_builtin(
+        &mut self,
+        name: impl Into<Arc<str>>,
+        prepare: crate::extension::AsyncBuiltinFn,
+    ) {
+        let name: Arc<str> = name.into();
+        self.register_builtin(name.clone(), async_builtin_placeholder);
+        let table = Arc::make_mut(&mut self.builtins);
+        let idx = table.async_fns.len() as u16;
+        table.async_fns.push(prepare);
+        let id = table.by_name[&name] as usize;
+        table.kinds[id] = BuiltinKind::Async(idx);
+    }
+
     /// Register a single builtin function by name.
     pub fn register_builtin(&mut self, name: impl Into<Arc<str>>, func: BuiltinFn) {
         let name: Arc<str> = name.into();
@@ -30,25 +46,7 @@ impl VM {
             func,
         });
         table.values.push(Value::Builtin(idx));
-        let ids = &mut table.ids;
-        match name.as_ref() {
-            "print" => ids.print_builtin_id = Some(idx),
-            "println" => ids.println_builtin_id = Some(idx),
-            "exec" => ids.exec_builtin_id = Some(idx),
-            "spawn" => ids.spawn_builtin_id = Some(idx),
-            "await_process" => ids.await_builtin_id = Some(idx),
-            "await_process_result" => ids.await_result_builtin_id = Some(idx),
-            "cancel" => ids.cancel_builtin_id = Some(idx),
-            "wait_any" => ids.wait_any_builtin_id = Some(idx),
-            "sleep" => ids.sleep_builtin_id = Some(idx),
-            "http_get" => ids.http_get_builtin_id = Some(idx),
-            "http" => ids.http_builtin_id = Some(idx),
-            "http_json" => ids.http_json_builtin_id = Some(idx),
-            "http_msgpack" => ids.http_msgpack_builtin_id = Some(idx),
-            "http_bytes" => ids.http_bytes_builtin_id = Some(idx),
-            "read_file" => ids.read_file_builtin_id = Some(idx),
-            _ => {}
-        }
+        table.kinds.push(BuiltinKind::of(&name));
         table.by_name.insert(name.clone(), idx);
         // A global already resolved to an earlier builtin of this name now
         // refers to the new one.
@@ -92,9 +90,20 @@ impl VM {
                 message: format!("builtin expects 1 arg, got {arity}"),
             });
         }
+        let kind = self.builtins.kinds[builtin_id as usize];
+        if kind == BuiltinKind::Plain {
+            let func = self.builtins.entries[builtin_id as usize].func;
+            let args = &self.stack[callee_pos + 1..callee_pos + 2];
+            let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
+            self.stack.truncate(callee_pos);
+            return self.push(result);
+        }
+        if let BuiltinKind::Async(idx) = kind {
+            return self.call_async_builtin(builtin_id, idx, callee_pos);
+        }
         let first_arg = self.stack[callee_pos + 1];
 
-        if self.builtins.ids.spawn_builtin_id == Some(builtin_id) {
+        if kind == BuiltinKind::Spawn {
             let closure_val = self.stack[callee_pos + 1];
             match closure_val {
                 Value::Heap(r) => match self.heap.get(r) {
@@ -153,7 +162,7 @@ impl VM {
             }
         }
 
-        if self.builtins.ids.await_builtin_id == Some(builtin_id) {
+        if kind == BuiltinKind::Await {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
                 Value::Pid(pid) => {
@@ -168,7 +177,7 @@ impl VM {
             }
         }
 
-        if self.builtins.ids.await_result_builtin_id == Some(builtin_id) {
+        if kind == BuiltinKind::AwaitResult {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
                 Value::Pid(pid) => {
@@ -183,7 +192,7 @@ impl VM {
             }
         }
 
-        if self.builtins.ids.cancel_builtin_id == Some(builtin_id) {
+        if kind == BuiltinKind::Cancel {
             let pid_val = self.stack[callee_pos + 1];
             match pid_val {
                 Value::Pid(pid) => {
@@ -198,7 +207,7 @@ impl VM {
             }
         }
 
-        if self.builtins.ids.wait_any_builtin_id == Some(builtin_id) {
+        if kind == BuiltinKind::WaitAny {
             let pids = crate::builtins::extract_pid_list_arg(
                 &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                 &self.heap,
@@ -209,7 +218,7 @@ impl VM {
         }
 
         if self.async_io {
-            let io_request = if self.builtins.ids.sleep_builtin_id == Some(builtin_id) {
+            let io_request = if kind == BuiltinKind::Sleep {
                 let ms = match self.stack[callee_pos + 1] {
                     Value::Int(ms) if ms >= 0 => ms as u64,
                     _ => {
@@ -221,7 +230,7 @@ impl VM {
                 Some(crate::io_backend::IoRequest::Sleep(
                     std::time::Duration::from_millis(ms),
                 ))
-            } else if self.builtins.ids.http_get_builtin_id == Some(builtin_id) {
+            } else if kind == BuiltinKind::HttpGet {
                 let url = crate::builtins::extract_string_arg(
                     &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                     &self.heap,
@@ -238,7 +247,7 @@ impl VM {
                     max_response: self.heap.http_response_limit(),
                     timeouts: self.heap.io_limits().http_timeouts(),
                 })
-            } else if let Some(format) = self.match_http_builtin(builtin_id) {
+            } else if let Some(format) = http_format(kind) {
                 let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
                 let (method, url, headers, body) =
                     crate::builtins::extract_http_args(args, &self.heap, "http")
@@ -263,7 +272,7 @@ impl VM {
                     max_response: self.heap.http_response_limit(),
                     timeouts: self.heap.io_limits().http_timeouts(),
                 })
-            } else if self.builtins.ids.read_file_builtin_id == Some(builtin_id) {
+            } else if kind == BuiltinKind::ReadFile {
                 let path = crate::builtins::extract_string_arg(
                     &self.stack[callee_pos + 1..callee_pos + 1 + arity],
                     &self.heap,
@@ -304,7 +313,7 @@ impl VM {
             }
         }
 
-        if self.builtins.ids.exec_builtin_id == Some(builtin_id) {
+        if kind == BuiltinKind::Exec {
             let exec_arg = self.stack[callee_pos + 1];
             let prepared = self.prepare_exec(exec_arg)?;
             let result = self
@@ -319,8 +328,8 @@ impl VM {
         let args = &self.stack[callee_pos + 1..callee_pos + 1 + arity];
         let result = func(args, &mut self.heap).map_err(|msg| RuntimeError { message: msg })?;
         self.stack.truncate(callee_pos);
-        let is_print = self.builtins.ids.print_builtin_id == Some(builtin_id);
-        let is_println = self.builtins.ids.println_builtin_id == Some(builtin_id);
+        let is_print = kind == BuiltinKind::Print;
+        let is_println = kind == BuiltinKind::Println;
         if is_print || is_println {
             let displayed = if is_println {
                 format!("{}\n", self.display_value(&first_arg))
@@ -346,19 +355,55 @@ impl VM {
         }
         Ok(())
     }
+}
 
-    fn match_http_builtin(&self, builtin_id: u16) -> Option<crate::io_backend::HttpResponseFormat> {
-        use crate::io_backend::HttpResponseFormat;
-        if self.builtins.ids.http_builtin_id == Some(builtin_id) {
-            Some(HttpResponseFormat::Text)
-        } else if self.builtins.ids.http_json_builtin_id == Some(builtin_id) {
-            Some(HttpResponseFormat::Json)
-        } else if self.builtins.ids.http_msgpack_builtin_id == Some(builtin_id) {
-            Some(HttpResponseFormat::Msgpack)
-        } else if self.builtins.ids.http_bytes_builtin_id == Some(builtin_id) {
-            Some(HttpResponseFormat::Bytes)
-        } else {
-            None
+impl VM {
+    /// Prepare an async extension builtin's job. Under the threaded runtime
+    /// the job runs on the I/O pool and the process suspends; otherwise it
+    /// runs here, and its result is charged as I/O the same way.
+    fn call_async_builtin(
+        &mut self,
+        builtin_id: u16,
+        idx: u16,
+        callee_pos: usize,
+    ) -> Result<(), RuntimeError> {
+        let prepare = self.builtins.async_fns[idx as usize];
+        let name = self.builtins.entries[builtin_id as usize].name.clone();
+        let args = &self.stack[callee_pos + 1..callee_pos + 2];
+        let job = prepare(args, &mut self.heap).map_err(|message| RuntimeError { message })?;
+        let job = crate::extension::ExtensionJob::new(name, job);
+        if self.async_io {
+            return self.suspend_for_runtime_request(
+                RuntimeRequest::Io(crate::io_backend::IoRequest::Extension(job)),
+                callee_pos,
+            );
         }
+        let sendable = job.run().map_err(|message| RuntimeError { message })?;
+        let rt = |e: String| RuntimeError { message: e };
+        self.heap
+            .charge_io_bytes(sendable.estimated_bytes() as u64)
+            .map_err(|e| rt(e.to_string()))?;
+        let value = crate::sendable::deserialize(&sendable, &mut self.heap)
+            .map_err(|e| rt(e.to_string()))?;
+        self.stack.truncate(callee_pos);
+        self.push(value)
+    }
+}
+
+/// Stands in for an async builtin's function; `call_builtin` dispatches on
+/// the kind and never calls it.
+fn async_builtin_placeholder(_: &[Value], _: &mut crate::heap::Heap) -> Result<Value, String> {
+    Err("async builtin called without the VM's dispatcher".into())
+}
+
+/// The response format of an HTTP builtin kind.
+fn http_format(kind: BuiltinKind) -> Option<crate::io_backend::HttpResponseFormat> {
+    use crate::io_backend::HttpResponseFormat;
+    match kind {
+        BuiltinKind::Http(HttpFormat::Text) => Some(HttpResponseFormat::Text),
+        BuiltinKind::Http(HttpFormat::Json) => Some(HttpResponseFormat::Json),
+        BuiltinKind::Http(HttpFormat::Msgpack) => Some(HttpResponseFormat::Msgpack),
+        BuiltinKind::Http(HttpFormat::Bytes) => Some(HttpResponseFormat::Bytes),
+        _ => None,
     }
 }

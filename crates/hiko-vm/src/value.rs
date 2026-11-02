@@ -31,30 +31,41 @@ pub enum Value {
 pub struct HostHandleId(pub u64);
 
 /// Runtime kind tag for an opaque host resource handle.
-// `Unsupported` keeps the type inhabited while no host resource kind
-// exists; it is not a non-exhaustive marker.
-#[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostHandleKind {
-    #[doc(hidden)]
+    /// A kind no builtin creates; tests use it.
     Unsupported,
+    /// A kind an extension defines, by name. The name is also the key for
+    /// its per-kind limit (`limits.host_resources`).
+    Extension(&'static str),
 }
 
 /// VM-owned opaque native resource. Heap values store only a small typed handle;
 /// the native Rust object is kept in the owning heap's host-resource table.
-// `Unsupported` keeps the type inhabited while no host resource kind
-// exists; it is not a non-exhaustive marker.
-#[allow(clippy::manual_non_exhaustive)]
-#[derive(Debug)]
 pub enum HostResource {
-    #[doc(hidden)]
+    /// A resource no builtin creates; tests use it.
     Unsupported,
+    /// A native object owned by an extension, such as an SDK client.
+    Extension {
+        kind: &'static str,
+        value: Arc<dyn std::any::Any + Send + Sync>,
+    },
+}
+
+impl std::fmt::Debug for HostResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HostResource::Unsupported => f.write_str("Unsupported"),
+            HostResource::Extension { kind, .. } => write!(f, "Extension({kind})"),
+        }
+    }
 }
 
 impl HostResource {
     pub fn kind(&self) -> HostHandleKind {
         match self {
             HostResource::Unsupported => HostHandleKind::Unsupported,
+            HostResource::Extension { kind, .. } => HostHandleKind::Extension(kind),
         }
     }
 }

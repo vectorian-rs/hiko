@@ -68,6 +68,8 @@ pub enum IoRequest {
         path: String,
         max_bytes: ReadLimit,
     },
+    /// The job of an async extension builtin.
+    Extension(crate::extension::ExtensionJob),
 }
 
 /// Result of a completed I/O operation.
@@ -195,6 +197,7 @@ impl IoBackend for MockIoBackend {
                 let io_bytes = value.estimated_bytes() as u64;
                 IoResult::Ok { value, io_bytes }
             }
+            IoRequest::Extension(job) => extension_result(&job),
         };
         self.completed.lock().unwrap().push((token, result));
         Ok(())
@@ -767,8 +770,20 @@ impl Drop for ThreadPoolIoBackend {
     }
 }
 
+/// Run an extension job; its result is charged as I/O like any other.
+fn extension_result(job: &crate::extension::ExtensionJob) -> IoResult {
+    match job.run() {
+        Ok(value) => IoResult::Ok {
+            io_bytes: value.estimated_bytes() as u64,
+            value,
+        },
+        Err(message) => IoResult::Err(message),
+    }
+}
+
 fn execute_io_request(request: IoRequest) -> IoResult {
     match request {
+        IoRequest::Extension(job) => extension_result(&job),
         IoRequest::Sleep(duration) => {
             std::thread::sleep(duration);
             IoResult::Ok {

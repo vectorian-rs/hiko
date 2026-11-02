@@ -26,6 +26,7 @@ pub(crate) fn hermetic_loader_options() -> ModuleLoaderOptions {
             std::env::temp_dir().join(format!("hiko-vm-test-lib-cache-{}", std::process::id())),
         ),
         local_package_root: Some(repo_libraries_dir()),
+        ..Default::default()
     }
 }
 

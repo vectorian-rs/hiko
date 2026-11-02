@@ -1,4 +1,5 @@
 use crate::builtins;
+use crate::extension::{Extension, ExtensionFn, ExtensionState};
 use crate::io_limits::IoLimits;
 use crate::value::BuiltinFn;
 use crate::vm::VM;
@@ -48,6 +49,7 @@ pub struct VMBuilder {
     max_live_processes: Option<u64>,
     max_spawns: Option<u64>,
     max_message_bytes: Option<u64>,
+    extensions: Vec<(&'static Extension, ExtensionState)>,
 }
 
 fn find_builtin(name: &str) -> Option<BuiltinFn> {
@@ -78,6 +80,7 @@ impl VMBuilder {
             max_live_processes: None,
             max_spawns: None,
             max_message_bytes: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -207,6 +210,31 @@ impl VMBuilder {
         self
     }
 
+    /// Turn on `extension` with its `[extensions.<name>]` run-config table:
+    /// its builtins are registered and its state is set for every process.
+    /// The program must have been compiled with the same extensions (see
+    /// [`Extension::compile_surface`]).
+    pub fn with_extension(
+        mut self,
+        extension: &'static Extension,
+        config: &toml::Value,
+    ) -> Result<Self, String> {
+        if self
+            .extensions
+            .iter()
+            .any(|(e, _)| e.name == extension.name)
+        {
+            return Err(format!(
+                "extension '{}' is configured twice",
+                extension.name
+            ));
+        }
+        let state = (extension.configure)(config)
+            .map_err(|e| format!("extensions.{}: {e}", extension.name))?;
+        self.extensions.push((extension, state));
+        Ok(self)
+    }
+
     /// Set maximum heap size (in number of objects).
     ///
     /// Separate fixed runtime guards still apply to the VM value stack and
@@ -334,6 +362,15 @@ impl VMBuilder {
 
         for (name, func) in &self.builtins {
             vm.register_builtin(*name, *func);
+        }
+        for (extension, state) in self.extensions {
+            for builtin in extension.builtins {
+                match builtin.func {
+                    ExtensionFn::Sync(func) => vm.register_builtin(builtin.name, func),
+                    ExtensionFn::Async(prepare) => vm.register_async_builtin(builtin.name, prepare),
+                }
+            }
+            vm.heap.set_extension_state(extension.name, state);
         }
 
         vm.set_exec_allowed(self.exec_allowed);

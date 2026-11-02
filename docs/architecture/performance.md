@@ -412,3 +412,19 @@ and the stack index helpers are out-of-line calls on every instruction: 20 to
 pattern matches and local reads, each a few instructions with operands.
 Next steps, in order of cost: inline those helpers, then measure
 LTO/`codegen-units = 1`/PGO on this suite, then larger dispatch changes.
+
+### Builtin dispatch by kind (PR #147)
+
+Before a builtin ran, `call_builtin` compared its id with up to 15 builtins
+the VM handles itself (print, exec, the process builtins, sleep, HTTP,
+`read_file`). Each builtin now has a dispatch kind stored when it is
+registered, and a plain builtin takes one branch to its function.
+
+The machine was busy, so the table gives minimums over 40 runs; user time
+moved the same way. "Before" is the V branch at `8b06637`, built with
+`builtin-all`.
+
+| Benchmark | Before | After |
+|---|---|---|
+| `global_builtin.hml` | 291.0 ms | 276.9 ms (-4.8%) |
+| `string_concat.hml` | | unchanged within noise |

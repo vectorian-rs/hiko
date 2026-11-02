@@ -264,6 +264,7 @@ been taken.
 | `hiko-builtin-meta` | Core         | Embeds Hiko source for internal modules such as `Filesystem`.                                                              |
 | `hiko-common`       | Core         |                                                                                                                          |
 | `tree-sitter-hiko`  | Tooling      | Editor support. Used by `hiko-docgen`.                                                                                   |
+| `hiko-ext-github`, `hiko-ext-aws` | Extension | Under `extensions/`. Linked into `hiko-cli` by the `ext-github` and `ext-aws` features (#147). |
 | `hiko-docgen`       | Tooling      | Generates the HTML under `libraries/`.                                                                                   |
 
 ### Builtin domains in `hiko-vm`
@@ -334,7 +335,9 @@ maximums.
 2. Done: effects reduced to provider and abort clauses (#121).
 3. Close the finished issues (#80, #54, #55) and the out-of-focus ones.
 4. Done: removed the harness and Hashline (#138, #139), and AWS and GitHub
-   with their policies, examples and libraries (#140).
+   with their policies, examples and libraries (#140). GitHub and AWS came
+   back as extension crates under `extensions/`, outside the default build
+   (#147, [extensions.md](../architecture/extensions.md)).
 5. Decide on the threaded runtime and structured concurrency.
 6. Done (#141): `json`, `regex` and `date` are non-default. The default `hiko-cli`
    release binary went from 8,973,664 to 6,743,280 bytes (−25%) and from 159 to

@@ -252,6 +252,7 @@ impl VM {
                 Ok(HeapObject::Bytes(b)) => format!("<bytes:{}>", b.len()),
                 Ok(HeapObject::HostHandle { kind, .. }) => match kind {
                     crate::value::HostHandleKind::Unsupported => "<host-handle>".to_string(),
+                    crate::value::HostHandleKind::Extension(kind) => format!("<{kind}>"),
                 },
                 Ok(HeapObject::Rng { .. }) => "<rng>".to_string(),
                 Ok(HeapObject::Closure { .. }) => "<fn>".to_string(),

@@ -2,7 +2,7 @@
 
 Opaque native resources owned by the VM (future database connections, file readers or SDK clients) are represented in Hiko values as `HeapObject::HostHandle { kind, id }`.
 
-No builtin creates a host handle today. The AWS config and S3/SQS client kinds were the only ones, and plan U (#140) removed them; `HostHandleKind::Unsupported` keeps the types inhabited until a new kind is added. The mechanism below stays as the contract for that kind.
+No core builtin creates a host handle. Extensions do (see [extensions.md](extensions.md)): `HostHandleKind::Extension(kind)` names the kind, and `Heap::alloc_extension_resource` and `Heap::extension_resource` store and fetch the native object. The AWS extension's configs and clients are the current users. `HostHandleKind::Unsupported` is a kind no builtin creates; tests use it.
 
 The handle is only a typed key. The actual Rust object lives in the owning heap's host-resource table and is dropped with that heap. Builtins must validate both:
 

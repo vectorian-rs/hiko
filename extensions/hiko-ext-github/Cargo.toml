@@ -1,0 +1,20 @@
+[package]
+name = "hiko-ext-github"
+version = "0.8.0"
+edition = "2024"
+license = "MIT"
+description = "hiko-ext-github: GitHub issue builtins for hiko, as an extension"
+repository = "https://github.com/vectorian-rs/hiko"
+
+[dependencies]
+hiko-builtin-meta = { version = "0.8.0", path = "../../crates/hiko-builtin-meta", default-features = false }
+hiko-vm = { version = "0.8.0", path = "../../crates/hiko-vm", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smallvec = "1"
+toml = "0.8"
+
+[dev-dependencies]
+hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false }
+hiko-syntax = { version = "0.8.0", path = "../../crates/hiko-syntax" }
+hiko-vm = { version = "0.8.0", path = "../../crates/hiko-vm", default-features = false, features = ["builtin-stdio"] }

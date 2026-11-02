@@ -63,6 +63,7 @@ top-level names before inference, so the VM has no module representation. See
 | Host-work and I/O accounting | [accounting-matrix.md](../builtins/accounting-matrix.md) |
 | Run config files and `build-vm` | [README](../../README.md), [full-builtin-run-config.example.toml](../builtins/full-builtin-run-config.example.toml) |
 | Native host handles | [host-handles.md](host-handles.md) |
+| Extensions (GitHub, AWS) | [extensions.md](extensions.md) |
 | Imports, lockfile, package cache | [imports.md](../language/imports.md) |
 | Verifier and formal models | [verification.md](../verification/verification.md) |
 | Effects | [effects.md](../language/effects.md) |

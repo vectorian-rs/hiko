@@ -9,6 +9,8 @@ members = [
     "crates/hiko-vm",
     "crates/hiko-cli",
     "crates/tree-sitter-hiko",
+    "extensions/hiko-ext-github",
+    "extensions/hiko-ext-aws",
 ]
 exclude = ["hiko-vm-*"]
 resolver = "2"

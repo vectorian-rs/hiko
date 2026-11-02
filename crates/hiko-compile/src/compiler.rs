@@ -40,6 +40,31 @@ pub struct ModuleLoaderOptions {
     /// `<root>/Pkg-vV/modules/Mod.hml` if that file exists (the layout of the
     /// repository's `libraries/` directory). A hash mismatch is an error.
     pub local_package_root: Option<PathBuf>,
+    /// Types, builtins and modules contributed by extensions.
+    pub extensions: ExtensionSurface,
+}
+
+/// What extensions add to the compiler: opaque types, builtin signatures,
+/// and Hiko modules resolved by import name before the lockfile.
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionSurface {
+    pub types: Vec<&'static str>,
+    pub builtins: Vec<(&'static str, hiko_builtin_meta::BuiltinTypeSignature)>,
+    /// `(import name, source)`, such as `("Github.Issue", "structure ...")`.
+    pub modules: Vec<(&'static str, &'static str)>,
+}
+
+impl ExtensionSurface {
+    fn module(&self, import_name: &str) -> Option<(&'static str, &'static str)> {
+        self.modules
+            .iter()
+            .find(|(name, _)| *name == import_name)
+            .copied()
+    }
+
+    fn has_builtin(&self, name: &str) -> bool {
+        self.builtins.iter().any(|(builtin, _)| *builtin == name)
+    }
 }
 
 #[derive(Debug)]
@@ -766,6 +791,20 @@ impl Compiler {
         )
     }
 
+    /// Like [`Compiler::compile`], with loader options (and so extensions).
+    pub fn compile_with_options(
+        program: Program,
+        loader_options: ModuleLoaderOptions,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        Self::compile_with_ctx(
+            program,
+            PathBuf::from("."),
+            None,
+            HashSet::new(),
+            loader_options,
+        )
+    }
+
     fn compile_with_ctx(
         program: Program,
         base_dir: PathBuf,
@@ -807,6 +846,17 @@ impl Compiler {
             interner,
         };
         c.infer_ctx.interner = c.interner.clone();
+        let surface = &c.loader_options.extensions;
+        for ty in &surface.types {
+            c.infer_ctx
+                .add_opaque_type(ty)
+                .map_err(CompileError::Codegen)?;
+        }
+        for (name, sig) in &surface.builtins {
+            c.infer_ctx
+                .bind_extension_builtin(name, *sig)
+                .map_err(CompileError::Codegen)?;
+        }
 
         // Pass 1: type inference (all type errors reported before any codegen)
         for decl in &desugared {
@@ -1066,7 +1116,8 @@ impl Compiler {
     /// it, earlier code keeps the binding it was compiled against.
     fn declare_global(&mut self, name: &str) {
         let taken = self.global_bindings.contains_key(name)
-            || hiko_builtin_meta::builtin_meta(name).is_some();
+            || hiko_builtin_meta::builtin_meta(name).is_some()
+            || self.loader_options.extensions.has_builtin(name);
         let global = if taken {
             let mut n = 1;
             loop {
@@ -1423,6 +1474,14 @@ impl Compiler {
 
     fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
+        if let Some((import_name, source)) = self.loader_options.extensions.module(module_name) {
+            return Ok(ResolvedImport::Synthetic {
+                import_name,
+                display_name: module_name.to_string(),
+                source,
+                base_dir: self.base_dir.clone(),
+            });
+        }
         if is_internal_builtin_package(package_name) {
             return self.resolve_internal_builtin_import(module_name, leaf_module);
         }
@@ -3155,6 +3214,7 @@ mod tests {
         let options = ModuleLoaderOptions {
             cache_dir: Some(test_cache_dir(path)),
             local_package_root: None,
+            ..Default::default()
         };
         Compiler::compile_file_with_options(parse_program(&source), path, options)
     }
@@ -4028,6 +4088,7 @@ Answer = "blake3:deadbeef"
         let options = ModuleLoaderOptions {
             cache_dir: Some(project_dir.join(".test-lib-cache")),
             local_package_root: Some(project_dir.join("libraries")),
+            ..Default::default()
         };
         Compiler::compile_file_with_options(parse_program(&source), entry_path, options)
     }
