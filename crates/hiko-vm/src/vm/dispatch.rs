@@ -952,7 +952,10 @@ impl VM {
     ) -> Result<usize, RuntimeError> {
         match base.checked_add(offset) {
             Some(idx) if idx < self.stack.len() => Ok(idx),
-            idx => Err(stack_index_error(what, idx)),
+            Some(idx) => Err(error_fmt(format_args!(
+                "{what}: stack index {idx} out of bounds"
+            ))),
+            None => Err(error_fmt(format_args!("{what}: stack index overflow"))),
         }
     }
 
@@ -963,32 +966,31 @@ impl VM {
         slot: usize,
         what: &str,
     ) -> Result<usize, RuntimeError> {
-        let frame = self
-            .frames
-            .get(frame_idx)
-            .ok_or_else(|| frame_index_error(what, frame_idx))?;
+        let frame = self.frames.get(frame_idx).ok_or_else(|| {
+            error_fmt(format_args!(
+                "{what}: frame index {frame_idx} out of bounds"
+            ))
+        })?;
         self.checked_stack_index(frame.base, slot, what)
     }
 
+    #[inline(always)]
     fn stack_start_for_arity(&self, arity: usize, what: &str) -> Result<usize, RuntimeError> {
         self.stack
             .len()
             .checked_sub(arity)
-            .ok_or_else(|| RuntimeError {
-                message: format!("{what}: stack underflow for arity {arity}"),
-            })
+            .ok_or_else(|| error_fmt(format_args!("{what}: stack underflow for arity {arity}")))
     }
 
+    #[inline(always)]
     fn callee_pos_for_arity(&self, arity: usize, what: &str) -> Result<usize, RuntimeError> {
-        let required = arity.checked_add(1).ok_or_else(|| RuntimeError {
-            message: format!("{what}: arity overflow"),
-        })?;
+        let required = arity
+            .checked_add(1)
+            .ok_or_else(|| error_fmt(format_args!("{what}: arity overflow")))?;
         self.stack
             .len()
             .checked_sub(required)
-            .ok_or_else(|| RuntimeError {
-                message: format!("{what}: stack underflow for arity {arity}"),
-            })
+            .ok_or_else(|| error_fmt(format_args!("{what}: stack underflow for arity {arity}")))
     }
 
     /// The next `N` operand bytes of the current instruction, advancing the
@@ -1010,9 +1012,11 @@ impl VM {
                 .chunk
                 .code
         };
-        let bytes = code
-            .get(frame.ip..frame.ip + N)
-            .ok_or_else(|| truncated_operand_error(N))?;
+        let bytes = code.get(frame.ip..frame.ip + N).ok_or_else(|| {
+            error_fmt(format_args!(
+                "truncated bytecode: expected {N}-byte operand"
+            ))
+        })?;
         frame.ip += N;
         Ok(bytes.try_into().expect("slice of length N"))
     }
@@ -1046,26 +1050,8 @@ fn error(message: &'static str) -> RuntimeError {
 
 #[cold]
 #[inline(never)]
-fn stack_index_error(what: &str, idx: Option<usize>) -> RuntimeError {
-    let message = match idx {
-        Some(idx) => format!("{what}: stack index {idx} out of bounds"),
-        None => format!("{what}: stack index overflow"),
-    };
-    RuntimeError { message }
-}
-
-#[cold]
-#[inline(never)]
-fn frame_index_error(what: &str, frame_idx: usize) -> RuntimeError {
+fn error_fmt(message: std::fmt::Arguments<'_>) -> RuntimeError {
     RuntimeError {
-        message: format!("{what}: frame index {frame_idx} out of bounds"),
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn truncated_operand_error(n: usize) -> RuntimeError {
-    RuntimeError {
-        message: format!("truncated bytecode: expected {n}-byte operand"),
+        message: message.to_string(),
     }
 }
