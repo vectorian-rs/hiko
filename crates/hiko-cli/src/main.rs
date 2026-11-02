@@ -28,6 +28,7 @@ use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
 
 #[cfg(feature = "cli-lock")]
+mod build_vm;
 mod lock_verify;
 
 fn main() {
@@ -48,7 +49,9 @@ fn main() {
         eprintln!("  inspect-work <file.hml>  Print static bytecode opcode counts");
         #[cfg(feature = "cli-hash")]
         eprintln!("  hash <file>...  Print BLAKE3 hashes for files");
-        eprintln!("  build-vm <config.toml>  Generate a custom VM from a run config");
+        eprintln!(
+            "  build-vm <config.toml> [--lock <hiko.lock.toml>] [--script <entry.hml>]  Generate a custom VM from a run config"
+        );
         process::exit(1);
     }
 
@@ -94,11 +97,11 @@ fn main() {
             }
         }
         "build-vm" => {
-            if args.len() < 3 {
-                eprintln!("Usage: hiko build-vm <config.toml>");
+            let options = build_vm::parse_args(&args[2..]).unwrap_or_else(|e| {
+                eprintln!("{e}");
                 process::exit(1);
-            }
-            build_vm(&args[2]);
+            });
+            build_vm(&options);
         }
         other => {
             eprintln!("Unknown command: {other}");
@@ -1209,67 +1212,42 @@ fn push_unique_path(path: &Path, seen: &mut BTreeSet<PathBuf>, resolved: &mut Ve
     }
 }
 
-fn build_vm(config_path: &str) {
-    let config = load_run_config(config_path, "run config");
-    if !config.extensions.is_empty() {
-        eprintln!(
-            "error: build-vm does not support [extensions] yet; run the script with `hiko run` instead"
-        );
-        process::exit(1);
-    }
-
-    let rust_src = config.to_rust_source();
-
-    let stem = std::path::Path::new(config_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("custom")
-        .replace('.', "-");
-    let out_dir = format!("hiko-vm-{stem}");
-
-    fs::create_dir_all(format!("{out_dir}/src")).unwrap_or_else(|e| {
-        eprintln!("error: cannot create output directory '{out_dir}/src': {e}");
+fn build_vm(options: &build_vm::BuildVmOptions) {
+    let config = load_run_config(&options.config_path, "run config");
+    let out_dir = build_vm::generate(options, &config, &linked_extensions()).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
         process::exit(1);
     });
-
-    fs::write(format!("{out_dir}/src/main.rs"), &rust_src).unwrap_or_else(|e| {
-        eprintln!("error: cannot write {out_dir}/src/main.rs: {e}");
-        process::exit(1);
-    });
-
-    let version = env!("CARGO_PKG_VERSION");
-    let cargo_toml = format!(
-        r#"[workspace]
-
-[package]
-name = "{out_dir}"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-hiko-syntax = "{version}"
-hiko-compile = {{ version = "{version}", features = ["builtin-all"] }}
-hiko-vm = {{ version = "{version}", features = ["builtin-all"] }}
-"#
-    );
-
-    fs::write(format!("{out_dir}/Cargo.toml"), &cargo_toml).unwrap_or_else(|e| {
-        eprintln!("error: cannot write {out_dir}/Cargo.toml: {e}");
-        process::exit(1);
-    });
+    let name = out_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let binary = if out_dir.is_absolute() {
+        format!("{}/target/release/{name}", out_dir.display())
+    } else {
+        format!("./{}/target/release/{name}", out_dir.display())
+    };
+    let out_dir = out_dir.display();
 
     println!("Generated custom VM project: {out_dir}/");
     println!("Config: {config:?}");
+    if options.lock.is_some() || options.script.is_some() {
+        println!("Sealed: imports resolve only from the sources in {out_dir}/src/embedded.rs");
+    }
     println!();
     println!("To build:");
     println!("  cd {out_dir} && cargo build --release");
     println!();
-    println!("To run a script:");
-    if config.entry.is_some() {
-        println!("  ./{out_dir}/target/release/{out_dir}");
-        println!("  ./{out_dir}/target/release/{out_dir} other-script.hml");
+    if options.script.is_some() {
+        println!("To run its program:");
+        println!("  {binary}");
+    } else if config.entry.is_some() {
+        println!("To run a script:");
+        println!("  {binary}");
+        println!("  {binary} other-script.hml");
     } else {
-        println!("  ./{out_dir}/target/release/{out_dir} script.hml");
+        println!("To run a script:");
+        println!("  {binary} script.hml");
     }
 }
 

@@ -55,8 +55,13 @@ The extension is fail-closed:
 - A `configure` error stops the VM from being built. Both bundled extensions
   reject unknown keys and default every permission to off.
 
-`hiko build-vm` rejects `[extensions]` for now; generated crates cannot link
-extensions yet.
+`hiko build-vm` links the extensions a run config turns on into the
+generated crate: it depends on their crates, embeds the `[extensions]` tables
+in `src/main.rs`, and registers each with `VMBuilder::with_extension`. When
+the `hiko` running `build-vm` links an extension too, its table is checked
+with `configure` at generation time; a `--script` program that uses
+extensions needs that, so it can be compiled with them. `build-vm` knows the
+bundled `github` and `aws` extensions.
 
 ## What the core provides
 

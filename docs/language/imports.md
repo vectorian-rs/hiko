@@ -257,11 +257,36 @@ We do **not** want keyed hashes as the primary package trust model. Shared-secre
 
 The cache should be treated as **untrusted storage**. Verification on reuse is not an optimization detail; it is part of the security model.
 
+## Generated Artifacts
+
+`hiko build-vm` can seal a program's modules into the binary it generates
+(#59), so the artifact reads no lockfile, cache or network at run time:
+
+```sh
+hiko build-vm run.toml --lock hiko.lock.toml                    # scripts from the command line
+hiko build-vm run.toml --lock hiko.lock.toml --script main.hml  # exactly this program
+```
+
+- `--lock` embeds every module in the lockfile. Each is read through the
+  normal loader and checked against its BLAKE3 hash. In the artifact, named
+  imports resolve only from these modules, and each is checked again when it
+  is imported.
+- `--script` also embeds the entry script and the local files it `use`s. The
+  binary runs only that program and refuses any argument. `build-vm` compiles
+  the program once against exactly the embedded sources, so a missing module
+  or file fails at generation time, not in the artifact.
+- The generated `src/embedded.rs` lists every module with its hash, and the
+  generated `build.rs` refuses to build if a module no longer matches it.
+- The generated crate uses `hiko-compile` without the HTTP loader
+  (`loader-embedded` only), so the artifact has no code to fetch modules.
+
+Sources are embedded, not compiled bytecode: the generated crate stays
+readable, and there is no serialized bytecode format to trust.
+
 ## What Is Next
 
 The remaining library/import work is operational hardening rather than deeper
 module theory:
 
 - add a lock update command for intentional dependency upgrades
-- support generated artifacts embedding exact locked content and selected policy
-- optionally include local `use` source hashes in generated artifacts for release reproducibility
+- embed only the modules a `--script` program imports, not the whole lockfile

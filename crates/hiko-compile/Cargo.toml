@@ -33,10 +33,13 @@ builtin-all = [
     "builtin-json",
     "builtin-date",
 ]
-loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
+loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3", "loader-embedded"]
 loader-named-imports = []
 loader-http = ["loader-named-imports", "hiko-common/http"]
 loader-integrity-blake3 = ["loader-http", "hiko-common/hash"]
+# Named imports and local files compiled into a sealed `build-vm` artifact
+# (`EmbeddedSources`), checked against BLAKE3 hashes. Needs no network code.
+loader-embedded = ["hiko-common/hash"]
 builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-types/builtin-stdio"]
 builtin-convert = ["hiko-builtin-meta/builtin-convert", "hiko-types/builtin-convert"]
 builtin-string = ["hiko-builtin-meta/builtin-string", "hiko-types/builtin-string"]
