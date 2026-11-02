@@ -15,3 +15,4 @@ toolchain=${RUST_TOOLCHAIN:-1.99.1}
 cargo +"$toolchain" fmt --all -- --check
 cargo +"$toolchain" clippy --workspace --all-targets -- -D warnings
 cargo +"$toolchain" clippy --workspace --all-targets --all-features -- -D warnings
+cargo +"$toolchain" clippy --workspace --all-targets --no-default-features -- -D warnings
