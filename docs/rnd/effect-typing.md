@@ -1,8 +1,7 @@
 # Effect Typing: Design Note
 
-Status: **proposal, awaiting maintainer review** (plan Y, #144; issue #48).
-Nothing here is implemented. Implementation starts only after the
-maintainer accepts this note or a revision of it.
+Status: **accepted** (plan Y, #144; issue #48). The maintainer answered the
+four questions at the end of this note. Nothing here is implemented yet.
 
 ## Goal
 
@@ -171,7 +170,8 @@ it. This is bookkeeping in the checker, not part of the type.
 
 Printed types show rows only when they are non-empty after generalization:
 `note : string -> unit ! {Log}`. A row variable that appears only once is not
-printed.
+printed. In the first stage, rows are printed only in error messages; `hiko
+check` and docgen print them from stage 3 (question 3).
 
 ## Annotations
 
@@ -248,13 +248,20 @@ escape the limit.
    today. A `requires` clause cannot appear inside a type.
 2. **A handler for an effect the body never performs:** accept silently (as
    proposed) or warn?
+   **Decided: accept silently.** A warning would flag generic wrappers such
+   as `with_console f` whenever `f` does not perform the effect. It can be
+   added later if it can tell those cases apart.
 3. **Printed types:** show rows in `hiko check` output and in docgen, or only
    in error messages for now?
+   **Decided: only in error messages in the first stage.** `hiko check` and
+   docgen print rows from implementation step 3.
 4. **Std.Filesystem:** keep the effect-per-operation design, so that every
    caller's row lists the operations it uses, or collapse it to one
    `Filesystem` effect for shorter rows?
+   **Decided: keep one effect per operation.** A row such as `{ReadText}`
+   shows that a function only reads, which serves the security goal.
 
-## Implementation Plan (after acceptance)
+## Implementation Plan
 
 1. Add rows to `Type::Arrow` and row unification, with all rows open and no
    checks. Every repository program must still type-check, as a no-op stage.
