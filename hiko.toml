@@ -14,7 +14,6 @@ url = "http://127.0.0.1:8000"
 [dependencies]
 Aws = { version = "0.1.0", registry = "local" }
 Gh = { version = "0.1.0", registry = "local" }
-Harness = { version = "0.1.0", registry = "local" }
 Hash = { version = "0.1.0", registry = "local" }
 Http = { version = "0.1.0", registry = "local" }
 Std = { version = "0.1.0", registry = "local" }
@@ -24,9 +23,6 @@ path = "policies/docs-writer.policy.toml"
 
 [policies.software-developer-role]
 path = "policies/software-developer-role.policy.toml"
-
-[policies.harness-tools]
-path = "policies/harness-tools.policy.toml"
 
 [policies.test-runner]
 path = "policies/test-runner.policy.toml"

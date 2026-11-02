@@ -1283,14 +1283,14 @@ mod tests {
         let args = vec![
             "--config".to_string(),
             "hiko.toml".to_string(),
-            "tools/read.hml".to_string(),
+            "script.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: false,
                 workers: 1,
             }
@@ -1299,16 +1299,13 @@ mod tests {
 
     #[test]
     fn parse_run_args_inline_config() {
-        let args = vec![
-            "--config=hiko.toml".to_string(),
-            "tools/read.hml".to_string(),
-        ];
+        let args = vec!["--config=hiko.toml".to_string(), "script.hml".to_string()];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: false,
                 workers: 1,
             }
@@ -1320,14 +1317,14 @@ mod tests {
         let args = vec![
             "--strict".to_string(),
             "--config=hiko.toml".to_string(),
-            "tools/read.hml".to_string(),
+            "script.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: true,
                 workers: 1,
             }
@@ -1340,14 +1337,14 @@ mod tests {
             "--config".to_string(),
             "hiko.toml".to_string(),
             "--strict".to_string(),
-            "tools/read.hml".to_string(),
+            "script.hml".to_string(),
         ];
         assert_eq!(
             parse_check_args(&args),
             ScriptOptions {
                 config_path: Some("hiko.toml".to_string()),
                 policy_name: None,
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: true,
                 workers: 1,
             }
@@ -1356,19 +1353,13 @@ mod tests {
 
     #[test]
     fn parse_fmt_args_file_list() {
-        let args = vec![
-            "examples/hello.hml".to_string(),
-            "tools/read.hml".to_string(),
-        ];
+        let args = vec!["examples/hello.hml".to_string(), "script.hml".to_string()];
         assert_eq!(
             parse_fmt_args(&args),
             FmtOptions {
                 check: false,
                 recurse: false,
-                paths: vec![
-                    "examples/hello.hml".to_string(),
-                    "tools/read.hml".to_string()
-                ],
+                paths: vec!["examples/hello.hml".to_string(), "script.hml".to_string()],
             }
         );
     }
@@ -1378,17 +1369,14 @@ mod tests {
         let args = vec![
             "--check".to_string(),
             "examples/hello.hml".to_string(),
-            "tools/read.hml".to_string(),
+            "script.hml".to_string(),
         ];
         assert_eq!(
             parse_fmt_args(&args),
             FmtOptions {
                 check: true,
                 recurse: false,
-                paths: vec![
-                    "examples/hello.hml".to_string(),
-                    "tools/read.hml".to_string()
-                ],
+                paths: vec!["examples/hello.hml".to_string(), "script.hml".to_string()],
             }
         );
     }
@@ -1479,14 +1467,14 @@ mod tests {
             "hiko.toml".to_string(),
             "--policy".to_string(),
             "docs-writer".to_string(),
-            "tools/read.hml".to_string(),
+            "script.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: Some("hiko.toml".to_string()),
                 policy_name: Some("docs-writer".to_string()),
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: false,
                 workers: 1,
             }
@@ -1495,16 +1483,13 @@ mod tests {
 
     #[test]
     fn parse_run_args_inline_policy() {
-        let args = vec![
-            "--policy=docs-writer".to_string(),
-            "tools/read.hml".to_string(),
-        ];
+        let args = vec!["--policy=docs-writer".to_string(), "script.hml".to_string()];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: None,
                 policy_name: Some("docs-writer".to_string()),
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: false,
                 workers: 1,
             }
@@ -1522,14 +1507,14 @@ mod tests {
         let args = vec![
             "--policy".to_string(),
             "docs-writer".to_string(),
-            "tools/read.hml".to_string(),
+            "script.hml".to_string(),
         ];
         assert_eq!(
             parse_run_args(&args),
             ScriptOptions {
                 config_path: None,
                 policy_name: Some("docs-writer".to_string()),
-                script_path: Some("tools/read.hml".to_string()),
+                script_path: Some("script.hml".to_string()),
                 strict: false,
                 workers: 1,
             }

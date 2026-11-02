@@ -245,12 +245,6 @@ const DATE_SOURCE: &str = r#"structure BuiltinDate = struct
 end
 "#;
 
-const HASHLINE_SOURCE: &str = r#"structure BuiltinHashline = struct
-  val read_tagged_raw = read_file_tagged
-  val edit_tagged_raw = edit_file_tagged
-end
-"#;
-
 /// Declares an internal module whose import path and enabled flag are derived
 /// from its leaf name and Cargo feature, so they cannot drift apart.
 macro_rules! module {
@@ -288,7 +282,6 @@ const MODULES: &[InternalBuiltinModule] = &[
     module!("Time", "builtin-time", TIME_SOURCE),
     module!("Numeric", "builtin-convert", NUMERIC_SOURCE),
     module!("Date", "builtin-time", DATE_SOURCE),
-    module!("Hashline", "builtin-filesystem", HASHLINE_SOURCE),
 ];
 
 pub fn is_internal_builtin_package(package_name: &str) -> bool {

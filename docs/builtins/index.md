@@ -4,7 +4,7 @@ Builtin surface, builtin-domain architecture, run-config policy, and proposed ca
 
 | File | Status | Summary |
 |---|---|---|
-| [`builtins.md`](builtins.md) | Current reference | Builtin surface grouped by domain: I/O, conversions, strings, math, filesystem, path, hashline, HTTP, JSON, bytes, RNG, system, process, and testing. |
+| [`builtins.md`](builtins.md) | Current reference | Builtin surface grouped by domain: I/O, conversions, strings, math, filesystem, path, HTTP, JSON, bytes, RNG, system, process, and testing. |
 | [`accounting-matrix.md`](accounting-matrix.md) | Current audit | Resource-accounting coverage by builtin/domain: opcode fuel, host work, I/O bytes, heap/memory, host resources, and known follow-ups. |
 | [`builtin-domains.md`](builtin-domains.md) | Current architecture policy | Builtin domain categories, compile-time Cargo feature gates, runtime `VMBuilder` policy gates, Rust layout conventions, and naming stability. |
 | [`full-builtin-run-config.example.toml`](full-builtin-run-config.example.toml) | Example config | Example builtin-granular run config covering limits and capability policy. |

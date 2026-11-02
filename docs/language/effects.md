@@ -152,8 +152,8 @@ The rules:
   ```
 
 `examples/http_effect_wrapper_test.hml` runs the same code against a mock HTTP
-provider and a real one. `Std.Filesystem` and `Std.Hashline` are providers over
-their builtins.
+provider and a real one. `Std.Filesystem` is a provider over its
+builtins.
 
 ## Abort Clauses
 

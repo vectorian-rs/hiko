@@ -242,7 +242,7 @@ gets the default.
 | `http_connect_timeout_ms` | 10000 | Establishing the HTTP connection |
 | `exec_timeout_ms` | 30000 | Wall clock of one `exec` call |
 | `max_http_response_bytes` | 67108864 (64 MiB) | One HTTP response body |
-| `max_file_read_bytes` | 67108864 (64 MiB) | One `read_file`, `read_file_bytes`, `read_file_tagged`, or `edit_file_tagged` read |
+| `max_file_read_bytes` | 67108864 (64 MiB) | One `read_file` or `read_file_bytes` read |
 | `max_exec_output_bytes` | 16777216 (16 MiB) | Each of `exec`'s stdout and stderr |
 | `max_concurrent_io` | 32 | Async I/O requests running at once per process tree (threaded runtime) |
 

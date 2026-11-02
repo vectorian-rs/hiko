@@ -430,8 +430,6 @@ folder_family!(FilesystemCapabilities {
     create_dir => "create_dir",
     is_dir => "is_dir",
     is_file => "is_file",
-    read_file_tagged => "read_file_tagged",
-    edit_file_tagged => "edit_file_tagged",
     glob => "glob",
     walk_dir => "walk_dir",
 });
@@ -1126,8 +1124,6 @@ fn validate_config_paths(config: &RunConfig) -> Result<(), String> {
         config.capabilities.filesystem.create_dir.as_ref(),
         config.capabilities.filesystem.is_dir.as_ref(),
         config.capabilities.filesystem.is_file.as_ref(),
-        config.capabilities.filesystem.read_file_tagged.as_ref(),
-        config.capabilities.filesystem.edit_file_tagged.as_ref(),
         config.capabilities.filesystem.glob.as_ref(),
         config.capabilities.filesystem.walk_dir.as_ref(),
     ];

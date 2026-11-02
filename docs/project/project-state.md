@@ -261,7 +261,7 @@ been taken.
 | `hiko-compile`      | Core         | Also contains the HTTP module loader behind `loader-http`.                                                               |
 | `hiko-vm`           | Core         | Also contains all builtin domains, AWS, GitHub, the threaded runtime, and the async I/O backend. Largest cleanup target. |
 | `hiko-cli`          | Core         | Default features enable every builtin, including GitHub.                                                                 |
-| `hiko-builtin-meta` | Core         | Embeds Hiko source for internal modules such as `Hashline`.                                                              |
+| `hiko-builtin-meta` | Core         | Embeds Hiko source for internal modules such as `Filesystem`.                                                              |
 | `hiko-common`       | Core         |                                                                                                                          |
 | `tree-sitter-hiko`  | Tooling      | Editor support. Used by `hiko-docgen`.                                                                                   |
 | `hiko-docgen`       | Tooling      | Generates the HTML under `libraries/`.                                                                                   |
@@ -276,7 +276,6 @@ been taken.
 | json, regex, hash, date                               | Library           | Useful, but not part of a minimal language. Could move behind non-default features.                  |
 | AWS (config, S3, SQS)                                 | Out of focus      | Pulls in `aws-sdk-*` and `tokio`. Already non-default.                                               |
 | GitHub                                                | Out of focus      | Enabled by default in `hiko-cli`.                                                                    |
-| Hashline                                              | Out of focus      | Agent editing support.                                                                               |
 
 ### Runtime
 
@@ -299,11 +298,9 @@ been taken.
 | Path                               | Class           | Notes                                                                                                                           |
 | ---------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `initial.md`                       | Historical      | Original project brief. Could move to `docs/project/`.                                                                          |
-| `test_hashline.hml`                | Stray           | Test file at the repository root.                                                                                               |
-| `vim-sml.zip`                      | Stray           | Binary in git.                                                                                                                  |
 | `_apalache-out/`                   | Generated       | Already in `.gitignore`. Safe to delete locally.                                                                                |
-| `policies/`                        | Mixed           | `aws-*`, `github-*`, `sre-aws-*`, `harness-tools`, `work-demo-*` are out of focus.                                              |
-| `tools/`                           | Mixed           | `run_all.hml` is the test runner. The rest (`bash`, `edit`, `grep`, ...) are harness tools.                                     |
+| `policies/`                        | Mixed           | `aws-*`, `github-*`, `sre-aws-*`, `work-demo-*` are out of focus.                                                             |
+| `tools/`                           | Core            | `run_all.hml`, the test runner.                                                                                                 |
 | `examples/`                        | Mixed           | 77 files. Includes AWS, GitHub, HTTP, and several `benchmark_*` variants. Needs pruning to language, VM, and security examples. |
 | `benchmarks/`                      | Core            |                                                                                                                                 |
 | `specs/`                           | Core (security) |                                                                                                                                 |
@@ -340,9 +337,9 @@ maximums.
 1. Fix the tests so they do not need a local HTTP server.
 2. Done: effects reduced to provider and abort clauses (#121).
 3. Close the finished issues (#80, #54, #55) and the out-of-focus ones.
-4. Move AWS, GitHub, Hashline, the harness tool scripts in `tools/`, and their
-   policies, examples, and libraries out of the repository. Partly done:
-   `hiko-harness`, its config and `SYSTEM.md` are removed.
+4. Move AWS and GitHub, and their policies, examples, and libraries, out of
+   the repository (plan U, #140). Done for the harness and Hashline (#138,
+   #139).
 5. Decide on the threaded runtime and structured concurrency.
 6. Make `json`, `regex`, `hash`, and `date` non-default features.
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.

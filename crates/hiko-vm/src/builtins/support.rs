@@ -59,26 +59,6 @@ pub(crate) fn alloc_list(heap: &mut Heap, elems: Vec<Value>) -> Result<Value, St
     Ok(list)
 }
 
-/// Stable 64-bit FNV-1a hash, returned as 16-char lowercase hex.
-#[cfg(feature = "builtin-filesystem")]
-pub(crate) fn fnv1a_tag_parts(parts: &[&str]) -> String {
-    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = BASIS;
-    for part in parts {
-        for &b in part.as_bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(PRIME);
-        }
-    }
-    format!("{h:016x}")
-}
-
-#[cfg(feature = "builtin-filesystem")]
-pub(crate) fn is_valid_fnv1a_tag(tag: &str) -> bool {
-    tag.len() == 16 && tag.as_bytes().iter().all(u8::is_ascii_hexdigit)
-}
-
 pub(crate) fn collect_list(heap: &Heap, list_val: Value) -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     let mut cur = list_val;

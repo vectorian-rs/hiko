@@ -10,14 +10,6 @@ pub const BUILTINS: &[BuiltinMeta] = &[
     BuiltinMeta::opt_in("create_dir", "capabilities.filesystem.create_dir"),
     BuiltinMeta::opt_in("is_dir", "capabilities.filesystem.is_dir"),
     BuiltinMeta::opt_in("is_file", "capabilities.filesystem.is_file"),
-    BuiltinMeta::opt_in(
-        "read_file_tagged",
-        "capabilities.filesystem.read_file_tagged",
-    ),
-    BuiltinMeta::opt_in(
-        "edit_file_tagged",
-        "capabilities.filesystem.edit_file_tagged",
-    ),
     BuiltinMeta::opt_in("glob", "capabilities.filesystem.glob"),
     BuiltinMeta::opt_in("walk_dir", "capabilities.filesystem.walk_dir"),
 ];
