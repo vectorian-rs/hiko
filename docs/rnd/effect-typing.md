@@ -285,8 +285,10 @@ escape the limit.
   - a builtin signature's arrows share one row variable, quantified in its
     scheme;
   - a constructor's arrow has its own quantified row variable;
-  - the arrows of one annotation share one row variable;
-  - a use of a type alias takes the using annotation's row variable.
+  - the arrows of one annotation share one row variable, kept with the
+    annotation's type variables (`Annotation` in `infer.rs`);
+  - a type alias records its row variable, and a use of the alias puts the
+    using annotation's row variable there.
 - Nothing adds a label yet, so no program changes type: `hiko check` gives
   the same result as before on all 122 repository `.hml` files.
 

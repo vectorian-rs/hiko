@@ -39,7 +39,8 @@ pub struct InferCtx {
     type_arities: HashMap<String, usize>,
     /// Opaque types declared by extensions (see `add_opaque_type`).
     opaque_types: Vec<String>,
-    type_aliases: HashMap<String, (Vec<u32>, Type)>,
+    /// Name -> (parameters, the row variable of the body's arrows, body).
+    type_aliases: HashMap<String, (Vec<u32>, Option<u32>, Type)>,
     /// Abstract type introduced by signature ascription -> implementation type name
     abstract_impls: HashMap<String, String>,
     /// Constructor name → tag (for exhaustiveness checking)
@@ -67,10 +68,19 @@ pub struct InferCtx {
 /// source file can stall the compiler.
 pub const DEFAULT_MAX_TYPE_WORK: u64 = 10_000_000;
 
-/// Key of an annotation's shared row variable in its type-variable map.
-/// Type variables are written with a leading `'`, so no type variable has
-/// this name.
-const ANNOTATION_ROW: &str = "!row";
+/// What one type annotation has bound so far: its type variables by name,
+/// and the row variable its unmarked arrows share.
+#[derive(Default)]
+struct Annotation {
+    tyvars: HashMap<String, u32>,
+    row: Option<u32>,
+}
+
+impl Annotation {
+    fn with_tyvars(tyvars: HashMap<String, u32>) -> Self {
+        Self { tyvars, row: None }
+    }
+}
 
 struct BuiltinTypeParser<'a> {
     chars: Vec<char>,
@@ -301,13 +311,11 @@ impl InferCtx {
         let mut vars = HashMap::new();
         let mut scheme_vars = Vec::new();
         for name in sig.vars {
-            let var = self.next_var;
-            self.next_var += 1;
+            let var = self.fresh_id();
             vars.insert(*name, var);
             scheme_vars.push(var);
         }
-        let row = self.next_var;
-        self.next_var += 1;
+        let row = self.fresh_id();
         scheme_vars.push(row);
         let mut parser = BuiltinTypeParser::new(sig.ty, vars, row, &self.opaque_types);
         let ty = parser.parse()?;
@@ -319,17 +327,19 @@ impl InferCtx {
 
     // ── Fresh variables ──────────────────────────────────────────────
 
-    fn fresh(&mut self) -> Type {
+    fn fresh_id(&mut self) -> u32 {
         let v = self.next_var;
         self.next_var += 1;
-        Type::Var(v)
+        v
+    }
+
+    fn fresh(&mut self) -> Type {
+        Type::Var(self.fresh_id())
     }
 
     /// A fresh open row `{| e}`.
     fn fresh_row(&mut self) -> Type {
-        let v = self.next_var;
-        self.next_var += 1;
-        Type::open_row(v)
+        Type::open_row(self.fresh_id())
     }
 
     /// `from -> to` with a fresh open row.
@@ -338,20 +348,16 @@ impl InferCtx {
         Type::arrow(from, to, row)
     }
 
-    /// The row variable that every unmarked arrow in one annotation shares,
-    /// kept in the annotation's type-variable map under a key no type
-    /// variable can have.
-    fn annotation_row(&mut self, tyvar_map: &mut HashMap<String, u32>) -> Type {
-        let v = match tyvar_map.get(ANNOTATION_ROW) {
-            Some(&v) => v,
+    /// The row variable that every unmarked arrow in one annotation shares.
+    fn annotation_row(&mut self, ann: &mut Annotation) -> u32 {
+        match ann.row {
+            Some(v) => v,
             None => {
-                let v = self.next_var;
-                self.next_var += 1;
-                tyvar_map.insert(ANNOTATION_ROW.to_string(), v);
+                let v = self.fresh_id();
+                ann.row = Some(v);
                 v
             }
-        };
-        Type::open_row(v)
+        }
     }
 
     // ── Work limit ───────────────────────────────────────────────────
@@ -520,40 +526,45 @@ impl InferCtx {
                 span,
             )
         };
-        match (t1.as_deref(), t2.as_deref()) {
-            (Some(Type::Var(a)), Some(Type::Var(b))) if a == b => {
+        let tail_var = |tail: &Option<Box<Type>>| match tail.as_deref() {
+            None => None,
+            Some(Type::Var(v)) => Some(*v),
+            Some(_) => unreachable!("an applied row's tail is a variable or absent"),
+        };
+        match (tail_var(t1), tail_var(t2)) {
+            // The same tail, or both closed: the labels must agree.
+            (a, b) if a == b => {
                 if only1.is_empty() && only2.is_empty() {
                     Ok(())
                 } else {
                     Err(mismatch(self))
                 }
             }
-            (Some(Type::Var(a)), Some(Type::Var(b))) => {
-                let (a, b) = (*a, *b);
-                let tail = self.fresh();
-                self.unify(&Type::Var(a), &Type::row(only2, Some(tail.clone())), span)?;
-                self.unify(&Type::Var(b), &Type::row(only1, Some(tail)), span)
-            }
-            (None, Some(Type::Var(b))) => {
-                if !only2.is_empty() {
-                    return Err(mismatch(self));
-                }
-                self.unify(&Type::Var(*b), &Type::row(only1, None), span)
-            }
-            (Some(Type::Var(a)), None) => {
-                if !only1.is_empty() {
-                    return Err(mismatch(self));
-                }
-                self.unify(&Type::Var(*a), &Type::row(only2, None), span)
-            }
-            (None, None) => {
+            (Some(a), Some(b)) => {
                 if only1.is_empty() && only2.is_empty() {
-                    Ok(())
+                    // Same labels: the tails stand for the same effects.
+                    self.subst.insert(a, Type::Var(b));
                 } else {
-                    Err(mismatch(self))
+                    let tail = self.fresh();
+                    self.subst.insert(a, Type::row(only2, Some(tail.clone())));
+                    self.subst.insert(b, Type::row(only1, Some(tail)));
                 }
+                Ok(())
             }
-            _ => unreachable!("an applied row's tail is a variable or absent"),
+            // One side is closed: the open side may not have labels the
+            // closed side lacks, and its tail takes the closed side's extra
+            // labels.
+            (open_tail, _) => {
+                let (open, open_only, closed_only) = match open_tail {
+                    Some(a) => (a, &only1, only2),
+                    None => (tail_var(t2).expect("one side is open"), &only2, only1),
+                };
+                if !open_only.is_empty() {
+                    return Err(mismatch(self));
+                }
+                self.subst.insert(open, Type::row(closed_only, None));
+                Ok(())
+            }
         }
     }
 
@@ -727,8 +738,8 @@ impl InferCtx {
                     return Err(self.err(&unbound_message(&internal), decl.span));
                 };
 
-                let mut tyvar_map = HashMap::new();
-                let export_ty = self.resolve_type_expr(ty, &mut tyvar_map)?;
+                let mut ann = Annotation::default();
+                let export_ty = self.resolve_type_expr(ty, &mut ann)?;
                 let public = self.interner.resolve(*public_name).to_string();
                 if self.constructors.contains_key(&public) {
                     return Err(self.err(
@@ -740,7 +751,7 @@ impl InferCtx {
                     &public,
                     &internal_scheme,
                     &export_ty,
-                    &tyvar_map,
+                    &ann.tyvars,
                     decl.span,
                 )?;
                 let scheme = Scheme {
@@ -782,7 +793,7 @@ impl InferCtx {
                 // generalized at each `perform` site while handlers see a
                 // single unknown type.
                 let arg_type = if let Some(ty_expr) = payload {
-                    self.resolve_type_expr_strict(ty_expr, &mut HashMap::new())?
+                    self.resolve_type_expr_strict(ty_expr, &mut Annotation::default())?
                 } else {
                     Type::unit()
                 };
@@ -932,9 +943,9 @@ impl InferCtx {
         // constructors. It does add the annotation row of function types in
         // payloads, which is quantified with the parameters: for now each
         // use of a constructor gets its own (effect typing, stage 1).
-        let mut tyvar_map: HashMap<String, u32> = param_vars.into_iter().collect();
-        self.annotation_row(&mut tyvar_map);
-        all_vars.push(tyvar_map[ANNOTATION_ROW]);
+        let mut ann = Annotation::with_tyvars(param_vars.into_iter().collect());
+        let payload_row = self.annotation_row(&mut ann);
+        all_vars.push(payload_row);
 
         for con in &dt.constructors {
             let con_name = self.interner.resolve(con.name).to_string();
@@ -943,11 +954,10 @@ impl InferCtx {
             }
             let mut vars = all_vars.clone();
             let con_ty = if let Some(ref payload_texpr) = con.payload {
-                let payload_ty = self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map)?;
+                let payload_ty = self.resolve_type_expr_strict(payload_texpr, &mut ann)?;
                 // A constructor performs nothing: its own row is open and
                 // quantified, separate from the rows inside the payload.
-                let row = self.next_var;
-                self.next_var += 1;
+                let row = self.fresh_id();
                 vars.push(row);
                 Type::arrow(payload_ty, result_ty.clone(), Type::open_row(row))
             } else {
@@ -973,44 +983,19 @@ impl InferCtx {
         Ok(())
     }
 
-    /// An alias body's arrows share the alias declaration's row variable,
-    /// its only variable that is not a parameter. A use of the alias puts
-    /// the using annotation's row there instead.
-    fn alias_rows_to(
-        &mut self,
-        body: &Type,
-        params: &[u32],
-        tyvar_map: &mut HashMap<String, u32>,
-    ) -> Type {
-        let rows: Vec<u32> = body
-            .free_vars()
-            .into_iter()
-            .filter(|v| !params.contains(v))
-            .collect();
-        if rows.is_empty() {
-            return body.clone();
-        }
-        let Type::Row(_, Some(tail)) = self.annotation_row(tyvar_map) else {
-            unreachable!("an annotation row is open")
-        };
-        let mapping: HashMap<u32, Type> = rows.into_iter().map(|v| (v, (*tail).clone())).collect();
-        self.substitute_vars(body, &mapping)
-    }
-
     fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
         let ta_name = self.interner.resolve(ta.name).to_string();
         self.check_new_type_name(&ta_name, ta.span)?;
-        let mut tyvar_map: HashMap<String, u32> = HashMap::new();
+        let mut ann = Annotation::default();
         let mut param_vars = Vec::new();
         for tv in &ta.tyvars {
-            let v = self.next_var;
-            self.next_var += 1;
-            tyvar_map.insert(self.interner.resolve(*tv).to_string(), v);
+            let v = self.fresh_id();
+            ann.tyvars.insert(self.interner.resolve(*tv).to_string(), v);
             param_vars.push(v);
         }
-        let body = self.resolve_type_expr_strict(&ta.ty, &mut tyvar_map)?;
+        let body = self.resolve_type_expr_strict(&ta.ty, &mut ann)?;
         self.type_aliases
-            .insert(ta_name.clone(), (param_vars, body));
+            .insert(ta_name.clone(), (param_vars, ann.row, body));
         self.type_arities.insert(ta_name, ta.tyvars.len());
         Ok(())
     }
@@ -1059,10 +1044,10 @@ impl InferCtx {
     ) -> Result<(), TypeError> {
         // Type variable names keep their leading quote, so these constructor
         // names cannot clash with a declared type.
-        // The annotation's row variable stays flexible.
+        // The annotation's row variable is not among `spec_tyvars`, so it
+        // stays flexible.
         let rigid: HashMap<u32, Type> = spec_tyvars
             .iter()
-            .filter(|(tv, _)| tv.as_str() != ANNOTATION_ROW)
             .map(|(tv, &v)| (v, Type::Con(tv.clone())))
             .collect();
         let expected = self.substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
@@ -1121,7 +1106,7 @@ impl InferCtx {
 
     /// The type named `name` applied to `args`, expanding type aliases.
     fn named_type(&self, name: &str, args: Vec<Type>) -> Type {
-        if let Some((params, body)) = self.type_aliases.get(name) {
+        if let Some((params, _, body)) = self.type_aliases.get(name) {
             let mapping: HashMap<u32, Type> = params.iter().copied().zip(args).collect();
             self.substitute_vars(body, &mapping)
         } else if args.is_empty() {
@@ -1283,8 +1268,7 @@ impl InferCtx {
 
             ExprKind::Ann(e, ty_expr) => {
                 let inferred = self.infer_expr(e)?;
-                let mut tyvar_map = HashMap::new();
-                let declared = self.resolve_type_expr(ty_expr, &mut tyvar_map)?;
+                let declared = self.resolve_type_expr(ty_expr, &mut Annotation::default())?;
                 self.unify(&inferred, &declared, expr.span)?;
                 Ok(declared)
             }
@@ -1517,8 +1501,7 @@ impl InferCtx {
 
             PatKind::Ann(p, ty_expr) => {
                 let (pat_ty, bindings) = self.infer_pat_inner(p)?;
-                let mut tyvar_map = HashMap::new();
-                let declared = self.resolve_type_expr(ty_expr, &mut tyvar_map)?;
+                let declared = self.resolve_type_expr(ty_expr, &mut Annotation::default())?;
                 self.unify(&pat_ty, &declared, pat.span)?;
                 Ok((declared, bindings))
             }
@@ -1534,26 +1517,47 @@ impl InferCtx {
 
     // ── Type expression resolution ───────────────────────────────────
 
+    /// An alias body with its parameters replaced by `args` and its row
+    /// variable by the using annotation's.
+    fn instantiate_alias(
+        &mut self,
+        body: &Type,
+        params: &[u32],
+        row: Option<u32>,
+        args: &[Type],
+        ann: &mut Annotation,
+    ) -> Type {
+        let mut mapping: HashMap<u32, Type> =
+            params.iter().copied().zip(args.iter().cloned()).collect();
+        if let Some(row) = row {
+            mapping.insert(row, Type::Var(self.annotation_row(ann)));
+        }
+        if mapping.is_empty() {
+            return body.clone();
+        }
+        self.substitute_vars(body, &mapping)
+    }
+
     fn resolve_type_expr_strict(
         &mut self,
         ty_expr: &TypeExpr,
-        tyvar_map: &mut HashMap<String, u32>,
+        ann: &mut Annotation,
     ) -> Result<Type, TypeError> {
-        self.resolve_type_expr_inner(ty_expr, tyvar_map, true)
+        self.resolve_type_expr_inner(ty_expr, ann, true)
     }
 
     fn resolve_type_expr(
         &mut self,
         ty_expr: &TypeExpr,
-        tyvar_map: &mut HashMap<String, u32>,
+        ann: &mut Annotation,
     ) -> Result<Type, TypeError> {
-        self.resolve_type_expr_inner(ty_expr, tyvar_map, false)
+        self.resolve_type_expr_inner(ty_expr, ann, false)
     }
 
     fn resolve_type_expr_inner(
         &mut self,
         ty_expr: &TypeExpr,
-        tyvar_map: &mut HashMap<String, u32>,
+        ann: &mut Annotation,
         strict_tyvars: bool,
     ) -> Result<Type, TypeError> {
         match &ty_expr.kind {
@@ -1571,9 +1575,9 @@ impl InferCtx {
                     ));
                 }
                 // Check type aliases (0-arg)
-                if let Some((params, body)) = self.type_aliases.get(name).cloned() {
+                if let Some((params, row, body)) = self.type_aliases.get(name).cloned() {
                     if params.is_empty() {
-                        return Ok(self.alias_rows_to(&body, &params, tyvar_map));
+                        return Ok(self.instantiate_alias(&body, &[], row, &[], ann));
                     }
                     return Err(self.err(
                         &format!("type {name} expects {} argument(s)", params.len()),
@@ -1594,14 +1598,14 @@ impl InferCtx {
             }
             TypeExprKind::Var(sym) => {
                 let name = self.interner.resolve(*sym);
-                if let Some(&v) = tyvar_map.get(name) {
+                if let Some(&v) = ann.tyvars.get(name) {
                     Ok(Type::Var(v))
                 } else if strict_tyvars {
                     Err(self.err(&format!("unbound type variable: {name}"), ty_expr.span))
                 } else {
-                    let v = self.next_var;
-                    self.next_var += 1;
-                    tyvar_map.insert(name.to_string(), v);
+                    let name = name.to_string();
+                    let v = self.fresh_id();
+                    ann.tyvars.insert(name, v);
                     Ok(Type::Var(v))
                 }
             }
@@ -1609,10 +1613,10 @@ impl InferCtx {
                 let name = self.interner.resolve(*sym).to_string();
                 let resolved_args: Vec<Type> = args
                     .iter()
-                    .map(|a| self.resolve_type_expr_inner(a, tyvar_map, strict_tyvars))
+                    .map(|a| self.resolve_type_expr_inner(a, ann, strict_tyvars))
                     .collect::<Result<_, _>>()?;
                 // Check alias
-                if let Some((param_vars, body)) = self.type_aliases.get(&name).cloned() {
+                if let Some((param_vars, row, body)) = self.type_aliases.get(&name).cloned() {
                     if param_vars.len() != resolved_args.len() {
                         return Err(self.err(
                             &format!(
@@ -1623,13 +1627,13 @@ impl InferCtx {
                             ty_expr.span,
                         ));
                     }
-                    let mapping: HashMap<u32, Type> = param_vars
-                        .iter()
-                        .zip(resolved_args.iter())
-                        .map(|(&v, arg)| (v, arg.clone()))
-                        .collect();
-                    let body = self.alias_rows_to(&body, &param_vars, tyvar_map);
-                    return Ok(self.substitute_vars(&body, &mapping));
+                    return Ok(self.instantiate_alias(
+                        &body,
+                        &param_vars,
+                        row,
+                        &resolved_args,
+                        ann,
+                    ));
                 }
                 // Check type constructor
                 if let Some(&arity) = self.type_arities.get(&name) {
@@ -1647,19 +1651,19 @@ impl InferCtx {
                 Err(self.err(&format!("unknown type constructor: {name}"), ty_expr.span))
             }
             TypeExprKind::Arrow(a, b) => {
-                let a = self.resolve_type_expr_inner(a, tyvar_map, strict_tyvars)?;
-                let b = self.resolve_type_expr_inner(b, tyvar_map, strict_tyvars)?;
-                let row = self.annotation_row(tyvar_map);
-                Ok(Type::arrow(a, b, row))
+                let a = self.resolve_type_expr_inner(a, ann, strict_tyvars)?;
+                let b = self.resolve_type_expr_inner(b, ann, strict_tyvars)?;
+                let row = self.annotation_row(ann);
+                Ok(Type::arrow(a, b, Type::open_row(row)))
             }
             TypeExprKind::Tuple(ts) => {
                 let resolved: Vec<Type> = ts
                     .iter()
-                    .map(|t| self.resolve_type_expr_inner(t, tyvar_map, strict_tyvars))
+                    .map(|t| self.resolve_type_expr_inner(t, ann, strict_tyvars))
                     .collect::<Result<_, _>>()?;
                 Ok(Type::Tuple(resolved))
             }
-            TypeExprKind::Paren(t) => self.resolve_type_expr_inner(t, tyvar_map, strict_tyvars),
+            TypeExprKind::Paren(t) => self.resolve_type_expr_inner(t, ann, strict_tyvars),
         }
     }
 
@@ -1802,21 +1806,35 @@ impl InferCtx {
     }
 }
 
-/// Whether `ty` contains a rigid signature type variable, which
-/// `check_matches_signature` represents as a constructor named `'a`.
 /// `{labels | tail}` with an applied `tail`: a row tail is merged in, so
-/// the result's tail is a variable or absent.
+/// the result's tail is a variable or absent. Both label lists are sorted,
+/// so they merge without sorting again.
 fn extend_row(labels: &[String], tail: Type) -> Type {
     match tail {
         Type::Row(more, rest) => {
-            let mut all = labels.to_vec();
-            all.extend(more);
-            Type::row(all, rest.map(|rest| *rest))
+            let mut all = Vec::with_capacity(labels.len() + more.len());
+            let (mut i, mut j) = (0, 0);
+            while i < labels.len() || j < more.len() {
+                let take_left = j == more.len() || (i < labels.len() && labels[i] <= more[j]);
+                let next = if take_left {
+                    i += 1;
+                    &labels[i - 1]
+                } else {
+                    j += 1;
+                    &more[j - 1]
+                };
+                if all.last() != Some(next) {
+                    all.push(next.clone());
+                }
+            }
+            Type::Row(all, rest)
         }
-        tail => Type::row(labels.to_vec(), Some(tail)),
+        tail => Type::Row(labels.to_vec(), Some(Box::new(tail))),
     }
 }
 
+/// Whether `ty` contains a rigid signature type variable, which
+/// `check_matches_signature` represents as a constructor named `'a`.
 fn mentions_rigid_var(ty: &Type) -> bool {
     match ty {
         Type::Con(name) => name.starts_with('\''),
@@ -2202,6 +2220,62 @@ mod tests {
              val bad = Box.Box 1",
         );
         assert!(msg.contains("unknown constructor: Box.Box"), "got: {msg}");
+    }
+
+    /// Rows unify as sets with a tail. Stage 1 adds no labels, so these
+    /// cases are checked here directly.
+    #[test]
+    fn rows_unify_as_sets_with_a_tail() {
+        let span = Span::dummy();
+        let labels = |ls: &[&str]| ls.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        let mut ctx = InferCtx::new();
+        let (a, b) = (ctx.fresh_id(), ctx.fresh_id());
+        let r1 = Type::row(labels(&["A"]), Some(Type::Var(a)));
+        let r2 = Type::row(labels(&["B"]), Some(Type::Var(b)));
+        ctx.unify(&r1, &r2, span).unwrap();
+        assert_eq!(ctx.apply(&r1), ctx.apply(&r2));
+        let Type::Row(both, Some(_)) = ctx.apply(&r1) else {
+            panic!("an open row with A and B")
+        };
+        assert_eq!(both, labels(&["A", "B"]));
+
+        // A closed row gives an open one its extra labels, and closes it.
+        let mut ctx = InferCtx::new();
+        let b = ctx.fresh_id();
+        let closed = Type::row(labels(&["A", "B"]), None);
+        let open = Type::row(labels(&["A"]), Some(Type::Var(b)));
+        ctx.unify(&closed, &open, span).unwrap();
+        assert_eq!(ctx.apply(&open), closed);
+
+        // A closed row cannot take labels.
+        let mut ctx = InferCtx::new();
+        let b = ctx.fresh_id();
+        let closed = Type::row(labels(&["A"]), None);
+        let open = Type::row(labels(&["B"]), Some(Type::Var(b)));
+        assert!(ctx.unify(&closed, &open, span).is_err());
+        assert!(ctx.unify(&open, &closed, span).is_err());
+
+        // The same tail: the labels must agree.
+        let mut ctx = InferCtx::new();
+        let a = ctx.fresh_id();
+        let r1 = Type::row(labels(&["A"]), Some(Type::Var(a)));
+        let r2 = Type::row(labels(&["B"]), Some(Type::Var(a)));
+        assert!(ctx.unify(&r1, &r2, span).is_err());
+        assert!(ctx.unify(&r1, &r1.clone(), span).is_ok());
+    }
+
+    #[test]
+    fn extend_row_merges_sorted_labels() {
+        let labels = |ls: &[&str]| ls.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        let tail = Type::row(labels(&["B", "D"]), Some(Type::Var(7)));
+        assert_eq!(
+            extend_row(&labels(&["A", "B", "C"]), tail),
+            Type::row(labels(&["A", "B", "C", "D"]), Some(Type::Var(7)))
+        );
+        assert_eq!(
+            extend_row(&labels(&["A"]), Type::Var(3)),
+            Type::row(labels(&["A"]), Some(Type::Var(3)))
+        );
     }
 
     #[test]
