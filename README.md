@@ -333,7 +333,7 @@ cd hiko-vm-reader && cargo build --release
 
 Each run config (policy file) defines a capability boundary.
 - `hiko run [--config <hiko.toml>] [--policy <name>] script.hml` resolves a project manifest, `hiko.toml`. With `--config` it uses that manifest; without it, the CLI searches upward from the current directory for `hiko.toml`. The manifest maps policy names to run config files under `[policies.<name>]` and names a default in `[defaults].policy`. `--policy` selects a different named policy. Only the builtins that the policy allows are registered for that invocation. When no manifest is found, the script runs with the core-only builtin surface.
-- `hiko build-vm <run-config.toml>` bakes one run config into a generated binary, so disallowed builtins are not compiled into that artifact.
+- `hiko build-vm <run-config.toml>` bakes one run config into a generated binary, so disallowed builtins are not compiled into that artifact. With `--lock <hiko.lock.toml>` it also seals the locked modules into the binary, and with `--script <entry.hml>` the program itself (see [imports](docs/language/imports.md#generated-artifacts)).
 
 Path rules:
 - relative `entry` and filesystem `folders` are resolved from the current working directory
@@ -381,6 +381,8 @@ hiko-vm-reader/
     ▼  cargo build --release
 hiko-vm-reader/target/release/  ← single binary, config-locked
 ```
+
+A sealed artifact (`--lock`, `--script`) also gets `src/embedded.rs`, which lists every embedded module with its BLAKE3 hash, the sources under `sealed/`, and a `build.rs` that refuses to build if a module no longer matches its hash. Its imports resolve only from those sources: no lockfile, cache or network at run time. `--hiko-path <checkout>` makes the generated crate depend on a local hiko checkout instead of crates.io.
 
 The generated `src/main.rs` is the auditable source of truth for what the VM can do. Commit it alongside your run config TOML — reviewers can see exactly which builtins are registered, which commands are whitelisted, and what limits are enforced, without running any tools. The `target/` directory is gitignored.
 
