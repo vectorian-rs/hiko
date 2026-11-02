@@ -223,6 +223,24 @@ accumulator or a `(result, new_state)` pair. See `examples/generator.hml` and
 Effect-based generators and state, which wrap `resume` in a new handler call,
 do not compile.
 
+## Example: Logging Both Ways
+
+`Std.Log` offers both styles, and `examples/log_plain.hml` and
+`examples/log_effect.hml` run one program each way:
+
+| | Logger value | `LogEvent` effect |
+| --- | --- | --- |
+| Who decides where a line goes | whoever calls `Log.make` | the handler around the call |
+| Plumbing | `log` is an argument of every function on the path | none |
+| Visible in types | as an argument | not yet; `! {LogEvent}` once effect typing lands ([effect-typing.md](../rnd/effect-typing.md)) |
+| Forgetting it | a type error: the argument is missing | a runtime error when the code logs |
+
+A handler can send each line to a function (`Log.handle_with`), print it
+(`Log.to_stderr`) or drop it (`Log.discard`). It cannot collect the lines into
+a list it returns: a provider clause must end with `resume k e`, so it cannot
+add to the value of the rest of the computation, and there is no mutable
+state to add to.
+
 ## Static Guarantees
 
 The typechecker guarantees:
