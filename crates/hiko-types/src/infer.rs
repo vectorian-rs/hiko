@@ -572,7 +572,7 @@ impl InferCtx {
             } => {
                 let internal = self.interner.resolve(*internal_name).to_string();
                 let Some(internal_scheme) = self.lookup(&internal).cloned() else {
-                    return Err(self.err(&format!("unbound variable: {internal}"), decl.span));
+                    return Err(self.err(&unbound_message(&internal), decl.span));
                 };
 
                 let mut tyvar_map = HashMap::new();
@@ -959,7 +959,7 @@ impl InferCtx {
                 if let Some(scheme) = self.lookup(name).cloned() {
                     Ok(self.instantiate(&scheme))
                 } else {
-                    Err(self.err(&format!("unbound variable: {name}"), expr.span))
+                    Err(self.err(&unbound_message(name), expr.span))
                 }
             }
             ExprKind::Constructor(sym) => {
@@ -1643,6 +1643,17 @@ fn is_syntactic_value(expr: &Expr) -> bool {
     }
 }
 
+/// A builtin left out of this build is reported with the Cargo feature that
+/// provides it, rather than as an ordinary unbound name.
+fn unbound_message(name: &str) -> String {
+    match hiko_builtin_meta::missing_builtin_feature(name) {
+        Some(feature) => format!(
+            "builtin `{name}` is not in this build of hiko; enable cargo feature `{feature}`"
+        ),
+        None => format!("unbound variable: {name}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2166,6 +2177,17 @@ mod tests {
     fn test_unbound_var() {
         let msg = infer_err("val x = y");
         assert!(msg.contains("unbound variable"), "got: {msg}");
+    }
+
+    #[cfg(not(feature = "builtin-json"))]
+    #[test]
+    fn test_builtin_left_out_of_build_names_its_feature() {
+        let msg = infer_err(r#"val x = json_parse "[]""#);
+        assert!(
+            msg.contains("builtin `json_parse` is not in this build")
+                && msg.contains("`builtin-json`"),
+            "got: {msg}"
+        );
     }
 
     #[test]
