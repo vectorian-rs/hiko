@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hiko_builtin_meta::{internal_builtin_module, is_internal_builtin_package};
-#[cfg(feature = "loader-integrity-blake3")]
+#[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_common::blake3_hex;
 #[cfg(feature = "loader-http")]
 use hiko_common::http_get_text_limited;
@@ -42,6 +42,10 @@ pub struct ModuleLoaderOptions {
     pub local_package_root: Option<PathBuf>,
     /// Types, builtins and modules contributed by extensions.
     pub extensions: ExtensionSurface,
+    /// Sources compiled into a sealed `build-vm` artifact. When set, named
+    /// imports resolve only from these and never from the lockfile, the
+    /// cache or the network.
+    pub embedded: Option<&'static EmbeddedSources>,
 }
 
 /// What extensions add to the compiler: opaque types, builtin signatures,
@@ -65,6 +69,63 @@ impl ExtensionSurface {
     fn has_builtin(&self, name: &str) -> bool {
         self.builtins.iter().any(|(builtin, _)| *builtin == name)
     }
+}
+
+/// Sources compiled into a sealed `build-vm` artifact (#59).
+///
+/// Named imports resolve only from `modules`, each checked against its
+/// BLAKE3 hash when it is loaded. When `files` is `Some`, local `use` resolves
+/// only from `files` and never reads the filesystem; their paths are relative
+/// to the entry script's directory, normalized by [`embedded_file_path`].
+#[derive(Debug)]
+pub struct EmbeddedSources {
+    pub modules: &'static [EmbeddedModule],
+    pub files: Option<&'static [EmbeddedFile]>,
+}
+
+/// A locked module in a sealed artifact.
+#[derive(Debug)]
+pub struct EmbeddedModule {
+    /// Import name, such as `Std.List`.
+    pub import_name: &'static str,
+    /// Lockfile hash, `blake3:<hex>` or `<hex>`.
+    pub blake3: &'static str,
+    pub source: &'static str,
+}
+
+/// A local file (`use "..."`) in a sealed artifact.
+#[derive(Debug)]
+pub struct EmbeddedFile {
+    pub path: &'static str,
+    pub source: &'static str,
+}
+
+/// The key of an embedded local file: `path` joined to `base_dir` and
+/// normalized lexically (`.` dropped, `..` applied), with `/` separators.
+/// Absolute paths are refused. `build-vm` uses the same function to name the
+/// files it embeds, so a lookup matches exactly when the paths agree.
+pub fn embedded_file_path(base_dir: &Path, path: &str) -> Result<String, CompileError> {
+    use std::path::Component;
+    let mut parts: Vec<String> = Vec::new();
+    for component in base_dir.join(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if parts.last().is_some_and(|p| p != "..") {
+                    parts.pop();
+                } else {
+                    parts.push("..".to_string());
+                }
+            }
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(CompileError::codegen(format!(
+                    "local use '{path}' is an absolute path; an embedded program can only use relative paths"
+                )));
+            }
+        }
+    }
+    Ok(parts.join("/"))
 }
 
 #[derive(Debug)]
@@ -163,7 +224,7 @@ fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileEr
     })
 }
 
-#[cfg(feature = "loader-integrity-blake3")]
+#[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), CompileError> {
     let actual = blake3_hex(bytes);
     if actual == expected_hash {
@@ -392,12 +453,50 @@ fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
     Ok((package, module))
 }
 
-#[cfg(feature = "loader-integrity-blake3")]
+#[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn normalize_blake3(hash: &str) -> String {
     hash.trim()
         .strip_prefix("blake3:")
         .unwrap_or(hash.trim())
         .to_ascii_lowercase()
+}
+
+#[cfg(feature = "loader-embedded")]
+fn resolve_embedded_module(
+    embedded: &'static EmbeddedSources,
+    module_name: &str,
+) -> Result<ResolvedImport, CompileError> {
+    let module = embedded
+        .modules
+        .iter()
+        .find(|m| m.import_name == module_name)
+        .ok_or_else(|| {
+            CompileError::codegen(format!(
+                "named import '{module_name}' is not embedded in this artifact"
+            ))
+        })?;
+    verify_blake3(
+        module.source.as_bytes(),
+        &normalize_blake3(module.blake3),
+        &format!("embedded module '{module_name}'"),
+    )?;
+    Ok(ResolvedImport::Embedded {
+        key: ImportKey::Synthetic(module.import_name),
+        display_name: module_name.to_string(),
+        source: module.source,
+        base_dir: PathBuf::new(),
+        module: true,
+    })
+}
+
+#[cfg(not(feature = "loader-embedded"))]
+fn resolve_embedded_module(
+    _embedded: &'static EmbeddedSources,
+    module_name: &str,
+) -> Result<ResolvedImport, CompileError> {
+    Err(CompileError::codegen(format!(
+        "named import '{module_name}' needs embedded sources; enable cargo feature 'loader-embedded'"
+    )))
 }
 
 struct Local {
@@ -564,6 +663,7 @@ struct LockedPackage {
 enum ImportKey {
     File(PathBuf),
     Synthetic(&'static str),
+    EmbeddedFile(&'static str),
 }
 
 #[derive(Debug)]
@@ -588,6 +688,15 @@ enum ResolvedImport {
         source: &'static str,
         base_dir: PathBuf,
     },
+    /// A source compiled into a sealed artifact (`EmbeddedSources`).
+    Embedded {
+        key: ImportKey,
+        display_name: String,
+        source: &'static str,
+        base_dir: PathBuf,
+        /// A locked module: like a remote module, it may not `use` files.
+        module: bool,
+    },
 }
 
 impl ResolvedImport {
@@ -601,6 +710,7 @@ impl ResolvedImport {
             ))]
             Self::VerifiedFile { canonical, .. } => ImportKey::File(canonical.clone()),
             Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
+            Self::Embedded { key, .. } => key.clone(),
         }
     }
 
@@ -613,6 +723,7 @@ impl ResolvedImport {
                 feature = "loader-integrity-blake3"
             ))]
             Self::VerifiedFile { .. } => true,
+            Self::Embedded { module, .. } => *module,
             _ => false,
         }
     }
@@ -627,6 +738,7 @@ impl ResolvedImport {
             ))]
             Self::VerifiedFile { display_name, .. } => display_name,
             Self::Synthetic { display_name, .. } => display_name,
+            Self::Embedded { display_name, .. } => display_name,
         }
     }
 
@@ -651,6 +763,9 @@ impl ResolvedImport {
                 Ok((Cow::Borrowed(source.as_str()), base_dir))
             }
             Self::Synthetic {
+                source, base_dir, ..
+            }
+            | Self::Embedded {
                 source, base_dir, ..
             } => Ok((Cow::Borrowed(*source), base_dir.clone())),
         }
@@ -776,6 +891,16 @@ impl Compiler {
         let mut loading = HashSet::new();
         loading.insert(ImportKey::File(canonical.clone()));
         Self::compile_with_ctx(program, base_dir, Some(canonical), loading, loader_options)
+    }
+
+    /// Compile a sealed artifact's embedded entry program. Imports resolve
+    /// only from `options.embedded`, and local `use` paths are relative to
+    /// the entry script's directory.
+    pub fn compile_embedded(
+        program: Program,
+        options: ModuleLoaderOptions,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        Self::compile_with_ctx(program, PathBuf::new(), None, HashSet::new(), options)
     }
 
     /// Compile a program without a file context (e.g., from a string).
@@ -1459,6 +1584,24 @@ impl Compiler {
                 "local use '{path}' is not allowed in a remote module; use a named import instead"
             )));
         }
+        if let Some(files) = self.loader_options.embedded.and_then(|e| e.files) {
+            let key = embedded_file_path(&self.base_dir, path)?;
+            let file = files.iter().find(|f| f.path == key).ok_or_else(|| {
+                CompileError::codegen(format!(
+                    "local use '{path}' ({key}) is not embedded in this artifact"
+                ))
+            })?;
+            return Ok(ResolvedImport::Embedded {
+                key: ImportKey::EmbeddedFile(file.path),
+                display_name: path.to_string(),
+                source: file.source,
+                base_dir: Path::new(file.path)
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .to_path_buf(),
+                module: false,
+            });
+        }
         let resolved = self.base_dir.join(path);
         let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
             CompileError::codegen(format!(
@@ -1484,6 +1627,9 @@ impl Compiler {
         }
         if is_internal_builtin_package(package_name) {
             return self.resolve_internal_builtin_import(module_name, leaf_module);
+        }
+        if let Some(embedded) = self.loader_options.embedded {
+            return resolve_embedded_module(embedded, module_name);
         }
         self.resolve_external_named_import(module_name, package_name, leaf_module)
     }
@@ -3107,6 +3253,120 @@ mod tests {
     fn parse_program(source: &str) -> Program {
         let tokens = Lexer::new(source, 0).tokenize().expect("lex");
         Parser::new(tokens).parse_program().expect("parse")
+    }
+
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+
+    /// Embedded sources with one module `Pkg.Greet` (its hash computed
+    /// unless `hash` is given) and the given local files.
+    fn embedded(
+        module_source: &str,
+        hash: Option<&str>,
+        files: Option<Vec<(&str, &str)>>,
+    ) -> ModuleLoaderOptions {
+        let blake3 = match hash {
+            Some(hash) => leak(hash.to_string()),
+            None => leak(format!("blake3:{}", blake3_hex(module_source.as_bytes()))),
+        };
+        let modules = Box::leak(Box::new([EmbeddedModule {
+            import_name: "Pkg.Greet",
+            blake3,
+            source: leak(module_source.to_string()),
+        }]));
+        let files = files.map(|files| {
+            let files: Vec<EmbeddedFile> = files
+                .into_iter()
+                .map(|(path, source)| EmbeddedFile {
+                    path: leak(path.to_string()),
+                    source: leak(source.to_string()),
+                })
+                .collect();
+            &*Box::leak(files.into_boxed_slice())
+        });
+        ModuleLoaderOptions {
+            embedded: Some(Box::leak(Box::new(EmbeddedSources { modules, files }))),
+            ..ModuleLoaderOptions::default()
+        }
+    }
+
+    const GREET: &str = "structure Greet = struct val hello = 42 end";
+
+    #[test]
+    fn embedded_named_import_resolves_without_a_lockfile() {
+        let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
+        Compiler::compile_embedded(program, embedded(GREET, None, None))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn embedded_module_with_a_wrong_hash_is_refused() {
+        let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
+        let wrong = format!("blake3:{}", "0".repeat(64));
+        let err = Compiler::compile_embedded(program, embedded(GREET, Some(&wrong), None))
+            .expect_err("a tampered module must not compile");
+        assert!(
+            format!("{err:?}").contains("failed BLAKE3 verification"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn named_import_not_embedded_is_refused() {
+        let program = parse_program("import Pkg.Other\nval x = 1");
+        let err = Compiler::compile_embedded(program, embedded(GREET, None, None))
+            .expect_err("only embedded modules resolve");
+        assert!(
+            format!("{err:?}").contains("not embedded in this artifact"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_local_use_resolves_relative_to_the_using_file() {
+        let program = parse_program("use \"./lib/a.hml\"\nval y = a + b");
+        let files = vec![
+            ("lib/a.hml", "use \"./b.hml\"\nval a = 1"),
+            ("lib/b.hml", "val b = 2"),
+        ];
+        Compiler::compile_embedded(program, embedded(GREET, None, Some(files)))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn embedded_local_use_never_reads_the_filesystem() {
+        // Cargo.toml exists next to this crate, but it is not embedded.
+        let program = parse_program("use \"./Cargo.toml\"\nval y = 1");
+        let err = Compiler::compile_embedded(program, embedded(GREET, None, Some(vec![])))
+            .expect_err("only embedded files resolve");
+        assert!(
+            format!("{err:?}").contains("not embedded in this artifact"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_module_cannot_use_local_files() {
+        let module = "use \"./x.hml\"\nstructure Greet = struct val hello = 1 end";
+        let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
+        let files = vec![("x.hml", "val z = 0")];
+        let err = Compiler::compile_embedded(program, embedded(module, None, Some(files)))
+            .expect_err("a locked module may not use files");
+        assert!(
+            format!("{err:?}").contains("not allowed in a remote module"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_file_paths_are_normalized_and_relative() {
+        let path = |base: &str, p: &str| embedded_file_path(Path::new(base), p).ok();
+        assert_eq!(path("", "a.hml").as_deref(), Some("a.hml"));
+        assert_eq!(path("", "./lib/../a.hml").as_deref(), Some("a.hml"));
+        assert_eq!(path("lib", "b.hml").as_deref(), Some("lib/b.hml"));
+        assert_eq!(path("lib", "../../up.hml").as_deref(), Some("../up.hml"));
+        assert_eq!(path("", "/etc/passwd.hml"), None);
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
