@@ -6,8 +6,15 @@ pub enum Type {
     Con(String),
     Var(u32),
     App(String, Vec<Type>),
-    Arrow(Box<Type>, Box<Type>),
+    /// A function: argument, result, and the effect row of a call. The row
+    /// is a `Row`, or a `Var` that stands for one.
+    Arrow(Box<Type>, Box<Type>, Box<Type>),
     Tuple(Vec<Type>),
+    /// An effect row: the effects a call may perform, as sorted, distinct
+    /// names, and a tail that stands for any further effects. `None` closes
+    /// the row; otherwise the tail is a `Var` (or, before substitution is
+    /// applied, another `Row`). Only appears as an arrow's row.
+    Row(Vec<String>, Option<Box<Type>>),
 }
 
 /// Primitive types as `(surface name, internal constructor name)`.
@@ -84,8 +91,20 @@ impl Type {
             .map(|(surface, _)| *surface)
     }
 
-    pub fn arrow(from: Type, to: Type) -> Type {
-        Type::Arrow(Box::new(from), Box::new(to))
+    pub fn arrow(from: Type, to: Type, row: Type) -> Type {
+        Type::Arrow(Box::new(from), Box::new(to), Box::new(row))
+    }
+
+    /// The row `{labels | tail}`.
+    pub fn row(mut labels: Vec<String>, tail: Option<Type>) -> Type {
+        labels.sort();
+        labels.dedup();
+        Type::Row(labels, tail.map(Box::new))
+    }
+
+    /// The row `{| v}`: no known effects, open.
+    pub fn open_row(v: u32) -> Type {
+        Type::Row(Vec::new(), Some(Box::new(Type::Var(v))))
     }
 
     pub fn is_equality(&self) -> bool {
@@ -118,9 +137,15 @@ impl Type {
                     vars.push(*v);
                 }
             }
-            Type::Arrow(a, b) => {
+            Type::Arrow(a, b, row) => {
                 a.collect_free_vars(vars, seen);
                 b.collect_free_vars(vars, seen);
+                row.collect_free_vars(vars, seen);
+            }
+            Type::Row(_, tail) => {
+                if let Some(tail) = tail {
+                    tail.collect_free_vars(vars, seen);
+                }
             }
             Type::Tuple(ts) | Type::App(_, ts) => {
                 for t in ts {
@@ -151,17 +176,26 @@ impl fmt::Display for Type {
                 };
                 write!(f, "'{c}{suffix}")
             }
-            Type::Arrow(a, b) => match a.as_ref() {
-                Type::Arrow(_, _) => write!(f, "({a}) -> {b}"),
+            // Rows are not printed yet (effect typing, stage 1).
+            Type::Arrow(a, b, _) => match a.as_ref() {
+                Type::Arrow(..) => write!(f, "({a}) -> {b}"),
                 _ => write!(f, "{a} -> {b}"),
             },
+            Type::Row(labels, tail) => {
+                write!(f, "{{{}", labels.join(", "))?;
+                if let Some(tail) = tail {
+                    let bar = if labels.is_empty() { "| " } else { " | " };
+                    write!(f, "{bar}{tail}")?;
+                }
+                write!(f, "}}")
+            }
             Type::Tuple(ts) => {
                 for (i, t) in ts.iter().enumerate() {
                     if i > 0 {
                         write!(f, " * ")?;
                     }
                     match t {
-                        Type::Arrow(_, _) | Type::Tuple(_) => write!(f, "({t})")?,
+                        Type::Arrow(..) | Type::Tuple(_) => write!(f, "({t})")?,
                         _ => write!(f, "{t}")?,
                     }
                 }
@@ -170,7 +204,7 @@ impl fmt::Display for Type {
             Type::App(name, args) => {
                 if args.len() == 1 {
                     match &args[0] {
-                        Type::Arrow(_, _) | Type::Tuple(_) | Type::App(_, _) => {
+                        Type::Arrow(..) | Type::Tuple(_) | Type::App(_, _) => {
                             write!(f, "({}) {}", args[0], Type::display_name(name))
                         }
                         _ => write!(f, "{} {}", args[0], Type::display_name(name)),

@@ -271,3 +271,41 @@ escape the limit.
 3. Annotation syntax and printing.
 4. Update effects.md "Static Guarantees" and "Non-Guarantees", and measure
    type-checking cost.
+
+### Stage 1 (done)
+
+- `Type::Arrow` has a third field, the row. A row is `Type::Row(labels,
+  tail)`, with sorted distinct labels and a tail that is a type variable or
+  absent. A row variable is an ordinary `Type::Var` bound to a row, so the
+  existing substitution, occurs check, free-variable walk, generalization
+  and instantiation handle row variables without changes.
+- Every arrow is open:
+  - an arrow inferred from `fn`, an application, a handler's
+    continuation or a constructor pattern gets a fresh row variable;
+  - a builtin signature's arrows share one row variable, quantified in its
+    scheme;
+  - a constructor's arrow has its own quantified row variable;
+  - the arrows of one annotation share one row variable;
+  - a use of a type alias takes the using annotation's row variable.
+- Nothing adds a label yet, so no program changes type: `hiko check` gives
+  the same result as before on all 122 repository `.hml` files.
+
+### Questions found in stage 1, for stage 2
+
+- **Function types inside datatypes.** In `datatype h = H of (string ->
+  unit)`, the stored function's row is quantified with the datatype for
+  now, so each use of `H` gets a fresh one. That forgets the effects of a
+  stored function: `case h of H f => f "x"` would add nothing to the
+  caller's row. Options:
+  - make such rows closed `{}` unless annotated, so a datatype can only
+    hold pure functions;
+  - or give the datatype an implicit row parameter, as Koka does.
+
+  In the repository only `examples/generator.hml` stores a function in a
+  datatype (`Next of 'a * (unit -> 'a stream)`), and that function is pure,
+  so closed rows would break nothing today. It still needs a decision
+  before the `perform` rule lands.
+- **Signatures.** A signature's row variable is left flexible, not rigid, so
+  `val f : int -> int` in a signature accepts an implementation that
+  performs effects, and exports its own row. Stage 2 must decide whether an
+  unmarked signature arrow means "pure" or "any effects".

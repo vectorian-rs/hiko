@@ -67,20 +67,29 @@ pub struct InferCtx {
 /// source file can stall the compiler.
 pub const DEFAULT_MAX_TYPE_WORK: u64 = 10_000_000;
 
+/// Key of an annotation's shared row variable in its type-variable map.
+/// Type variables are written with a leading `'`, so no type variable has
+/// this name.
+const ANNOTATION_ROW: &str = "!row";
+
 struct BuiltinTypeParser<'a> {
     chars: Vec<char>,
     pos: usize,
     vars: HashMap<&'a str, u32>,
+    /// The row variable every arrow of the signature shares: no builtin
+    /// performs an effect, so a call adds nothing to the caller's row.
+    row: u32,
     /// Opaque type names an extension declared, usable like primitives.
     opaque: &'a [String],
 }
 
 impl<'a> BuiltinTypeParser<'a> {
-    fn new(input: &'a str, vars: HashMap<&'a str, u32>, opaque: &'a [String]) -> Self {
+    fn new(input: &'a str, vars: HashMap<&'a str, u32>, row: u32, opaque: &'a [String]) -> Self {
         Self {
             chars: input.chars().collect(),
             pos: 0,
             vars,
+            row,
             opaque,
         }
     }
@@ -99,7 +108,7 @@ impl<'a> BuiltinTypeParser<'a> {
         self.skip_ws();
         if self.consume("->") {
             let rhs = self.parse_arrow()?;
-            Ok(Type::arrow(lhs, rhs))
+            Ok(Type::arrow(lhs, rhs, Type::open_row(self.row)))
         } else {
             Ok(lhs)
         }
@@ -297,7 +306,10 @@ impl InferCtx {
             vars.insert(*name, var);
             scheme_vars.push(var);
         }
-        let mut parser = BuiltinTypeParser::new(sig.ty, vars, &self.opaque_types);
+        let row = self.next_var;
+        self.next_var += 1;
+        scheme_vars.push(row);
+        let mut parser = BuiltinTypeParser::new(sig.ty, vars, row, &self.opaque_types);
         let ty = parser.parse()?;
         Ok(Scheme {
             vars: scheme_vars,
@@ -311,6 +323,35 @@ impl InferCtx {
         let v = self.next_var;
         self.next_var += 1;
         Type::Var(v)
+    }
+
+    /// A fresh open row `{| e}`.
+    fn fresh_row(&mut self) -> Type {
+        let v = self.next_var;
+        self.next_var += 1;
+        Type::open_row(v)
+    }
+
+    /// `from -> to` with a fresh open row.
+    fn arrow(&mut self, from: Type, to: Type) -> Type {
+        let row = self.fresh_row();
+        Type::arrow(from, to, row)
+    }
+
+    /// The row variable that every unmarked arrow in one annotation shares,
+    /// kept in the annotation's type-variable map under a key no type
+    /// variable can have.
+    fn annotation_row(&mut self, tyvar_map: &mut HashMap<String, u32>) -> Type {
+        let v = match tyvar_map.get(ANNOTATION_ROW) {
+            Some(&v) => v,
+            None => {
+                let v = self.next_var;
+                self.next_var += 1;
+                tyvar_map.insert(ANNOTATION_ROW.to_string(), v);
+                v
+            }
+        };
+        Type::open_row(v)
     }
 
     // ── Work limit ───────────────────────────────────────────────────
@@ -351,7 +392,11 @@ impl InferCtx {
                     ty.clone()
                 }
             }
-            Type::Arrow(a, b) => Type::arrow(self.apply(a), self.apply(b)),
+            Type::Arrow(a, b, row) => Type::arrow(self.apply(a), self.apply(b), self.apply(row)),
+            Type::Row(labels, tail) => match tail {
+                None => ty.clone(),
+                Some(tail) => extend_row(labels, self.apply(tail)),
+            },
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply(t)).collect()),
             Type::App(n, args) => {
                 Type::App(n.clone(), args.iter().map(|t| self.apply(t)).collect())
@@ -367,10 +412,15 @@ impl InferCtx {
         }
         match ty {
             Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
-            Type::Arrow(a, b) => Type::arrow(
+            Type::Arrow(a, b, row) => Type::arrow(
                 self.substitute_vars(a, mapping),
                 self.substitute_vars(b, mapping),
+                self.substitute_vars(row, mapping),
             ),
+            Type::Row(labels, tail) => match tail {
+                None => ty.clone(),
+                Some(tail) => extend_row(labels, self.substitute_vars(tail, mapping)),
+            },
             Type::Tuple(ts) => Type::Tuple(
                 ts.iter()
                     .map(|t| self.substitute_vars(t, mapping))
@@ -415,10 +465,12 @@ impl InferCtx {
                 Ok(())
             }
             (Type::Con(a), Type::Con(b)) if a == b => Ok(()),
-            (Type::Arrow(a1, b1), Type::Arrow(a2, b2)) => {
+            (Type::Arrow(a1, b1, r1), Type::Arrow(a2, b2, r2)) => {
                 self.unify(a1, a2, span)?;
-                self.unify(b1, b2, span)
+                self.unify(b1, b2, span)?;
+                self.unify(r1, r2, span)
             }
+            (Type::Row(l1, t1), Type::Row(l2, t2)) => self.unify_rows(l1, t1, l2, t2, span),
             (Type::Tuple(ts1), Type::Tuple(ts2)) if ts1.len() == ts2.len() => {
                 for (a, b) in ts1.iter().zip(ts2.iter()) {
                     self.unify(a, b, span)?;
@@ -444,6 +496,67 @@ impl InferCtx {
         }
     }
 
+    /// Unify the rows `{l1 | t1}` and `{l2 | t2}` (labels sorted and
+    /// distinct, tails resolved). Each side's tail takes the labels only the
+    /// other side has; when both are open they share a fresh tail. A closed
+    /// side cannot take labels.
+    fn unify_rows(
+        &mut self,
+        l1: &[String],
+        t1: &Option<Box<Type>>,
+        l2: &[String],
+        t2: &Option<Box<Type>>,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let only1: Vec<String> = l1.iter().filter(|l| !l2.contains(l)).cloned().collect();
+        let only2: Vec<String> = l2.iter().filter(|l| !l1.contains(l)).cloned().collect();
+        let mismatch = |this: &Self| {
+            this.err(
+                &format!(
+                    "effect mismatch: {} and {}",
+                    Type::Row(l1.to_vec(), t1.clone()),
+                    Type::Row(l2.to_vec(), t2.clone())
+                ),
+                span,
+            )
+        };
+        match (t1.as_deref(), t2.as_deref()) {
+            (Some(Type::Var(a)), Some(Type::Var(b))) if a == b => {
+                if only1.is_empty() && only2.is_empty() {
+                    Ok(())
+                } else {
+                    Err(mismatch(self))
+                }
+            }
+            (Some(Type::Var(a)), Some(Type::Var(b))) => {
+                let (a, b) = (*a, *b);
+                let tail = self.fresh();
+                self.unify(&Type::Var(a), &Type::row(only2, Some(tail.clone())), span)?;
+                self.unify(&Type::Var(b), &Type::row(only1, Some(tail)), span)
+            }
+            (None, Some(Type::Var(b))) => {
+                if !only2.is_empty() {
+                    return Err(mismatch(self));
+                }
+                self.unify(&Type::Var(*b), &Type::row(only1, None), span)
+            }
+            (Some(Type::Var(a)), None) => {
+                if !only1.is_empty() {
+                    return Err(mismatch(self));
+                }
+                self.unify(&Type::Var(*a), &Type::row(only2, None), span)
+            }
+            (None, None) => {
+                if only1.is_empty() && only2.is_empty() {
+                    Ok(())
+                } else {
+                    Err(mismatch(self))
+                }
+            }
+            _ => unreachable!("an applied row's tail is a variable or absent"),
+        }
+    }
+
     fn occurs(&self, v: u32, ty: &Type) -> bool {
         if !self.charge() {
             return false;
@@ -456,7 +569,8 @@ impl InferCtx {
                     v == *u
                 }
             }
-            Type::Arrow(a, b) => self.occurs(v, a) || self.occurs(v, b),
+            Type::Arrow(a, b, row) => self.occurs(v, a) || self.occurs(v, b) || self.occurs(v, row),
+            Type::Row(_, tail) => tail.as_ref().is_some_and(|tail| self.occurs(v, tail)),
             Type::Tuple(ts) | Type::App(_, ts) => ts.iter().any(|t| self.occurs(v, t)),
             Type::Con(_) => false,
         }
@@ -764,7 +878,7 @@ impl InferCtx {
         // Build the curried function type: arg1 -> arg2 -> ... -> result
         let mut ty = result_var;
         for arg in arg_vars.into_iter().rev() {
-            ty = Type::arrow(arg, ty);
+            ty = self.arrow(arg, ty);
         }
         Ok(ty)
     }
@@ -813,25 +927,33 @@ impl InferCtx {
             )
         };
 
-        let all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
-        // Strict resolution never adds to the map, so one copy serves all constructors.
+        let mut all_vars: Vec<u32> = param_vars.iter().map(|(_, v)| *v).collect();
+        // Strict resolution adds no type variables, so one copy serves all
+        // constructors. It does add the annotation row of function types in
+        // payloads, which is quantified with the parameters: for now each
+        // use of a constructor gets its own (effect typing, stage 1).
         let mut tyvar_map: HashMap<String, u32> = param_vars.into_iter().collect();
+        self.annotation_row(&mut tyvar_map);
+        all_vars.push(tyvar_map[ANNOTATION_ROW]);
 
         for con in &dt.constructors {
             let con_name = self.interner.resolve(con.name).to_string();
             if self.constructors.contains_key(&con_name) {
                 return Err(self.err(&format!("duplicate constructor name: {con_name}"), con.span));
             }
+            let mut vars = all_vars.clone();
             let con_ty = if let Some(ref payload_texpr) = con.payload {
                 let payload_ty = self.resolve_type_expr_strict(payload_texpr, &mut tyvar_map)?;
-                Type::arrow(payload_ty, result_ty.clone())
+                // A constructor performs nothing: its own row is open and
+                // quantified, separate from the rows inside the payload.
+                let row = self.next_var;
+                self.next_var += 1;
+                vars.push(row);
+                Type::arrow(payload_ty, result_ty.clone(), Type::open_row(row))
             } else {
                 result_ty.clone()
             };
-            let scheme = Scheme {
-                vars: all_vars.clone(),
-                ty: con_ty,
-            };
+            let scheme = Scheme { vars, ty: con_ty };
             self.constructors.insert(con_name.clone(), scheme.clone());
             self.bind(con_name, scheme);
         }
@@ -849,6 +971,30 @@ impl InferCtx {
             .collect();
         self.datatype_constructors.insert(dt_name, con_info);
         Ok(())
+    }
+
+    /// An alias body's arrows share the alias declaration's row variable,
+    /// its only variable that is not a parameter. A use of the alias puts
+    /// the using annotation's row there instead.
+    fn alias_rows_to(
+        &mut self,
+        body: &Type,
+        params: &[u32],
+        tyvar_map: &mut HashMap<String, u32>,
+    ) -> Type {
+        let rows: Vec<u32> = body
+            .free_vars()
+            .into_iter()
+            .filter(|v| !params.contains(v))
+            .collect();
+        if rows.is_empty() {
+            return body.clone();
+        }
+        let Type::Row(_, Some(tail)) = self.annotation_row(tyvar_map) else {
+            unreachable!("an annotation row is open")
+        };
+        let mapping: HashMap<u32, Type> = rows.into_iter().map(|v| (v, (*tail).clone())).collect();
+        self.substitute_vars(body, &mapping)
     }
 
     fn register_type_alias(&mut self, ta: &TypeAliasDecl) -> Result<(), TypeError> {
@@ -913,8 +1059,10 @@ impl InferCtx {
     ) -> Result<(), TypeError> {
         // Type variable names keep their leading quote, so these constructor
         // names cannot clash with a declared type.
+        // The annotation's row variable stays flexible.
         let rigid: HashMap<u32, Type> = spec_tyvars
             .iter()
+            .filter(|(tv, _)| tv.as_str() != ANNOTATION_ROW)
             .map(|(tv, &v)| (v, Type::Con(tv.clone())))
             .collect();
         let expected = self.substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
@@ -958,9 +1106,12 @@ impl InferCtx {
                     None => Type::App(name.clone(), args),
                 }
             }
-            Type::Arrow(a, b) => {
-                Type::arrow(self.reveal_abstract_types(a), self.reveal_abstract_types(b))
-            }
+            Type::Arrow(a, b, row) => Type::arrow(
+                self.reveal_abstract_types(a),
+                self.reveal_abstract_types(b),
+                (**row).clone(),
+            ),
+            Type::Row(..) => ty.clone(),
             Type::Tuple(ts) => {
                 Type::Tuple(ts.iter().map(|t| self.reveal_abstract_types(t)).collect())
             }
@@ -1069,7 +1220,7 @@ impl InferCtx {
                 let func_ty = self.infer_expr(func)?;
                 let arg_ty = self.infer_expr(arg)?;
                 let result = self.fresh();
-                let expected = Type::arrow(arg_ty, result.clone());
+                let expected = self.arrow(arg_ty, result.clone());
                 self.unify(&func_ty, &expected, expr.span)?;
                 Ok(result)
             }
@@ -1086,7 +1237,7 @@ impl InferCtx {
                 let resolved = self.apply(&param_ty);
                 let type_info = self.type_info_for(&resolved);
                 self.check_exhaustiveness(&[pat], &type_info, expr.span)?;
-                Ok(Type::arrow(param_ty, body_ty))
+                Ok(self.arrow(param_ty, body_ty))
             }
 
             ExprKind::If(cond, then_br, else_br) => {
@@ -1172,7 +1323,7 @@ impl InferCtx {
                         })?;
                     let payload_var_name = self.interner.resolve(handler.payload_var).to_string();
                     self.bind(payload_var_name, Scheme::mono(payload_ty));
-                    let cont_ty = Type::arrow(effect_result_ty, body_ty.clone());
+                    let cont_ty = self.arrow(effect_result_ty, body_ty.clone());
                     let cont_var_name = self.interner.resolve(handler.cont_var).to_string();
                     self.bind(cont_var_name, Scheme::mono(cont_ty));
                     let handler_ty = self.infer_expr(&handler.body)?;
@@ -1186,7 +1337,8 @@ impl InferCtx {
                 let cont_ty = self.infer_expr(cont)?;
                 let arg_ty = self.infer_expr(arg)?;
                 let result_ty = self.fresh();
-                self.unify(&cont_ty, &Type::arrow(arg_ty, result_ty.clone()), expr.span)?;
+                let expected = self.arrow(arg_ty, result_ty.clone());
+                self.unify(&cont_ty, &expected, expr.span)?;
                 Ok(result_ty)
             }
         }
@@ -1356,7 +1508,7 @@ impl InferCtx {
                     Some(payload_pat) => {
                         let result = self.fresh();
                         let (payload_ty, bindings) = self.infer_pat_inner(payload_pat)?;
-                        let expected = Type::arrow(payload_ty, result.clone());
+                        let expected = self.arrow(payload_ty, result.clone());
                         self.unify(&con_ty, &expected, pat.span)?;
                         Ok((result, bindings))
                     }
@@ -1421,7 +1573,7 @@ impl InferCtx {
                 // Check type aliases (0-arg)
                 if let Some((params, body)) = self.type_aliases.get(name).cloned() {
                     if params.is_empty() {
-                        return Ok(body);
+                        return Ok(self.alias_rows_to(&body, &params, tyvar_map));
                     }
                     return Err(self.err(
                         &format!("type {name} expects {} argument(s)", params.len()),
@@ -1476,6 +1628,7 @@ impl InferCtx {
                         .zip(resolved_args.iter())
                         .map(|(&v, arg)| (v, arg.clone()))
                         .collect();
+                    let body = self.alias_rows_to(&body, &param_vars, tyvar_map);
                     return Ok(self.substitute_vars(&body, &mapping));
                 }
                 // Check type constructor
@@ -1496,7 +1649,8 @@ impl InferCtx {
             TypeExprKind::Arrow(a, b) => {
                 let a = self.resolve_type_expr_inner(a, tyvar_map, strict_tyvars)?;
                 let b = self.resolve_type_expr_inner(b, tyvar_map, strict_tyvars)?;
-                Ok(Type::arrow(a, b))
+                let row = self.annotation_row(tyvar_map);
+                Ok(Type::arrow(a, b, row))
             }
             TypeExprKind::Tuple(ts) => {
                 let resolved: Vec<Type> = ts
@@ -1536,7 +1690,7 @@ impl InferCtx {
             }
             Type::Tuple(elems) => TypeInfo::tuple_type(elems.len()),
             Type::Var(_) => TypeInfo::infinite(), // unconstrained, assume infinite
-            Type::Arrow(_, _) => TypeInfo::infinite(),
+            Type::Arrow(..) | Type::Row(..) => TypeInfo::infinite(),
         }
     }
 
@@ -1650,11 +1804,25 @@ impl InferCtx {
 
 /// Whether `ty` contains a rigid signature type variable, which
 /// `check_matches_signature` represents as a constructor named `'a`.
+/// `{labels | tail}` with an applied `tail`: a row tail is merged in, so
+/// the result's tail is a variable or absent.
+fn extend_row(labels: &[String], tail: Type) -> Type {
+    match tail {
+        Type::Row(more, rest) => {
+            let mut all = labels.to_vec();
+            all.extend(more);
+            Type::row(all, rest.map(|rest| *rest))
+        }
+        tail => Type::row(labels.to_vec(), Some(tail)),
+    }
+}
+
 fn mentions_rigid_var(ty: &Type) -> bool {
     match ty {
         Type::Con(name) => name.starts_with('\''),
         Type::Var(_) => false,
-        Type::Arrow(a, b) => mentions_rigid_var(a) || mentions_rigid_var(b),
+        Type::Arrow(a, b, _) => mentions_rigid_var(a) || mentions_rigid_var(b),
+        Type::Row(..) => false,
         Type::Tuple(ts) | Type::App(_, ts) => ts.iter().any(mentions_rigid_var),
     }
 }

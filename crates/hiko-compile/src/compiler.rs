@@ -2124,7 +2124,7 @@ impl Compiler {
                 }
                 // Arity: 1 if the constructor has a payload, 0 otherwise
                 if let Some(scheme) = self.infer_ctx.constructor_scheme(&qualified) {
-                    let arity = matches!(&scheme.ty, Type::Arrow(_, _)) as u8;
+                    let arity = matches!(&scheme.ty, Type::Arrow(..)) as u8;
                     self.constructor_arities.insert(name.clone(), arity);
                 }
             } else if self.infer_ctx.has_value(&qualified) {
