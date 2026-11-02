@@ -97,7 +97,7 @@ aws_s3_client = 4
 
 - **Dispatch:** a builtin call dispatches on a kind stored at registration,
   so extension builtins cost the same as core ones (#147).
-- **Default binary:** the extension hooks add about 87 KB to the default
-  `hiko-cli` (6,743,280 to 6,830,656 bytes, macOS arm64), mostly the
-  generic run-config table parsing. The default build links no extension,
-  and its dependency tree is unchanged (153 crates).
+- **Default binary:** the extension hooks add about 104 KB to the default
+  `hiko-cli` (6,449,888 to 6,554,080 bytes after #148, macOS arm64), mostly
+  the generic run-config table parsing. The default build links no
+  extension, and its dependency tree is unchanged (97 crates).
