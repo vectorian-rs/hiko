@@ -610,3 +610,33 @@ against the one before.
   avoid runs only when `max_memory_bytes` is set, which no benchmark does,
   and reserving in chunks would let one process take budget its siblings
   could use near the limit.
+
+### What the VM executes (opcode counts, #152)
+
+Counted with the `opcode-stats` feature (`HIKO_OPCODE_STATS=<path>`) on
+`main` plus #149, #159 and #164. "Move" is the share of executed instructions
+that only move values between locals and the stack: `GetLocal*`,
+`SetLocal*`, `Pop`.
+
+| Program | Executed | Move share | Top opcodes |
+|---|---|---|---|
+| `compare/tak` | 38.0M | 67% | `GetLocal` 21%, `GetLocal3` 11%, `Pop` 10% |
+| `compare/sieve` | 67.7M | 65% | `GetLocal` 44%, `JumpIfNotTag` 9%, `GetLocal3` 7% |
+| `compare/nbody` | 72.2M | 65% | `GetLocal` 50%, `GetField` 8%, `GetLocal0` 6% |
+| `compare/list` | 231.9M | 63% | `GetLocal` 40%, `GetField0` 15%, `JumpIfNotTag` 10% |
+| `compare/queens` | 47.1M | 63% | `GetLocal` 38%, `GetLocal3` 9%, `JumpIfNotEq` 5% |
+| `list_length` | 171.2M | 59% | `GetLocal` 35%, `JumpIfNotTag` 12%, `GetLocal2` 6% |
+| `compare/mandelbrot` | 89.1M | 55% | `GetLocal` 43%, `Const` 11%, `MulFloat` 10% |
+| `compare/binary_trees` | 164.6M | 46% | `GetLocal1` 10%, `GetLocal0` 10%, `Pop` 10% |
+| `ack` | 167.5M | 43% | `Const` 20%, `GetLocal2` 13%, `JumpIfNotEq` 10% |
+| `compare/fib` | 67.0M | 26% | `GetLocal0` 26%, `Const` 21%, `Return` 11% |
+
+Over all ten programs, 1.12 billion instructions, 54% are moves. The generic
+`GetLocal` (2-byte operand) alone is 35 to 50% on most programs: the short
+forms cover only slots 0 to 3.
+
+Most frequent consecutive pairs, as a share of all pairs: `GetLocal ->
+GetLocal` 6.3%, `GetLocal -> JumpIfNotTag` 4.7%, `JumpIfNotTag -> GetLocal`
+4.7%, `GetLocal -> GetField0` 4.4%, `GetLocal0 -> GetLocal1` 4.1%,
+`GetField0 -> GetLocal` 3.4%, `GetLocal1 -> GetLocal2` 2.9%, `GetField1 ->
+GetLocal` 2.8%, `GetLocal -> GetField1` 2.4%, `Const -> JumpIfNotEq` 2.1%.
