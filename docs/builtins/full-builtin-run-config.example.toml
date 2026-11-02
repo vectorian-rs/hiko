@@ -38,11 +38,8 @@ max_file_read_bytes = 67_108_864        # one file read
 max_exec_output_bytes = 16_777_216      # each of stdout and stderr
 max_concurrent_io = 32                  # async I/O running at once per process tree
 
-# Opaque native Rust resources, such as AWS SDK config/client handles.
-[limits.host_resources]
-aws_config = 8
-aws_s3_client = 8
-aws_sqs_client = 8
+# [limits.host_resources] caps opaque native resources per kind. No host
+# resource kind exists today, so the table is omitted.
 
 # Standard input/output builtins.
 [capabilities.stdio.print]

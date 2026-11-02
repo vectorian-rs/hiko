@@ -243,11 +243,11 @@ The compiler then enforces the clause forms above.
 ## Non-Guarantees
 
 Hiko does not put effect sets in function types. A function that may perform
-`Aws.S3.list_buckets` does not have a type that records that fact. Hiko has no
+`Log.write` does not have a type that records that fact. Hiko has no
 function type like:
 
 ```text
-Aws.Config -> Result Error Report ! { Clock.now, Aws.S3.list_buckets }
+string -> Report ! { Clock.now, Log.write }
 ```
 
 This means:

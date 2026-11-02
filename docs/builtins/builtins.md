@@ -194,21 +194,3 @@ The raw builtins are intended to sit under `Std.Fiber`, which provides the user-
 | ----------- | -------------------------- | ----------------------------- |
 | `assert`    | `bool * string -> unit`    | Assert condition with message |
 | `assert_eq` | `'a * 'a * string -> unit` | Assert equality with message  |
-
-## AWS and GitHub (out of focus)
-
-These builtins are out of the project's current focus and may move out of this
-repository. Prefer the library wrappers (`Aws.S3`, `Aws.SQS`, `Gh.Issue`), which
-return `Std.Result`. The raw builtins return `bool * ... * string` tuples: a
-success flag, the payload, and an error message.
-
-- `aws_config_sso_profile : string -> aws_config`
-- `aws_config_instance_profile : unit -> aws_config`
-- `aws_s3_client : aws_config -> aws_s3_client`
-- `aws_s3_list_buckets : aws_s3_client -> bool * (string * string * string) list * string`
-- `aws_sqs_client : aws_config -> aws_sqs_client`
-- `aws_sqs_list_queues : aws_sqs_client -> bool * string list * string`
-- `github_issue_create : string * string * string -> bool * string * string`
-- `github_issue_view : string * int -> bool * string * string`
-- `github_issue_update : string * int * string -> bool * string * string`
-- `github_issue_list : string -> bool * string * string`

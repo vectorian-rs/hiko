@@ -276,7 +276,7 @@ while the request runs on the I/O backend (`ThreadPoolIoBackend`):
   deadline, however busy the workers are.
 - **One shared queue, fair across process trees.** A process tree is a root
   process plus every process it spawns, directly or indirectly. Blocking
-  requests (HTTP, file reads, AWS calls) wait in a queue per tree, and a free
+  requests (HTTP, file reads) wait in a queue per tree, and a free
   worker takes the next request round-robin across trees.
 - **Slow requests do not block others.** Blocking calls hold a worker each, so
   the pool grows when requests are waiting and no worker is idle, up to 256
@@ -339,7 +339,7 @@ For latency-sensitive use:
    and tighten the per-operation limits (`http_timeout_ms`, `exec_timeout_ms`,
    `max_*_bytes`) below their defaults where scripts only need small payloads.
 5. Set `max_memory_bytes` and, where useful, `max_heap`.
-6. Set `max_host_resources` and per-kind `limits.host_resources` caps when scripts can create native handles such as AWS clients.
+6. Set `max_host_resources` and per-kind `limits.host_resources` caps when a build has builtins that create native handles (none do today).
 7. Use the runtime-managed async I/O path for operations that may block.
 8. Treat sync HTTP/file/exec builtins as bounded but non-preemptive host calls.
    The longest pause one call of a CPU-bound builtin causes is in the
@@ -364,11 +364,6 @@ exec_timeout_ms = 30_000
 max_http_response_bytes = 8_388_608
 max_file_read_bytes = 8_388_608
 max_exec_output_bytes = 1_048_576
-
-[limits.host_resources]
-aws_config = 8
-aws_s3_client = 8
-aws_sqs_client = 8
 ```
 
 With the calibrated unit, `max_host_work = 10_000_000` is about 0.12 s of
@@ -389,7 +384,7 @@ Hiko does not currently provide:
 - preemption inside GC marking/sweeping;
 - exact wall-clock accounting for host work (only HTTP and `exec` have
   wall-clock timeouts);
-- deadlines for file reads and AWS calls: they can wait in the I/O queue and
+- deadlines for file reads: they can wait in the I/O queue and
   run for as long as the operation takes;
 - more than 256 blocking I/O requests running at once in one runtime: beyond
   that, requests queue (HTTP deadlines still apply).

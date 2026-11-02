@@ -1,9 +1,3 @@
-#[cfg(feature = "builtin-aws-config")]
-use crate::builder::AwsConfigPolicy as VmAwsConfigPolicy;
-#[cfg(feature = "builtin-aws-s3")]
-use crate::builder::AwsS3Policy as VmAwsS3Policy;
-#[cfg(feature = "builtin-aws-sqs")]
-use crate::builder::AwsSqsPolicy as VmAwsSqsPolicy;
 #[cfg(feature = "builtin-exec")]
 use crate::builder::ExecPolicy as VmExecPolicy;
 use crate::builder::VMBuilder;
@@ -133,16 +127,6 @@ struct HttpLeaf {
     enabled: bool,
     #[serde(default)]
     allowed_hosts: Vec<String>,
-}
-
-#[cfg(feature = "builtin-aws-config")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct AwsSsoProfileLeaf {
-    #[serde(default)]
-    enabled: bool,
-    #[serde(default)]
-    allowed_profiles: Vec<String>,
 }
 
 /// The `exec` timeout is `[limits] exec_timeout_ms`.
@@ -556,200 +540,6 @@ impl ExecCapabilities {
     }
 }
 
-#[cfg(feature = "builtin-aws-config")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct AwsCapabilities {
-    #[serde(default)]
-    config: AwsConfigCapabilities,
-    #[cfg(feature = "builtin-aws-s3")]
-    #[serde(default)]
-    s3: AwsS3Capabilities,
-    #[cfg(feature = "builtin-aws-sqs")]
-    #[serde(default)]
-    sqs: AwsSqsCapabilities,
-}
-
-#[cfg(feature = "builtin-aws-config")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct AwsConfigCapabilities {
-    sso_profile: Option<AwsSsoProfileLeaf>,
-    instance_profile: Option<EnabledLeaf>,
-}
-
-#[cfg(feature = "builtin-aws-s3")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct AwsS3Capabilities {
-    list_buckets: Option<EnabledLeaf>,
-}
-
-#[cfg(feature = "builtin-aws-sqs")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct AwsSqsCapabilities {
-    list_queues: Option<EnabledLeaf>,
-}
-
-#[cfg(feature = "builtin-aws-config")]
-impl AwsCapabilities {
-    fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        let builder = self.config.apply(builder);
-        #[cfg(feature = "builtin-aws-s3")]
-        let builder = self.s3.apply(builder);
-        #[cfg(feature = "builtin-aws-sqs")]
-        let builder = self.sqs.apply(builder);
-        builder
-    }
-
-    fn emit(&self, out: &mut String) {
-        self.config.emit(out);
-        #[cfg(feature = "builtin-aws-s3")]
-        self.s3.emit(out);
-        #[cfg(feature = "builtin-aws-sqs")]
-        self.sqs.emit(out);
-    }
-
-    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        self.config.extend_enabled(out);
-        #[cfg(feature = "builtin-aws-s3")]
-        self.s3.extend_enabled(out);
-        #[cfg(feature = "builtin-aws-sqs")]
-        self.sqs.extend_enabled(out);
-    }
-}
-
-#[cfg(feature = "builtin-aws-config")]
-impl AwsConfigCapabilities {
-    fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        let sso_enabled = self.sso_profile.as_ref().is_some_and(|leaf| leaf.enabled);
-        let instance_enabled = self
-            .instance_profile
-            .as_ref()
-            .is_some_and(|leaf| leaf.enabled);
-        if sso_enabled || instance_enabled {
-            return builder.with_aws_config(VmAwsConfigPolicy {
-                allowed_sso_profiles: self
-                    .sso_profile
-                    .as_ref()
-                    .map(|leaf| leaf.allowed_profiles.clone())
-                    .unwrap_or_default(),
-                allow_instance_profile: instance_enabled,
-            });
-        }
-        builder
-    }
-
-    fn emit(&self, out: &mut String) {
-        let sso_enabled = self.sso_profile.as_ref().is_some_and(|leaf| leaf.enabled);
-        let instance_enabled = self
-            .instance_profile
-            .as_ref()
-            .is_some_and(|leaf| leaf.enabled);
-        if sso_enabled || instance_enabled {
-            let allowed_profiles = self
-                .sso_profile
-                .as_ref()
-                .map(|leaf| leaf.allowed_profiles.clone())
-                .unwrap_or_default();
-            out.push_str(&format!(
-                "            .with_aws_config(hiko_vm::builder::AwsConfigPolicy {{\n\
-                 \x20               allowed_sso_profiles: vec![{}],\n\
-                 \x20               allow_instance_profile: {},\n\
-                 \x20           }})\n",
-                rust_string_vec(&allowed_profiles),
-                instance_enabled
-            ));
-        }
-    }
-
-    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        let sso_enabled = self.sso_profile.as_ref().is_some_and(|leaf| leaf.enabled);
-        let instance_enabled = self
-            .instance_profile
-            .as_ref()
-            .is_some_and(|leaf| leaf.enabled);
-        if sso_enabled || instance_enabled {
-            // The public Aws.Config module exposes both constructors. Compile-time
-            // builtin discovery therefore needs both raw names whenever the config
-            // domain is present; runtime policy checks still gate actual use.
-            out.insert("aws_config_sso_profile");
-            out.insert("aws_config_instance_profile");
-        }
-    }
-}
-
-#[cfg(feature = "builtin-aws-s3")]
-impl AwsS3Capabilities {
-    fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        if let Some(leaf) = &self.list_buckets
-            && leaf.enabled
-        {
-            return builder.with_aws_s3(VmAwsS3Policy {
-                allow_list_buckets: true,
-            });
-        }
-        builder
-    }
-
-    fn emit(&self, out: &mut String) {
-        if let Some(leaf) = &self.list_buckets
-            && leaf.enabled
-        {
-            out.push_str(
-                "            .with_aws_s3(hiko_vm::builder::AwsS3Policy {\n\
-                 \x20               allow_list_buckets: true,\n\
-                 \x20           })\n",
-            );
-        }
-    }
-
-    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        if let Some(leaf) = &self.list_buckets
-            && leaf.enabled
-        {
-            out.insert("aws_s3_client");
-            out.insert("aws_s3_list_buckets");
-        }
-    }
-}
-
-#[cfg(feature = "builtin-aws-sqs")]
-impl AwsSqsCapabilities {
-    fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        if let Some(leaf) = &self.list_queues
-            && leaf.enabled
-        {
-            return builder.with_aws_sqs(VmAwsSqsPolicy {
-                allow_list_queues: true,
-            });
-        }
-        builder
-    }
-
-    fn emit(&self, out: &mut String) {
-        if let Some(leaf) = &self.list_queues
-            && leaf.enabled
-        {
-            out.push_str(
-                "            .with_aws_sqs(hiko_vm::builder::AwsSqsPolicy {\n\
-                 \x20               allow_list_queues: true,\n\
-                 \x20           })\n",
-            );
-        }
-    }
-
-    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        if let Some(leaf) = &self.list_queues
-            && leaf.enabled
-        {
-            out.insert("aws_sqs_client");
-            out.insert("aws_sqs_list_queues");
-        }
-    }
-}
-
 impl ProcessCapabilities {
     fn requires_runtime(&self) -> bool {
         self.spawn.as_ref().is_some_and(|leaf| leaf.enabled)
@@ -759,196 +549,9 @@ impl ProcessCapabilities {
     }
 }
 
-#[cfg(feature = "builtin-github")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct GitHubCapabilities {
-    #[serde(default)]
-    pub issue: GitHubIssueCapabilities,
-}
-
-#[cfg(feature = "builtin-github")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct GitHubIssueCapabilities {
-    pub create: Option<GitHubIssueLeaf>,
-    pub view: Option<GitHubIssueLeaf>,
-    pub update: Option<GitHubIssueLeaf>,
-    pub list: Option<GitHubIssueLeaf>,
-}
-
-#[cfg(feature = "builtin-github")]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct GitHubIssueLeaf {
-    pub enabled: bool,
-    #[serde(default)]
-    pub allowed_repos: Vec<String>,
-}
-
-#[cfg(feature = "builtin-github")]
-impl GitHubCapabilities {
-    fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        let create_repos = self
-            .issue
-            .create
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-        let view_repos = self
-            .issue
-            .view
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-        let update_repos = self
-            .issue
-            .update
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-        let list_repos = self
-            .issue
-            .list
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-
-        if !create_repos.is_empty()
-            || !view_repos.is_empty()
-            || !update_repos.is_empty()
-            || !list_repos.is_empty()
-        {
-            return builder.with_github_issue(crate::builder::GitHubIssuePolicy {
-                create_repos,
-                view_repos,
-                update_repos,
-                list_repos,
-            });
-        }
-        builder
-    }
-
-    fn emit(&self, out: &mut String) {
-        let create_repos = self
-            .issue
-            .create
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-        let view_repos = self
-            .issue
-            .view
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-        let update_repos = self
-            .issue
-            .update
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-        let list_repos = self
-            .issue
-            .list
-            .as_ref()
-            .filter(|l| l.enabled)
-            .map(|l| l.allowed_repos.clone())
-            .unwrap_or_default();
-
-        if !create_repos.is_empty()
-            || !view_repos.is_empty()
-            || !update_repos.is_empty()
-            || !list_repos.is_empty()
-        {
-            out.push_str(&format!(
-                "            .with_github_issue(hiko_vm::builder::GitHubIssuePolicy {{\n\
-                 \x20               create_repos: vec![{}],\n\
-                 \x20               view_repos: vec![{}],\n\
-                 \x20               update_repos: vec![{}],\n\
-                 \x20               list_repos: vec![{}],\n\
-                 \x20           }})\n",
-                rust_string_vec(&create_repos),
-                rust_string_vec(&view_repos),
-                rust_string_vec(&update_repos),
-                rust_string_vec(&list_repos),
-            ));
-        }
-    }
-
-    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        if self.issue.create.as_ref().is_some_and(|l| l.enabled) {
-            out.insert("github_issue_create");
-        }
-        if self.issue.view.as_ref().is_some_and(|l| l.enabled) {
-            out.insert("github_issue_view");
-        }
-        if self.issue.update.as_ref().is_some_and(|l| l.enabled) {
-            out.insert("github_issue_update");
-        }
-        if self.issue.list.as_ref().is_some_and(|l| l.enabled) {
-            out.insert("github_issue_list");
-        }
-    }
-}
-
-#[cfg(feature = "builtin-aws-config")]
-impl AwsCapabilities {
-    fn requires_runtime(&self) -> bool {
-        self.config
-            .sso_profile
-            .as_ref()
-            .is_some_and(|leaf| leaf.enabled)
-            || self
-                .config
-                .instance_profile
-                .as_ref()
-                .is_some_and(|leaf| leaf.enabled)
-            || {
-                #[cfg(feature = "builtin-aws-s3")]
-                {
-                    self.s3
-                        .list_buckets
-                        .as_ref()
-                        .is_some_and(|leaf| leaf.enabled)
-                }
-                #[cfg(not(feature = "builtin-aws-s3"))]
-                {
-                    false
-                }
-            }
-            || {
-                #[cfg(feature = "builtin-aws-sqs")]
-                {
-                    self.sqs
-                        .list_queues
-                        .as_ref()
-                        .is_some_and(|leaf| leaf.enabled)
-                }
-                #[cfg(not(feature = "builtin-aws-sqs"))]
-                {
-                    false
-                }
-            }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
-    #[cfg(feature = "builtin-aws-config")]
-    #[serde(default)]
-    pub aws: AwsCapabilities,
-    #[cfg(feature = "builtin-github")]
-    #[serde(default)]
-    pub github: GitHubCapabilities,
     #[serde(default)]
     pub stdio: StdioCapabilities,
     #[serde(default)]
@@ -995,10 +598,6 @@ impl Capabilities {
         for name in unrestricted_runtime_builtin_names() {
             builder = builder.register_builtin_name(name);
         }
-        #[cfg(feature = "builtin-aws-config")]
-        let builder = self.aws.apply(builder);
-        #[cfg(feature = "builtin-github")]
-        let builder = self.github.apply(builder);
         let builder = self.stdio.apply(builder);
         let builder = self.convert.apply(builder);
         let builder = self.string.apply(builder);
@@ -1024,10 +623,6 @@ impl Capabilities {
         for name in unrestricted_runtime_builtin_names() {
             out.push_str(&format!("            .register_builtin_name({name:?})\n"));
         }
-        #[cfg(feature = "builtin-aws-config")]
-        self.aws.emit(out);
-        #[cfg(feature = "builtin-github")]
-        self.github.emit(out);
         self.stdio.emit(out);
         self.convert.emit(out);
         self.string.emit(out);
@@ -1051,10 +646,6 @@ impl Capabilities {
 
     fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
         let mut out: BTreeSet<_> = unrestricted_runtime_builtin_names().collect();
-        #[cfg(feature = "builtin-aws-config")]
-        self.aws.extend_enabled(&mut out);
-        #[cfg(feature = "builtin-github")]
-        self.github.extend_enabled(&mut out);
         self.stdio.extend_enabled(&mut out);
         self.convert.extend_enabled(&mut out);
         self.string.extend_enabled(&mut out);
@@ -1078,16 +669,7 @@ impl Capabilities {
     }
 
     fn requires_runtime(&self) -> bool {
-        self.process.requires_runtime() || {
-            #[cfg(feature = "builtin-aws-config")]
-            {
-                self.aws.requires_runtime()
-            }
-            #[cfg(not(feature = "builtin-aws-config"))]
-            {
-                false
-            }
-        }
+        self.process.requires_runtime()
     }
 }
 
@@ -1435,8 +1017,8 @@ folders = ["."]
 max_host_resources = 4
 
 [limits.host_resources]
-aws_config = 1
-aws_s3_client = 2
+unsupported = 1
+other = 2
 "#,
         )
         .expect("host resource limits should parse");
@@ -1444,25 +1026,8 @@ aws_s3_client = 2
         let rust_source = config.to_rust_source();
         assert!(rust_source.contains(".max_host_resources(4)"));
         assert!(rust_source.contains(".host_resource_limits(std::collections::HashMap::from(["));
-        assert!(rust_source.contains("(\"aws_config\".to_string(), 1usize)"));
-        assert!(rust_source.contains("(\"aws_s3_client\".to_string(), 2usize)"));
-    }
-
-    #[test]
-    #[cfg(feature = "builtin-aws-config")]
-    fn aws_config_policy_exposes_config_module_builtins_but_runtime_gates_use() {
-        let config = RunConfig::from_toml(
-            r#"
-[capabilities.aws.config.sso_profile]
-enabled = true
-allowed_profiles = ["dev"]
-"#,
-        )
-        .expect("AWS config policy should parse");
-        let enabled = config.enabled_builtin_names();
-
-        assert!(enabled.contains("aws_config_sso_profile"));
-        assert!(enabled.contains("aws_config_instance_profile"));
+        assert!(rust_source.contains("(\"unsupported\".to_string(), 1usize)"));
+        assert!(rust_source.contains("(\"other\".to_string(), 2usize)"));
     }
 
     #[test]

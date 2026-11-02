@@ -121,20 +121,6 @@ struct BuiltinIds {
     http_msgpack_builtin_id: Option<u16>,
     http_bytes_builtin_id: Option<u16>,
     read_file_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-config")]
-    aws_config_sso_profile_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-config")]
-    aws_config_instance_profile_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-s3")]
-    aws_s3_list_buckets_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-sqs")]
-    aws_sqs_list_queues_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-github")]
-    github_issue_create_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-github")]
-    github_issue_view_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-github")]
-    github_issue_update_builtin_id: Option<u16>,
 }
 
 /// The builtins a VM can call, with the name each is registered under.
@@ -379,23 +365,6 @@ impl VM {
     /// Set per-builtin HTTP host allowlists.
     pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
         self.heap.set_http_allowed_hosts_by_builtin(hosts);
-    }
-
-    /// Set per-builtin GitHub issue repo allowlists.
-    #[cfg(feature = "builtin-github")]
-    pub fn set_github_issue_allowed_repos(&mut self, repos: HashMap<String, Vec<String>>) {
-        self.heap.set_github_issue_allowed_repos(repos);
-    }
-
-    /// Set allowed AWS SSO profile names.
-    #[cfg(feature = "builtin-aws-config")]
-    pub fn set_aws_sso_profiles(&mut self, profiles: Vec<String>) {
-        self.heap.set_aws_sso_profiles(profiles);
-    }
-
-    #[cfg(feature = "builtin-aws-config")]
-    pub fn set_aws_allow_instance_profile(&mut self, allowed: bool) {
-        self.heap.set_aws_allow_instance_profile(allowed);
     }
 
     /// Check if a filesystem path is within the allowed root.
@@ -2115,7 +2084,7 @@ mod tests {
         vm.set_max_host_work(100);
         vm.heap.charge_host_work(30).unwrap();
         vm.set_max_host_resources(4);
-        vm.set_host_resource_limits(HashMap::from([("aws_config".to_string(), 1)]));
+        vm.set_host_resource_limits(HashMap::from([("other".to_string(), 1)]));
 
         let mut child = vm.create_child();
         child.heap.charge_host_work(60).unwrap();
@@ -2124,10 +2093,7 @@ mod tests {
 
         assert_eq!(child.heap.max_host_work(), Some(100));
         assert_eq!(child.heap.max_host_resources(), Some(4));
-        assert_eq!(
-            child.heap.host_resource_limits().get("aws_config"),
-            Some(&1)
-        );
+        assert_eq!(child.heap.host_resource_limits().get("other"), Some(&1));
 
         // Host resources are counted for the tree: three in the child and
         // one in the parent use up the limit of four.
@@ -2458,60 +2424,5 @@ mod tests {
         assert!(files[0].ends_with("file.txt"));
 
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[cfg(feature = "builtin-github")]
-    #[test]
-    fn test_github_issue_rejects_denied_repo() {
-        use crate::builder::GitHubIssuePolicy;
-
-        let program = compile_program(r#"val _ = github_issue_create ("evil-org/nope", "x", "y")"#);
-        let mut vm = VMBuilder::new(program)
-            .with_core()
-            .with_github_issue(GitHubIssuePolicy {
-                create_repos: vec!["vectorian-rs/hiko".to_string()],
-                view_repos: vec![],
-                update_repos: vec![],
-                list_repos: vec![],
-            })
-            .build();
-
-        let err = vm.run().expect_err("denied repo should fail");
-        assert!(
-            err.message.contains("not in allowed repos"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    #[cfg(feature = "builtin-github")]
-    #[test]
-    fn test_github_issue_policy_child_inheritance() {
-        use crate::builder::GitHubIssuePolicy;
-
-        let program = compile_program("val _ = ()");
-        let vm = VMBuilder::new(program)
-            .with_core()
-            .with_github_issue(GitHubIssuePolicy {
-                create_repos: vec!["vectorian-rs/hiko".to_string()],
-                view_repos: vec![],
-                update_repos: vec![],
-                list_repos: vec![],
-            })
-            .build();
-
-        let child = vm.create_child();
-        assert!(
-            child
-                .heap()
-                .check_github_repo_for("github_issue_create", "vectorian-rs/hiko")
-                .is_ok()
-        );
-        assert!(
-            child
-                .heap()
-                .check_github_repo_for("github_issue_create", "other/repo")
-                .is_err()
-        );
     }
 }

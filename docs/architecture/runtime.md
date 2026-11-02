@@ -90,7 +90,7 @@ Rule:
 A closure is sent as its function index and its captures. Every process runs
 the same compiled program and registers the same builtins in the same order,
 so the index means the same function in the child. `Rng`
-values and host handles (other than AWS configs) cannot be sent; trying to
+values and host handles cannot be sent; trying to
 send one is a runtime error that names the kind of value.
 
 Copying is iterative and bounded by `max_message_bytes` and a depth limit. See

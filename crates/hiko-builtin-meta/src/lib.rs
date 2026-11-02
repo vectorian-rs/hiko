@@ -1,9 +1,3 @@
-#[cfg(feature = "builtin-aws-config")]
-mod aws_config;
-#[cfg(feature = "builtin-aws-s3")]
-mod aws_s3;
-#[cfg(feature = "builtin-aws-sqs")]
-mod aws_sqs;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -14,8 +8,6 @@ mod env;
 mod exec;
 #[cfg(feature = "builtin-filesystem")]
 mod filesystem;
-#[cfg(feature = "builtin-github")]
-mod github;
 #[cfg(feature = "builtin-hash")]
 mod hash;
 #[cfg(feature = "builtin-http")]
@@ -107,14 +99,6 @@ pub use signatures::{
 };
 
 const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
-    #[cfg(feature = "builtin-aws-config")]
-    aws_config::BUILTINS,
-    #[cfg(feature = "builtin-aws-s3")]
-    aws_s3::BUILTINS,
-    #[cfg(feature = "builtin-aws-sqs")]
-    aws_sqs::BUILTINS,
-    #[cfg(feature = "builtin-github")]
-    github::BUILTINS,
     #[cfg(feature = "builtin-stdio")]
     stdio::BUILTINS,
     #[cfg(feature = "builtin-convert")]

@@ -27,7 +27,6 @@ builtin-all = [
     "builtin-exec",
     "builtin-system",
     "builtin-testing",
-    "builtin-github",
 ]
 loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3"]
 loader-named-imports = ["hiko-compile/loader-named-imports"]
@@ -142,32 +141,6 @@ builtin-testing = [
     "hiko-compile/builtin-testing",
     "hiko-types/builtin-testing",
     "hiko-vm/builtin-testing",
-]
-builtin-aws-config = [
-    "hiko-builtin-meta/builtin-aws-config",
-    "hiko-compile/builtin-aws-config",
-    "hiko-types/builtin-aws-config",
-    "hiko-vm/builtin-aws-config",
-]
-builtin-aws-s3 = [
-    "builtin-aws-config",
-    "hiko-builtin-meta/builtin-aws-s3",
-    "hiko-compile/builtin-aws-s3",
-    "hiko-types/builtin-aws-s3",
-    "hiko-vm/builtin-aws-s3",
-]
-builtin-aws-sqs = [
-    "builtin-aws-config",
-    "hiko-builtin-meta/builtin-aws-sqs",
-    "hiko-compile/builtin-aws-sqs",
-    "hiko-types/builtin-aws-sqs",
-    "hiko-vm/builtin-aws-sqs",
-]
-builtin-github = [
-    "hiko-builtin-meta/builtin-github",
-    "hiko-compile/builtin-github",
-    "hiko-types/builtin-github",
-    "hiko-vm/builtin-github",
 ]
 
 [dependencies]

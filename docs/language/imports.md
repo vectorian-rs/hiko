@@ -148,7 +148,7 @@ url = "http://127.0.0.1:8000"
 
 [dependencies]
 Std = { version = "0.1.0", registry = "local" }
-Aws = { version = "0.1.0", registry = "local" }
+Hash = { version = "0.1.0", registry = "local" }
 ```
 
 `defaults.lockfile` is resolved relative to the directory containing

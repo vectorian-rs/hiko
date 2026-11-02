@@ -1,9 +1,0 @@
-[capabilities.stdio.println]
-enabled = true
-
-[capabilities.http.http_get]
-enabled = true
-allowed_hosts = ["api.github.com"]
-
-[capabilities.json.json_parse]
-enabled = true

@@ -1,8 +1,5 @@
 #[cfg(any(
     test,
-    feature = "builtin-aws-config",
-    feature = "builtin-aws-s3",
-    feature = "builtin-aws-sqs",
     feature = "builtin-bytes",
     feature = "builtin-convert",
     feature = "builtin-env",
@@ -19,8 +16,7 @@
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time",
-    feature = "builtin-github"
+    feature = "builtin-time"
 ))]
 use crate::heap::Heap;
 use crate::value::BuiltinFn;
@@ -42,15 +38,11 @@ use crate::value::BuiltinFn;
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time",
-    feature = "builtin-github"
+    feature = "builtin-time"
 ))]
 use crate::value::HeapObject;
 #[cfg(any(
     test,
-    feature = "builtin-aws-config",
-    feature = "builtin-aws-s3",
-    feature = "builtin-aws-sqs",
     feature = "builtin-bytes",
     feature = "builtin-convert",
     feature = "builtin-env",
@@ -67,8 +59,7 @@ use crate::value::HeapObject;
     feature = "builtin-string",
     feature = "builtin-system",
     feature = "builtin-testing",
-    feature = "builtin-time",
-    feature = "builtin-github"
+    feature = "builtin-time"
 ))]
 use crate::value::Value;
 
@@ -117,12 +108,6 @@ pub(crate) use http_args::extract_http_args;
 #[cfg(feature = "builtin-http")]
 pub(crate) use http_args::{HttpArgRefs, extract_http_arg_refs};
 
-#[cfg(any(
-    feature = "builtin-aws-config",
-    feature = "builtin-aws-s3",
-    feature = "builtin-aws-sqs"
-))]
-mod aws;
 #[cfg(feature = "builtin-bytes")]
 mod bytes;
 #[cfg(feature = "builtin-convert")]
@@ -135,8 +120,6 @@ mod env;
 mod exec;
 #[cfg(feature = "builtin-filesystem")]
 mod filesystem;
-#[cfg(feature = "builtin-github")]
-mod github;
 #[cfg(feature = "builtin-hash")]
 mod hash;
 #[cfg(feature = "builtin-http")]
@@ -175,13 +158,6 @@ pub(crate) fn builtin_entries() -> Vec<(&'static str, BuiltinFn)> {
 }
 
 fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
-    #[cfg(any(
-        feature = "builtin-aws-config",
-        feature = "builtin-aws-s3",
-        feature = "builtin-aws-sqs"
-    ))]
-    _entries.extend(aws::entries());
-
     #[cfg(feature = "builtin-stdio")]
     _entries.extend(stdio::entries());
 
@@ -241,9 +217,6 @@ fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
 
     #[cfg(feature = "builtin-testing")]
     _entries.extend(testing::entries());
-
-    #[cfg(feature = "builtin-github")]
-    _entries.extend(github::entries());
 }
 
 #[cfg(test)]
