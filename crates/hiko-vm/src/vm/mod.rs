@@ -121,14 +121,6 @@ struct BuiltinIds {
     http_msgpack_builtin_id: Option<u16>,
     http_bytes_builtin_id: Option<u16>,
     read_file_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-config")]
-    aws_config_sso_profile_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-config")]
-    aws_config_instance_profile_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-s3")]
-    aws_s3_list_buckets_builtin_id: Option<u16>,
-    #[cfg(feature = "builtin-aws-sqs")]
-    aws_sqs_list_queues_builtin_id: Option<u16>,
 }
 
 /// The builtins a VM can call, with the name each is registered under.
@@ -373,17 +365,6 @@ impl VM {
     /// Set per-builtin HTTP host allowlists.
     pub fn set_http_allowed_hosts_by_builtin(&mut self, hosts: HashMap<String, Vec<String>>) {
         self.heap.set_http_allowed_hosts_by_builtin(hosts);
-    }
-
-    /// Set allowed AWS SSO profile names.
-    #[cfg(feature = "builtin-aws-config")]
-    pub fn set_aws_sso_profiles(&mut self, profiles: Vec<String>) {
-        self.heap.set_aws_sso_profiles(profiles);
-    }
-
-    #[cfg(feature = "builtin-aws-config")]
-    pub fn set_aws_allow_instance_profile(&mut self, allowed: bool) {
-        self.heap.set_aws_allow_instance_profile(allowed);
     }
 
     /// Check if a filesystem path is within the allowed root.
@@ -2103,7 +2084,7 @@ mod tests {
         vm.set_max_host_work(100);
         vm.heap.charge_host_work(30).unwrap();
         vm.set_max_host_resources(4);
-        vm.set_host_resource_limits(HashMap::from([("aws_config".to_string(), 1)]));
+        vm.set_host_resource_limits(HashMap::from([("other".to_string(), 1)]));
 
         let mut child = vm.create_child();
         child.heap.charge_host_work(60).unwrap();
@@ -2112,10 +2093,7 @@ mod tests {
 
         assert_eq!(child.heap.max_host_work(), Some(100));
         assert_eq!(child.heap.max_host_resources(), Some(4));
-        assert_eq!(
-            child.heap.host_resource_limits().get("aws_config"),
-            Some(&1)
-        );
+        assert_eq!(child.heap.host_resource_limits().get("other"), Some(&1));
 
         // Host resources are counted for the tree: three in the child and
         // one in the parent use up the limit of four.

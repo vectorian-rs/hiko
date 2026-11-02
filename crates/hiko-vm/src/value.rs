@@ -31,80 +31,22 @@ pub enum Value {
 pub struct HostHandleId(pub u64);
 
 /// Runtime kind tag for an opaque host resource handle.
-// `Unsupported` keeps the type inhabited when no AWS feature is enabled; it
-// is not a non-exhaustive marker.
+// `Unsupported` keeps the type inhabited while no host resource kind
+// exists; it is not a non-exhaustive marker.
 #[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostHandleKind {
-    #[cfg(feature = "builtin-aws-config")]
-    AwsConfig,
-    #[cfg(feature = "builtin-aws-s3")]
-    AwsS3Client,
-    #[cfg(feature = "builtin-aws-sqs")]
-    AwsSqsClient,
     #[doc(hidden)]
     Unsupported,
 }
 
-#[cfg(feature = "builtin-aws-config")]
-pub struct AwsConfigHandle {
-    pub auth: AwsConfigAuthMethod,
-    pub sdk_config: Arc<aws_config::SdkConfig>,
-}
-
-#[cfg(feature = "builtin-aws-config")]
-impl fmt::Debug for AwsConfigHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AwsConfigHandle")
-            .field("auth", &self.auth)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "builtin-aws-config")]
-#[derive(Debug)]
-pub enum AwsConfigAuthMethod {
-    SsoProfile { profile: String },
-    InstanceProfile,
-}
-
-#[cfg(feature = "builtin-aws-s3")]
-pub struct AwsS3ClientHandle {
-    pub client: Arc<aws_sdk_s3::Client>,
-}
-
-#[cfg(feature = "builtin-aws-s3")]
-impl fmt::Debug for AwsS3ClientHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AwsS3ClientHandle").finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "builtin-aws-sqs")]
-pub struct AwsSqsClientHandle {
-    pub client: Arc<aws_sdk_sqs::Client>,
-}
-
-#[cfg(feature = "builtin-aws-sqs")]
-impl fmt::Debug for AwsSqsClientHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AwsSqsClientHandle").finish_non_exhaustive()
-    }
-}
-
 /// VM-owned opaque native resource. Heap values store only a small typed handle;
 /// the native Rust object is kept in the owning heap's host-resource table.
-// `Unsupported` keeps the type inhabited when no AWS feature is enabled; it
-// is not a non-exhaustive marker.
+// `Unsupported` keeps the type inhabited while no host resource kind
+// exists; it is not a non-exhaustive marker.
 #[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug)]
 pub enum HostResource {
-    #[cfg(feature = "builtin-aws-config")]
-    AwsConfig(AwsConfigHandle),
-    #[cfg(feature = "builtin-aws-s3")]
-    AwsS3Client(AwsS3ClientHandle),
-    #[cfg(feature = "builtin-aws-sqs")]
-    AwsSqsClient(AwsSqsClientHandle),
     #[doc(hidden)]
     Unsupported,
 }
@@ -112,12 +54,6 @@ pub enum HostResource {
 impl HostResource {
     pub fn kind(&self) -> HostHandleKind {
         match self {
-            #[cfg(feature = "builtin-aws-config")]
-            HostResource::AwsConfig(_) => HostHandleKind::AwsConfig,
-            #[cfg(feature = "builtin-aws-s3")]
-            HostResource::AwsS3Client(_) => HostHandleKind::AwsS3Client,
-            #[cfg(feature = "builtin-aws-sqs")]
-            HostResource::AwsSqsClient(_) => HostHandleKind::AwsSqsClient,
             HostResource::Unsupported => HostHandleKind::Unsupported,
         }
     }

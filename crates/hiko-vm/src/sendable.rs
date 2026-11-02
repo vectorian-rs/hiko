@@ -15,8 +15,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::heap::{Heap, HeapLimitExceeded};
-#[cfg(feature = "builtin-aws-config")]
-use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
 use crate::value::{Fields, GcRef, HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 
@@ -54,15 +52,6 @@ pub enum SendableValue {
     Unit,
     String(Arc<str>),
     Bytes(Arc<[u8]>),
-    #[cfg(feature = "builtin-aws-config")]
-    AwsConfigSsoProfile {
-        profile: Arc<str>,
-        sdk_config: Arc<aws_config::SdkConfig>,
-    },
-    #[cfg(feature = "builtin-aws-config")]
-    AwsConfigInstanceProfile {
-        sdk_config: Arc<aws_config::SdkConfig>,
-    },
     Tuple(Vec<SendableValue>),
     List(Vec<SendableValue>),
     Data {
@@ -135,10 +124,6 @@ impl SendableValue {
             SendableValue::Unit => 0,
             SendableValue::String(text) => text.len(),
             SendableValue::Bytes(bytes) => bytes.len(),
-            #[cfg(feature = "builtin-aws-config")]
-            SendableValue::AwsConfigSsoProfile { profile, .. } => profile.len(),
-            #[cfg(feature = "builtin-aws-config")]
-            SendableValue::AwsConfigInstanceProfile { .. } => 0,
             SendableValue::Tuple(_)
             | SendableValue::List(_)
             | SendableValue::Data { .. }
@@ -184,20 +169,6 @@ impl SendableValue {
             SendableValue::Builtin(idx) => SendableValue::Builtin(*idx),
             SendableValue::String(s) => SendableValue::String(s.clone()),
             SendableValue::Bytes(b) => SendableValue::Bytes(b.clone()),
-            #[cfg(feature = "builtin-aws-config")]
-            SendableValue::AwsConfigSsoProfile {
-                profile,
-                sdk_config,
-            } => SendableValue::AwsConfigSsoProfile {
-                profile: profile.clone(),
-                sdk_config: sdk_config.clone(),
-            },
-            #[cfg(feature = "builtin-aws-config")]
-            SendableValue::AwsConfigInstanceProfile { sdk_config } => {
-                SendableValue::AwsConfigInstanceProfile {
-                    sdk_config: sdk_config.clone(),
-                }
-            }
             SendableValue::Tuple(_)
             | SendableValue::List(_)
             | SendableValue::Data { .. }
@@ -542,23 +513,6 @@ fn deserialize_leaf(value: &SendableValue, heap: &mut Heap) -> Result<Value, Hea
         SendableValue::Builtin(idx) => Ok(Value::Builtin(*idx)),
         SendableValue::String(s) => Ok(Value::Heap(heap.alloc(HeapObject::String(s.clone()))?)),
         SendableValue::Bytes(b) => Ok(Value::Heap(heap.alloc(HeapObject::Bytes(b.clone()))?)),
-        #[cfg(feature = "builtin-aws-config")]
-        SendableValue::AwsConfigSsoProfile {
-            profile,
-            sdk_config,
-        } => heap.alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
-            auth: AwsConfigAuthMethod::SsoProfile {
-                profile: profile.to_string(),
-            },
-            sdk_config: sdk_config.clone(),
-        })),
-        #[cfg(feature = "builtin-aws-config")]
-        SendableValue::AwsConfigInstanceProfile { sdk_config } => {
-            heap.alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
-                auth: AwsConfigAuthMethod::InstanceProfile,
-                sdk_config: sdk_config.clone(),
-            }))
-        }
         SendableValue::Tuple(_)
         | SendableValue::List(_)
         | SendableValue::Data { .. }
@@ -859,23 +813,6 @@ mod tests {
         let result = serialize(rng, &heap);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Rng"));
-    }
-
-    #[cfg(feature = "builtin-aws-config")]
-    #[test]
-    fn test_host_handle_rejected() {
-        use crate::value::{AwsConfigAuthMethod, AwsConfigHandle, HostResource};
-
-        let mut heap = Heap::new();
-        let handle = heap
-            .alloc_host_resource(HostResource::AwsConfig(AwsConfigHandle {
-                auth: AwsConfigAuthMethod::InstanceProfile,
-                sdk_config: Arc::new(aws_config::SdkConfig::builder().build()),
-            }))
-            .unwrap();
-        let result = serialize(handle, &heap);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("host resource"));
     }
 
     #[test]

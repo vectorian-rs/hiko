@@ -12,7 +12,6 @@ lockfile = "hiko.lock.toml"
 url = "http://127.0.0.1:8000"
 
 [dependencies]
-Aws = { version = "0.1.0", registry = "local" }
 Hash = { version = "0.1.0", registry = "local" }
 Http = { version = "0.1.0", registry = "local" }
 Std = { version = "0.1.0", registry = "local" }
@@ -28,12 +27,6 @@ path = "policies/test-runner.policy.toml"
 
 [policies.benchmark]
 path = "policies/benchmark.policy.toml"
-
-[policies.aws-s3-list-buckets]
-path = "policies/aws-s3-list-buckets.policy.toml"
-
-[policies.sre-aws-read-role]
-path = "policies/sre-aws-read-role.policy.toml"
 
 [policies.should-fail-io]
 path = "policies/should-fail-io.policy.toml"

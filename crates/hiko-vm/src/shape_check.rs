@@ -26,9 +26,6 @@ pub enum Shape {
     Word,
     Pid,
     Rng,
-    AwsConfig,
-    AwsS3Client,
-    AwsSqsClient,
     /// Type variable — matches anything (polymorphic builtins like json_parse).
     Var,
     /// Tuple with N fields of specific shapes.
@@ -47,7 +44,7 @@ pub struct ReturnType {
 
 /// Parse the return type from a full signature string.
 /// Example: "string -> int" returns Shape::Int.
-/// Example: "aws_s3_client -> bool * (string * string * string) list * string" returns a tuple shape.
+/// Example: "string -> bool * (string * string * string) list * string" returns a tuple shape.
 pub fn parse_return_type(sig: &str) -> Result<ReturnType, String> {
     // Find the last -> to isolate the return type
     let return_str = if let Some(idx) = sig.rfind("->") {
@@ -150,9 +147,6 @@ impl ShapeParser {
             "word" => Ok(Shape::Word),
             "pid" => Ok(Shape::Pid),
             "rng" => Ok(Shape::Rng),
-            "aws_config" => Ok(Shape::AwsConfig),
-            "aws_s3_client" => Ok(Shape::AwsS3Client),
-            "aws_sqs_client" => Ok(Shape::AwsSqsClient),
             other => Err(format!("unknown type '{}'", other)),
         }
     }
@@ -260,21 +254,6 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
             _ => Err(format!("expected pid, got {}", value_kind(value))),
         },
         Shape::Rng => Err("rng cannot cross process boundary".into()),
-        Shape::AwsConfig => {
-            #[cfg(feature = "builtin-aws-config")]
-            match value {
-                SendableValue::AwsConfigSsoProfile { .. }
-                | SendableValue::AwsConfigInstanceProfile { .. } => Ok(()),
-                _ => Err(format!("expected aws_config, got {}", value_kind(value))),
-            }
-            #[cfg(not(feature = "builtin-aws-config"))]
-            {
-                let _ = value;
-                Err("aws_config not available in this build".into())
-            }
-        }
-        Shape::AwsS3Client => Err("aws_s3_client cannot cross process boundary".into()),
-        Shape::AwsSqsClient => Err("aws_sqs_client cannot cross process boundary".into()),
         Shape::Tuple(expected_elems) => match value {
             SendableValue::Tuple(fields) => {
                 if fields.len() != expected_elems.len() {
@@ -401,39 +380,6 @@ pub fn check_value_shape(value: Value, heap: &Heap, shape: &Shape) -> Result<(),
             },
             _ => Err(format!("expected rng, got {}", vm_value_kind(value, heap))),
         },
-        Shape::AwsConfig => {
-            #[cfg(feature = "builtin-aws-config")]
-            {
-                check_host_handle(value, heap, HostHandleKind::AwsConfig, "aws_config")
-            }
-            #[cfg(not(feature = "builtin-aws-config"))]
-            {
-                let _ = (value, heap);
-                Err("aws_config not available in this build".into())
-            }
-        }
-        Shape::AwsS3Client => {
-            #[cfg(feature = "builtin-aws-s3")]
-            {
-                check_host_handle(value, heap, HostHandleKind::AwsS3Client, "aws_s3_client")
-            }
-            #[cfg(not(feature = "builtin-aws-s3"))]
-            {
-                let _ = (value, heap);
-                Err("aws_s3_client not available in this build".into())
-            }
-        }
-        Shape::AwsSqsClient => {
-            #[cfg(feature = "builtin-aws-sqs")]
-            {
-                check_host_handle(value, heap, HostHandleKind::AwsSqsClient, "aws_sqs_client")
-            }
-            #[cfg(not(feature = "builtin-aws-sqs"))]
-            {
-                let _ = (value, heap);
-                Err("aws_sqs_client not available in this build".into())
-            }
-        }
         Shape::Tuple(expected_elems) => match value {
             Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                 HeapObject::Tuple(fields) => {
@@ -579,10 +525,6 @@ fn value_kind(value: &SendableValue) -> &'static str {
         SendableValue::Unit => "unit",
         SendableValue::String(_) => "string",
         SendableValue::Bytes(_) => "bytes",
-        #[cfg(feature = "builtin-aws-config")]
-        SendableValue::AwsConfigSsoProfile { .. } => "aws_config",
-        #[cfg(feature = "builtin-aws-config")]
-        SendableValue::AwsConfigInstanceProfile { .. } => "aws_config",
         SendableValue::Tuple(_) => "tuple",
         SendableValue::List(_) => "list",
         SendableValue::Data { .. } => "data",
@@ -647,25 +589,6 @@ mod tests {
             Shape::Tuple(vec![
                 Shape::Int,
                 Shape::List(Box::new(Shape::Tuple(vec![Shape::String, Shape::String]))),
-                Shape::String,
-            ])
-        );
-    }
-
-    #[test]
-    fn parse_aws_s3_signature() {
-        let rt =
-            parse_return_type("aws_s3_client -> bool * (string * string * string) list * string")
-                .unwrap();
-        assert_eq!(
-            rt.shape,
-            Shape::Tuple(vec![
-                Shape::Bool,
-                Shape::List(Box::new(Shape::Tuple(vec![
-                    Shape::String,
-                    Shape::String,
-                    Shape::String,
-                ]))),
                 Shape::String,
             ])
         );
@@ -802,12 +725,11 @@ mod tests {
 
     #[test]
     fn check_nested_tuple_with_list() {
-        // Simulates the aws_s3_list_buckets success result:
         // bool * (string * string * string) list * string
         let bucket = SendableValue::Tuple(vec![
             SendableValue::String(Arc::from("my-bucket")),
             SendableValue::String(Arc::from("2026-01-01")),
-            SendableValue::String(Arc::from("arn:aws:s3:::my-bucket")),
+            SendableValue::String(Arc::from("arn:example:my-bucket")),
         ]);
         let value = SendableValue::Tuple(vec![
             SendableValue::Bool(true),
@@ -846,56 +768,6 @@ mod tests {
     #[test]
     fn check_bytes_matches() {
         assert!(check_shape(&SendableValue::Bytes(Arc::from([1, 2, 3])), &Shape::Bytes).is_ok());
-    }
-
-    // --- Regression: the exact bug from issue #76 ---
-    // The old signature declared Option.option wrappers that the Rust code
-    // did not produce. This test verifies the current correct shape.
-
-    #[test]
-    fn aws_s3_bucket_shape_no_options() {
-        // The current (fixed) return shape for aws_s3_list_buckets
-        let shape =
-            parse_return_type("aws_s3_client -> bool * (string * string * string) list * string")
-                .unwrap()
-                .shape;
-
-        // Simulate what sendable_list_buckets_output actually produces
-        let bucket = SendableValue::Tuple(vec![
-            SendableValue::String(Arc::from("my-bucket")),
-            SendableValue::String(Arc::from("2026-01-01")),
-            SendableValue::String(Arc::from("arn:aws:s3:::my-bucket")),
-        ]);
-        let success = SendableValue::Tuple(vec![
-            SendableValue::Bool(true),
-            SendableValue::List(vec![bucket]),
-            SendableValue::String(Arc::from("")),
-        ]);
-
-        assert!(check_shape(&success, &shape).is_ok());
-    }
-
-    #[test]
-    fn aws_s3_old_wrong_shape_would_fail() {
-        // The OLD (buggy) shape would have expected Option.option wrappers.
-        // Verify that the actual (non-Option) values would NOT match the old shape.
-        let old_shape = parse_return_type(
-            "aws_config -> bool * ((string Option.option * string Option.option * string Option.option) list Option.option * ((string Option.option * string Option.option) Option.option) * string Option.option * string Option.option) * string",
-        ).unwrap().shape;
-
-        // The actual value (plain strings) should NOT match this old shape
-        let bucket = SendableValue::Tuple(vec![
-            SendableValue::String(Arc::from("my-bucket")),
-            SendableValue::String(Arc::from("2026-01-01")),
-            SendableValue::String(Arc::from("arn:aws:s3:::my-bucket")),
-        ]);
-        let success = SendableValue::Tuple(vec![
-            SendableValue::Bool(true),
-            SendableValue::List(vec![bucket]),
-            SendableValue::String(Arc::from("")),
-        ]);
-
-        assert!(check_shape(&success, &old_shape).is_err());
     }
 
     // --- Parse and sample all real signatures ---
@@ -1712,24 +1584,6 @@ mod tests {
             ),
             ("exit", "non-returning process exit"),
             ("panic", "polymorphic non-returning error path"),
-            (
-                "aws_config_sso_profile",
-                "async I/O runtime and credentials required",
-            ),
-            (
-                "aws_config_instance_profile",
-                "async I/O runtime and credentials required",
-            ),
-            ("aws_s3_client", "requires an aws_config host handle"),
-            (
-                "aws_s3_list_buckets",
-                "async I/O runtime and AWS credentials required; shape regression covered separately",
-            ),
-            ("aws_sqs_client", "requires an aws_config host handle"),
-            (
-                "aws_sqs_list_queues",
-                "async I/O runtime and AWS credentials required",
-            ),
         ])
     }
 

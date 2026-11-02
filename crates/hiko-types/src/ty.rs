@@ -24,9 +24,6 @@ pub const PRIMITIVE_TYPES: &[(&str, &str)] = &[
     ("unit", "Unit"),
     ("bytes", "Bytes"),
     ("rng", "Rng"),
-    ("aws_config", "AwsConfig"),
-    ("aws_s3_client", "AwsS3Client"),
-    ("aws_sqs_client", "AwsSqsClient"),
     ("pid", "Pid"),
 ];
 
@@ -60,15 +57,6 @@ impl Type {
     }
     pub fn rng() -> Type {
         Type::Con("Rng".into())
-    }
-    pub fn aws_config() -> Type {
-        Type::Con("AwsConfig".into())
-    }
-    pub fn aws_s3_client() -> Type {
-        Type::Con("AwsS3Client".into())
-    }
-    pub fn aws_sqs_client() -> Type {
-        Type::Con("AwsSqsClient".into())
     }
     pub fn unit() -> Type {
         Type::Con("Unit".into())

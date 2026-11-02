@@ -9,24 +9,6 @@ pub struct InternalBuiltinModule {
     pub source: &'static str,
 }
 
-const AWS_CONFIG_SOURCE: &str = r#"structure BuiltinAwsConfig = struct
-  val sso_profile_raw = aws_config_sso_profile
-  val instance_profile_raw = aws_config_instance_profile
-end
-"#;
-
-const AWS_S3_SOURCE: &str = r#"structure BuiltinAwsS3 = struct
-  val client_raw = aws_s3_client
-  val list_buckets_raw = aws_s3_list_buckets
-end
-"#;
-
-const AWS_SQS_SOURCE: &str = r#"structure BuiltinAwsSqs = struct
-  val client_raw = aws_sqs_client
-  val list_queues_raw = aws_sqs_list_queues
-end
-"#;
-
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
   val read_text_raw = read_file
   val read_bytes_raw = read_file_bytes
@@ -252,9 +234,6 @@ macro_rules! module {
 }
 
 const MODULES: &[InternalBuiltinModule] = &[
-    module!("AwsConfig", "builtin-aws-config", AWS_CONFIG_SOURCE),
-    module!("AwsS3", "builtin-aws-s3", AWS_S3_SOURCE),
-    module!("AwsSqs", "builtin-aws-sqs", AWS_SQS_SOURCE),
     module!("Filesystem", "builtin-filesystem", FILESYSTEM_SOURCE),
     module!("Path", "builtin-path", PATH_SOURCE),
     module!("Json", "builtin-json", JSON_SOURCE),
