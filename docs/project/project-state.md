@@ -259,7 +259,7 @@ been taken.
 | ------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | `hiko-syntax`       | Core         | Lexer, parser, desugar and constant folding. No tree-sitter dependency (`7b7e930`).                                      |
 | `hiko-types`        | Core         |                                                                                                                          |
-| `hiko-compile`      | Core         | Also contains the HTTP module loader behind `loader-http`.                                                               |
+| `hiko-compile`      | Core         | Also contains the HTTP module loader behind `loader-integrity-blake3`.                                                   |
 | `hiko-vm`           | Core         | Also contains all builtin domains, the threaded runtime, and the async I/O backend. Largest cleanup target.              |
 | `hiko-cli`          | Core         | Default features leave out regex, JSON and dates; `builtin-all` enables every builtin (#141).                           |
 | `hiko-builtin-meta` | Core         | Embeds Hiko source for internal modules such as `Filesystem`.                                                              |
@@ -352,7 +352,7 @@ maximums.
    `cargo tree -p hiko-cli -e normal,build`).
 7. Done (`7b7e930`): `hiko-syntax` no longer depends on tree-sitter.
 8. Done: the README calls handlers deep and gives `http_get`'s real type.
-   AG also corrected the opcode count (79) and the builtin table's types.
+   #158 also corrected the opcode count (79) and the builtin table's types.
 9. Done: fuzz targets for the parser, type checker, verifier, and policy
    parser (#143).
 10. Continue the effects research track with question 3 (effect rows).
