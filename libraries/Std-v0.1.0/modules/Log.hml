@@ -1,4 +1,5 @@
 import Std.Env
+import Std.Format
 import Std.Option
 import Std.Stdio
 import Std.String
@@ -55,13 +56,12 @@ structure Log = struct
         Option.Some level => level
       | Option.None => default
 
-  fun pad_right width text =
-    if string_length text >= width then text else pad_right width (text ^ " ")
-
   fun two n = if n < 10 then "0" ^ int_to_string n else int_to_string n
 
   (* (year, month, day) of a day count since 1970-01-01, in the proleptic
-     Gregorian calendar (Howard Hinnant's civil_from_days). *)
+     Gregorian calendar (Howard Hinnant's civil_from_days). Std.Date can
+     format times too, but it needs builtin-date, which the default build
+     leaves out; logging should work in every build. *)
   fun civil days =
     let
       val z = days + 719468
@@ -84,18 +84,24 @@ structure Log = struct
       val (year, month, day) = civil (secs / 86400)
       val time = secs mod 86400
     in
-      int_to_string year ^ "-" ^ two month ^ "-" ^ two day ^ "T" ^
-      two (time / 3600) ^ ":" ^ two (time mod 3600 / 60) ^ ":" ^ two (time mod 60) ^ "Z"
+      String.join "" [
+        int_to_string year, "-", two month, "-", two day, "T",
+        two (time / 3600), ":", two (time mod 3600 / 60), ":", two (time mod 60), "Z"
+      ]
     end
 
   fun format_line (ms, level, target, message) =
-    timestamp ms ^ " " ^ pad_right 5 (level_name level) ^ " " ^ target ^ ": " ^ message
+    String.join "" [
+      timestamp ms, " ", Format.pad_right 5 (level_name level), " ", target, ": ", message
+    ]
+
+  fun field_parts fields =
+    case fields of
+        [] => []
+      | (key, value) :: rest => " " :: key :: "=" :: value :: field_parts rest
 
   (* `message k1=v1 k2=v2` *)
-  fun kv message fields =
-    case fields of
-        [] => message
-      | (key, value) :: rest => kv (message ^ " " ^ key ^ "=" ^ value) rest
+  fun kv message fields = String.join "" (message :: field_parts fields)
 
   fun now_ms () = Time.to_epoch_ms (Time.now ())
 

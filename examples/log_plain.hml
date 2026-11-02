@@ -7,9 +7,8 @@
 
    Run with HIKO_LOG=debug to see the debug lines. Both examples print the
    same lines to stderr. *)
+import Std.List
 import Std.Log
-
-fun count xs = case xs of [] => 0 | _ :: rest => 1 + count rest
 
 fun validate log (name, quantity) =
   if quantity <= 0 then
@@ -28,7 +27,7 @@ fun process log orders =
 
 fun run log orders =
   let
-    val _ = Log.info log ("processing " ^ int_to_string (count orders) ^ " orders")
+    val _ = Log.info log ("processing " ^ int_to_string (List.length orders) ^ " orders")
     val total = process log orders
     val _ = Log.info log (Log.kv "done" [("total", int_to_string total)])
   in
