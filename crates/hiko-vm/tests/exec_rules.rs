@@ -51,7 +51,8 @@ fn tool(dir: &Path, name: &str) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn toml_list(items: &[&str]) -> String {
+/// `["a", "b"]`, which TOML and Hiko both read as a list of strings.
+fn quoted_list(items: &[&str]) -> String {
     let items: Vec<String> = items.iter().map(|s| format!("{s:?}")).collect();
     format!("[{}]", items.join(", "))
 }
@@ -63,21 +64,16 @@ fn config(argv: &[&str], rest: Option<&str>) -> RunConfig {
         "[capabilities.stdio.print]\nenabled = true\n\
          [capabilities.exec.exec]\nenabled = true\n\
          [[capabilities.exec.exec.allow]]\nargv = {}\n{rest}",
-        toml_list(argv)
+        quoted_list(argv)
     ))
     .expect("config")
-}
-
-fn hiko_list(items: &[&str]) -> String {
-    let items: Vec<String> = items.iter().map(|s| format!("{s:?}")).collect();
-    format!("[{}]", items.join(", "))
 }
 
 /// Run `exec (command, args)` under `config`: the stdout, or the error.
 fn run(config: &RunConfig, command: &str, args: &[&str]) -> Result<String, String> {
     let program = compile(&format!(
         "val (code, out, err) = exec ({command:?}, {})\nval _ = print out",
-        hiko_list(args)
+        quoted_list(args)
     ));
     let mut vm = config.apply_to_builder(VMBuilder::new(program)).build();
     vm.enable_output_capture();
