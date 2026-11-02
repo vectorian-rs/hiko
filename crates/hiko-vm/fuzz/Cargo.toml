@@ -11,11 +11,11 @@ cargo-fuzz = true
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
 syn = { version = "2", features = ["full", "visit"] }
-hiko-builtin-meta = { path = "../../hiko-builtin-meta" }
-hiko-compile = { path = "../../hiko-compile" }
+hiko-builtin-meta = { path = "../../hiko-builtin-meta", features = ["builtin-all"] }
+hiko-compile = { path = "../../hiko-compile", features = ["builtin-all"] }
 hiko-syntax = { path = "../../hiko-syntax" }
-hiko-types = { path = "../../hiko-types" }
-hiko-vm = { path = ".." }
+hiko-types = { path = "../../hiko-types", features = ["builtin-all"] }
+hiko-vm = { path = "..", features = ["builtin-all"] }
 
 # Prevent this from interfering with workspaces
 [workspace]
