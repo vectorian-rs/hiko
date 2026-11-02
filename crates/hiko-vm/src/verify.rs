@@ -134,7 +134,7 @@ fn decode_chunk(
     }
 
     for inst in &decoded {
-        for target in &inst.successors {
+        for target in inst.successors.iter().chain(&inst.handler_clause_targets) {
             if !starts.contains(target) {
                 return Err(format!(
                     "control-flow target {target} does not point to an instruction boundary"
@@ -688,9 +688,11 @@ fn verify_stack_effects(decoded: &[DecodedInst], initial_depth: usize) -> Result
             }
         }
 
-        let inst = &decoded[*by_start
-            .get(&start)
-            .expect("decoded instruction starts should be indexed")];
+        // `decode_chunk` checks every target; this is a second line of
+        // defence, so a verifier bug rejects the program instead of panicking.
+        let inst = &decoded[*by_start.get(&start).ok_or_else(|| {
+            format!("control-flow target {start} does not point to an instruction boundary")
+        })?];
 
         if let Some(slot) = inst.provider_slots.iter().find(|&&slot| slot >= depth) {
             return Err(format!(
@@ -1312,6 +1314,33 @@ mod tests {
         code.extend(std::iter::repeat_n(Op::Pop as u8, clause_pops));
         code.push(Op::Halt as u8);
         program_with_effects(code, 0, vec![effect_zero()])
+    }
+
+    #[test]
+    fn rejects_handler_clause_target_inside_an_instruction() {
+        // Found by fuzzing: clause targets were not checked against
+        // instruction boundaries, and the stack pass panicked on one.
+        // Offset -3 from the end of the InstallHandler (8) is its flags byte.
+        let code = vec![
+            Op::InstallHandler as u8,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0xfd,
+            0xff,
+            Op::Unit as u8,
+            Op::Halt as u8,
+        ];
+        let program = program_with_effects(code, 0, vec![effect_zero()]);
+        let err = verify_program(&program).expect_err("program should fail verification");
+        assert!(
+            err.message()
+                .contains("control-flow target 5 does not point to an instruction boundary"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]
