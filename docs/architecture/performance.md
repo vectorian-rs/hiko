@@ -553,3 +553,12 @@ helpers on the hot path.
 | `tak` | 257 ms | 233 ms | 67 ms | 83 ms | 13 ms | 3.5x | 2.8x |
 
 Hiko is 8 to 28% faster than at #146, and now 1.3 to 11x slower than Lua 5.5.
+
+### Review fixes (PR #149)
+
+After the measurements above, #149 inlined `stack_start_for_arity` and
+`callee_pos_for_arity`, made `MakeCons` check the stack before taking its
+values, and checked `ip + N` for overflow in `read_operand`. Interleaved, 8
+rounds, on AC, load average 5 to 6.5: `list`, `fib`, `tak`, `nbody` within
+1%; `binary_trees`, `ack` +1 to 2%; `queens`, `sieve` +2%. Kept: the
+`MakeCons` and `read_operand` changes are correctness fixes.
