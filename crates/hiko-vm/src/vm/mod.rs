@@ -314,6 +314,8 @@ pub struct VM {
     process_budgets: crate::budget::ProcessBudgets,
     exec_allowed: Vec<String>,
     exec_allowed_paths: Vec<ExecAllowedPath>,
+    /// Argument rules with their resolved command.
+    exec_rules: Vec<(crate::builder::ExecArgvRule, ExecAllowedPath)>,
     exec_allowed_resolution_errors: Vec<String>,
     /// When true, I/O builtins suspend via `RuntimeRequest::Io` instead of blocking.
     async_io: bool,
@@ -489,6 +491,7 @@ impl VM {
             process_budgets: Default::default(),
             exec_allowed: Vec::new(),
             exec_allowed_paths: Vec::new(),
+            exec_rules: Vec::new(),
             exec_allowed_resolution_errors: Vec::new(),
             async_io: false,
             pending_runtime_request: None,
@@ -2492,6 +2495,7 @@ mod tests {
             .with_core()
             .with_exec(ExecPolicy {
                 allowed: vec![script.to_string_lossy().to_string()],
+                rules: Vec::new(),
             })
             .build();
 
@@ -2529,6 +2533,7 @@ mod tests {
             .with_core()
             .with_exec(ExecPolicy {
                 allowed: vec![allowed.to_string_lossy().to_string()],
+                rules: Vec::new(),
             })
             .build();
 

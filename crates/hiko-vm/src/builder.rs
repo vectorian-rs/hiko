@@ -26,7 +26,33 @@ pub struct HttpPolicy {
 /// Policy for direct command execution.
 #[cfg(feature = "builtin-exec")]
 pub struct ExecPolicy {
+    /// Commands allowed with any arguments.
     pub allowed: Vec<String>,
+    /// Commands allowed only with the arguments a rule gives.
+    pub rules: Vec<ExecArgvRule>,
+}
+
+/// An `exec` rule that allows one argument vector, or a fixed prefix of
+/// one. The command, `argv[0]`, is resolved like an `allowed` entry, and a
+/// call matches by the resolved file, not by name. The arguments are
+/// compared as strings, exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecArgvRule {
+    pub argv: Vec<String>,
+    /// Whether more arguments may follow `argv`.
+    pub rest_any: bool,
+}
+
+impl ExecArgvRule {
+    /// Whether `args`, the arguments after the command, satisfy this rule.
+    pub fn args_match(&self, args: &[String]) -> bool {
+        let fixed = self.argv.get(1..).unwrap_or(&[]);
+        if self.rest_any {
+            args.len() >= fixed.len() && args[..fixed.len()] == *fixed
+        } else {
+            args == fixed
+        }
+    }
 }
 
 /// Builder for creating VMs with specific capabilities.
@@ -34,6 +60,7 @@ pub struct VMBuilder {
     program: CompiledProgram,
     builtins: Vec<(&'static str, BuiltinFn)>,
     exec_allowed: Vec<String>,
+    exec_rules: Vec<ExecArgvRule>,
     fs_root: String,
     fs_builtin_folders: HashMap<String, Vec<String>>,
     http_allowed_hosts: Vec<String>,
@@ -65,6 +92,7 @@ impl VMBuilder {
             program,
             builtins: Vec::new(),
             exec_allowed: Vec::new(),
+            exec_rules: Vec::new(),
             fs_root: String::new(),
             fs_builtin_folders: HashMap::new(),
             http_allowed_hosts: Vec::new(),
@@ -201,6 +229,7 @@ impl VMBuilder {
     #[cfg(feature = "builtin-exec")]
     pub fn with_exec(mut self, policy: ExecPolicy) -> Self {
         self.exec_allowed = policy.allowed;
+        self.exec_rules = policy.rules;
         self.register_builtin_name("exec")
     }
 
@@ -373,7 +402,7 @@ impl VMBuilder {
             vm.heap.set_extension_state(extension.name, state);
         }
 
-        vm.set_exec_allowed(self.exec_allowed);
+        vm.set_exec_policy(self.exec_allowed, self.exec_rules);
         vm.set_io_limits(self.io_limits);
         vm.set_fs_root(self.fs_root);
         vm.set_fs_builtin_folders(self.fs_builtin_folders);

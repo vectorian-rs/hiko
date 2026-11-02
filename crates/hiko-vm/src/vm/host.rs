@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use crate::builder::ExecArgvRule;
 use crate::io_limits::ReadLimit;
 
 pub trait OutputSink: Send + Sync {
@@ -202,6 +203,13 @@ fn resolve_exec_command_path(command: &str) -> Result<PathBuf, String> {
 impl VM {
     /// Set the allowed commands for the exec builtin.
     pub fn set_exec_allowed(&mut self, allowed: Vec<String>) {
+        self.set_exec_policy(allowed, Vec::new());
+    }
+
+    /// Set the commands `exec` may run with any arguments, and the argument
+    /// rules. Each command is resolved to a file now; a call must resolve to
+    /// the same file.
+    pub fn set_exec_policy(&mut self, allowed: Vec<String>, rules: Vec<ExecArgvRule>) {
         let mut resolved = Vec::new();
         let mut errors = Vec::new();
         for command in &allowed {
@@ -210,8 +218,20 @@ impl VM {
                 Err(err) => errors.push(format!("{command}: {err}")),
             }
         }
+        let mut resolved_rules = Vec::new();
+        for rule in rules {
+            let Some(command) = rule.argv.first() else {
+                errors.push("an argv rule is empty".to_string());
+                continue;
+            };
+            match resolve_exec_command(command) {
+                Ok(path) => resolved_rules.push((rule, path)),
+                Err(err) => errors.push(format!("{command}: {err}")),
+            }
+        }
         self.exec_allowed = allowed;
         self.exec_allowed_paths = resolved;
+        self.exec_rules = resolved_rules;
         self.exec_allowed_resolution_errors = errors;
     }
 
@@ -305,26 +325,43 @@ impl VM {
     pub(super) fn prepare_exec(&self, arg: Value) -> Result<ResolvedExec, RuntimeError> {
         let (command, args) = extract_exec_command_and_args(&self.heap, arg)
             .map_err(|message| RuntimeError { message })?;
+        if command.contains('\0') || args.iter().any(|arg| arg.contains('\0')) {
+            return Err(RuntimeError {
+                message: "exec: the command and arguments must not contain NUL".into(),
+            });
+        }
         let resolved_path = resolve_exec_command(&command).map_err(|err| RuntimeError {
             message: format!("exec: {err}"),
         })?;
-        if let Some(allowed_path) = self
+        let by_command = self
             .exec_allowed_paths
             .iter()
-            .find(|allowed| **allowed == resolved_path)
-            .cloned()
-        {
+            .find(|allowed| **allowed == resolved_path);
+        let by_rule = || {
+            self.exec_rules
+                .iter()
+                .find(|(rule, path)| *path == resolved_path && rule.args_match(&args))
+                .map(|(_, path)| path)
+        };
+        if let Some(allowed_path) = by_command.or_else(by_rule).cloned() {
             Ok(ResolvedExec {
                 display_command: command,
                 allowed_path,
                 args,
             })
         } else {
+            let rules: Vec<&[String]> = self
+                .exec_rules
+                .iter()
+                .map(|(rule, _)| rule.argv.as_slice())
+                .collect();
             let mut message = format!(
-                "exec: command '{}' resolved to '{}' which is not in the allowed list: {:?}",
+                "exec: command '{}' resolved to '{}' with arguments {:?} is not in the allowed list: {:?}, nor allowed by an argv rule: {:?}",
                 command,
                 resolved_path.path.display(),
-                self.exec_allowed
+                args,
+                self.exec_allowed,
+                rules
             );
             if !self.exec_allowed_resolution_errors.is_empty() {
                 message.push_str(&format!(

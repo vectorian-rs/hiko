@@ -214,6 +214,7 @@ fn exec_vm(script: &std::path::Path) -> VMBuilder {
     .with_core()
     .with_exec(hiko_vm::builder::ExecPolicy {
         allowed: vec![script.to_string_lossy().to_string()],
+        rules: Vec::new(),
     })
 }
 
@@ -237,6 +238,7 @@ fn exec_timeout_kills_the_whole_process_group() {
     .with_core()
     .with_exec(hiko_vm::builder::ExecPolicy {
         allowed: vec!["/bin/sh".to_string()],
+        rules: Vec::new(),
     })
     .exec_timeout_ms(1000)
     .build();
@@ -305,6 +307,7 @@ fn exec_within_limits_still_returns_output() {
         .with_core()
         .with_exec(hiko_vm::builder::ExecPolicy {
             allowed: vec![script.to_string_lossy().to_string()],
+            rules: Vec::new(),
         })
         .exec_timeout_ms(5000)
         .build();

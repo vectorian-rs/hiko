@@ -143,6 +143,7 @@ impl VM {
         // re-resolving every command through PATH on each spawn.
         child.exec_allowed = self.exec_allowed.clone();
         child.exec_allowed_paths = self.exec_allowed_paths.clone();
+        child.exec_rules = self.exec_rules.clone();
         child.exec_allowed_resolution_errors = self.exec_allowed_resolution_errors.clone();
         child.set_io_limits(self.heap.io_limits());
         child.set_max_message_bytes(self.heap.max_message_bytes());
