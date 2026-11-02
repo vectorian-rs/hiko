@@ -74,7 +74,6 @@ mod json_value;
 mod http_args;
 
 #[cfg(any(
-    test,
     feature = "builtin-filesystem",
     feature = "builtin-http",
     feature = "builtin-json",
@@ -100,14 +99,12 @@ pub(crate) use support::alloc_list;
 ))]
 pub(crate) use support::heap_alloc;
 #[cfg(any(
-    test,
     feature = "builtin-date",
     feature = "builtin-regex",
     feature = "builtin-string"
 ))]
 pub(crate) use support::string_pair;
 #[cfg(any(
-    test,
     feature = "builtin-bytes",
     feature = "builtin-hash",
     feature = "builtin-json",
@@ -240,6 +237,8 @@ fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
 }
 
 #[cfg(test)]
+// Used by the tests of whichever builtin domains are enabled.
+#[allow(dead_code)]
 pub(super) mod test_helpers {
     use super::*;
     use smallvec::smallvec;

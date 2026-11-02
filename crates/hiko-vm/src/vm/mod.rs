@@ -665,13 +665,18 @@ impl Drop for VM {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::{FilesystemPolicy, VMBuilder};
+    #[cfg(feature = "builtin-filesystem")]
+    use crate::builder::FilesystemPolicy;
+    use crate::builder::VMBuilder;
     use hiko_compile::compiler::Compiler;
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
+    #[cfg(any(feature = "builtin-exec", feature = "builtin-filesystem"))]
     use std::fs;
+    #[cfg(any(feature = "builtin-exec", feature = "builtin-filesystem"))]
     use std::path::PathBuf;
     use std::sync::Mutex;
+    #[cfg(any(feature = "builtin-exec", feature = "builtin-filesystem"))]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
@@ -893,6 +898,7 @@ mod tests {
         assert_eq!(err.message, "GetField: field index 0 out of bounds");
     }
 
+    #[cfg(any(feature = "builtin-exec", feature = "builtin-filesystem"))]
     fn temp_dir(name: &str) -> PathBuf {
         let unique = format!(
             "hiko-vm-{}-{}-{}",
@@ -931,6 +937,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     fn global_string_list(vm: &VM, name: &str) -> Vec<String> {
         let mut values = Vec::new();
         let mut current = *vm
@@ -2366,6 +2373,7 @@ mod tests {
         assert!(vm.get_global("http_get").is_none());
     }
 
+    #[cfg(feature = "builtin-exec")]
     #[cfg(unix)]
     #[test]
     fn test_exec_allows_resolved_absolute_path() {
@@ -2398,6 +2406,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "builtin-exec")]
     #[cfg(unix)]
     #[test]
     fn test_exec_rejects_resolved_path_not_in_allowlist() {
@@ -2433,6 +2442,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     #[test]
     fn test_fs_root_rejects_list_dir_traversal() {
         let root = temp_dir("fs-root-list");
@@ -2453,6 +2463,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     #[test]
     fn test_fs_root_allows_create_dir_for_missing_nested_child() {
         let root = temp_dir("fs-root-create");
@@ -2473,6 +2484,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     #[test]
     fn test_fs_root_rejects_glob_traversal() {
         let root = temp_dir("fs-root-glob");
@@ -2493,6 +2505,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     #[cfg(unix)]
     #[test]
     fn test_fs_root_rejects_walk_dir_symlink_escape() {
@@ -2523,6 +2536,7 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     #[test]
     fn test_fs_root_walk_dir_returns_deterministic_order() {
         let root = temp_dir("fs-root-walk-order");
@@ -2558,6 +2572,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "builtin-filesystem")]
     #[cfg(unix)]
     #[test]
     fn test_fs_root_walk_dir_handles_symlink_cycle() {
