@@ -25,6 +25,9 @@ For the runtime model and VM/process creation details, start with
 ```bash
 cargo build --release
 
+# Regex, JSON and date builtins are not in the default build
+cargo build --release -p hiko-cli --features builtin-all
+
 # Run a program
 cargo run -- run examples/factorial.hml
 

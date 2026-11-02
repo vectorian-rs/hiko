@@ -260,7 +260,7 @@ been taken.
 | `hiko-types`        | Core         |                                                                                                                          |
 | `hiko-compile`      | Core         | Also contains the HTTP module loader behind `loader-http`.                                                               |
 | `hiko-vm`           | Core         | Also contains all builtin domains, the threaded runtime, and the async I/O backend. Largest cleanup target.              |
-| `hiko-cli`          | Core         | Default features enable every builtin.                                                                                   |
+| `hiko-cli`          | Core         | Default features leave out regex, JSON and dates; `builtin-all` enables every builtin (#141).                           |
 | `hiko-builtin-meta` | Core         | Embeds Hiko source for internal modules such as `Filesystem`.                                                              |
 | `hiko-common`       | Core         |                                                                                                                          |
 | `tree-sitter-hiko`  | Tooling      | Editor support. Used by `hiko-docgen`.                                                                                   |
@@ -273,7 +273,7 @@ been taken.
 | stdio, convert, string, math, bytes, numeric, testing | Core              | Pure or minimal host access.                                                                         |
 | filesystem, exec, env, process, path, time, random    | Security showcase | These are what the capability model protects. Keep, but they are the main fuzzing and audit targets. |
 | http                                                  | Security showcase | Host allowlist. Also the module loader transport.                                                    |
-| json, regex, hash, date                               | Library           | Useful, but not part of a minimal language. Could move behind non-default features.                  |
+| json, regex, date                                     | Library           | Non-default since #141; in `builtin-all`. `hash` stays default: the module loader links `blake3`.    |
 
 ### Runtime
 
@@ -336,7 +336,10 @@ maximums.
 4. Done: removed the harness and Hashline (#138, #139), and AWS and GitHub
    with their policies, examples and libraries (#140).
 5. Decide on the threaded runtime and structured concurrency.
-6. Make `json`, `regex`, `hash`, and `date` non-default features.
+6. Done (#141): `json`, `regex` and `date` are non-default. The default `hiko-cli`
+   release binary went from 8,973,664 to 6,743,280 bytes (−25%) and from 159 to
+   153 crates (macOS arm64). `hash` stays, because the module loader already
+   links `blake3`.
 7. Remove the unused tree-sitter dependency from `hiko-syntax`.
 8. Fix the README inconsistencies listed above.
 9. Add fuzz targets for the parser, type checker, verifier, and policy parser.
