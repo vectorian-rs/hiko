@@ -34,7 +34,7 @@ and on AC power (`docs/architecture/performance.md`, "How to measure").
 
 ### 1. Release profile (no code change) — measured, not kept
 
-Measured in #149: fat LTO with one codegen unit made 12 of 15 programs 1 to
+Measured in #149: fat LTO with one codegen unit made 13 of 15 programs 1 to
 15% slower (`docs/architecture/performance.md`). The text below is the
 original estimate.
 

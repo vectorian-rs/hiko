@@ -434,23 +434,26 @@ moved the same way. "Before" is the V branch at `8b06637`, built with
 
 `[profile.release]` with `lto = "fat"` and `codegen-units = 1`, against
 Cargo's defaults (no cross-crate LTO, 16 codegen units), both built from
-`main` after #148. Interleaved, 10 rounds each, on AC; other work kept the
-load average at 10 to 30, which interleaving spreads over both sides.
+`main` after #148. Interleaved, 10 rounds each, on AC, load average about 3
+(a first run at load 10 to 30 pointed the same way).
 
 | Benchmark | Default | Fat LTO, 1 unit | Change |
 |---|---|---|---|
-| `compare/sieve` | 601 ms | 687 ms | +14% |
-| `compare/tak` | 494 ms | 566 ms | +15% (load 29) |
-| `compare/queens` | 395 ms | 420 ms | +6% |
-| `early_exit` | 315 ms | 331 ms | +5% |
-| `ack` | 1063 ms | 1113 ms | +5% |
-| `global_builtin` | 298 ms | 310 ms | +4% |
-| `compare/mandelbrot`, `compare/nbody`, `tak`, `string_concat`, `list_length`, `compare/fib` | | | +1 to +4% |
-| `ec_fib`, `compare/list` | | | -1 to -2% |
-| `compare/binary_trees` | 1713 ms | 1624 ms | -5% (load 22; minimum +4%) |
+| `compare/sieve` | 582 ms | 668 ms | +15% |
+| `ack` | 1017 ms | 1068 ms | +5% |
+| `early_exit` | 301 ms | 316 ms | +5% |
+| `global_builtin` | 284 ms | 296 ms | +4% |
+| `compare/fib` | 453 ms | 470 ms | +4% |
+| `compare/binary_trees` | 1408 ms | 1460 ms | +4% |
+| `compare/mandelbrot` | 602 ms | 624 ms | +4% |
+| `compare/nbody` | 616 ms | 636 ms | +3% |
+| `tak` | 250 ms | 258 ms | +3% |
+| `compare/tak`, `compare/queens`, `list_length` | | | +2.5% |
+| `compare/list` | 1677 ms | 1698 ms | +1% |
+| `ec_fib`, `string_concat` | | | -1%, 0% |
 
 Medians; the minimums move the same way. The binary is 28% smaller
-(6,449,888 to 4,658,512 bytes), but 12 of 15 programs are slower: more
+(6,449,888 to 4,658,512 bytes), but 13 of 15 programs are slower: more
 inlining into the very large `dispatch` function likely worsens register
 allocation in the hot loop. Not kept. Inlining the specific hot helpers
 (review items 2 and 3 in `docs/rnd/2026-11-vm-performance-review.md`) is
