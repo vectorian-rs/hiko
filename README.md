@@ -278,26 +278,9 @@ VM ──> Execution               (stack-based, mark-and-sweep GC)
 
 ## Examples
 
-The `examples/` directory includes programs demonstrating:
-
-| File | Feature |
-|---|---|
-| `hello.hml` | Basic output |
-| `factorial.hml` | Clausal function definitions |
-| `fibonacci.hml` | Recursion |
-| `closures.hml` | Higher-order functions, composition |
-| `list_ops.hml` | Map, filter, fold over lists |
-| `option.hml` | Algebraic data types |
-| `either.hml` | Sum types for error handling |
-| `result.hml` | Canonical success/error datatype |
-| `error_handling.hml` | Recoverable errors with `Std.Result` |
-| `spawn_stress.hml` | Isolated-process concurrency stress test |
-| `expr_eval.hml` | Recursive expression evaluator |
-| `math.hml` | float arithmetic, sqrt |
-| `string_ops.hml` | string manipulation builtins |
-| `file_io.hml` | File read/write |
-| `http_fetch.hml` | HTTP GET request |
-| `import_test.hml` | Module imports |
+[`examples/README.md`](examples/README.md) lists every example by topic:
+language features, modules, effects, host builtins, and the limit and policy
+examples that must fail.
 
 ## Agent Workflow
 

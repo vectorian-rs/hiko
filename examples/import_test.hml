@@ -1,3 +1,6 @@
+(* Local file inclusion with `use`; a repeated `use` of the same file is included once. *)
+use "./math.hml"
+
 use "./math.hml"
 
 val _ = println (int_to_string (square 5))

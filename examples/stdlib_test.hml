@@ -1,3 +1,4 @@
+(* Std.List: folds, take, drop, append, all and any. *)
 import Std.List
 
 val nums = [1, 2, 3, 4, 5]

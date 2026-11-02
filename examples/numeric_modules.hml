@@ -1,3 +1,4 @@
+(* Fixed-width numbers: Std.Int32, Std.Word32 and Std.Float32. *)
 import Std.Int32
 import Std.Word32
 import Std.Float32
