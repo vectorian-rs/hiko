@@ -39,6 +39,9 @@ loader-http = ["loader-named-imports", "hiko-compile/loader-http"]
 loader-integrity-blake3 = ["loader-http", "hiko-compile/loader-integrity-blake3"]
 cli-hash = ["dep:hiko-common", "hiko-common/hash"]
 cli-lock = ["dep:hiko-common", "hiko-common/hash", "hiko-common/http"]
+# Extensions under extensions/, linked in when their feature is on.
+ext-github = ["dep:hiko-ext-github"]
+ext-aws = ["dep:hiko-ext-aws"]
 builtin-stdio = [
     "hiko-builtin-meta/builtin-stdio",
     "hiko-compile/builtin-stdio",
@@ -161,6 +164,8 @@ hiko-syntax = { version = "0.8.0", path = "../hiko-syntax" }
 hiko-types = { version = "0.8.0", path = "../hiko-types", default-features = false }
 hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false }
 hiko-vm = { version = "0.8.0", path = "../hiko-vm", default-features = false }
+hiko-ext-github = { version = "0.8.0", path = "../../extensions/hiko-ext-github", optional = true }
+hiko-ext-aws = { version = "0.8.0", path = "../../extensions/hiko-ext-aws", optional = true }
 codespan-reporting = "0.11"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

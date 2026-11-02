@@ -14,7 +14,7 @@ use hiko_builtin_meta::{BuiltinSurface, builtin_meta, core_builtin_names};
 #[cfg(feature = "cli-hash")]
 use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram};
-use hiko_compile::compiler::{CompileError, Compiler};
+use hiko_compile::compiler::{CompileError, Compiler, ExtensionSurface, ModuleLoaderOptions};
 use hiko_compile::op::{HANDLER_CLAUSE_BYTES, Op};
 use hiko_syntax::format::{FormatError, format_source};
 use hiko_syntax::lexer::Lexer;
@@ -22,6 +22,7 @@ use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
 use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
+use hiko_vm::extension::Extension;
 use hiko_vm::threaded::ThreadedRuntime;
 use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
@@ -291,7 +292,43 @@ pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
 
 /// Compiles `path`, printing any diagnostics. Warnings are printed and
 /// compilation continues; errors are printed and the process exits with 1.
-fn compile_or_exit(path: &str) -> Compiled {
+/// Extensions linked into this binary, by the `ext-*` cargo features. A run
+/// config turns one on with an `[extensions.<name>]` table.
+fn linked_extensions() -> Vec<&'static Extension> {
+    [
+        #[cfg(feature = "ext-github")]
+        &hiko_ext_github::GITHUB,
+        #[cfg(feature = "ext-aws")]
+        &hiko_ext_aws::AWS,
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// What the extensions `config` turns on add to the compiler.
+fn extension_surface_or_exit(config: Option<&RunConfig>) -> ExtensionSurface {
+    let Some(config) = config else {
+        return ExtensionSurface::default();
+    };
+    match config.configured_extensions(&linked_extensions()) {
+        Ok(configured) => Extension::compile_surface(&configured),
+        Err(message) => {
+            eprintln!("error: {message}");
+            process::exit(1);
+        }
+    }
+}
+
+fn build_vm_or_exit(config: &RunConfig, program: CompiledProgram) -> hiko_vm::vm::VM {
+    config
+        .build_vm_with_extensions(program, &linked_extensions())
+        .unwrap_or_else(|message| {
+            eprintln!("error: {message}");
+            process::exit(1);
+        })
+}
+
+fn compile_or_exit(path: &str, extensions: ExtensionSurface) -> Compiled {
     let source = read_source_or_exit(path);
     let ctx = DiagCtx::new(path, source.clone());
 
@@ -303,14 +340,20 @@ fn compile_or_exit(path: &str) -> Compiled {
         ctx.error(&e.message, Some(e.span));
         process::exit(1);
     });
+    let options = ModuleLoaderOptions {
+        extensions,
+        ..Default::default()
+    };
     let (program, warnings) =
-        Compiler::compile_file(program, Path::new(path)).unwrap_or_else(|e| {
-            match &e {
-                CompileError::Type(te) => ctx.error(&te.message, Some(te.span)),
-                CompileError::Codegen(msg) => ctx.error(msg, None),
-            }
-            process::exit(1);
-        });
+        Compiler::compile_file_with_options(program, Path::new(path), options).unwrap_or_else(
+            |e| {
+                match &e {
+                    CompileError::Type(te) => ctx.error(&te.message, Some(te.span)),
+                    CompileError::Codegen(msg) => ctx.error(msg, None),
+                }
+                process::exit(1);
+            },
+        );
 
     for warning in &warnings {
         ctx.warning(&warning.message, Some(warning.span));
@@ -956,7 +999,7 @@ fn inspect_program_work(program: &CompiledProgram) -> Result<WorkInspection, Str
 }
 
 fn inspect_work_file(path: &str) {
-    let compiled = compile_or_exit(path);
+    let compiled = compile_or_exit(path, ExtensionSurface::default());
     let inspection = inspect_program_work(&compiled.program).unwrap_or_else(|message| {
         eprintln!("error: {message}");
         process::exit(1);
@@ -986,14 +1029,14 @@ fn run_file(options: &ScriptOptions) {
     eprintln!("info: {}", surface.describe());
     let config = load_surface_config(&surface);
     let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
-    let compiled = compile_or_exit(&path);
+    let compiled = compile_or_exit(&path, extension_surface_or_exit(config.as_ref()));
     if options.strict {
         enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
     }
 
     let output_sink = Arc::new(StdoutOutputSink::default());
     if let Some(config) = config.as_ref().filter(|config| config.requires_runtime()) {
-        let mut vm = config.build_vm(compiled.program);
+        let mut vm = build_vm_or_exit(config, compiled.program);
         vm.set_output_sink(output_sink);
 
         let runtime = ThreadedRuntime::new(options.workers);
@@ -1012,7 +1055,7 @@ fn run_file(options: &ScriptOptions) {
     }
 
     let mut vm = if let Some(config) = &config {
-        config.build_vm(compiled.program)
+        build_vm_or_exit(config, compiled.program)
     } else {
         VMBuilder::new(compiled.program).with_core().build()
     };
@@ -1031,8 +1074,8 @@ fn check_file(options: &ScriptOptions) {
         .script_path
         .as_deref()
         .expect("check requires a script");
-    let compiled = compile_or_exit(path);
     let config = load_surface_config(&surface);
+    let compiled = compile_or_exit(path, extension_surface_or_exit(config.as_ref()));
     if options.strict {
         enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
     }
@@ -1168,6 +1211,12 @@ fn push_unique_path(path: &Path, seen: &mut BTreeSet<PathBuf>, resolved: &mut Ve
 
 fn build_vm(config_path: &str) {
     let config = load_run_config(config_path, "run config");
+    if !config.extensions.is_empty() {
+        eprintln!(
+            "error: build-vm does not support [extensions] yet; run the script with `hiko run` instead"
+        );
+        process::exit(1);
+    }
 
     let rust_src = config.to_rust_source();
 

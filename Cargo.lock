@@ -1305,6 +1305,8 @@ dependencies = [
  "hiko-builtin-meta",
  "hiko-common",
  "hiko-compile",
+ "hiko-ext-aws",
+ "hiko-ext-github",
  "hiko-syntax",
  "hiko-types",
  "hiko-vm",
