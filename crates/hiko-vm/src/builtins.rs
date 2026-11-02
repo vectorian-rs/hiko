@@ -237,8 +237,9 @@ fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
 }
 
 #[cfg(test)]
-// Used by the tests of whichever builtin domains are enabled.
-#[allow(dead_code)]
+// Used by the tests of whichever builtin domains are enabled; with every
+// domain on, a helper no test uses is still reported.
+#[cfg_attr(not(feature = "builtin-all"), allow(dead_code))]
 pub(super) mod test_helpers {
     use super::*;
     use smallvec::smallvec;
