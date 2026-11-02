@@ -83,6 +83,15 @@ pub struct EmbeddedSources {
     pub files: Option<&'static [EmbeddedFile]>,
 }
 
+/// A locked module's verified source, from [`Compiler::locked_module_sources`].
+#[derive(Debug, Clone)]
+pub struct LockedModuleSource {
+    pub import_name: String,
+    /// The lockfile hash, as written there.
+    pub blake3: String,
+    pub source: String,
+}
+
 /// A locked module in a sealed artifact.
 #[derive(Debug)]
 pub struct EmbeddedModule {
@@ -893,6 +902,55 @@ impl Compiler {
         Self::compile_with_ctx(program, base_dir, Some(canonical), loading, loader_options)
     }
 
+    /// The source of every module in the lockfile of the project that
+    /// `entry_file` belongs to, each read through the normal loader (local
+    /// package root, cache, then network) and checked against its BLAKE3
+    /// hash. `build-vm` embeds these in a sealed artifact. Sorted by import
+    /// name.
+    #[cfg(all(
+        feature = "loader-named-imports",
+        feature = "loader-http",
+        feature = "loader-integrity-blake3"
+    ))]
+    pub fn locked_module_sources(
+        entry_file: &Path,
+        loader_options: ModuleLoaderOptions,
+    ) -> Result<Vec<LockedModuleSource>, CompileError> {
+        let canonical =
+            std::fs::canonicalize(entry_file).unwrap_or_else(|_| entry_file.to_path_buf());
+        let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let mut c = Compiler::new(
+            base_dir,
+            Some(canonical),
+            HashSet::new(),
+            loader_options,
+            StringInterner::default(),
+        );
+        let (lockfile, _) = c.ensure_import_loader("the lockfile")?;
+        let mut names = Vec::new();
+        for (package_name, package) in &lockfile.packages {
+            for (module, hash) in &package.modules {
+                names.push((format!("{package_name}.{module}"), hash.clone()));
+            }
+        }
+        names.sort();
+        let mut sources = Vec::new();
+        for (import_name, blake3) in names {
+            let (package_name, leaf_module) = split_import_name(&import_name)?;
+            let ResolvedImport::VerifiedFile { source, .. } =
+                c.resolve_external_named_import(&import_name, package_name, leaf_module)?
+            else {
+                unreachable!("external named imports resolve to verified files");
+            };
+            sources.push(LockedModuleSource {
+                import_name,
+                blake3,
+                source,
+            });
+        }
+        Ok(sources)
+    }
+
     /// Compile a sealed artifact's embedded entry program. Imports resolve
     /// only from `options.embedded`, and local `use` paths are relative to
     /// the entry script's directory.
@@ -930,19 +988,13 @@ impl Compiler {
         )
     }
 
-    fn compile_with_ctx(
-        program: Program,
+    fn new(
         base_dir: PathBuf,
         entry_file: Option<PathBuf>,
         loading_imports: HashSet<ImportKey>,
         loader_options: ModuleLoaderOptions,
-    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        // Desugar and constant-fold
-        let program = hiko_syntax::desugar::desugar_program(program);
-        let program = hiko_syntax::constfold::fold_program(program);
-        let interner = program.interner;
-        let desugared = program.decls;
-
+        interner: StringInterner,
+    ) -> Compiler {
         let mut c = Compiler {
             functions: Vec::new(),
             func_stack: vec![FuncCtx::new(None, 0)],
@@ -971,6 +1023,29 @@ impl Compiler {
             interner,
         };
         c.infer_ctx.interner = c.interner.clone();
+        c
+    }
+
+    fn compile_with_ctx(
+        program: Program,
+        base_dir: PathBuf,
+        entry_file: Option<PathBuf>,
+        loading_imports: HashSet<ImportKey>,
+        loader_options: ModuleLoaderOptions,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        // Desugar and constant-fold
+        let program = hiko_syntax::desugar::desugar_program(program);
+        let program = hiko_syntax::constfold::fold_program(program);
+        let interner = program.interner;
+        let desugared = program.decls;
+
+        let mut c = Compiler::new(
+            base_dir,
+            entry_file,
+            loading_imports,
+            loader_options,
+            interner,
+        );
         let surface = &c.loader_options.extensions;
         for ty in &surface.types {
             c.infer_ctx
@@ -3357,6 +3432,33 @@ mod tests {
             format!("{err:?}").contains("not allowed in a remote module"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn locked_module_sources_reads_every_locked_module_verified() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let options = ModuleLoaderOptions {
+            cache_dir: Some(unique_temp_dir("locked-sources")),
+            local_package_root: Some(repo.join("libraries")),
+            ..Default::default()
+        };
+        let sources = Compiler::locked_module_sources(&repo.join("hiko.toml"), options)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let option = sources
+            .iter()
+            .find(|m| m.import_name == "Std.Option")
+            .expect("Std.Option is locked");
+        let on_disk =
+            std::fs::read_to_string(repo.join("libraries/Std-v0.1.0/modules/Option.hml")).unwrap();
+        assert_eq!(option.source, on_disk);
+        assert_eq!(
+            normalize_blake3(&option.blake3),
+            blake3_hex(on_disk.as_bytes())
+        );
+        let names: Vec<_> = sources.iter().map(|m| m.import_name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
     }
 
     #[test]
