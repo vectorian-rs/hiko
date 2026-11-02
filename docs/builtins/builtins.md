@@ -204,8 +204,14 @@ rest = "any"   # default "none"
   up in `PATH`. A call's program is resolved the same way when it runs, and
   must be the same file (device and inode on Unix). So `./mise` or
   `/opt/other/mise` is refused unless it is the configured file, and a
-  symlink is followed to its target. Just before spawning, the VM checks
-  that the file is still the one that was allowed.
+  symlink is followed to its target.
+- **A replaced file is refused.** The VM holds each allowed executable
+  open while it runs, so the file's inode cannot be freed and reused. A
+  file created at the same path, by deleting and recreating it or by
+  renaming over it, always has a different inode, and `exec` refuses it.
+  This does not depend on timestamps (#160). An executable the VM may not
+  read (mode `--x`) cannot be held open; it is checked by device, inode,
+  change time and size only.
 - **Arguments match as strings, exactly.** There is no globbing, trimming or
   splitting: `"run check"` is one argument and does not match `"run",
   "check"`; an empty string is an argument. With `rest = "any"`, only
@@ -213,6 +219,22 @@ rest = "any"   # default "none"
 - A NUL in the program or an argument is refused. A rule with an empty
   `argv`, or an empty command, is a config error.
 - Child processes have the same permissions as their parent.
+
+What the allowlist does **not** guarantee:
+
+- **Writes to the allowed file itself.** The check compares the file's
+  change time and size, so a write that keeps the size and lands within one
+  timestamp tick of the policy can go unnoticed. Keep allowed executables
+  in directories, and as files, that the script's user cannot write.
+- **A replacement between the check and the spawn.** The VM checks the path
+  just before it spawns, and then the OS opens the path again. A file swapped
+  in during that short window runs. macOS cannot run a program through an
+  open descriptor (`execve` of `/dev/fd/N` fails with `EACCES`), so the
+  window is not closed portably. The defence is the same: the script's user
+  must not be able to write to the allowed executable's directory.
+- **What the program does.** Arguments are fixed, but the program itself
+  may read files, environment variables or configuration that the script can
+  change.
 - `build-vm` writes the rules into the generated binary.
 
 ## Concurrency (threaded runtime)

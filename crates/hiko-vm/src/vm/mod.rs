@@ -167,7 +167,12 @@ impl StringCache {
 /// An allowed executable as it was when the policy was applied. `exec`
 /// refuses a command whose identity no longer matches, such as a file
 /// replaced after the check.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// An allowed executable is held open (`pin`) for as long as the VM and its
+/// children hold the policy. An open file's inode cannot be freed, so it
+/// cannot be reused: a file created at the same path always has a different
+/// `(dev, ino)`, whatever the timestamp granularity (#160).
+#[derive(Clone, Debug)]
 pub(super) struct ExecAllowedPath {
     path: PathBuf,
     #[cfg(unix)]
@@ -182,7 +187,26 @@ pub(super) struct ExecAllowedPath {
     #[cfg(unix)]
     ctime: (i64, i64),
     len: u64,
+    /// The allowed file, open. `None` for a call's command, which is only
+    /// compared, and for an executable the VM may not read (mode `--x`).
+    #[allow(dead_code, reason = "held open, not read: it keeps the inode alive")]
+    pin: Option<Arc<std::fs::File>>,
 }
+
+/// Identity only: a call's command equals an allowed executable when they
+/// are the same file in the same state, pinned or not.
+impl PartialEq for ExecAllowedPath {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        let same_inode =
+            self.dev == other.dev && self.ino == other.ino && self.ctime == other.ctime;
+        #[cfg(not(unix))]
+        let same_inode = true;
+        self.path == other.path && same_inode && self.len == other.len
+    }
+}
+
+impl Eq for ExecAllowedPath {}
 
 /// How the VM dispatches a builtin call. Most builtins are `Plain`: the VM
 /// calls the function and pushes its result. The others need the VM itself

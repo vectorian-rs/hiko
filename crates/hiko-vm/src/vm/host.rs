@@ -129,10 +129,35 @@ fn canonicalize_exec_candidate(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
 
+/// The identity of the file at `path` now.
 fn exec_allowed_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
     let metadata = path
         .metadata()
         .map_err(|e| format!("cannot stat executable '{}': {e}", path.display()))?;
+    exec_identity(path, metadata, None)
+}
+
+/// Open the executable at `path` and take its identity from the open file,
+/// which stays open in `pin`. An executable the VM may not read is allowed
+/// by identity only.
+fn pinned_exec_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
+    match std::fs::File::open(&path) {
+        Ok(file) => {
+            let metadata = file
+                .metadata()
+                .map_err(|e| format!("cannot stat executable '{}': {e}", path.display()))?;
+            exec_identity(path, metadata, Some(Arc::new(file)))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => exec_allowed_path(path),
+        Err(e) => Err(format!("cannot open executable '{}': {e}", path.display())),
+    }
+}
+
+fn exec_identity(
+    path: PathBuf,
+    metadata: std::fs::Metadata,
+    pin: Option<Arc<std::fs::File>>,
+) -> Result<ExecAllowedPath, String> {
     if !metadata.is_file() {
         return Err(format!("executable '{}' is not a file", path.display()));
     }
@@ -154,11 +179,16 @@ fn exec_allowed_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
             (metadata.ctime(), metadata.ctime_nsec())
         },
         len: metadata.len(),
+        pin,
     })
 }
 
 fn resolve_exec_command(command: &str) -> Result<ExecAllowedPath, String> {
     resolve_exec_command_path(command).and_then(exec_allowed_path)
+}
+
+fn resolve_allowed_exec_command(command: &str) -> Result<ExecAllowedPath, String> {
+    resolve_exec_command_path(command).and_then(pinned_exec_path)
 }
 
 fn resolve_exec_command_path(command: &str) -> Result<PathBuf, String> {
@@ -213,7 +243,7 @@ impl VM {
         let mut resolved = Vec::new();
         let mut errors = Vec::new();
         for command in &allowed {
-            match resolve_exec_command(command) {
+            match resolve_allowed_exec_command(command) {
                 Ok(path) => resolved.push(path),
                 Err(err) => errors.push(format!("{command}: {err}")),
             }
@@ -224,7 +254,7 @@ impl VM {
                 errors.push("an argv rule is empty".to_string());
                 continue;
             };
-            match resolve_exec_command(command) {
+            match resolve_allowed_exec_command(command) {
                 Ok(path) => resolved_rules.push((rule, path)),
                 Err(err) => errors.push(format!("{command}: {err}")),
             }
@@ -546,6 +576,68 @@ mod tests {
 
         assert_eq!(first.path, second.path);
         assert_ne!(first, second);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// #160: while the allowed file is held open its inode cannot be reused,
+    /// so a same-size replacement made within one timestamp tick still has
+    /// a different identity. Nothing here depends on timing.
+    #[test]
+    fn pinned_executable_detects_a_same_size_replacement() {
+        let root = temp_dir("exec-pinned");
+        let script = root.join("tool.sh");
+        write_executable(&script, "#!/bin/sh\necho first\n");
+        let allowed = pinned_exec_path(script.clone()).expect("pinned identity");
+        assert!(allowed.pin.is_some());
+
+        for round in 0..50 {
+            std::fs::remove_file(&script).expect("remove executable");
+            write_executable(&script, "#!/bin/sh\necho secnd\n");
+            let now = exec_allowed_path(script.clone()).expect("current identity");
+            assert_ne!(allowed.ino, now.ino, "round {round}: inode reused");
+            assert_ne!(allowed, now, "round {round}");
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "builtin-exec")]
+    #[test]
+    fn exec_refuses_an_allowed_file_replaced_after_the_policy() {
+        use crate::builder::{ExecPolicy, VMBuilder};
+
+        let root = temp_dir("exec-replaced");
+        let script = root.join("tool.sh");
+        write_executable(&script, "#!/bin/sh\necho first\n");
+        let program = {
+            let source = format!("val _ = exec ({:?}, [])", script.to_string_lossy());
+            let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
+                .tokenize()
+                .expect("lex");
+            let program = hiko_syntax::parser::Parser::new(tokens)
+                .parse_program()
+                .expect("parse");
+            hiko_compile::compiler::Compiler::compile(program)
+                .expect("compile")
+                .0
+        };
+        let mut vm = VMBuilder::new(program)
+            .with_core()
+            .with_exec(ExecPolicy {
+                allowed: vec![script.to_string_lossy().into_owned()],
+                rules: Vec::new(),
+            })
+            .build();
+
+        std::fs::remove_file(&script).expect("remove executable");
+        write_executable(&script, "#!/bin/sh\necho secnd\n");
+        let err = vm.run().expect_err("the replaced file must not run");
+        assert!(
+            err.message.contains("not in the allowed list"),
+            "{}",
+            err.message
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
