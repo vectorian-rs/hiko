@@ -32,7 +32,12 @@ allocation take at most 13%.
 Gains are estimates from the profile shares and must be measured, interleaved
 and on AC power (`docs/architecture/performance.md`, "How to measure").
 
-### 1. Release profile (no code change)
+### 1. Release profile (no code change) — measured, not kept
+
+Measured in #149: fat LTO with one codegen unit made 12 of 15 programs 1 to
+15% slower (`docs/architecture/performance.md`). The text below is the
+original estimate.
+
 
 The root `Cargo.toml` has no `[profile.release]` and there is no
 `.cargo/config`, so release builds use thin local LTO and 16 codegen units.

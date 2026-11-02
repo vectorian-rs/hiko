@@ -428,3 +428,30 @@ moved the same way. "Before" is the V branch at `8b06637`, built with
 |---|---|---|
 | `global_builtin.hml` | 291.0 ms | 276.9 ms (-4.8%) |
 | `string_concat.hml` | | unchanged within noise |
+||||||| parent of 1fc12ee (docs: fat LTO and one codegen unit made the interpreter slower)
+
+### Release profile: fat LTO and one codegen unit (PR #149, not kept)
+
+`[profile.release]` with `lto = "fat"` and `codegen-units = 1`, against
+Cargo's defaults (no cross-crate LTO, 16 codegen units), both built from
+`main` after #148. Interleaved, 10 rounds each, on AC; other work kept the
+load average at 10 to 30, which interleaving spreads over both sides.
+
+| Benchmark | Default | Fat LTO, 1 unit | Change |
+|---|---|---|---|
+| `compare/sieve` | 601 ms | 687 ms | +14% |
+| `compare/tak` | 494 ms | 566 ms | +15% (load 29) |
+| `compare/queens` | 395 ms | 420 ms | +6% |
+| `early_exit` | 315 ms | 331 ms | +5% |
+| `ack` | 1063 ms | 1113 ms | +5% |
+| `global_builtin` | 298 ms | 310 ms | +4% |
+| `compare/mandelbrot`, `compare/nbody`, `tak`, `string_concat`, `list_length`, `compare/fib` | | | +1 to +4% |
+| `ec_fib`, `compare/list` | | | -1 to -2% |
+| `compare/binary_trees` | 1713 ms | 1624 ms | -5% (load 22; minimum +4%) |
+
+Medians; the minimums move the same way. The binary is 28% smaller
+(6,449,888 to 4,658,512 bytes), but 12 of 15 programs are slower: more
+inlining into the very large `dispatch` function likely worsens register
+allocation in the hot loop. Not kept. Inlining the specific hot helpers
+(review items 2 and 3 in `docs/rnd/2026-11-vm-performance-review.md`) is
+still worth measuring on its own, and thin LTO or PGO separately.
