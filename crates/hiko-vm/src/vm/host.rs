@@ -277,6 +277,12 @@ impl VM {
         self.output_sink = Some(sink);
     }
 
+    /// Send `eprint`/`eprintln` output to `sink` instead of the host's
+    /// stderr. Child processes inherit it.
+    pub fn set_error_sink(&mut self, sink: Arc<dyn OutputSink>) {
+        self.heap.set_error_sink(Some(sink));
+    }
+
     pub fn clear_output_sink(&mut self) {
         self.output_sink = None;
     }
