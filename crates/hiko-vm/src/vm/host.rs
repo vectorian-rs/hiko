@@ -134,6 +134,12 @@ fn exec_allowed_path(path: PathBuf) -> Result<ExecAllowedPath, String> {
             use std::os::unix::fs::MetadataExt as _;
             metadata.ino()
         },
+        #[cfg(unix)]
+        ctime: {
+            use std::os::unix::fs::MetadataExt as _;
+            (metadata.ctime(), metadata.ctime_nsec())
+        },
+        len: metadata.len(),
     })
 }
 
