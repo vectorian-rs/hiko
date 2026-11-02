@@ -533,3 +533,21 @@ with `Op::try_from` inlined.
 Medians; the minimums agree. Unlike whole-program LTO, which inlined
 everything into `dispatch` and made it slower, this inlines only the small
 helpers on the hot path.
+
+### Against Lua and Python, after #149 steps 2 and 3
+
+`scripts/compare.sh`, 10 runs each, on AC, load average about 3.5, at
+`026f91b`. "#146" is the Hiko time in the first comparison above.
+
+| Program | Hiko (#146) | Hiko | Lua | Python | LuaJIT | Hiko / Lua | Hiko / Python |
+|---|---|---|---|---|---|---|---|
+| `binary_trees` | 1454 ms | 1216 ms | 496 ms | 292 ms | 133 ms | 2.5x | 4.2x |
+| `fib` | 472 ms | 433 ms | 136 ms | 235 ms | 18 ms | 3.2x | 1.8x |
+| `list` | 1755 ms | 1380 ms | 123 ms | 169 ms | 18 ms | 11.3x | 8.2x |
+| `mandelbrot` | 636 ms | 525 ms | 125 ms | 207 ms | 12 ms | 4.2x | 2.5x |
+| `nbody` | 642 ms | 464 ms | 95 ms | 109 ms | 18 ms | 4.9x | 4.3x |
+| `queens` | 351 ms | 286 ms | 50 ms | 101 ms | 11 ms | 5.7x | 2.8x |
+| `sieve` | 608 ms | 464 ms | 346 ms | 153 ms | 99 ms | 1.3x | 3.0x |
+| `tak` | 257 ms | 233 ms | 67 ms | 83 ms | 13 ms | 3.5x | 2.8x |
+
+Hiko is 8 to 28% faster than at #146, and now 1.3 to 11x slower than Lua 5.5.
