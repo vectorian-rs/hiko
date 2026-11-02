@@ -62,6 +62,7 @@ python3 -m http.server 8000 -d libraries --bind 127.0.0.1
 | `effects_overview.hml` | Provider and abort clauses. |
 | `effects_and_io.hml` | Effects next to ordinary I/O builtins. |
 | `http_effect_wrapper_test.hml` | One HTTP effect with a mock and a real handler. The real handler needs the local module server. |
+| `log_plain.hml`, `log_effect.hml` | One program logging with `Std.Log` two ways: a logger passed down, and the `LogEvent` effect with a handler at the top. Both print the same lines; `HIKO_LOG=debug` shows more. |
 
 ## Runtime and host builtins
 
