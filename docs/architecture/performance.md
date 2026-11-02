@@ -562,3 +562,30 @@ values, and checked `ip + N` for overflow in `read_operand`. Interleaved, 8
 rounds, on AC, load average 5 to 6.5: `list`, `fib`, `tak`, `nbody` within
 1%; `binary_trees`, `ack` +1 to 2%; `queens`, `sieve` +2%. Kept: the
 `MakeCons` and `read_operand` changes are correctness fixes.
+
+### Keeping the current function's code in `dispatch` (PR #159, #151)
+
+`dispatch` looked up the frame's chunk for every instruction
+(`chunk_for_checked`), and every operand read looked up the frame and chunk
+again (`read_operand`). It now holds the current function's code slice,
+reloading it only when the frame's function changes, and reads operands from
+it. The protos and main chunk are `Arc`-cloned into locals so the slice does
+not borrow `self`.
+
+Interleaved, 10 rounds, on AC, load average 4 to 8 (medians; the minimums
+agree); "before" is #149's head.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/tak` | 218 ms | 190 ms | -13% |
+| `global_builtin` | 272 ms | 237 ms | -13% |
+| `compare/fib` | 432 ms | 382 ms | -12% |
+| `compare/list` | 1357 ms | 1208 ms | -11% |
+| `ack` | 1005 ms | 895 ms | -11% |
+| `list_length` | 1049 ms | 937 ms | -11% |
+| `compare/nbody` | 477 ms | 426 ms | -11% |
+| `compare/queens` | 289 ms | 260 ms | -10% |
+| `early_exit` | 299 ms | 270 ms | -10% |
+| `compare/mandelbrot` | 541 ms | 493 ms | -9% |
+| `compare/binary_trees` | 1249 ms | 1247 ms | 0% |
+| `compare/sieve` | 488 ms | 508 ms | +4% |
