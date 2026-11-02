@@ -14,8 +14,6 @@ mod env;
 mod exec;
 #[cfg(feature = "builtin-filesystem")]
 mod filesystem;
-#[cfg(feature = "builtin-github")]
-mod github;
 #[cfg(feature = "builtin-hash")]
 mod hash;
 #[cfg(feature = "builtin-http")]
@@ -113,8 +111,6 @@ const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     aws_s3::BUILTINS,
     #[cfg(feature = "builtin-aws-sqs")]
     aws_sqs::BUILTINS,
-    #[cfg(feature = "builtin-github")]
-    github::BUILTINS,
     #[cfg(feature = "builtin-stdio")]
     stdio::BUILTINS,
     #[cfg(feature = "builtin-convert")]

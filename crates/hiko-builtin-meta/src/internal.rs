@@ -27,14 +27,6 @@ const AWS_SQS_SOURCE: &str = r#"structure BuiltinAwsSqs = struct
 end
 "#;
 
-const GITHUB_SOURCE: &str = r#"structure BuiltinGithub = struct
-  val issue_create_raw = github_issue_create
-  val issue_view_raw = github_issue_view
-  val issue_update_raw = github_issue_update
-  val issue_list_raw = github_issue_list
-end
-"#;
-
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
   val read_text_raw = read_file
   val read_bytes_raw = read_file_bytes
@@ -263,7 +255,6 @@ const MODULES: &[InternalBuiltinModule] = &[
     module!("AwsConfig", "builtin-aws-config", AWS_CONFIG_SOURCE),
     module!("AwsS3", "builtin-aws-s3", AWS_S3_SOURCE),
     module!("AwsSqs", "builtin-aws-sqs", AWS_SQS_SOURCE),
-    module!("Github", "builtin-github", GITHUB_SOURCE),
     module!("Filesystem", "builtin-filesystem", FILESYSTEM_SOURCE),
     module!("Path", "builtin-path", PATH_SOURCE),
     module!("Json", "builtin-json", JSON_SOURCE),

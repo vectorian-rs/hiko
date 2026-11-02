@@ -9,13 +9,6 @@ Config = "blake3:c21cb05619ccfc9def3c8ab775af5eb5c066970cb643d0892d15edbb7f74c61
 S3 = "blake3:fde0fc157bd0751c206b0fa9ea821b2d0580bc13351684c4115673b37b0a36de"
 SQS = "blake3:9616f4dbeb117419f34b827bad2450ae2aa6a1c30a5cd129a6c957a702274f66"
 
-[packages.Gh]
-version = "0.1.0"
-base_url = "http://127.0.0.1:8000/Gh-v0.1.0"
-
-[packages.Gh.modules]
-Issue = "blake3:85d2c6bc002806c189327488d85f10fe90f0aac1fbec03d5818589d7ddc3a87c"
-
 [packages.Hash]
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Hash-v0.1.0"

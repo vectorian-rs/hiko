@@ -55,12 +55,6 @@ impl VM {
             "aws_s3_list_buckets" => ids.aws_s3_list_buckets_builtin_id = Some(idx),
             #[cfg(feature = "builtin-aws-sqs")]
             "aws_sqs_list_queues" => ids.aws_sqs_list_queues_builtin_id = Some(idx),
-            #[cfg(feature = "builtin-github")]
-            "github_issue_create" => ids.github_issue_create_builtin_id = Some(idx),
-            #[cfg(feature = "builtin-github")]
-            "github_issue_view" => ids.github_issue_view_builtin_id = Some(idx),
-            #[cfg(feature = "builtin-github")]
-            "github_issue_update" => ids.github_issue_update_builtin_id = Some(idx),
             _ => {}
         }
         table.by_name.insert(name.clone(), idx);

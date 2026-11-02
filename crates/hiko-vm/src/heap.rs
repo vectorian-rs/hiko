@@ -220,8 +220,6 @@ pub struct Heap {
     http_allowed_hosts: Vec<String>,
     /// Per-builtin HTTP host allowlists.
     http_allowed_hosts_by_builtin: HashMap<String, Vec<String>>,
-    /// Per-builtin GitHub issue repo allowlists.
-    github_issue_allowed_repos: HashMap<String, Vec<String>>,
     /// Allowed AWS SSO profile names for Aws.Config creation.
     #[cfg(feature = "builtin-aws-config")]
     aws_sso_profiles: Vec<String>,
@@ -300,7 +298,6 @@ impl Heap {
             regex_cache: Arc::default(),
             http_allowed_hosts: Vec::new(),
             http_allowed_hosts_by_builtin: HashMap::new(),
-            github_issue_allowed_repos: HashMap::new(),
             #[cfg(feature = "builtin-aws-config")]
             aws_sso_profiles: Vec::new(),
             #[cfg(feature = "builtin-aws-config")]
@@ -592,30 +589,6 @@ impl Heap {
             Err(format!(
                 "host '{}' not in allowed hosts for '{}': {:?}",
                 host, builtin, allowed_hosts
-            ))
-        }
-    }
-
-    pub fn set_github_issue_allowed_repos(&mut self, repos: HashMap<String, Vec<String>>) {
-        self.github_issue_allowed_repos = repos;
-    }
-
-    pub fn github_issue_allowed_repos(&self) -> &HashMap<String, Vec<String>> {
-        &self.github_issue_allowed_repos
-    }
-
-    pub fn check_github_repo_for(&self, builtin: &str, repo: &str) -> Result<(), String> {
-        let allowed_repos = self
-            .github_issue_allowed_repos
-            .get(builtin)
-            .ok_or_else(|| format!("builtin '{builtin}' has no GitHub permission"))?;
-
-        if allowed_repos.iter().any(|r| r == repo) {
-            Ok(())
-        } else {
-            Err(format!(
-                "repo '{}' not in allowed repos for '{}': {:?}",
-                repo, builtin, allowed_repos
             ))
         }
     }
