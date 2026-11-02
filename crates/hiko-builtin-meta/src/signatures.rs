@@ -14,7 +14,7 @@ fn poly_a(ty: &'static str) -> Option<BuiltinTypeSignature> {
 pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
     let ty = match name {
         // I/O
-        "print" | "println" => "string -> unit",
+        "print" | "println" | "eprint" | "eprintln" => "string -> unit",
         "read_line" | "read_stdin" => "unit -> string",
 
         // Conversions

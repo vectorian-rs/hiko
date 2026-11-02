@@ -15,6 +15,12 @@ enabled = true
 [capabilities.stdio.println]
 enabled = true
 
+[capabilities.stdio.eprint]
+enabled = true
+
+[capabilities.stdio.eprintln]
+enabled = true
+
 [capabilities.stdio.read_line]
 enabled = true
 

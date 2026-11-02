@@ -96,6 +96,8 @@ end
 const STDIO_SOURCE: &str = r#"structure BuiltinStdio = struct
   val print_raw = print
   val println_raw = println
+  val eprint_raw = eprint
+  val eprintln_raw = eprintln
   val read_line_raw = read_line
   val read_stdin_raw = read_stdin
 end

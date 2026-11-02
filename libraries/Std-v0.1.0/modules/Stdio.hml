@@ -3,6 +3,8 @@ import __Builtin.Stdio
 signature STDIO = sig
   val print : string -> unit
   val println : string -> unit
+  val eprint : string -> unit
+  val eprintln : string -> unit
   val read_line : unit -> string
   val read_stdin : unit -> string
 end
@@ -11,6 +13,10 @@ structure Stdio :> STDIO = struct
   fun print text = BuiltinStdio.print_raw text
 
   fun println text = BuiltinStdio.println_raw text
+
+  fun eprint text = BuiltinStdio.eprint_raw text
+
+  fun eprintln text = BuiltinStdio.eprintln_raw text
 
   fun read_line () = BuiltinStdio.read_line_raw ()
 

@@ -297,6 +297,8 @@ macro_rules! http_family {
 enabled_family!(StdioCapabilities {
     print => "print",
     println => "println",
+    eprint => "eprint",
+    eprintln => "eprintln",
     read_line => "read_line",
     read_stdin => "read_stdin",
 });
