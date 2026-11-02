@@ -253,7 +253,11 @@ enabled = true
 folders = ["./workspace"]
 
 # HTTP builtins.
-# `allowed_hosts` are host allowlists enforced for each builtin.
+# `allowed_hosts` are host allowlists enforced for each builtin. The host is
+# read with the HTTP client's own URL parser, so the host checked is the host
+# connected to. It must be a DNS name (compared in lowercase) or a bracketed
+# IPv6 address such as "[::1]"; write internationalized names in punycode
+# ("xn--..."). Other forms, such as percent-encoded hosts, are refused.
 
 [capabilities.http.http_get]
 enabled = true
