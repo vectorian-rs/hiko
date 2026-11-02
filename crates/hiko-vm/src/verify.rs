@@ -227,7 +227,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 0,
+                min_depth: slot + 1,
                 delta: 1,
             }
         }
@@ -246,7 +246,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 0,
+                min_depth: slot + 1,
                 delta: 1,
             }
         }
@@ -259,7 +259,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 1,
+                min_depth: slot + 2,
                 delta: -1,
             }
         }
@@ -278,7 +278,7 @@ fn decode_instruction(
             }
             successors.push(*ip);
             StackRule::Exact {
-                min_depth: 1,
+                min_depth: slot + 2,
                 delta: -1,
             }
         }
@@ -991,7 +991,14 @@ mod tests {
     #[test]
     fn accepts_main_get_local_with_declared_local_slot() {
         let program = program_with_effects(
-            vec![Op::GetLocal as u8, 0, 0, Op::Pop as u8, Op::Halt as u8],
+            vec![
+                Op::Unit as u8,
+                Op::GetLocal as u8,
+                0,
+                0,
+                Op::Pop as u8,
+                Op::Halt as u8,
+            ],
             1,
             Vec::new(),
         );
@@ -1002,6 +1009,8 @@ mod tests {
     fn accepts_quick_local_and_make_cons_stack_rules() {
         let program = program_with_effects(
             vec![
+                Op::Unit as u8,
+                Op::Unit as u8,
                 Op::GetLocal0 as u8,
                 Op::GetLocal1 as u8,
                 Op::MakeCons as u8,
@@ -1038,6 +1047,36 @@ mod tests {
             assert!(err.message().contains("SetLocal"), "{}", err.message());
             assert!(
                 err.message().contains(&format!("local slot {slot}")),
+                "{}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_local_slot_not_yet_on_the_stack() {
+        // Found by fuzzing: these pass the slot-count check, but the slot is
+        // not on the stack (for `SetLocal`, not below its own operand).
+        let cases = [
+            (
+                vec![Op::Unit as u8, Op::SetLocal0 as u8, Op::Halt as u8],
+                "SetLocal0",
+            ),
+            (
+                vec![Op::Unit as u8, Op::SetLocal as u8, 1, 0, Op::Halt as u8],
+                "SetLocal",
+            ),
+            (
+                vec![Op::Unit as u8, Op::GetLocal1 as u8, Op::Halt as u8],
+                "GetLocal1",
+            ),
+        ];
+        for (code, op) in cases {
+            let program = program_with_effects(code, 2, Vec::new());
+            let err = verify_program(&program).expect_err("program should fail verification");
+            assert!(
+                err.message()
+                    .contains(&format!("{op} at offset 1 requires stack depth")),
                 "{}",
                 err.message()
             );
