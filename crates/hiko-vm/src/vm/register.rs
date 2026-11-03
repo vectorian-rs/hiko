@@ -15,10 +15,12 @@
 //! targets, before calls, and before a local that something still refers to
 //! is overwritten.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
-use hiko_compile::chunk::{Chunk, CompiledProgram, Constant};
+use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use hiko_compile::op::Op;
+
+use crate::verify::{DecodedInst, StackRule};
 
 use super::dispatch::{Flow, error, error_fmt};
 use super::*;
@@ -125,10 +127,10 @@ pub(super) enum RegOp {
 /// A translated function.
 #[derive(Debug)]
 pub(super) struct RegFunction {
-    pub(super) code: Vec<RegOp>,
-    /// Stack instructions each `RegOp` stands for, charged as work.
-    pub(super) weight: Vec<u32>,
-    /// Stack bytecode offset each `RegOp` came from, for error spans.
+    /// Each instruction with the number of stack instructions it stands
+    /// for, charged as work.
+    pub(super) code: Vec<(RegOp, u32)>,
+    /// Stack bytecode offset each instruction came from, for error spans.
     pub(super) src_ip: Vec<u32>,
     /// Scalar constants, already converted.
     pub(super) consts: Vec<Value>,
@@ -137,152 +139,56 @@ pub(super) struct RegFunction {
     pub(super) n_regs: u16,
 }
 
-/// Register code for a whole program: `main` and each function, when it
-/// translates.
+/// Register code for a whole program, for each function that translates.
 #[derive(Debug, Default)]
 pub(super) struct RegisterCode {
-    pub(super) main: Option<RegFunction>,
-    pub(super) protos: Vec<Option<RegFunction>>,
+    /// Indexed by `proto_idx + 1` (wrapping), so `main` (`usize::MAX`) is
+    /// entry 0.
+    functions: Vec<Option<RegFunction>>,
 }
 
 impl RegisterCode {
     pub(super) fn translate(program: &CompiledProgram) -> Self {
-        let arities: Vec<u8> = program.functions.iter().map(|p| p.arity).collect();
+        let effect_tags: BTreeSet<u16> = program.effects.iter().map(|e| e.tag).collect();
+        let translate = |chunk: &Chunk, n_locals: u16, proto: Option<&FunctionProto>| {
+            let decoded = crate::verify::decode_chunk(
+                chunk,
+                n_locals as usize,
+                proto,
+                &program.functions,
+                &effect_tags,
+                program.globals.len(),
+            )
+            .ok()?;
+            translate(chunk, &decoded, proto.map_or(0, |p| p.arity))
+        };
+        let main = translate(&program.main, program.main_n_locals, None);
+        let protos = program
+            .functions
+            .iter()
+            .map(|p| translate(&p.chunk, p.n_locals, Some(p)));
         RegisterCode {
-            main: translate(&program.main, 0, &arities),
-            protos: program
-                .functions
-                .iter()
-                .map(|p| translate(&p.chunk, p.arity, &arities))
-                .collect(),
+            functions: std::iter::once(main).chain(protos).collect(),
         }
     }
 
     #[inline(always)]
     pub(super) fn get(&self, proto_idx: usize) -> Option<&RegFunction> {
-        if proto_idx == usize::MAX {
-            self.main.as_ref()
-        } else {
-            self.protos.get(proto_idx)?.as_ref()
-        }
+        self.functions.get(proto_idx.wrapping_add(1))?.as_ref()
+    }
+
+    #[inline(always)]
+    pub(super) fn is_register(&self, proto_idx: usize) -> bool {
+        self.get(proto_idx).is_some()
+    }
+
+    /// The stack bytecode offset of register instruction `pc`.
+    pub(super) fn src_ip(&self, proto_idx: usize, pc: usize) -> Option<usize> {
+        Some(*self.get(proto_idx)?.src_ip.get(pc)? as usize)
     }
 }
 
 // ── Translation ──────────────────────────────────────────────────────
-
-struct Inst {
-    start: usize,
-    op: Op,
-    /// u16 operand (local slot, constant, proto) where the op has one.
-    a: u16,
-    /// Jump target (stack bytecode offset) for jumps.
-    target: Option<usize>,
-}
-
-fn decode(code: &[u8]) -> Option<Vec<Inst>> {
-    let mut out = Vec::new();
-    let mut ip = 0;
-    while ip < code.len() {
-        let start = ip;
-        let op = Op::try_from(code[ip]).ok()?;
-        ip += 1;
-        let u16_at = |ip: usize| -> Option<u16> {
-            Some(u16::from_le_bytes([*code.get(ip)?, *code.get(ip + 1)?]))
-        };
-        let (a, target) = match op {
-            Op::Const
-            | Op::GetLocal
-            | Op::SetLocal
-            | Op::CallDirect
-            | Op::TailCallDirect
-            | Op::Panic => {
-                let a = u16_at(ip)?;
-                ip += 2;
-                (a, None)
-            }
-            Op::Jump
-            | Op::JumpIfFalse
-            | Op::JumpIfNotLtInt
-            | Op::JumpIfNotGtInt
-            | Op::JumpIfNotLeInt
-            | Op::JumpIfNotGeInt => {
-                let offset = u16_at(ip)? as i16;
-                ip += 2;
-                (0, Some(ip.checked_add_signed(offset as isize)?))
-            }
-            Op::Unit
-            | Op::True
-            | Op::False
-            | Op::GetLocal0
-            | Op::GetLocal1
-            | Op::GetLocal2
-            | Op::GetLocal3
-            | Op::SetLocal0
-            | Op::SetLocal1
-            | Op::SetLocal2
-            | Op::SetLocal3
-            | Op::Pop
-            | Op::AddInt
-            | Op::SubInt
-            | Op::MulInt
-            | Op::LtInt
-            | Op::GtInt
-            | Op::LeInt
-            | Op::GeInt
-            | Op::CallSelf
-            | Op::TailCallSelf
-            | Op::Return
-            | Op::Halt => (0, None),
-            // Outside stage 1: the function stays on the stack VM.
-            _ => return None,
-        };
-        out.push(Inst {
-            start,
-            op,
-            a,
-            target,
-        });
-    }
-    Some(out)
-}
-
-/// Stack effect and whether control falls through, for the supported ops.
-fn stack_rule(inst: &Inst, self_arity: u8, arities: &[u8]) -> Option<(isize, bool)> {
-    let arity_of = |p: u16| arities.get(p as usize).map(|&a| a as isize);
-    Some(match inst.op {
-        Op::Const
-        | Op::Unit
-        | Op::True
-        | Op::False
-        | Op::GetLocal
-        | Op::GetLocal0
-        | Op::GetLocal1
-        | Op::GetLocal2
-        | Op::GetLocal3 => (1, true),
-        Op::SetLocal
-        | Op::SetLocal0
-        | Op::SetLocal1
-        | Op::SetLocal2
-        | Op::SetLocal3
-        | Op::Pop
-        | Op::AddInt
-        | Op::SubInt
-        | Op::MulInt
-        | Op::LtInt
-        | Op::GtInt
-        | Op::LeInt
-        | Op::GeInt
-        | Op::JumpIfFalse => (-1, true),
-        Op::JumpIfNotLtInt | Op::JumpIfNotGtInt | Op::JumpIfNotLeInt | Op::JumpIfNotGeInt => {
-            (-2, true)
-        }
-        Op::Jump => (0, false),
-        Op::CallDirect => (1 - arity_of(inst.a)?, true),
-        Op::CallSelf => (1 - self_arity as isize, true),
-        Op::TailCallDirect | Op::TailCallSelf | Op::Return | Op::Panic | Op::Halt => (0, false),
-        _ => return None,
-    })
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Entry {
@@ -292,9 +198,9 @@ enum Entry {
     Const(u16),
 }
 
+#[derive(Default)]
 struct Builder {
-    code: Vec<RegOp>,
-    weight: Vec<u32>,
+    code: Vec<(RegOp, u32)>,
     src_ip: Vec<u32>,
     pending: u32,
     current_ip: u32,
@@ -302,8 +208,7 @@ struct Builder {
 
 impl Builder {
     fn emit(&mut self, op: RegOp) {
-        self.code.push(op);
-        self.weight.push(self.pending);
+        self.code.push((op, self.pending));
         self.src_ip.push(self.current_ip);
         self.pending = 0;
     }
@@ -335,18 +240,37 @@ impl Builder {
     }
 }
 
-/// Translate one function whose first `arity` stack slots are its
-/// arguments.
-fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
-    let insts = decode(&chunk.code)?;
+fn int_op(op: Op) -> Option<IntOp> {
+    Some(match op {
+        Op::AddInt => IntOp::Add,
+        Op::SubInt => IntOp::Sub,
+        Op::MulInt => IntOp::Mul,
+        _ => return None,
+    })
+}
+
+fn cmp_op(op: Op) -> Option<Cmp> {
+    Some(match op {
+        Op::LtInt | Op::JumpIfNotLtInt => Cmp::Lt,
+        Op::GtInt | Op::JumpIfNotGtInt => Cmp::Gt,
+        Op::LeInt | Op::JumpIfNotLeInt => Cmp::Le,
+        Op::GeInt | Op::JumpIfNotGeInt => Cmp::Ge,
+        _ => return None,
+    })
+}
+
+/// Translate one function from its verifier decoding. Its first `arity`
+/// stack slots are its arguments.
+fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunction> {
     if insts.is_empty() {
         return None;
     }
-    let index: BTreeMap<usize, usize> = insts
-        .iter()
-        .enumerate()
-        .map(|(i, x)| (x.start, i))
-        .collect();
+    // Instruction index by stack bytecode offset.
+    let mut index = vec![usize::MAX; chunk.code.len() + 1];
+    for (i, inst) in insts.iter().enumerate() {
+        index[inst.start] = i;
+    }
+    let at = |offset: usize| index.get(offset).copied().filter(|&i| i != usize::MAX);
 
     // Stack depth at each instruction; every path must agree.
     let mut depth: Vec<Option<usize>> = vec![None; insts.len()];
@@ -358,36 +282,29 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
             Some(_) => return None,
             None => depth[i] = Some(d),
         }
-        let inst = &insts[i];
-        let (delta, falls) = stack_rule(inst, arity, arities)?;
-        let after = d.checked_add_signed(delta)?;
-        max_depth = max_depth.max(d).max(after);
-        if let Some(t) = inst.target {
-            work.push((*index.get(&t)?, after));
-        }
-        if falls {
-            if i + 1 >= insts.len() {
-                return None;
+        if let StackRule::Exact { delta, .. } = insts[i].stack {
+            let after = d.checked_add_signed(delta)?;
+            max_depth = max_depth.max(after);
+            for &next in &insts[i].successors {
+                work.push((at(next)?, after));
             }
-            work.push((i + 1, after));
         }
     }
     let n_regs = Reg::try_from(max_depth.max(1)).ok()?;
 
-    let targets: std::collections::BTreeSet<usize> =
-        insts.iter().filter_map(|x| x.target).collect();
+    // Offsets that jumps land on.
+    let mut is_target = vec![false; chunk.code.len() + 1];
+    for inst in insts {
+        if is_jump(inst.op) {
+            is_target[*inst.successors.first()?] = true;
+        }
+    }
 
     let mut consts = Vec::new();
     let mut messages = Vec::new();
-    let mut b = Builder {
-        code: Vec::new(),
-        weight: Vec::new(),
-        src_ip: Vec::new(),
-        pending: 0,
-        current_ip: 0,
-    };
-    // Stack offset -> register pc, and jumps to patch.
-    let mut pc_of: BTreeMap<usize, u32> = BTreeMap::new();
+    let mut b = Builder::default();
+    // Register pc of each jump target, by stack offset, and jumps to patch.
+    let mut pc_of = vec![u32::MAX; chunk.code.len() + 1];
     let mut patches: Vec<(usize, usize)> = Vec::new();
     let mut stack: Vec<Entry> = Vec::new();
     let mut reachable_prev = false;
@@ -399,7 +316,7 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
             continue;
         };
         b.current_ip = inst.start as u32;
-        if targets.contains(&inst.start) {
+        if is_target[inst.start] {
             if reachable_prev {
                 b.materialize(&mut stack);
                 if b.pending > 0 {
@@ -407,7 +324,7 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
                 }
             }
             stack = (0..d).map(|k| Entry::Reg(k as Reg)).collect();
-            pc_of.insert(inst.start, b.code.len() as u32);
+            pc_of[inst.start] = b.code.len() as u32;
         } else if !reachable_prev {
             stack = (0..d).map(|k| Entry::Reg(k as Reg)).collect();
         }
@@ -415,19 +332,24 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
         b.pending += 1;
         reachable_prev = true;
 
-        let local = |op: Op, a: u16| -> u16 {
-            match op {
+        // The u16 operand right after the opcode, for ops that have one.
+        let operand = || -> Option<u16> {
+            let bytes = chunk.code.get(inst.start + 1..inst.start + 3)?;
+            Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+        };
+        let local = || -> Option<usize> {
+            Some(match inst.op {
                 Op::GetLocal0 | Op::SetLocal0 => 0,
                 Op::GetLocal1 | Op::SetLocal1 => 1,
                 Op::GetLocal2 | Op::SetLocal2 => 2,
                 Op::GetLocal3 | Op::SetLocal3 => 3,
-                _ => a,
-            }
+                _ => operand()? as usize,
+            })
         };
 
         match inst.op {
             Op::Const => {
-                let value = match chunk.constants.get(inst.a as usize)? {
+                let value = match chunk.constants.get(operand()? as usize)? {
                     Constant::Int(n) => Value::Int(*n),
                     Constant::Float(f) => Value::Float(*f),
                     Constant::Char(c) => Value::Char(*c),
@@ -441,12 +363,11 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
             Op::True => stack.push(Entry::Const(push_const(&mut consts, Value::Bool(true))?)),
             Op::False => stack.push(Entry::Const(push_const(&mut consts, Value::Bool(false))?)),
             Op::GetLocal | Op::GetLocal0 | Op::GetLocal1 | Op::GetLocal2 | Op::GetLocal3 => {
-                let slot = local(inst.op, inst.a) as usize;
                 // The value currently in that slot (a register or constant).
-                stack.push(*stack.get(slot)?);
+                stack.push(*stack.get(local()?)?);
             }
             Op::SetLocal | Op::SetLocal0 | Op::SetLocal1 | Op::SetLocal2 | Op::SetLocal3 => {
-                let slot = local(inst.op, inst.a) as usize;
+                let slot = local()?;
                 let value = stack.pop()?;
                 if slot >= stack.len() {
                     return None;
@@ -485,51 +406,11 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
                 let a = b.operand(lhs, pos);
                 let bb = b.operand(rhs, pos + 1);
                 let dst = pos as Reg;
-                let op = match inst.op {
-                    Op::AddInt => RegOp::Int {
-                        op: IntOp::Add,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                    Op::SubInt => RegOp::Int {
-                        op: IntOp::Sub,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                    Op::MulInt => RegOp::Int {
-                        op: IntOp::Mul,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                    Op::LtInt => RegOp::CmpInt {
-                        cmp: Cmp::Lt,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                    Op::GtInt => RegOp::CmpInt {
-                        cmp: Cmp::Gt,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                    Op::LeInt => RegOp::CmpInt {
-                        cmp: Cmp::Le,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                    _ => RegOp::CmpInt {
-                        cmp: Cmp::Ge,
-                        dst,
-                        a,
-                        b: bb,
-                    },
-                };
-                b.emit(op);
+                b.emit(match (int_op(inst.op), cmp_op(inst.op)) {
+                    (Some(op), _) => RegOp::Int { op, dst, a, b: bb },
+                    (_, Some(cmp)) => RegOp::CmpInt { cmp, dst, a, b: bb },
+                    _ => return None,
+                });
                 stack.push(Entry::Reg(dst));
             }
             Op::JumpIfNotLtInt | Op::JumpIfNotGtInt | Op::JumpIfNotLeInt | Op::JumpIfNotGeInt => {
@@ -539,15 +420,9 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
                 b.materialize(&mut stack);
                 let a = b.operand(lhs, pos);
                 let bb = b.operand(rhs, pos + 1);
-                let cmp = match inst.op {
-                    Op::JumpIfNotLtInt => Cmp::Lt,
-                    Op::JumpIfNotGtInt => Cmp::Gt,
-                    Op::JumpIfNotLeInt => Cmp::Le,
-                    _ => Cmp::Ge,
-                };
-                patches.push((b.code.len(), inst.target?));
+                patches.push((b.code.len(), *inst.successors.first()?));
                 b.emit(RegOp::JumpIfNotCmpInt {
-                    cmp,
+                    cmp: cmp_op(inst.op)?,
                     a,
                     b: bb,
                     target: 0,
@@ -558,59 +433,45 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
                 let pos = stack.len();
                 b.materialize(&mut stack);
                 let cond = b.operand(cond, pos);
-                patches.push((b.code.len(), inst.target?));
+                patches.push((b.code.len(), *inst.successors.first()?));
                 b.emit(RegOp::JumpIfFalse { cond, target: 0 });
             }
             Op::Jump => {
                 b.materialize(&mut stack);
-                patches.push((b.code.len(), inst.target?));
+                patches.push((b.code.len(), *inst.successors.first()?));
                 b.emit(RegOp::Jump { target: 0 });
                 reachable_prev = false;
             }
-            Op::CallDirect | Op::CallSelf => {
-                let n_args = if inst.op == Op::CallSelf {
-                    arity as usize
-                } else {
-                    *arities.get(inst.a as usize)? as usize
+            Op::CallDirect | Op::CallSelf | Op::TailCallDirect | Op::TailCallSelf => {
+                let n_args = match inst.stack {
+                    // A call pops its arguments and pushes the result.
+                    StackRule::Exact { delta, .. } => usize::try_from(1 - delta).ok()?,
+                    StackRule::Terminal { min_depth } => min_depth,
                 };
                 b.materialize(&mut stack);
-                let first_arg = stack.len().checked_sub(n_args)?;
-                let first = first_arg as Reg;
+                let first = stack.len().checked_sub(n_args)?;
+                let first_arg = first as Reg;
                 let n_args = u8::try_from(n_args).ok()?;
-                b.emit(if inst.op == Op::CallSelf {
-                    RegOp::CallSelf {
-                        first_arg: first,
-                        n_args,
-                    }
-                } else {
-                    RegOp::CallDirect {
-                        proto: inst.a,
-                        first_arg: first,
-                        n_args,
-                    }
-                });
-                stack.truncate(first_arg);
-                stack.push(Entry::Reg(first));
-            }
-            Op::TailCallDirect | Op::TailCallSelf => {
-                let n_args = if inst.op == Op::TailCallSelf {
-                    arity as usize
-                } else {
-                    *arities.get(inst.a as usize)? as usize
-                };
-                b.materialize(&mut stack);
-                let first_arg = stack.len().checked_sub(n_args)? as Reg;
-                let n_args = u8::try_from(n_args).ok()?;
-                b.emit(if inst.op == Op::TailCallSelf {
-                    RegOp::TailCallSelf { first_arg, n_args }
-                } else {
-                    RegOp::TailCallDirect {
-                        proto: inst.a,
+                b.emit(match inst.op {
+                    Op::CallSelf => RegOp::CallSelf { first_arg, n_args },
+                    Op::TailCallSelf => RegOp::TailCallSelf { first_arg, n_args },
+                    Op::CallDirect => RegOp::CallDirect {
+                        proto: operand()?,
                         first_arg,
                         n_args,
-                    }
+                    },
+                    _ => RegOp::TailCallDirect {
+                        proto: operand()?,
+                        first_arg,
+                        n_args,
+                    },
                 });
-                reachable_prev = false;
+                if matches!(inst.op, Op::CallDirect | Op::CallSelf) {
+                    stack.truncate(first);
+                    stack.push(Entry::Reg(first_arg));
+                } else {
+                    reachable_prev = false;
+                }
             }
             Op::Return => {
                 let value = stack.pop()?;
@@ -619,7 +480,7 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
                 reachable_prev = false;
             }
             Op::Panic => {
-                let Constant::String(message) = chunk.constants.get(inst.a as usize)? else {
+                let Constant::String(message) = chunk.constants.get(operand()? as usize)? else {
                     return None;
                 };
                 let msg = u16::try_from(messages.len()).ok()?;
@@ -631,13 +492,14 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
                 b.emit(RegOp::Halt);
                 reachable_prev = false;
             }
+            // Outside stage 1: the function stays on the stack VM.
             _ => return None,
         }
     }
 
     for (at, target) in patches {
-        let pc = *pc_of.get(&target)?;
-        match &mut b.code[at] {
+        let pc = *pc_of.get(target).filter(|&&pc| pc != u32::MAX)?;
+        match &mut b.code[at].0 {
             RegOp::JumpIfNotCmpInt { target, .. }
             | RegOp::JumpIfFalse { target, .. }
             | RegOp::Jump { target } => *target = pc,
@@ -647,13 +509,24 @@ fn translate(chunk: &Chunk, arity: u8, arities: &[u8]) -> Option<RegFunction> {
 
     let function = RegFunction {
         code: b.code,
-        weight: b.weight,
         src_ip: b.src_ip,
         consts,
         messages,
         n_regs,
     };
     check(&function).then_some(function)
+}
+
+fn is_jump(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Jump
+            | Op::JumpIfFalse
+            | Op::JumpIfNotLtInt
+            | Op::JumpIfNotGtInt
+            | Op::JumpIfNotLeInt
+            | Op::JumpIfNotGeInt
+    )
 }
 
 fn push_const(consts: &mut Vec<Value>, value: Value) -> Option<u16> {
@@ -667,7 +540,9 @@ fn check(f: &RegFunction) -> bool {
     let reg = |r: Reg| r < f.n_regs;
     let pc = |t: u32| (t as usize) < f.code.len();
     let konst = |i: u16| (i as usize) < f.consts.len();
-    f.code.iter().all(|op| match *op {
+    let args =
+        |first_arg: Reg, n_args: u8| first_arg as usize + n_args as usize <= f.n_regs as usize;
+    f.code.iter().all(|&(op, _)| match op {
         RegOp::Nop | RegOp::Halt => true,
         RegOp::LoadConst { dst, idx } => reg(dst) && konst(idx),
         RegOp::Move { dst, src } => reg(dst) && reg(src),
@@ -681,15 +556,11 @@ fn check(f: &RegFunction) -> bool {
         RegOp::CallDirect {
             first_arg, n_args, ..
         }
-        | RegOp::CallSelf { first_arg, n_args } => {
-            reg(first_arg) && (first_arg as usize + n_args as usize) <= f.n_regs as usize
-        }
+        | RegOp::CallSelf { first_arg, n_args } => reg(first_arg) && args(first_arg, n_args),
         RegOp::TailCallDirect {
             first_arg, n_args, ..
         }
-        | RegOp::TailCallSelf { first_arg, n_args } => {
-            (first_arg as usize + n_args as usize) <= f.n_regs as usize
-        }
+        | RegOp::TailCallSelf { first_arg, n_args } => args(first_arg, n_args),
         RegOp::Return { src } => reg(src),
         RegOp::Panic { msg } => (msg as usize) < f.messages.len(),
     })
@@ -702,7 +573,7 @@ impl VM {
     pub(super) fn top_frame_is_register(&self) -> bool {
         self.frames
             .last()
-            .is_some_and(|f| self.register_code.get(f.proto_idx).is_some())
+            .is_some_and(|f| self.register_code.is_register(f.proto_idx))
     }
 
     /// Run register frames until the program finishes or the top frame runs
@@ -727,7 +598,7 @@ impl VM {
                 return Err(error("stack overflow"));
             }
             self.stack.resize(top, Value::Unit);
-            let regs = base..top;
+            let regs = &mut self.stack[base..top];
 
             // Fail at the current instruction, leaving the frame on it.
             macro_rules! fail {
@@ -738,7 +609,7 @@ impl VM {
             }
             macro_rules! r {
                 ($reg:expr) => {
-                    match self.stack[regs.clone()].get($reg as usize) {
+                    match regs.get($reg as usize) {
                         Some(v) => *v,
                         None => fail!(error("register out of bounds")),
                     }
@@ -747,7 +618,7 @@ impl VM {
             macro_rules! set {
                 ($reg:expr, $val:expr) => {{
                     let v = $val;
-                    match self.stack[regs.clone()].get_mut($reg as usize) {
+                    match regs.get_mut($reg as usize) {
                         Some(slot) => *slot = v,
                         None => fail!(error("register out of bounds")),
                     }
@@ -761,9 +632,16 @@ impl VM {
                     }
                 };
             }
+            // Copy the arguments of a tail call to the frame's first registers.
+            macro_rules! shift_args {
+                ($first_arg:expr, $n_args:expr) => {{
+                    let first = $first_arg as usize;
+                    regs.copy_within(first..first + $n_args as usize, 0);
+                }};
+            }
 
             loop {
-                let (Some(&op), Some(&weight)) = (func.code.get(pc), func.weight.get(pc)) else {
+                let Some(&(op, weight)) = func.code.get(pc) else {
                     fail!(error("unexpected end of register code"));
                 };
                 if let Some(fuel) = self.fuel.as_mut() {
@@ -791,18 +669,14 @@ impl VM {
                     RegOp::Move { dst, src } => set!(dst, r!(src)),
                     RegOp::Int { op, dst, a, b } => {
                         let (x, y) = (int!(a), int!(b));
-                        let v = match op {
-                            IntOp::Add => x.checked_add(y),
-                            IntOp::Sub => x.checked_sub(y),
-                            IntOp::Mul => x.checked_mul(y),
+                        let (v, overflow) = match op {
+                            IntOp::Add => (x.checked_add(y), "integer overflow (addition)"),
+                            IntOp::Sub => (x.checked_sub(y), "integer overflow (subtraction)"),
+                            IntOp::Mul => (x.checked_mul(y), "integer overflow (multiplication)"),
                         };
                         match v {
                             Some(v) => set!(dst, Value::Int(v)),
-                            None => fail!(error(match op {
-                                IntOp::Add => "integer overflow (addition)",
-                                IntOp::Sub => "integer overflow (subtraction)",
-                                IntOp::Mul => "integer overflow (multiplication)",
-                            })),
+                            None => fail!(error(overflow)),
                         }
                     }
                     RegOp::CmpInt { cmp, dst, a, b } => {
@@ -866,10 +740,7 @@ impl VM {
                         first_arg,
                         n_args,
                     } => {
-                        self.stack.copy_within(
-                            base + first_arg as usize..base + first_arg as usize + n_args as usize,
-                            base,
-                        );
+                        shift_args!(first_arg, n_args);
                         let f = &mut self.frames[fi];
                         f.ip = 0;
                         f.proto_idx = proto as usize;
@@ -880,10 +751,7 @@ impl VM {
                         break;
                     }
                     RegOp::TailCallSelf { first_arg, n_args } => {
-                        self.stack.copy_within(
-                            base + first_arg as usize..base + first_arg as usize + n_args as usize,
-                            base,
-                        );
+                        shift_args!(first_arg, n_args);
                         pc = 0;
                         continue;
                     }
@@ -954,7 +822,7 @@ mod tests {
             .filter(|(_, p)| p.name.as_deref() == Some(name))
             .max_by_key(|(_, p)| p.arity)
             .expect("no such function");
-        code.protos[idx].is_some()
+        code.get(idx).is_some()
     }
 
     /// Run `src` on the stack VM alone and with register code, returning

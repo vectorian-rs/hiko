@@ -31,6 +31,8 @@ mod gc;
 mod host;
 #[cfg(feature = "register-vm")]
 mod register;
+#[cfg(feature = "register-vm")]
+use register::RegisterCode;
 mod runtime_bridge;
 
 pub use host::{OutputSink, StderrOutputSink, StdoutOutputSink};
@@ -277,7 +279,7 @@ pub struct VM {
     /// Register code for the functions that translate; shared with child
     /// VMs. See `register.rs`.
     #[cfg(feature = "register-vm")]
-    register_code: Arc<register::RegisterCode>,
+    register_code: Arc<RegisterCode>,
     /// Fuel already paid towards the register instruction a fuel yield
     /// stopped on.
     #[cfg(feature = "register-vm")]
@@ -436,9 +438,9 @@ impl VM {
         // never runs.
         #[cfg(feature = "register-vm")]
         let register_code = Arc::new(if startup_error.is_none() {
-            register::RegisterCode::translate(&program)
+            RegisterCode::translate(&program)
         } else {
-            register::RegisterCode::default()
+            RegisterCode::default()
         });
         Self::from_parts(
             program,
@@ -451,7 +453,7 @@ impl VM {
     fn from_parts(
         program: CompiledProgram,
         startup_error: Option<String>,
-        #[cfg(feature = "register-vm")] register_code: Arc<register::RegisterCode>,
+        #[cfg(feature = "register-vm")] register_code: Arc<RegisterCode>,
     ) -> Self {
         VM {
             #[cfg(feature = "register-vm")]
@@ -685,8 +687,8 @@ impl VM {
         let chunk = self.chunk_for_checked(frame.proto_idx).ok()?;
         // A register frame stops on the failing instruction.
         #[cfg(feature = "register-vm")]
-        if let Some(f) = self.register_code.get(frame.proto_idx) {
-            return chunk.span_at(*f.src_ip.get(frame.ip)? as usize);
+        if self.register_code.is_register(frame.proto_idx) {
+            return chunk.span_at(self.register_code.src_ip(frame.proto_idx, frame.ip)?);
         }
         chunk.span_at(frame.ip.saturating_sub(1))
     }

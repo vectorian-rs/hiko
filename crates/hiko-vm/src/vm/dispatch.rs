@@ -79,8 +79,8 @@ impl VM {
             let proto_idx = self.frames[fi].proto_idx;
             if code_proto != Some(proto_idx) {
                 #[cfg(feature = "register-vm")]
-                if self.register_code.get(proto_idx).is_some() {
-                    // The register VM charges for the instruction.
+                if self.register_code.is_register(proto_idx) {
+                    // The register VM charges for the instruction itself.
                     if let Some(fuel) = self.fuel.as_mut() {
                         *fuel += 1;
                     }

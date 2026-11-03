@@ -30,12 +30,15 @@ impl std::fmt::Display for VerificationError {
 
 impl std::error::Error for VerificationError {}
 
+/// One decoded instruction. The register VM's translator reuses this
+/// decoding, so operand widths and stack effects live in one place.
 #[derive(Debug, Clone)]
-struct DecodedInst {
-    start: usize,
-    op: Op,
-    stack: StackRule,
-    successors: Vec<usize>,
+pub(crate) struct DecodedInst {
+    pub(crate) start: usize,
+    pub(crate) op: Op,
+    pub(crate) stack: StackRule,
+    /// For a jump, the target comes first, then the fall-through.
+    pub(crate) successors: Vec<usize>,
     handler_clause_targets: Vec<usize>,
     /// Local slots holding provider clause closures; each must be below the
     /// stack depth at the `InstallHandler`.
@@ -43,7 +46,7 @@ struct DecodedInst {
 }
 
 #[derive(Debug, Clone)]
-enum StackRule {
+pub(crate) enum StackRule {
     Exact { min_depth: usize, delta: isize },
     Terminal { min_depth: usize },
 }
@@ -100,7 +103,7 @@ fn verify_chunk(
     Ok(())
 }
 
-fn decode_chunk(
+pub(crate) fn decode_chunk(
     chunk: &Chunk,
     n_locals: usize,
     proto: Option<&FunctionProto>,
