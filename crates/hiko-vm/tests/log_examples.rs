@@ -11,14 +11,21 @@ use common::Captured;
 use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
 
+const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
 /// Run `example` under the repository's default policy: (stdout, stderr).
 fn run(example: &str) -> (String, String) {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let policy = std::fs::read_to_string(format!(
-        "{root}/policies/software-developer-role.policy.toml"
+        "{ROOT}/policies/software-developer-role.policy.toml"
     ))
     .unwrap();
-    let config = RunConfig::from_toml(&policy).unwrap();
+    run_with(example, &policy)
+}
+
+/// Run `example` under the run config `policy`: (stdout, stderr).
+fn run_with(example: &str, policy: &str) -> (String, String) {
+    let root = ROOT;
+    let config = RunConfig::from_toml(policy).unwrap();
     let program = common::compile_file_hermetic(&format!("{root}/examples/{example}"));
     let mut vm = config.apply_to_builder(VMBuilder::new(program)).build();
     let (out, err) = (Arc::new(Captured::default()), Arc::new(Captured::default()));
@@ -34,7 +41,9 @@ fn run(example: &str) -> (String, String) {
 /// A log line without its `YYYY-MM-DDTHH:MM:SSZ ` prefix, after checking
 /// the prefix's shape.
 fn without_time(line: &str) -> &str {
-    let (time, rest) = line.split_at(21);
+    let (Some(time), Some(rest)) = (line.get(..21), line.get(21..)) else {
+        panic!("not a log line: {line:?}")
+    };
     let shape: String = time
         .chars()
         .map(|c| if c.is_ascii_digit() { '0' } else { c })
@@ -83,5 +92,33 @@ fn eprint_needs_its_capability() {
         result.unwrap();
         let expected = if builtin == "eprintln" { "x\n" } else { "x" };
         assert_eq!(*err.0.lock().unwrap(), expected);
+    }
+}
+
+/// The capabilities Std.Log says it needs are enough (plus `println` for
+/// the example's own output).
+#[test]
+fn std_log_needs_only_the_capabilities_it_lists() {
+    let policy: String = [
+        "stdio.println",
+        "stdio.eprintln",
+        "time.epoch_ms",
+        "convert.int_to_string",
+        "string.string_length",
+        "string.string_join",
+        "env.getenv",
+        "string.to_lower",
+        "string.trim",
+    ]
+    .iter()
+    .map(|leaf| format!("[capabilities.{leaf}]\nenabled = true\n"))
+    .collect();
+    for example in ["log_plain.hml", "log_effect.hml"] {
+        let (out, err) = run_with(example, &policy);
+        assert_eq!(out, "total: 8\n", "{example}");
+        assert!(
+            err.contains("WARN  shop: skipping pears"),
+            "{example}: {err}"
+        );
     }
 }

@@ -1,9 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Log source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Log</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Log</span></code></pre><p class="meta">Raw source: <a href="./Log.hml">Log.hml</a><br>BLAKE3: <code title="blake3:d0f5847a25898a2a7cf0765923087cfdc4557f30109d66cc4299226430563c0e">blake3:d0f5847a...30563c0e</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>level</strong> <span class="meta">Trace | Debug | Info | Warn | Error</span></li><li><code>fun</code> <strong>severity</strong></li><li><code>fun</code> <strong>level_name</strong></li><li><code>fun</code> <strong>enabled</strong></li><li><code>fun</code> <strong>parse_level</strong></li><li><code>fun</code> <strong>from_env</strong></li><li><code>fun</code> <strong>two</strong></li><li><code>fun</code> <strong>civil</strong></li><li><code>fun</code> <strong>timestamp</strong></li><li><code>fun</code> <strong>format_line</strong></li><li><code>fun</code> <strong>field_parts</strong></li><li><code>fun</code> <strong>kv</strong></li><li><code>fun</code> <strong>now_ms</strong></li><li><code>datatype</code> <strong>logger</strong> <span class="meta">Logger</span></li><li><code>fun</code> <strong>make</strong></li><li><code>fun</code> <strong>log</strong></li><li><code>fun</code> <strong>trace</strong></li><li><code>fun</code> <strong>debug</strong></li><li><code>fun</code> <strong>info</strong></li><li><code>fun</code> <strong>warn</strong></li><li><code>fun</code> <strong>error</strong></li><li><code>effect</code> <strong>LogEvent</strong></li><li><code>fun</code> <strong>emit</strong></li><li><code>fun</code> <strong>emit_trace</strong></li><li><code>fun</code> <strong>emit_debug</strong></li><li><code>fun</code> <strong>emit_info</strong></li><li><code>fun</code> <strong>emit_warn</strong></li><li><code>fun</code> <strong>emit_error</strong></li><li><code>fun</code> <strong>handle_with</strong></li><li><code>fun</code> <strong>to_stderr</strong></li><li><code>fun</code> <strong>discard</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Env</span>
-<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Format</span>
-<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Option</span>
-<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Stdio</span>
-<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">String</span>
-<span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Time</span>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Log source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Log</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Log</span></code></pre><p class="meta">Raw source: <a href="./Log.hml">Log.hml</a><br>BLAKE3: <code title="blake3:fae826a2602c60005de2b5b73615967bfbbf670b360276eedc80a66218b127a7">blake3:fae826a2...18b127a7</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>level</strong> <span class="meta">Trace | Debug | Info | Warn | Error</span></li><li><code>fun</code> <strong>severity</strong></li><li><code>fun</code> <strong>level_name</strong></li><li><code>fun</code> <strong>enabled</strong></li><li><code>fun</code> <strong>parse_level</strong></li><li><code>fun</code> <strong>from_env</strong></li><li><code>fun</code> <strong>pad_right</strong></li><li><code>fun</code> <strong>two</strong></li><li><code>fun</code> <strong>concat</strong></li><li><code>fun</code> <strong>civil</strong></li><li><code>fun</code> <strong>timestamp</strong></li><li><code>fun</code> <strong>format_line</strong></li><li><code>fun</code> <strong>field_parts</strong></li><li><code>fun</code> <strong>kv</strong></li><li><code>fun</code> <strong>now_ms</strong></li><li><code>datatype</code> <strong>logger</strong> <span class="meta">Logger</span></li><li><code>fun</code> <strong>make</strong></li><li><code>fun</code> <strong>log</strong></li><li><code>fun</code> <strong>trace</strong></li><li><code>fun</code> <strong>debug</strong></li><li><code>fun</code> <strong>info</strong></li><li><code>fun</code> <strong>warn</strong></li><li><code>fun</code> <strong>error</strong></li><li><code>effect</code> <strong>LogEvent</strong></li><li><code>fun</code> <strong>emit</strong></li><li><code>fun</code> <strong>emit_trace</strong></li><li><code>fun</code> <strong>emit_debug</strong></li><li><code>fun</code> <strong>emit_info</strong></li><li><code>fun</code> <strong>emit_warn</strong></li><li><code>fun</code> <strong>emit_error</strong></li><li><code>fun</code> <strong>handle_with</strong></li><li><code>fun</code> <strong>to_stderr</strong></li><li><code>fun</code> <strong>discard</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Option</span>
 
 <span class="tok-comment">(* Log lines in the format of Rust&#39;s env_logger, written to stderr:
 
@@ -16,7 +11,12 @@
    - The `LogEvent` effect: `Log.emit_info &quot;app&quot; &quot;message&quot;` anywhere, and a
      handler around the code decides what happens to the line:
      `Log.to_stderr Log.Info (fn () =&gt; ...)`, `Log.discard`, or
-     `Log.handle_with` and any function. *)</span>
+     `Log.handle_with` and any function.
+
+   Code that logs needs the capabilities eprintln, epoch_ms, int_to_string,
+   string_length and string_join, plus getenv, to_lower and trim for
+   from_env. The module calls those builtins directly: importing Std.Stdio,
+   Std.String or Std.Time would need every builtin those modules wrap. *)</span>
 <span class="tok-keyword">structure</span> <span class="tok-module">Log</span> = <span class="tok-keyword">struct</span>
   <span class="tok-keyword">datatype</span> <span class="tok-type">level</span> = <span class="tok-constructor">Trace</span> | <span class="tok-constructor">Debug</span> | <span class="tok-constructor">Info</span> | <span class="tok-constructor">Warn</span> | <span class="tok-constructor">Error</span>
 
@@ -40,7 +40,7 @@
   <span class="tok-keyword">fun</span> <span class="tok-function">enabled</span> (<span class="tok-variable">min</span>, <span class="tok-variable">level</span>) = <span class="tok-variable">severity</span> <span class="tok-variable">level</span> &gt;= <span class="tok-variable">severity</span> <span class="tok-variable">min</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">parse_level</span> <span class="tok-variable">text</span> =
-    <span class="tok-keyword">case</span> <span class="tok-namespace">String</span>.<span class="tok-variable-member">lower</span> (<span class="tok-namespace">String</span>.<span class="tok-variable-member">trim</span> <span class="tok-variable">text</span>) <span class="tok-keyword">of</span>
+    <span class="tok-keyword">case</span> <span class="tok-variable">to_lower</span> (<span class="tok-variable">trim</span> <span class="tok-variable">text</span>) <span class="tok-keyword">of</span>
         <span class="tok-string">&quot;trace&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Trace</span>
       | <span class="tok-string">&quot;debug&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Debug</span>
       | <span class="tok-string">&quot;info&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Info</span>
@@ -52,11 +52,16 @@
      RUST_LOG does without per-target filters; `default` when it is unset
      or names no level. *)</span>
   <span class="tok-keyword">fun</span> <span class="tok-function">from_env</span> <span class="tok-variable">name</span> <span class="tok-variable">default</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">parse_level</span> (<span class="tok-namespace">Env</span>.<span class="tok-variable-member">get</span> <span class="tok-variable">name</span>) <span class="tok-keyword">of</span>
+    <span class="tok-keyword">case</span> <span class="tok-variable">parse_level</span> (<span class="tok-variable">getenv</span> <span class="tok-variable">name</span>) <span class="tok-keyword">of</span>
         <span class="tok-namespace">Option</span>.<span class="tok-constructor">Some</span> <span class="tok-variable">level</span> =&gt; <span class="tok-variable">level</span>
       | <span class="tok-namespace">Option</span>.<span class="tok-constructor">None</span> =&gt; <span class="tok-variable">default</span>
 
+  <span class="tok-keyword">fun</span> <span class="tok-function">pad_right</span> <span class="tok-variable">width</span> <span class="tok-variable">text</span> =
+    <span class="tok-keyword">if</span> <span class="tok-variable">string_length</span> <span class="tok-variable">text</span> &gt;= <span class="tok-variable">width</span> <span class="tok-keyword">then</span> <span class="tok-variable">text</span> <span class="tok-keyword">else</span> <span class="tok-variable">pad_right</span> <span class="tok-variable">width</span> (<span class="tok-variable">text</span> ^ <span class="tok-string">&quot; &quot;</span>)
+
   <span class="tok-keyword">fun</span> <span class="tok-function">two</span> <span class="tok-variable">n</span> = <span class="tok-keyword">if</span> <span class="tok-variable">n</span> &lt; <span class="tok-number">10</span> <span class="tok-keyword">then</span> <span class="tok-string">&quot;0&quot;</span> ^ <span class="tok-variable">int_to_string</span> <span class="tok-variable">n</span> <span class="tok-keyword">else</span> <span class="tok-variable">int_to_string</span> <span class="tok-variable">n</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">concat</span> <span class="tok-variable">parts</span> = <span class="tok-variable">string_join</span> (<span class="tok-variable">parts</span>, <span class="tok-string">&quot;&quot;</span>)
 
   <span class="tok-comment">(* (year, month, day) of a day count since 1970-01-01, in the proleptic
      Gregorian calendar (Howard Hinnant&#39;s civil_from_days). Std.Date can
@@ -84,16 +89,14 @@
       <span class="tok-keyword">val</span> (<span class="tok-variable">year</span>, <span class="tok-variable">month</span>, <span class="tok-variable">day</span>) = <span class="tok-variable">civil</span> (<span class="tok-variable">secs</span> / <span class="tok-number">86400</span>)
       <span class="tok-keyword">val</span> <span class="tok-variable">time</span> = <span class="tok-variable">secs</span> mod <span class="tok-number">86400</span>
     <span class="tok-keyword">in</span>
-      <span class="tok-namespace">String</span>.<span class="tok-variable-member">join</span> <span class="tok-string">&quot;&quot;</span> [
+      <span class="tok-variable">concat</span> [
         <span class="tok-variable">int_to_string</span> <span class="tok-variable">year</span>, <span class="tok-string">&quot;-&quot;</span>, <span class="tok-variable">two</span> <span class="tok-variable">month</span>, <span class="tok-string">&quot;-&quot;</span>, <span class="tok-variable">two</span> <span class="tok-variable">day</span>, <span class="tok-string">&quot;T&quot;</span>,
         <span class="tok-variable">two</span> (<span class="tok-variable">time</span> / <span class="tok-number">3600</span>), <span class="tok-string">&quot;:&quot;</span>, <span class="tok-variable">two</span> (<span class="tok-variable">time</span> mod <span class="tok-number">3600</span> / <span class="tok-number">60</span>), <span class="tok-string">&quot;:&quot;</span>, <span class="tok-variable">two</span> (<span class="tok-variable">time</span> mod <span class="tok-number">60</span>), <span class="tok-string">&quot;Z&quot;</span>
       ]
     <span class="tok-keyword">end</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">format_line</span> (<span class="tok-variable">ms</span>, <span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>) =
-    <span class="tok-namespace">String</span>.<span class="tok-variable-member">join</span> <span class="tok-string">&quot;&quot;</span> [
-      <span class="tok-variable">timestamp</span> <span class="tok-variable">ms</span>, <span class="tok-string">&quot; &quot;</span>, <span class="tok-namespace">Format</span>.<span class="tok-variable-member">pad_right</span> <span class="tok-number">5</span> (<span class="tok-variable">level_name</span> <span class="tok-variable">level</span>), <span class="tok-string">&quot; &quot;</span>, <span class="tok-variable">target</span>, <span class="tok-string">&quot;: &quot;</span>, <span class="tok-variable">message</span>
-    ]
+    <span class="tok-variable">concat</span> [<span class="tok-variable">timestamp</span> <span class="tok-variable">ms</span>, <span class="tok-string">&quot; &quot;</span>, <span class="tok-variable">pad_right</span> <span class="tok-number">5</span> (<span class="tok-variable">level_name</span> <span class="tok-variable">level</span>), <span class="tok-string">&quot; &quot;</span>, <span class="tok-variable">target</span>, <span class="tok-string">&quot;: &quot;</span>, <span class="tok-variable">message</span>]
 
   <span class="tok-keyword">fun</span> <span class="tok-function">field_parts</span> <span class="tok-variable">fields</span> =
     <span class="tok-keyword">case</span> <span class="tok-variable">fields</span> <span class="tok-keyword">of</span>
@@ -101,9 +104,9 @@
       | (<span class="tok-variable">key</span>, <span class="tok-variable">value</span>) :: <span class="tok-variable">rest</span> =&gt; <span class="tok-string">&quot; &quot;</span> :: <span class="tok-variable">key</span> :: <span class="tok-string">&quot;=&quot;</span> :: <span class="tok-variable">value</span> :: <span class="tok-variable">field_parts</span> <span class="tok-variable">rest</span>
 
   <span class="tok-comment">(* `message k1=v1 k2=v2` *)</span>
-  <span class="tok-keyword">fun</span> <span class="tok-function">kv</span> <span class="tok-variable">message</span> <span class="tok-variable">fields</span> = <span class="tok-namespace">String</span>.<span class="tok-variable-member">join</span> <span class="tok-string">&quot;&quot;</span> (<span class="tok-variable">message</span> :: <span class="tok-variable">field_parts</span> <span class="tok-variable">fields</span>)
+  <span class="tok-keyword">fun</span> <span class="tok-function">kv</span> <span class="tok-variable">message</span> <span class="tok-variable">fields</span> = <span class="tok-variable">concat</span> (<span class="tok-variable">message</span> :: <span class="tok-variable">field_parts</span> <span class="tok-variable">fields</span>)
 
-  <span class="tok-keyword">fun</span> <span class="tok-function">now_ms</span> () = <span class="tok-namespace">Time</span>.<span class="tok-variable-member">to_epoch_ms</span> (<span class="tok-namespace">Time</span>.<span class="tok-variable-member">now</span> ())
+  <span class="tok-keyword">fun</span> <span class="tok-function">now_ms</span> () = <span class="tok-variable">epoch_ms</span> ()
 
   <span class="tok-comment">(* Logger values *)</span>
 
@@ -114,7 +117,7 @@
 
   <span class="tok-keyword">fun</span> <span class="tok-function">log</span> (<span class="tok-constructor">Logger</span> (<span class="tok-variable">min</span>, <span class="tok-variable">target</span>)) <span class="tok-variable">level</span> <span class="tok-variable">message</span> =
     <span class="tok-keyword">if</span> <span class="tok-variable">enabled</span> (<span class="tok-variable">min</span>, <span class="tok-variable">level</span>) <span class="tok-keyword">then</span>
-      <span class="tok-namespace">Stdio</span>.<span class="tok-variable-member">eprintln</span> (<span class="tok-variable">format_line</span> (<span class="tok-variable">now_ms</span> (), <span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>))
+      <span class="tok-variable">eprintln</span> (<span class="tok-variable">format_line</span> (<span class="tok-variable">now_ms</span> (), <span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>))
     <span class="tok-keyword">else</span> ()
 
   <span class="tok-keyword">fun</span> <span class="tok-function">trace</span> <span class="tok-variable">logger</span> <span class="tok-variable">message</span> = <span class="tok-variable">log</span> <span class="tok-variable">logger</span> <span class="tok-constructor">Trace</span> <span class="tok-variable">message</span>
@@ -159,7 +162,7 @@
         <span class="tok-keyword">resume</span> <span class="tok-variable">k</span> ()
       <span class="tok-keyword">end</span>
 
-  <span class="tok-keyword">fun</span> <span class="tok-function">to_stderr</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span> = <span class="tok-variable">handle_with</span> <span class="tok-namespace">Stdio</span>.<span class="tok-variable-member">eprintln</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_stderr</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span> = <span class="tok-variable">handle_with</span> <span class="tok-variable">eprintln</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">discard</span> <span class="tok-variable">f</span> =
     <span class="tok-keyword">handle</span>

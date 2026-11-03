@@ -1,9 +1,4 @@
-import Std.Env
-import Std.Format
 import Std.Option
-import Std.Stdio
-import Std.String
-import Std.Time
 
 (* Log lines in the format of Rust's env_logger, written to stderr:
 
@@ -16,7 +11,12 @@ import Std.Time
    - The `LogEvent` effect: `Log.emit_info "app" "message"` anywhere, and a
      handler around the code decides what happens to the line:
      `Log.to_stderr Log.Info (fn () => ...)`, `Log.discard`, or
-     `Log.handle_with` and any function. *)
+     `Log.handle_with` and any function.
+
+   Code that logs needs the capabilities eprintln, epoch_ms, int_to_string,
+   string_length and string_join, plus getenv, to_lower and trim for
+   from_env. The module calls those builtins directly: importing Std.Stdio,
+   Std.String or Std.Time would need every builtin those modules wrap. *)
 structure Log = struct
   datatype level = Trace | Debug | Info | Warn | Error
 
@@ -40,7 +40,7 @@ structure Log = struct
   fun enabled (min, level) = severity level >= severity min
 
   fun parse_level text =
-    case String.lower (String.trim text) of
+    case to_lower (trim text) of
         "trace" => Option.Some Trace
       | "debug" => Option.Some Debug
       | "info" => Option.Some Info
@@ -52,11 +52,16 @@ structure Log = struct
      RUST_LOG does without per-target filters; `default` when it is unset
      or names no level. *)
   fun from_env name default =
-    case parse_level (Env.get name) of
+    case parse_level (getenv name) of
         Option.Some level => level
       | Option.None => default
 
+  fun pad_right width text =
+    if string_length text >= width then text else pad_right width (text ^ " ")
+
   fun two n = if n < 10 then "0" ^ int_to_string n else int_to_string n
+
+  fun concat parts = string_join (parts, "")
 
   (* (year, month, day) of a day count since 1970-01-01, in the proleptic
      Gregorian calendar (Howard Hinnant's civil_from_days). Std.Date can
@@ -84,16 +89,14 @@ structure Log = struct
       val (year, month, day) = civil (secs / 86400)
       val time = secs mod 86400
     in
-      String.join "" [
+      concat [
         int_to_string year, "-", two month, "-", two day, "T",
         two (time / 3600), ":", two (time mod 3600 / 60), ":", two (time mod 60), "Z"
       ]
     end
 
   fun format_line (ms, level, target, message) =
-    String.join "" [
-      timestamp ms, " ", Format.pad_right 5 (level_name level), " ", target, ": ", message
-    ]
+    concat [timestamp ms, " ", pad_right 5 (level_name level), " ", target, ": ", message]
 
   fun field_parts fields =
     case fields of
@@ -101,9 +104,9 @@ structure Log = struct
       | (key, value) :: rest => " " :: key :: "=" :: value :: field_parts rest
 
   (* `message k1=v1 k2=v2` *)
-  fun kv message fields = String.join "" (message :: field_parts fields)
+  fun kv message fields = concat (message :: field_parts fields)
 
-  fun now_ms () = Time.to_epoch_ms (Time.now ())
+  fun now_ms () = epoch_ms ()
 
   (* Logger values *)
 
@@ -114,7 +117,7 @@ structure Log = struct
 
   fun log (Logger (min, target)) level message =
     if enabled (min, level) then
-      Stdio.eprintln (format_line (now_ms (), level, target, message))
+      eprintln (format_line (now_ms (), level, target, message))
     else ()
 
   fun trace logger message = log logger Trace message
@@ -159,7 +162,7 @@ structure Log = struct
         resume k ()
       end
 
-  fun to_stderr min f = handle_with Stdio.eprintln min f
+  fun to_stderr min f = handle_with eprintln min f
 
   fun discard f =
     handle
