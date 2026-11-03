@@ -33,6 +33,9 @@ mod host;
 mod register;
 #[cfg(feature = "register-vm")]
 use register::RegisterCode;
+#[cfg(feature = "register-vm")]
+#[doc(hidden)]
+pub mod register_check;
 mod runtime_bridge;
 
 pub use host::{OutputSink, StderrOutputSink, StdoutOutputSink};

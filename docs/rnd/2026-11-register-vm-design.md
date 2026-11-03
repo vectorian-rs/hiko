@@ -124,6 +124,23 @@ disable translation) for one release after switching over.
   on and off) and requires the same output, result and error. It is seeded
   from the repository's programs and the existing fuzz corpora, next to
   #143's targets.
+
+  *As built (stage 2, step 1):* `fuzz_register_vm` and the proptest
+  `both_vms_agree` share `hiko_vm::vm::register_check`. Neither is seeded
+  from the repository's programs: those use strings, lists and builtins,
+  which stage 1 does not translate, and some of them write files or reach
+  the network. Instead the bytes drive a generator of up to four mutually
+  recursive integer functions (arithmetic, comparisons, `if`, `let`,
+  `andalso`, `orelse`, `not`, calls and tail calls). Each function's first
+  parameter counts down, so every call tree is finite. The check is wider
+  than planned: output, error and its location, the call depth where fuel
+  runs out at two limits, and the number of scheduler slices. Error
+  locations are not compared for fuel stops. Both VMs stop in the same
+  frame after the same work, but one register instruction stands for
+  several stack instructions and the stack VM can stop between them (after
+  pushing one argument of a call, say), so the CLI can point a few
+  instructions apart for the same fuel limit. The target builds with
+  `--features register-vm`; the other targets keep fuzzing the stack VM.
 - **The test suite** runs with translation on and off.
 
 ## Work limits

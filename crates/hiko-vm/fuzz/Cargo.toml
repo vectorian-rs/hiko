@@ -17,6 +17,12 @@ hiko-syntax = { path = "../../hiko-syntax" }
 hiko-types = { path = "../../hiko-types", features = ["builtin-all", "check-generalization"] }
 hiko-vm = { path = "..", features = ["builtin-all"] }
 
+[features]
+# Only `fuzz_register_vm` needs it; the other targets keep fuzzing the stack
+# VM, which is what runs by default:
+# `cargo fuzz run fuzz_register_vm --features register-vm`.
+register-vm = ["hiko-vm/register-vm"]
+
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
@@ -45,6 +51,14 @@ bench = false
 [[bin]]
 name = "fuzz_run_config"
 path = "fuzz_targets/fuzz_run_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_register_vm"
+path = "fuzz_targets/fuzz_register_vm.rs"
+required-features = ["register-vm"]
 test = false
 doc = false
 bench = false
