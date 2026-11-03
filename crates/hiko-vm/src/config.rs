@@ -875,14 +875,10 @@ impl RunConfig {
 
     /// Generate Rust source code for a main.rs that bakes this config in.
     ///
-    /// Extensions need their crates linked ([`RunConfig::to_rust_source_for`]);
-    /// here they are left out, so the generated VM does not register them.
-    pub fn to_rust_source(&self) -> String {
-        let mut config = self.clone();
-        config.extensions.clear();
-        config
-            .to_rust_source_for(GeneratedProgram::ScriptArgument, &[])
-            .expect("only extensions can make generation fail")
+    /// A config that turns on extensions is an error here: the generated
+    /// crate must link them ([`RunConfig::to_rust_source_for`]).
+    pub fn to_rust_source(&self) -> Result<String, String> {
+        self.to_rust_source_for(GeneratedProgram::ScriptArgument, &[])
     }
 
     /// Like [`RunConfig::to_rust_source`], choosing where the generated
@@ -1028,7 +1024,7 @@ impl RunConfig {
         s.push_str("            ;\n");
         for (i, (name, _)) in paths.iter().enumerate() {
             s.push_str(&format!(
-                "        let builder = builder.with_extension(extensions[{i}], &extension_tables[{name:?}]).expect(\"extension '{name}'\");\n"
+                "        let builder = builder.with_extension(extensions[{i}], &extension_tables[{name:?}]).unwrap_or_else(|e| {{ eprintln!(\"error: [extensions.{name}]: {{e}}\"); std::process::exit(1) }});\n"
             ));
         }
         s.push_str("        builder.build()\n");
@@ -1152,7 +1148,7 @@ folders = ["."]
         assert!(enabled.contains("numeric_float32_add"));
         assert!(!enabled.contains("println"));
 
-        let rust_source = config.to_rust_source();
+        let rust_source = config.to_rust_source().unwrap();
         assert!(rust_source.contains(".register_builtin_name(\"numeric_int32_min_value\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_word32_add\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_float32_add\")"));
@@ -1172,7 +1168,7 @@ other = 2
         )
         .expect("host resource limits should parse");
 
-        let rust_source = config.to_rust_source();
+        let rust_source = config.to_rust_source().unwrap();
         assert!(rust_source.contains(".max_host_resources(4)"));
         assert!(rust_source.contains(".host_resource_limits(std::collections::HashMap::from(["));
         assert!(rust_source.contains("(\"unsupported\".to_string(), 1usize)"));

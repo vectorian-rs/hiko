@@ -355,7 +355,7 @@ fn policy_io_limit_keys_reach_the_vm() {
         }
     );
 
-    let source = config.to_rust_source();
+    let source = config.to_rust_source().unwrap();
     for line in [
         ".http_timeout_ms(1500)",
         ".http_connect_timeout_ms(700)",

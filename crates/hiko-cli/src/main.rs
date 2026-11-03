@@ -1223,10 +1223,7 @@ fn build_vm(options: &build_vm::BuildVmOptions) {
         eprintln!("error: {e}");
         process::exit(1);
     });
-    let name = out_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = build_vm::package_name(&out_dir);
     let binary = if out_dir.is_absolute() {
         format!("{}/target/release/{name}", out_dir.display())
     } else {
