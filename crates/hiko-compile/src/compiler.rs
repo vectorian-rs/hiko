@@ -313,6 +313,52 @@ fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
     ))
 }
 
+/// The module cache of the project whose manifest is `manifest_path`: its
+/// `[defaults] lib_cache`, relative to the manifest, else
+/// `$HOME/.hiko/lib-cache`. An embedder's `ModuleLoaderOptions::cache_dir`
+/// overrides both; `hiko install` has none.
+#[cfg(feature = "loader-integrity-blake3")]
+pub fn project_module_cache_dir(
+    manifest_path: &Path,
+    lib_cache: Option<&str>,
+) -> Result<PathBuf, CompileError> {
+    match lib_cache {
+        Some(dir) => Ok(manifest_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(dir)),
+        None => default_module_cache_dir(),
+    }
+}
+
+/// The cache file for the module at `module_url` with BLAKE3 `hash` (hex,
+/// without the `blake3:` prefix).
+#[cfg(feature = "loader-integrity-blake3")]
+pub fn module_cache_path(cache_dir: &Path, module_url: &str, hash: &str) -> PathBuf {
+    let url_hash = blake3_hex(module_url.as_bytes());
+    cache_dir.join(format!("{url_hash}-{hash}.hml"))
+}
+
+/// Store `source`, already checked against `hash`, as the cached copy of
+/// the module at `module_url`.
+#[cfg(feature = "loader-integrity-blake3")]
+pub fn store_cached_module(
+    cache_dir: &Path,
+    module_url: &str,
+    hash: &str,
+    source: &str,
+) -> Result<PathBuf, CompileError> {
+    std::fs::create_dir_all(cache_dir).map_err(|e| {
+        CompileError::codegen(format!(
+            "cannot create module cache '{}': {e}",
+            cache_dir.display()
+        ))
+    })?;
+    let cache_path = module_cache_path(cache_dir, module_url, hash);
+    write_verified_cache_file(&cache_path, source.as_bytes())?;
+    Ok(cache_path)
+}
+
 #[cfg(feature = "loader-integrity-blake3")]
 const REMOTE_MODULE_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(feature = "loader-integrity-blake3")]
@@ -1838,18 +1884,11 @@ impl Compiler {
             }
         }
 
-        std::fs::create_dir_all(cache_dir).map_err(|e| {
-            CompileError::codegen(format!(
-                "cannot create module cache '{}': {e}",
-                cache_dir.display()
-            ))
-        })?;
         let module_url = format!(
             "{}/modules/{leaf_module}.hml",
             package.base_url.trim_end_matches('/')
         );
-        let url_hash = blake3_hex(module_url.as_bytes());
-        let cache_path = cache_dir.join(format!("{url_hash}-{expected_hash}.hml"));
+        let cache_path = module_cache_path(cache_dir, &module_url, &expected_hash);
 
         if cache_path.exists() {
             let cached = std::fs::read_to_string(&cache_path).map_err(|e| {
@@ -1880,7 +1919,7 @@ impl Compiler {
             &expected_hash,
             &format!("named import '{module_name}'"),
         )?;
-        write_verified_cache_file(&cache_path, source.as_bytes())?;
+        let cache_path = store_cached_module(cache_dir, &module_url, &expected_hash, &source)?;
         Ok(ResolvedImport::VerifiedFile {
             canonical: cache_path,
             display_name: module_name.to_string(),
@@ -1939,23 +1978,13 @@ impl Compiler {
             validate_lockfile_against_manifest(&lockfile, lockfile_path, &loader_config)?;
             self.import_lockfile = Some(lockfile);
             // The embedder's choice, then the manifest's, then the default.
-            let manifest_cache = loader_config
-                .manifest
-                .defaults
-                .lib_cache
-                .as_ref()
-                .map(|dir| {
-                    let manifest_dir = loader_config
-                        .manifest_path
-                        .parent()
-                        .unwrap_or_else(|| Path::new("."));
-                    manifest_dir.join(dir)
-                });
-            self.module_cache_dir = match (&self.loader_options.cache_dir, manifest_cache) {
-                (Some(dir), _) => Some(dir.clone()),
-                (None, Some(dir)) => Some(dir),
-                (None, None) => Some(default_module_cache_dir()?),
-            };
+            self.module_cache_dir = Some(match &self.loader_options.cache_dir {
+                Some(dir) => dir.clone(),
+                None => project_module_cache_dir(
+                    &loader_config.manifest_path,
+                    loader_config.manifest.defaults.lib_cache.as_deref(),
+                )?,
+            });
         }
         let lockfile = self.import_lockfile.as_ref().unwrap();
         let cache_dir = self.module_cache_dir.as_ref().unwrap();

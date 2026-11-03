@@ -11,61 +11,60 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct LockManifestDefaults {
-    lockfile: Option<String>,
+pub(crate) struct LockManifestDefaults {
+    pub(crate) lockfile: Option<String>,
     #[serde(default)]
     #[serde(rename = "policy")]
     _policy: Option<String>,
     #[serde(default)]
-    #[serde(rename = "lib_cache")]
-    _lib_cache: Option<String>,
+    pub(crate) lib_cache: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LockRegistry {
-    url: String,
+pub(crate) struct LockRegistry {
+    pub(crate) url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LockDependency {
-    version: String,
-    registry: String,
+pub(crate) struct LockDependency {
+    pub(crate) version: String,
+    pub(crate) registry: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct LockProjectManifest {
+pub(crate) struct LockProjectManifest {
     #[serde(default)]
     #[serde(rename = "project")]
     _project: toml::Table,
     #[serde(default)]
-    defaults: LockManifestDefaults,
+    pub(crate) defaults: LockManifestDefaults,
     #[serde(default)]
-    registries: BTreeMap<String, LockRegistry>,
+    pub(crate) registries: BTreeMap<String, LockRegistry>,
     #[serde(default)]
-    dependencies: BTreeMap<String, LockDependency>,
+    pub(crate) dependencies: BTreeMap<String, LockDependency>,
     #[serde(default)]
     #[serde(rename = "policies")]
     _policies: toml::Table,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ModuleLockfile {
-    schema_version: u32,
+pub(crate) struct ModuleLockfile {
+    pub(crate) schema_version: u32,
     #[serde(default)]
-    packages: BTreeMap<String, ModuleLockPackage>,
+    pub(crate) packages: BTreeMap<String, ModuleLockPackage>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ModuleLockPackage {
-    version: String,
-    base_url: String,
+pub(crate) struct ModuleLockPackage {
+    pub(crate) version: String,
+    pub(crate) base_url: String,
     #[serde(default)]
-    modules: BTreeMap<String, String>,
+    pub(crate) modules: BTreeMap<String, String>,
 }
 
 const LOCK_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -94,7 +93,7 @@ pub(crate) fn lock_command(args: &[String]) {
     }
 }
 
-fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
+pub(crate) fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
     let mut config_path = None;
     let mut i = 0;
     while i < args.len() {
@@ -108,7 +107,7 @@ fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
     config_path
 }
 
-fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(path) = config_path {
         return Ok(path);
     }
@@ -158,19 +157,22 @@ fn verify_locked_modules(lockfile: &ModuleLockfile) -> Result<(), String> {
     }
 }
 
-fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
+pub(crate) fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read project manifest '{}': {e}", path.display()))?;
     toml::from_str(&text).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
 }
 
-fn load_module_lockfile(path: &Path) -> Result<ModuleLockfile, String> {
+pub(crate) fn load_module_lockfile(path: &Path) -> Result<ModuleLockfile, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read module lockfile '{}': {e}", path.display()))?;
     toml::from_str(&text).map_err(|e| format!("Invalid module lockfile '{}': {e}", path.display()))
 }
 
-fn validate_module_lockfile(lockfile: &ModuleLockfile, path: &Path) -> Result<(), String> {
+pub(crate) fn validate_module_lockfile(
+    lockfile: &ModuleLockfile,
+    path: &Path,
+) -> Result<(), String> {
     if lockfile.schema_version != 1 {
         return Err(format!(
             "unsupported module lockfile schema_version {} in '{}'; expected 1",
@@ -282,7 +284,11 @@ fn validate_dependency_source(
     Ok(())
 }
 
-fn validate_remote_base_url(package_name: &str, base_url: &str, path: &Path) -> Result<(), String> {
+pub(crate) fn validate_remote_base_url(
+    package_name: &str,
+    base_url: &str,
+    path: &Path,
+) -> Result<(), String> {
     let base_url = base_url.trim();
     if base_url.starts_with("https://") {
         return Ok(());
@@ -328,7 +334,7 @@ fn verify_locked_module(
     }
 }
 
-fn normalize_blake3(hash: &str) -> String {
+pub(crate) fn normalize_blake3(hash: &str) -> String {
     hash.trim()
         .strip_prefix("blake3:")
         .unwrap_or(hash.trim())

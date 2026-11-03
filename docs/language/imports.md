@@ -191,6 +191,34 @@ Version tells us what release we intended to use. The package base URL tells us
 where the release lives. The BLAKE3 hash tells us whether the bytes of an
 individual module are exactly the bytes we locked.
 
+### Installing
+
+`hiko install` writes the lockfile from the manifest. It is the only command
+that changes `hiko.lock.toml`; compiling never does.
+
+```sh
+hiko install            # the hiko.toml found upward from the current directory
+hiko install --check    # write nothing; fail if the lockfile is out of date
+```
+
+For each `[dependencies]` entry it:
+
+1. fetches `<registry url>/<Package>-v<version>/package.toml` and checks that
+   it names that package and version;
+2. downloads every module the package lists and checks each against the
+   package's BLAKE3 hash;
+3. stores each module in the module cache, where the loader finds it.
+
+Then it writes every module of every dependency to the lockfile, and prints
+one line per difference from the lockfile it replaces (`+` added, `-` removed,
+`~` changed). If any package or module fails, nothing is written: not the
+lockfile and not the cache. Packages are locked whole, as `package.toml` lists
+them; there is no per-module selection. A package removed from
+`[dependencies]` is removed from the lockfile.
+
+`--check` is for CI: it fetches and verifies the same way, compares the result
+with the lockfile on disk, and exits nonzero if they differ.
+
 ### Cache Model
 
 Remote modules are cached locally for reuse.
@@ -288,5 +316,8 @@ readable, and there is no serialized bytecode format to trust.
 The remaining library/import work is operational hardening rather than deeper
 module theory:
 
-- add a lock update command for intentional dependency upgrades
+- let extensions declare the library modules their Hiko sources import,
+  so `hiko install` locks them and a missing one is an explicit error (#175)
+- make `local_package_root` (used by `build-vm` and tests) exclusive: today a
+  module missing from it falls through to the cache and the network
 - embed only the modules a `--script` program imports, not the whole lockfile
