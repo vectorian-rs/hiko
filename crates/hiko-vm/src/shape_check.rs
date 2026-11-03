@@ -108,6 +108,12 @@ impl ShapeParser {
             self.skip_ws();
             if self.consume_word("list") {
                 ty = Shape::List(Box::new(ty));
+            } else if self.consume_word("pid") {
+                // `'a pid`: what the child returns is not part of the pid.
+                ty = Shape::Pid;
+            } else if self.consume_word("BuiltinProcess.await_result") {
+                // A datatype declared in Hiko source: not checked here.
+                ty = Shape::Var;
             } else if self.consume_word("Option.option") {
                 ty = Shape::Option(Box::new(ty));
             } else {
@@ -145,7 +151,6 @@ impl ShapeParser {
             "unit" => Ok(Shape::Unit),
             "bytes" => Ok(Shape::Bytes),
             "word" => Ok(Shape::Word),
-            "pid" => Ok(Shape::Pid),
             "rng" => Ok(Shape::Rng),
             other => Err(format!("unknown type '{}'", other)),
         }

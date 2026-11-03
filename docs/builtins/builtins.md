@@ -260,12 +260,15 @@ What the allowlist does **not** guarantee:
 
 ## Concurrency (threaded runtime)
 
-| Builtin         | Type                  | Description                              |
-| --------------- | --------------------- | ---------------------------------------- |
-| `spawn`         | `(unit -> 'a) -> pid` | Spawn an isolated process                |
-| `await_process` | `pid -> 'a`           | Block until a child process completes    |
-| `cancel`        | `pid -> unit`         | Cooperatively cancel a child process     |
-| `wait_any`      | `pid list -> pid`     | Wait until any child in the set finishes |
+| Builtin         | Type                     | Description                              |
+| --------------- | ------------------------ | ---------------------------------------- |
+| `spawn`         | `(unit -> 'a) -> 'a pid` | Spawn an isolated process                |
+| `await_process` | `'a pid -> 'a`           | Block until a child process completes    |
+| `cancel`        | `'a pid -> unit`         | Cooperatively cancel a child process     |
+| `wait_any`      | `'a pid list -> 'a pid`  | Wait until any child in the set finishes |
+
+A pid records what its child returns: `spawn (fn () => 42)` is an `int pid`,
+and awaiting it gives an `int`. Any two pids compare with `=`.
 
 `wait_any [p1, p2, ..., pn]` is deterministic: it blocks until at least one listed child has completed, then returns the leftmost PID in the original input list whose child is complete. If multiple children complete concurrently, input list order breaks ties. A child completion is only a wakeup signal; it is not automatically the winner.
 

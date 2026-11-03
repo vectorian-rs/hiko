@@ -230,7 +230,7 @@ fn wait_any_over_failed_cancelled_and_successful_children() {
              | BuiltinProcess.Err BuiltinProcess.AlreadyJoined => \"already joined\"\n\
              | BuiltinProcess.Err _ => \"other\"\n\
          val f = spawn (fn () => (panic \"wait boom\" : int))\n\
-         val c = spawn (fn () => {leaf})\n\
+         val c = spawn (fn () => let val _ = {leaf} in 0 end)\n\
          val s = spawn (fn () => 42)\n\
          val _ = cancel c\n\
          val w = wait_any [f, c, s]\n\

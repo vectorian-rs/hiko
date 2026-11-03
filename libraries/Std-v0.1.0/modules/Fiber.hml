@@ -17,7 +17,7 @@ structure FiberInternal = struct
           cancel_all rest
         end
 
-  fun remove_first (target : pid) (fibers : pid list) =
+  fun remove_first (target : 'a pid) fibers =
     case fibers of
         [] => []
       | fiber :: rest => if fiber = target then rest else fiber :: remove_first target rest
@@ -34,7 +34,8 @@ structure FiberInternal = struct
 end
 
 structure Fiber = struct
-  type 'a t = pid
+  (* A fiber that returns an 'a: joining it gives back an 'a. *)
+  type 'a t = 'a pid
 
   type error = BuiltinProcess.error
 
@@ -57,7 +58,6 @@ structure Fiber = struct
     case Fiber.join fiber of
         Ok value => value
       | Err err => panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
-      | _ => panic "Fiber.join_or_fail: unexpected result shape"
 
   fun cancel fiber = BuiltinProcess.cancel_raw fiber
 
@@ -72,7 +72,6 @@ structure Fiber = struct
           (Ok left_value, Ok right_value) => Ok (left_value, right_value)
         | (Err err, _) => Err err
         | (_, Err err) => Err err
-        | _ => Err (BuiltinProcess.RuntimeError "Fiber.both: unexpected result shape")
     end
 
   fun join_all fibers =
@@ -87,7 +86,6 @@ structure Fiber = struct
               (Ok value, Ok values) => Ok (value :: values)
             | (Err err, _) => Err err
             | (_, Err err) => Err err
-            | _ => Err (BuiltinProcess.RuntimeError "Fiber.join_all: unexpected result shape")
         end
 
   fun all fs = Fiber.join_all (FiberInternal.spawn_all fs)

@@ -141,10 +141,11 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "date_parse_rfc3339" | "date_parse_rfc9557" => "string -> bool * string",
 
         // Process
-        "spawn" => return poly_a("(unit -> 'a) -> pid"),
-        "await_process" | "await_process_result" => return poly_a("pid -> 'a"),
-        "cancel" => "pid -> unit",
-        "wait_any" => "pid list -> pid",
+        "spawn" => return poly_a("(unit -> 'a) -> 'a pid"),
+        "await_process" => return poly_a("'a pid -> 'a"),
+        "await_process_result" => return poly_a("'a pid -> 'a BuiltinProcess.await_result"),
+        "cancel" => return poly_a("'a pid -> unit"),
+        "wait_any" => return poly_a("'a pid list -> 'a pid"),
 
         // Exec, system, testing
         "exec" => "string * string list -> int * string * string",
