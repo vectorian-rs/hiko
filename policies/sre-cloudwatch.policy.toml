@@ -1,5 +1,6 @@
 # Run config for examples/sre/cloudwatch_alarms.hml: read CloudWatch alarms with one SSO
-# profile, print the report, exit with its status. Nothing else.
+# profile, print the report, exit with its status. It cannot read the
+# environment, files or the network beyond CloudWatch.
 
 [capabilities.stdio.println]
 enabled = true
@@ -16,12 +17,9 @@ enabled = true
 [capabilities.string.string_replace]
 enabled = true
 
-[capabilities.env.getenv]
-enabled = true
-
 [capabilities.system.exit]
 enabled = true
 
 [extensions.aws]
-sso_profiles = ["dev"]   # the profiles AWS_PROFILE may name
+sso_profiles = ["dev"]   # the profile the script names
 cloudwatch = true

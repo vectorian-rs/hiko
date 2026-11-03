@@ -649,7 +649,9 @@ fn metric_alarm_row(alarm: &aws_sdk_cloudwatch::types::MetricAlarm) -> SendableV
         alarm.alarm_name(),
         alarm.state_value(),
         &source,
-        alarm.state_updated_timestamp(),
+        alarm
+            .state_transitioned_timestamp()
+            .or(alarm.state_updated_timestamp()),
         alarm.state_reason(),
     )
 }
@@ -659,7 +661,9 @@ fn composite_alarm_row(alarm: &aws_sdk_cloudwatch::types::CompositeAlarm) -> Sen
         alarm.alarm_name(),
         alarm.state_value(),
         "composite",
-        alarm.state_updated_timestamp(),
+        alarm
+            .state_transitioned_timestamp()
+            .or(alarm.state_updated_timestamp()),
         alarm.state_reason(),
     )
 }
@@ -940,7 +944,8 @@ mod tests {
             .state_value(StateValue::Alarm)
             .namespace("AWS/ApplicationELB")
             .metric_name("HTTPCode_Target_5XX_Count")
-            .state_updated_timestamp(DateTime::from_millis(1_793_700_000_875))
+            .state_transitioned_timestamp(DateTime::from_millis(1_793_700_000_875))
+            .state_updated_timestamp(DateTime::from_secs(1_793_790_000))
             .state_reason("Threshold Crossed: 1 datapoint [12.0] was greater than 5.0")
             .build();
         assert_eq!(

@@ -48,3 +48,11 @@ val _ = check (string_join (Report.table [("b", Health.Critical, "", ""), ("a", 
     "| CRIT   | b    |       |        |",
     "| CRIT   | a    |       |        |"
   ], "\n"))
+
+(* A cell splits back exactly: `\` is written `\\`, then `|` is written `\|`. *)
+val _ = check (Report.cell "a\\|b|c", "a\\\\\\|b\\|c")
+
+(* The source is one word, so the summary stays one line of key=value
+   fields. *)
+val _ = check (Report.summary ("cloud\twatch=prod|x\ny", []),
+  "status=OK source=cloud-watch-prod-x-y total=0 crit=0 unknown=0 warn=0 ok=0")

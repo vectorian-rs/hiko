@@ -2,6 +2,6 @@ name = "Sre"
 version = "0.1.0"
 
 [modules]
-Health = "blake3:b170a67c852fee1e5358338e502ca016708b9532f9fd5dbe47e3472b65bdc1c4"
-Report = "blake3:b8f72d55ab000168487152f25912746233af7baf6694511ee9a4913cd4ec9d1b"
+Health = "blake3:adb71b32d6133b308000600ecfbb3ddfa844652832d8e1c0d5cd06dea754bd79"
+Report = "blake3:0698739a4b0b84b3e9eccb904ddc252c10f7c2f053d3d96de248b166987b988f"
 CloudWatchAlarms = "blake3:ebf136f4100397224daeabdf00bc5cfdeffbf48b577533518d26250ba20d8b2c"

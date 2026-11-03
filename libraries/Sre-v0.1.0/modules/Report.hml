@@ -13,8 +13,8 @@ import Sre.Health
      | UNKNOWN | db-lag  |                      |                   |
 
    A person scans the table. An agent reads the summary line's fields, and
-   the table's cells, which `|` separates (a `|` inside a cell is written
-   `\|`, and a line break as a space). The table renders as Markdown
+   the table's cells, which `|` separates (inside a cell, `\` is written
+   `\\`, `|` is written `\|`, and a line break is a space). The table renders as Markdown
    wherever Markdown does. A script ends with
    `exit (Health.exit_code (Report.print (source, checks)))`.
 
@@ -28,7 +28,7 @@ structure Report = struct
     List.foldr
       (fn (status, rest) => List.append (List.filter (Health.has_status status) checks) rest)
       []
-      [Health.Critical, Health.Unknown, Health.Warning, Health.Healthy]
+      Health.statuses
 
   (* `text` repeated `n` times, by doubling. *)
   fun repeat (text, n) =
@@ -39,19 +39,24 @@ structure Report = struct
 
   fun pad_right width text = text ^ repeat (" ", width - string_length text)
 
-  (* A table cell: `|` escaped, line breaks as spaces. *)
+  (* A table cell: `\` written `\\` and `|` written `\|`, so a cell
+     splits back exactly; line breaks as spaces. *)
   fun cell text =
-    string_replace (string_replace (string_replace (text, "|", "\\|"), "\r", ""), "\n", " ")
+    string_replace (string_replace (string_replace (string_replace (text, "\\", "\\\\"),
+      "|", "\\|"), "\r", ""), "\n", " ")
+
+  (* One word: whitespace, `=` and `|` become `-`. *)
+  fun word text =
+    List.foldl (fn (text, c) => string_replace (text, c, "-")) text [" ", "\t", "\r", "\n", "=", "|"]
 
   fun wider (width, text) =
     if string_length text > width then string_length text else width
 
-  (* `key=value` pairs; spaces in `source` become `-`, so every field is
-     one word. *)
+  (* `key=value` pairs; `source` is made one word, so every field is. *)
   fun summary (source, checks) =
     string_join ([
       "status=" ^ Health.status_name (Health.overall checks),
-      "source=" ^ string_replace (source, " ", "-"),
+      "source=" ^ word source,
       "total=" ^ int_to_string (List.length checks),
       "crit=" ^ int_to_string (Health.count Health.Critical checks),
       "unknown=" ^ int_to_string (Health.count Health.Unknown checks),

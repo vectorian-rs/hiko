@@ -8,6 +8,9 @@ import Std.List
 structure Health = struct
   datatype status = Healthy | Warning | Critical | Unknown
 
+  (* Every status, worst first. *)
+  val statuses = [Critical, Unknown, Warning, Healthy]
+
   (* name, status, since, detail *)
   type check = string * status * string * string
 

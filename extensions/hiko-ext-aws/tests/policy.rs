@@ -29,9 +29,8 @@ fn loader_options(config: &RunConfig) -> ModuleLoaderOptions {
     ModuleLoaderOptions {
         extensions: Extension::compile_surface(&configured),
         local_package_root: Some(repo().join("libraries")),
-        cache_dir: Some(
-            std::env::temp_dir().join(format!("hiko-ext-aws-test-cache-{}", std::process::id())),
-        ),
+        // One directory for every run, so runs do not leave new ones.
+        cache_dir: Some(std::env::temp_dir().join("hiko-ext-aws-test-cache")),
         ..Default::default()
     }
 }

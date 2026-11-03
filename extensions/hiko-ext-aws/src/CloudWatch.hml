@@ -8,8 +8,10 @@ structure CloudWatch = struct
   type error = string
 
   (*! Name, state (`OK`, `ALARM` or `INSUFFICIENT_DATA`), source
-      (`Namespace/MetricName`, `metric math` or `composite`), when the state
-      last changed (RFC 3339, whole seconds), and the reason CloudWatch gives. *)
+      (`Namespace/MetricName`, `metric math` or `composite`), when the alarm
+      entered its state (RFC 3339, whole seconds; CloudWatch's
+      StateTransitionedTimestamp, which other updates do not move), and the
+      reason CloudWatch gives. *)
   type alarm = string * string * string * string * string
 
   fun name (name, _, _, _, _) = name

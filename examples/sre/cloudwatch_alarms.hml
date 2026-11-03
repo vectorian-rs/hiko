@@ -5,17 +5,21 @@
    could not be read).
 
    Needs a hiko built with `--features ext-aws`, an SSO session for the
-   profile (`aws sso login --profile dev`), and a run config that allows the
-   profile: policies/sre-cloudwatch.policy.toml lists `dev`.
+   profile below (`aws sso login --profile dev`), and a run config that
+   allows it: policies/sre-cloudwatch.policy.toml lists `dev`. To use
+   another profile, change it in both places. A profile the policy does not
+   list is a setup error: hiko stops with exit 1 and no report.
 
-     AWS_PROFILE=dev hiko run --policy sre-cloudwatch examples/sre/cloudwatch_alarms.hml *)
+     hiko run --policy sre-cloudwatch examples/sre/cloudwatch_alarms.hml *)
 import Aws.Config
 import Aws.CloudWatch
 import Sre.Health
 import Sre.Report
 import Sre.CloudWatchAlarms
 
-val client = CloudWatch.client (Config.sso_profile (getenv "AWS_PROFILE"))
+val profile = "dev"
+
+val client = CloudWatch.client (Config.sso_profile profile)
 
 val status =
   case CloudWatchAlarms.checks client of
