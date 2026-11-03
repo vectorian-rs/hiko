@@ -75,14 +75,19 @@ impl VM {
     /// Cost notes:
     /// - pushes one `Value::Unit` argument onto the stack
     /// - appends one `CallFrame`
-    /// - allocates one `Arc<[Value]>` to own the captures slice
+    /// - allocates one `Arc<[Value]>` to own the captures slice, unless it is
+    ///   empty
     pub fn setup_closure_call(&mut self, proto_idx: usize, captures: &[Value]) {
         self.stack.push(Value::Unit);
         self.frames.push(CallFrame {
             proto_idx,
             ip: 0,
             base: 0,
-            captures: Arc::from(captures),
+            captures: if captures.is_empty() {
+                Captures::Empty
+            } else {
+                Captures::Closure(Arc::from(captures))
+            },
         });
     }
 
@@ -203,7 +208,7 @@ impl VM {
             proto_idx: usize::MAX,
             ip: 0,
             base: 0,
-            captures: Arc::from([]),
+            captures: Captures::Empty,
         });
         self.dispatch()
     }
@@ -246,7 +251,7 @@ impl VM {
                 proto_idx: usize::MAX,
                 ip: 0,
                 base: 0,
-                captures: Arc::from([]),
+                captures: Captures::Empty,
             });
         }
 

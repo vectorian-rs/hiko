@@ -31,26 +31,6 @@ impl VM {
         self.alloc(HeapObject::String(s.into()))
     }
 
-    pub(super) fn checked_relative_ip(
-        &self,
-        proto_idx: usize,
-        base_after_operand: usize,
-        offset: i16,
-        what: &str,
-    ) -> Result<usize, RuntimeError> {
-        let target = base_after_operand
-            .checked_add_signed(offset as isize)
-            .ok_or_else(|| RuntimeError {
-                message: format!("{what}: instruction pointer overflow"),
-            })?;
-        if target > self.chunk_for_checked(proto_idx)?.code.len() {
-            return Err(RuntimeError {
-                message: format!("{what}: relative jump target {target} lands outside chunk"),
-            });
-        }
-        Ok(target)
-    }
-
     pub(super) fn capture_value(
         &self,
         frame_idx: usize,

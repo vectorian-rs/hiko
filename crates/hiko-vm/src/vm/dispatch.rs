@@ -17,13 +17,14 @@ struct RecClosurePatch {
 
 impl VM {
     pub(super) fn dispatch(&mut self) -> Result<(), RuntimeError> {
-        // The code of the current frame's function, looked up again only when
+        // The chunk of the current frame's function, looked up again only when
         // the frame's function changes. The protos and the main chunk never
-        // change while a VM runs; holding them here lets `code` borrow from
+        // change while a VM runs; holding them here lets `chunk` borrow from
         // locals instead of `self`.
         let protos = Arc::clone(&self.protos);
         let main_chunk = Arc::clone(&self.main_chunk);
         let mut code_proto = None;
+        let mut chunk: &Chunk = &main_chunk;
         let mut code: &[u8] = &[];
 
         // The next operand bytes of the current instruction, from `code`.
@@ -59,15 +60,15 @@ impl VM {
             let fi = self.current_frame_index()?;
             let proto_idx = self.frames[fi].proto_idx;
             if code_proto != Some(proto_idx) {
-                code = if proto_idx == usize::MAX {
-                    &main_chunk.code
+                chunk = if proto_idx == usize::MAX {
+                    &main_chunk
                 } else {
                     &protos
                         .get(proto_idx)
                         .ok_or_else(|| Self::unknown_proto_error(proto_idx))?
                         .chunk
-                        .code
                 };
+                code = &chunk.code;
                 code_proto = Some(proto_idx);
             }
             let ip = self.frames[fi].ip;
@@ -89,13 +90,9 @@ impl VM {
 
                 Op::Const => {
                     let idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
-                    let constant = self
-                        .chunk_for_checked(proto_idx)?
-                        .constants
-                        .get(idx)
-                        .ok_or_else(|| RuntimeError {
-                            message: format!("Const: constant index {idx} out of bounds"),
-                        })?;
+                    let constant = chunk.constants.get(idx).ok_or_else(|| RuntimeError {
+                        message: format!("Const: constant index {idx} out of bounds"),
+                    })?;
                     let val = match constant {
                         Constant::Int(n) => Value::Int(*n),
                         Constant::Float(f) => Value::Float(*f),
@@ -325,7 +322,7 @@ impl VM {
                 Op::Jump => {
                     let offset = i16::from_le_bytes(operand!(fi, 2));
                     let ip = self.frames[fi].ip;
-                    let target = self.checked_relative_ip(proto_idx, ip, offset, "Jump")?;
+                    let target = jump_target(ip, offset, code.len(), "Jump")?;
                     self.frames[fi].ip = target;
                 }
                 Op::JumpIfNotTag => {
@@ -335,8 +332,7 @@ impl VM {
                     let actual = self.data_tag(value, "JumpIfNotTag")?;
                     if actual != tag {
                         let ip = self.frames[fi].ip;
-                        let target =
-                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfNotTag")?;
+                        let target = jump_target(ip, offset, code.len(), "JumpIfNotTag")?;
                         self.frames[fi].ip = target;
                     }
                 }
@@ -348,8 +344,7 @@ impl VM {
                     let actual = self.data_tag(self.stack[idx], "JumpIfLocalNotTag")?;
                     if actual != tag {
                         let ip = self.frames[fi].ip;
-                        let target =
-                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfLocalNotTag")?;
+                        let target = jump_target(ip, offset, code.len(), "JumpIfLocalNotTag")?;
                         self.frames[fi].ip = target;
                     }
                 }
@@ -359,7 +354,7 @@ impl VM {
                     let a = self.pop()?;
                     let equal = values_equal(a, b, &self.heap);
                     if equal == (op == Op::JumpIfEq) {
-                        self.relative_jump(fi, proto_idx, offset, op)?;
+                        self.relative_jump(fi, code.len(), offset, op)?;
                     }
                 }
                 Op::JumpIfNotLtInt
@@ -376,7 +371,7 @@ impl VM {
                         _ => a >= b,
                     };
                     if !holds {
-                        self.relative_jump(fi, proto_idx, offset, op)?;
+                        self.relative_jump(fi, code.len(), offset, op)?;
                     }
                 }
                 Op::JumpIfFalse => {
@@ -384,8 +379,7 @@ impl VM {
                     let cond = self.pop_bool()?;
                     if !cond {
                         let ip = self.frames[fi].ip;
-                        let target =
-                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfFalse")?;
+                        let target = jump_target(ip, offset, code.len(), "JumpIfFalse")?;
                         self.frames[fi].ip = target;
                     }
                 }
@@ -457,7 +451,7 @@ impl VM {
                             self.stack.truncate(base + arity);
                             self.frames[fi].ip = 0;
                             self.frames[fi].proto_idx = closure_proto;
-                            self.frames[fi].captures = closure_captures;
+                            self.frames[fi].captures = closure_captures.into();
                         }
                         Value::Builtin(id) => {
                             self.call_builtin(id, callee_pos, arity)?;
@@ -484,7 +478,7 @@ impl VM {
                         proto_idx,
                         ip: 0,
                         base: arg_start,
-                        captures: self.no_captures.clone(),
+                        captures: Captures::Empty,
                     });
                 }
 
@@ -533,7 +527,7 @@ impl VM {
                     self.stack.truncate(base + arity);
                     self.frames[fi].ip = 0;
                     self.frames[fi].proto_idx = proto_idx;
-                    self.frames[fi].captures = self.no_captures.clone();
+                    self.frames[fi].captures = Captures::Empty;
                 }
 
                 Op::Return => {
@@ -582,10 +576,10 @@ impl VM {
                             }
                             0 => {
                                 let offset = i16::from_le_bytes(operand!(fi, 2));
-                                let ip = self.checked_relative_ip(
-                                    self.frames[fi].proto_idx,
+                                let ip = jump_target(
                                     self.frames[fi].ip,
                                     offset,
+                                    code.len(),
                                     "InstallHandler clause",
                                 )?;
                                 ClauseAction::Abort { ip }
@@ -738,7 +732,7 @@ impl VM {
             proto_idx: closure_proto,
             ip: 0,
             base: callee_pos,
-            captures: closure_captures,
+            captures: closure_captures.into(),
         });
         Ok(())
     }
@@ -896,10 +890,11 @@ impl VM {
 
     /// Take the jump of a conditional jump instruction whose `i16` offset
     /// was just read.
+    #[inline(always)]
     fn relative_jump(
         &mut self,
         fi: usize,
-        proto_idx: usize,
+        code_len: usize,
         offset: i16,
         op: Op,
     ) -> Result<(), RuntimeError> {
@@ -912,7 +907,7 @@ impl VM {
             Op::JumpIfNotLeInt => "JumpIfNotLeInt",
             _ => "JumpIfNotGeInt",
         };
-        self.frames[fi].ip = self.checked_relative_ip(proto_idx, ip, offset, name)?;
+        self.frames[fi].ip = jump_target(ip, offset, code_len, name)?;
         Ok(())
     }
 
@@ -1109,5 +1104,26 @@ fn error(message: &'static str) -> RuntimeError {
 fn error_fmt(message: std::fmt::Arguments<'_>) -> RuntimeError {
     RuntimeError {
         message: message.to_string(),
+    }
+}
+
+/// The target of a relative jump whose offset ends at `ip`, if it lies in
+/// a chunk of `code_len` bytes.
+#[inline(always)]
+fn jump_target(ip: usize, offset: i16, code_len: usize, what: &str) -> Result<usize, RuntimeError> {
+    match ip.checked_add_signed(offset as isize) {
+        Some(target) if target <= code_len => Ok(target),
+        target => Err(jump_target_error(what, target)),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn jump_target_error(what: &str, target: Option<usize>) -> RuntimeError {
+    match target {
+        Some(target) => error_fmt(format_args!(
+            "{what}: relative jump target {target} lands outside chunk"
+        )),
+        None => error_fmt(format_args!("{what}: instruction pointer overflow")),
     }
 }

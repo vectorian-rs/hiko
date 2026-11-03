@@ -75,7 +75,39 @@ struct CallFrame {
     proto_idx: usize,
     ip: usize,
     base: usize,
-    captures: Arc<[Value]>,
+    captures: Captures,
+}
+
+/// The captured values a frame's function sees. Most calls are direct calls
+/// to top-level functions with no captures; `Empty` gives them a frame
+/// without touching a reference count.
+#[derive(Clone, Debug, Default)]
+pub(super) enum Captures {
+    #[default]
+    Empty,
+    Closure(Arc<[Value]>),
+}
+
+impl From<Arc<[Value]>> for Captures {
+    fn from(captures: Arc<[Value]>) -> Self {
+        if captures.is_empty() {
+            Captures::Empty
+        } else {
+            Captures::Closure(captures)
+        }
+    }
+}
+
+impl std::ops::Deref for Captures {
+    type Target = [Value];
+
+    #[inline(always)]
+    fn deref(&self) -> &[Value] {
+        match self {
+            Captures::Empty => &[],
+            Captures::Closure(captures) => captures,
+        }
+    }
 }
 
 struct HandlerFrame {
@@ -83,7 +115,7 @@ struct HandlerFrame {
     stack_base: usize,
     clauses: Vec<HandlerClause>,
     proto_idx: usize,
-    captures: Arc<[Value]>,
+    captures: Captures,
 }
 
 /// Handlers hidden while a provider clause runs: the handler whose clause
@@ -250,9 +282,6 @@ pub struct VM {
     /// Reused buffer for `ConcatString`, so a concatenation allocates only
     /// the new string's shared payload.
     concat_buf: String,
-    /// The captures of a function called with `CallDirect`, which has none.
-    /// Shared, because `Arc::from([])` allocates on every call.
-    no_captures: Arc<[Value]>,
     /// Slice-local opcode budget for the currently active dispatch loop.
     ///
     /// This value is intentionally transient. `run_slice` installs it from the
@@ -414,7 +443,6 @@ impl VM {
             #[cfg(feature = "opcode-stats")]
             last_op: crate::opcode_stats::START,
             concat_buf: String::new(),
-            no_captures: Arc::from([]),
             fuel: None,
             fuel_budget: None,
             live_process_slot: None,
@@ -793,7 +821,7 @@ mod tests {
             proto_idx: 9999,
             ip: 0,
             base: 0,
-            captures: Arc::from([]),
+            captures: Captures::Empty,
         });
 
         let err = vm
@@ -2144,7 +2172,7 @@ mod tests {
             proto_idx: usize::MAX,
             ip: 0,
             base: 0,
-            captures: Arc::from([]),
+            captures: Captures::Empty,
         });
 
         let err = vm.capture_value(0, true, 1).unwrap_err();
@@ -2174,7 +2202,7 @@ mod tests {
                 stack_base: 0,
                 clauses: Vec::new(),
                 proto_idx: usize::MAX,
-                captures: Arc::from([]),
+                captures: Captures::Empty,
             });
         }
 
