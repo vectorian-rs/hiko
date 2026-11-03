@@ -640,3 +640,22 @@ GetLocal` 6.3%, `GetLocal -> JumpIfNotTag` 4.7%, `JumpIfNotTag -> GetLocal`
 4.7%, `GetLocal -> GetField0` 4.4%, `GetLocal0 -> GetLocal1` 4.1%,
 `GetField0 -> GetLocal` 3.4%, `GetLocal1 -> GetLocal2` 2.9%, `GetField1 ->
 GetLocal` 2.8%, `GetLocal -> GetField1` 2.4%, `Const -> JumpIfNotEq` 2.1%.
+
+### Superinstruction: field of a local (PR #165, #152)
+
+`GetLocal slot; GetField0` and `GetLocal slot; GetField1` (6.8% of executed
+pairs) became `GetLocalField0 slot` / `GetLocalField1 slot`. The compiler
+fuses them only when no jump lands between the two. Interleaved, 10 rounds,
+on AC, load average 3 to 3.7:
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/list` | 1163 ms | 997 ms | -14% |
+| `list_length` | 885 ms | 809 ms | -9% |
+| `compare/sieve` | 405 ms | 382 ms | -6% |
+| `compare/nbody` | 395 ms | 382 ms | -3% |
+| `compare/queens` | 257 ms | 250 ms | -3% |
+| `compare/binary_trees` | 1067 ms | 1042 ms | -2% |
+| `compare/tak`, `compare/fib`, `compare/mandelbrot`, `ack` | | | within 1% |
+
+Medians; the minimums agree.
