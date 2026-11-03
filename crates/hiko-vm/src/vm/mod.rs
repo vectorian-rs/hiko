@@ -298,6 +298,9 @@ pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     let (Value::Heap(ra), Value::Heap(rb)) = (a, b) else {
         return scalars_equal(a, b);
     };
+    if ra == rb {
+        return true;
+    }
     // Two strings, the common heap case, need no worklist.
     if let (Ok(HeapObject::String(sa)), Ok(HeapObject::String(sb))) = (heap.get(ra), heap.get(rb)) {
         return sa == sb;

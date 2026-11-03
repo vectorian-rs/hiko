@@ -301,9 +301,9 @@ impl VM {
                 Op::GetField1 => self.push_field(1)?,
                 Op::GetLocalField0 | Op::GetLocalField1 => {
                     let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
-                    let idx = self.local_stack_index(fi, slot, "GetLocal")?;
+                    let idx = self.local_stack_index(fi, slot, "GetLocalField")?;
                     let field = (op == Op::GetLocalField1) as usize;
-                    let val = self.field_of(self.stack[idx], field)?;
+                    let val = self.field_of(self.stack[idx], field, "GetLocalField")?;
                     self.push(val)?;
                 }
                 Op::MakeData => {
@@ -826,7 +826,7 @@ impl VM {
 
     fn push_field(&mut self, idx: usize) -> Result<(), RuntimeError> {
         let val = self.pop()?;
-        let field = self.field_of(val, idx)?;
+        let field = self.field_of(val, idx, "GetField")?;
         self.push(field)
     }
 
@@ -843,19 +843,19 @@ impl VM {
 
     /// Field `idx` of a tuple or data value.
     #[inline(always)]
-    fn field_of(&self, val: Value, idx: usize) -> Result<Value, RuntimeError> {
+    fn field_of(&self, val: Value, idx: usize, what: &str) -> Result<Value, RuntimeError> {
         let fields = match val {
             Value::Heap(r) => match self.heap_get(r)? {
                 HeapObject::Tuple(t) => t,
                 HeapObject::Data { fields, .. } => fields,
-                _ => return Err(error("GetField: expected tuple or data")),
+                _ => return Err(error_fmt(format_args!("{what}: expected tuple or data"))),
             },
-            _ => return Err(error("GetField: expected tuple or data")),
+            _ => return Err(error_fmt(format_args!("{what}: expected tuple or data"))),
         };
         fields
             .get(idx)
             .copied()
-            .ok_or_else(|| error_fmt(format_args!("GetField: field index {idx} out of bounds")))
+            .ok_or_else(|| error_fmt(format_args!("{what}: field index {idx} out of bounds")))
     }
 
     fn pop_int(&mut self) -> Result<i64, RuntimeError> {
