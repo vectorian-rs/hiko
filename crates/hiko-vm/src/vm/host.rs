@@ -769,8 +769,10 @@ mod tests {
     #[test]
     fn linux_runs_the_pinned_binary_not_a_file_swapped_in_at_its_path() {
         let root = temp_dir("exec-descriptor");
-        let tool = root.join("tool");
-        std::fs::copy(std::fs::canonicalize("/bin/echo").unwrap(), &tool).unwrap();
+        // A copy of the shell, a plain ELF binary: on Ubuntu 26.04 coreutils
+        // such as /bin/echo are one uutils multi-call binary.
+        let tool = root.join("sh");
+        std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &tool).unwrap();
         let allowed = allowed_executable(tool.clone()).expect("pinned");
         assert!(
             matches!(allowed.via, ExecVia::Descriptor(_)),
@@ -780,11 +782,20 @@ mod tests {
 
         std::fs::remove_file(&tool).unwrap();
         write_executable(&tool, "#!/bin/sh\necho swapped\n");
+        use std::os::unix::process::CommandExt as _;
+        // argv[0] as `run_exec` sets it: the command, not /proc/self/fd/N.
         let out = std::process::Command::new(exec_path(&allowed))
-            .arg("pinned")
+            .arg0(&tool)
+            .args(["-c", "echo pinned"])
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "pinned\n");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "pinned\n",
+            "status {:?}, stderr {:?}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
