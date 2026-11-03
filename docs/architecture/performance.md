@@ -659,3 +659,22 @@ on AC, load average 3 to 3.7:
 | `compare/tak`, `compare/fib`, `compare/mandelbrot`, `ack` | | | within 1% |
 
 Medians; the minimums agree.
+
+### Superinstruction: tag test on a local (PR #165, #152)
+
+Pattern tag checks were `GetLocal slot; JumpIfNotTag tag` (4.7% of executed
+pairs). The compiler now emits `JumpIfLocalNotTag slot tag offset`, which
+reads the local in place. Interleaved, 10 rounds, on AC, load average 2 to
+3.2; "before" includes the field-of-a-local superinstruction.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/list` | 995 ms | 926 ms | -7% |
+| `list_length` | 806 ms | 751 ms | -7% |
+| `compare/sieve` | 376 ms | 358 ms | -5% |
+| `compare/queens` | 247 ms | 240 ms | -3% |
+| `compare/binary_trees` | 1035 ms | 1017 ms | -2% |
+| `compare/nbody` | 382 ms | 376 ms | -1% |
+| `compare/tak`, `compare/fib`, `ack` | | | 0% |
+
+Medians; the minimums agree.
