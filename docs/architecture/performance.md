@@ -710,3 +710,32 @@ first comparison above.
 | `tak` | 257 ms | 195 ms | 54 ms | 82 ms | 12 ms | 3.6x | 2.4x |
 
 Hiko is 17 to 45% faster than at #146, and 1.1x to 7.7x slower than Lua 5.5.
+
+### Caching the chunk, and calls without captures (#151, #152)
+
+Two changes to `dispatch`, each measured against the one before it.
+Interleaved A/B (`ab.py`), on AC, load average 2.6 to 3.5. B/A is the ratio
+of medians.
+
+- **Chunk cache:** `dispatch` keeps the current function's whole `Chunk`,
+  not just its code. `Const` reads the cached constants without looking up
+  the function again, and jumps check against the cached code length.
+- **Captures:** a frame holds `Captures::Empty` for a call with no captures
+  instead of a reference-counted empty slice. `CallDirect`, tail calls and
+  returns no longer touch a reference count.
+
+| Program | chunk cache: B/A | captures: B/A |
+|---|---|---|
+| `compare/fib` | 0.973 | 0.947 |
+| `compare/tak` | 0.975 | 0.952 |
+| `ack` | 0.972 | 0.962 |
+| `compare/queens` | 0.975 | 0.974 |
+| `compare/list` | 0.984 | 0.975 |
+| `compare/sieve` | 0.999 | 0.973 |
+| `compare/binary_trees` | 0.990 | 0.989 |
+| `compare/nbody` | 0.993 | 0.986 |
+| `compare/mandelbrot` | 1.000 | |
+| `early_exit` | 0.976 | |
+
+Together, call-heavy programs are 6 to 8% faster (`fib` 377 to 353 ms,
+`tak` 192 to 182 ms), and nothing is slower.
