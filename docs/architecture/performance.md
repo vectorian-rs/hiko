@@ -690,3 +690,23 @@ Medians; the minimums agree.
 loop's code layout or register allocation rather than the fusion. Reverted.
 A register VM (#155) removes these reads without adding opcodes to the
 stack VM's loop.
+
+### Against Lua and Python, after #159, #164 and #165
+
+`scripts/compare.sh`, 10 runs each, on AC, load average about 2.5, with
+#159 (code slice in `dispatch`), #164 (string fixes) and #165's kept
+superinstructions (field of a local, tag test on a local). "#146" is the
+first comparison above.
+
+| Program | Hiko (#146) | Hiko | Lua | Python | LuaJIT | Hiko / Lua | Hiko / Python |
+|---|---|---|---|---|---|---|---|
+| `binary_trees` | 1454 ms | 1053 ms | 504 ms | 294 ms | 134 ms | 2.1x | 3.6x |
+| `fib` | 472 ms | 391 ms | 137 ms | 241 ms | 18 ms | 2.9x | 1.6x |
+| `list` | 1755 ms | 962 ms | 125 ms | 171 ms | 19 ms | 7.7x | 5.6x |
+| `mandelbrot` | 636 ms | 466 ms | 105 ms | 210 ms | 12 ms | 4.4x | 2.2x |
+| `nbody` | 642 ms | 406 ms | 96 ms | 113 ms | 17 ms | 4.2x | 3.6x |
+| `queens` | 351 ms | 250 ms | 51 ms | 101 ms | 11 ms | 4.9x | 2.5x |
+| `sieve` | 608 ms | 373 ms | 341 ms | 157 ms | 101 ms | 1.1x | 2.4x |
+| `tak` | 257 ms | 195 ms | 54 ms | 82 ms | 12 ms | 3.6x | 2.4x |
+
+Hiko is 17 to 45% faster than at #146, and 1.1x to 7.7x slower than Lua 5.5.
