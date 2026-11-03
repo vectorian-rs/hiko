@@ -388,6 +388,22 @@ fn decode_instruction(
                 delta: 0,
             }
         }
+        Op::GetLocalPair => {
+            let a = read_u16(chunk, ip, "GetLocalPair")? as usize;
+            let b = read_u16(chunk, ip, "GetLocalPair")? as usize;
+            if let Some(slot) = [a, b].into_iter().find(|&slot| slot >= n_locals) {
+                return Err(format!(
+                    "GetLocalPair at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
+            successors.push(*ip);
+            // `b` is read after `a` is pushed, so it may be the slot that
+            // push creates.
+            StackRule::Exact {
+                min_depth: (a + 1).max(b),
+                delta: 2,
+            }
+        }
         Op::GetLocalField0 | Op::GetLocalField1 => {
             let slot = read_u16(chunk, ip, "GetLocalField")? as usize;
             if slot >= n_locals {
@@ -1149,6 +1165,74 @@ mod tests {
             let err = verify_program(&out_of_range).expect_err("slot 5 is out of range");
             assert!(err.message().contains("local slot 5"), "{}", err.message());
         }
+    }
+
+    #[test]
+    fn local_pairs_need_both_locals_on_the_stack() {
+        let ok = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::Unit as u8,
+                Op::GetLocalPair as u8,
+                1,
+                0,
+                0,
+                0,
+                Op::Halt as u8,
+            ],
+            2,
+            Vec::new(),
+        );
+        verify_program(&ok).unwrap_or_else(|e| panic!("{e}"));
+        // Pushing local 0 creates slot 1, which the second read may use.
+        let reads_the_first_push = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::GetLocalPair as u8,
+                0,
+                0,
+                1,
+                0,
+                Op::Halt as u8,
+            ],
+            2,
+            Vec::new(),
+        );
+        verify_program(&reads_the_first_push).unwrap_or_else(|e| panic!("{e}"));
+        let two_short = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::GetLocalPair as u8,
+                0,
+                0,
+                2,
+                0,
+                Op::Halt as u8,
+            ],
+            3,
+            Vec::new(),
+        );
+        let err = verify_program(&two_short).expect_err("slot 2 is not on the stack");
+        assert!(
+            err.message().contains("requires stack depth"),
+            "{}",
+            err.message()
+        );
+        let out_of_range = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::GetLocalPair as u8,
+                0,
+                0,
+                9,
+                0,
+                Op::Halt as u8,
+            ],
+            2,
+            Vec::new(),
+        );
+        let err = verify_program(&out_of_range).expect_err("slot 9 is out of range");
+        assert!(err.message().contains("local slot 9"), "{}", err.message());
     }
 
     #[test]

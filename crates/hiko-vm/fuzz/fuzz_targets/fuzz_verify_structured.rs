@@ -9,8 +9,8 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, Function
 use hiko_vm::verify::verify_program;
 use libfuzzer_sys::fuzz_target;
 
-/// One past the highest opcode (`JumpIfLocalNotTag` = 83).
-const OPCODE_COUNT: u8 = 84;
+/// One past the highest opcode (`GetLocalPair` = 84).
+const OPCODE_COUNT: u8 = 85;
 
 #[derive(Arbitrary, Debug)]
 struct Inst {

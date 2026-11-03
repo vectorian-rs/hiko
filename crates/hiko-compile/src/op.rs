@@ -149,6 +149,9 @@ pub enum Op {
     /// jump unless the data value in local `slot` (u16) has constructor
     /// `tag` (u16). Offset (i16) is relative to the end of the instruction.
     JumpIfLocalNotTag = 83,
+    /// `GetLocal a; GetLocal b` in one instruction: push local `a` (u16),
+    /// then local `b` (u16).
+    GetLocalPair = 84,
 }
 
 impl TryFrom<u8> for Op {
@@ -240,6 +243,7 @@ impl TryFrom<u8> for Op {
             81 => Ok(Op::GetLocalField0),
             82 => Ok(Op::GetLocalField1),
             83 => Ok(Op::JumpIfLocalNotTag),
+            84 => Ok(Op::GetLocalPair),
             _ => Err(b),
         }
     }
