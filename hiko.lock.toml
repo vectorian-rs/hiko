@@ -20,8 +20,8 @@ base_url = "http://127.0.0.1:8000/Sre-v0.1.0"
 
 [packages.Sre.modules]
 CloudWatchAlarms = "blake3:ebf136f4100397224daeabdf00bc5cfdeffbf48b577533518d26250ba20d8b2c"
-Health = "blake3:adb71b32d6133b308000600ecfbb3ddfa844652832d8e1c0d5cd06dea754bd79"
-Report = "blake3:0698739a4b0b84b3e9eccb904ddc252c10f7c2f053d3d96de248b166987b988f"
+Health = "blake3:b170a67c852fee1e5358338e502ca016708b9532f9fd5dbe47e3472b65bdc1c4"
+Report = "blake3:ba7cd65f5709241f391a4a0bf68488efcc68657101b36d735f26a34d05102af7"
 
 [packages.Std]
 version = "0.1.0"

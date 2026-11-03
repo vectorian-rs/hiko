@@ -52,6 +52,18 @@ val _ = check (string_join (Report.table [("b", Health.Critical, "", ""), ("a", 
 (* A cell splits back exactly: `\` is written `\\`, then `|` is written `\|`. *)
 val _ = check (Report.cell "a\\|b|c", "a\\\\\\|b\\|c")
 
+(* Every line break is one space: CRLF, a lone CR and LF. *)
+val _ = check (Report.cell "a\r\nb\rc\nd", "a b c d")
+
+(* Order comes from Health.urgency alone: CRIT, UNKNOWN, WARN, OK, and
+   checks of one status keep their order. *)
+val _ =
+  check (string_join (List.map (fn (name, _, _, _) => name)
+    (Report.ordered [("ok1", Health.Healthy, "", ""), ("warn", Health.Warning, "", ""),
+      ("unk", Health.Unknown, "", ""), ("crit1", Health.Critical, "", ""),
+      ("ok2", Health.Healthy, "", ""), ("crit2", Health.Critical, "", "")]), " "),
+    "crit1 crit2 unk warn ok1 ok2")
+
 (* The source is one word, so the summary stays one line of key=value
    fields. *)
 val _ = check (Report.summary ("cloud\twatch=prod|x\ny", []),

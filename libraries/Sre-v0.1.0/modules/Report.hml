@@ -23,12 +23,19 @@ import Sre.Health
    builtins directly: importing Std.Stdio or Std.String would need every
    builtin those modules wrap. Std.List wraps none. *)
 structure Report = struct
-  (* Worst first; checks with the same status keep their order. *)
-  fun ordered checks =
-    List.foldr
-      (fn (status, rest) => List.append (List.filter (Health.has_status status) checks) rest)
-      []
-      Health.statuses
+  (* `check` placed after every check at least as urgent. *)
+  fun insert (check, sorted) =
+    case sorted of
+        [] => [check]
+      | first :: rest =>
+        if Health.urgency (Health.status_of check) > Health.urgency (Health.status_of first) then
+          check :: sorted
+        else
+          first :: insert (check, rest)
+
+  (* Worst first, by Health.urgency; checks with the same status keep their
+     order. *)
+  fun ordered checks = List.foldl (fn (sorted, check) => insert (check, sorted)) [] checks
 
   (* `text` repeated `n` times, by doubling. *)
   fun repeat (text, n) =
@@ -40,10 +47,10 @@ structure Report = struct
   fun pad_right width text = text ^ repeat (" ", width - string_length text)
 
   (* A table cell: `\` written `\\` and `|` written `\|`, so a cell
-     splits back exactly; line breaks as spaces. *)
+     splits back exactly; a line break (`\r\n`, `\r` or `\n`) as a space. *)
   fun cell text =
-    string_replace (string_replace (string_replace (string_replace (text, "\\", "\\\\"),
-      "|", "\\|"), "\r", ""), "\n", " ")
+    string_replace (string_replace (string_replace (string_replace (string_replace (text, "\\", "\\\\"),
+      "|", "\\|"), "\r\n", " "), "\r", " "), "\n", " ")
 
   (* One word: whitespace, `=` and `|` become `-`. *)
   fun word text =
