@@ -30,12 +30,18 @@ impl std::fmt::Display for VerificationError {
 
 impl std::error::Error for VerificationError {}
 
+/// One decoded instruction. The register VM's translator reuses this
+/// decoding, so operand widths and stack effects live in one place.
 #[derive(Debug, Clone)]
-struct DecodedInst {
-    start: usize,
-    op: Op,
-    stack: StackRule,
-    successors: Vec<usize>,
+pub(crate) struct DecodedInst {
+    pub(crate) start: usize,
+    pub(crate) op: Op,
+    pub(crate) stack: StackRule,
+    pub(crate) successors: Vec<usize>,
+    /// Where a jump goes when it is taken; read by the register VM's
+    /// translator.
+    #[cfg_attr(not(feature = "register-vm"), allow(dead_code))]
+    pub(crate) jump_target: Option<usize>,
     handler_clause_targets: Vec<usize>,
     /// Local slots holding provider clause closures; each must be below the
     /// stack depth at the `InstallHandler`.
@@ -43,7 +49,7 @@ struct DecodedInst {
 }
 
 #[derive(Debug, Clone)]
-enum StackRule {
+pub(crate) enum StackRule {
     Exact { min_depth: usize, delta: isize },
     Terminal { min_depth: usize },
 }
@@ -100,7 +106,7 @@ fn verify_chunk(
     Ok(())
 }
 
-fn decode_chunk(
+pub(crate) fn decode_chunk(
     chunk: &Chunk,
     n_locals: usize,
     proto: Option<&FunctionProto>,
@@ -193,6 +199,7 @@ fn decode_instruction(
         };
 
     let mut successors = Vec::new();
+    let mut jump_target = None;
     let mut handler_clause_targets = Vec::new();
     let mut provider_slots = Vec::new();
     let stack = match op {
@@ -407,6 +414,7 @@ fn decode_instruction(
         Op::Jump => {
             let offset = read_i16(chunk, ip, "Jump")?;
             let target = read_relative_target(*ip, offset, "Jump")?;
+            jump_target = Some(target);
             successors.push(target);
             StackRule::Exact {
                 min_depth: 0,
@@ -417,6 +425,7 @@ fn decode_instruction(
             read_u16(chunk, ip, "JumpIfNotTag")?;
             let offset = read_i16(chunk, ip, "JumpIfNotTag")?;
             let target = read_relative_target(*ip, offset, "JumpIfNotTag")?;
+            jump_target = Some(target);
             successors.push(target);
             successors.push(*ip);
             StackRule::Exact {
@@ -430,6 +439,7 @@ fn decode_instruction(
             read_u16(chunk, ip, "JumpIfLocalNotTag")?;
             let offset = read_i16(chunk, ip, "JumpIfLocalNotTag")?;
             let target = read_relative_target(*ip, offset, "JumpIfLocalNotTag")?;
+            jump_target = Some(target);
             successors.push(target);
             successors.push(*ip);
             StackRule::Exact {
@@ -445,6 +455,7 @@ fn decode_instruction(
         | Op::JumpIfNotGeInt => {
             let offset = read_i16(chunk, ip, "compare-and-branch")?;
             let target = read_relative_target(*ip, offset, "compare-and-branch")?;
+            jump_target = Some(target);
             successors.push(target);
             successors.push(*ip);
             StackRule::Exact {
@@ -455,6 +466,7 @@ fn decode_instruction(
         Op::JumpIfFalse => {
             let offset = read_i16(chunk, ip, "JumpIfFalse")?;
             let target = read_relative_target(*ip, offset, "JumpIfFalse")?;
+            jump_target = Some(target);
             successors.push(target);
             successors.push(*ip);
             StackRule::Exact {
@@ -649,6 +661,7 @@ fn decode_instruction(
         op,
         stack,
         successors,
+        jump_target,
         handler_clause_targets,
         provider_slots,
     })

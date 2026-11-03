@@ -17,6 +17,24 @@ struct RecClosurePatch {
 
 impl VM {
     pub(super) fn dispatch(&mut self) -> Result<(), RuntimeError> {
+        #[cfg(feature = "register-vm")]
+        loop {
+            let flow = if self.top_frame_is_register() {
+                self.dispatch_register()?
+            } else {
+                self.dispatch_stack()?
+            };
+            if let Flow::Done = flow {
+                return Ok(());
+            }
+        }
+        #[cfg(not(feature = "register-vm"))]
+        self.dispatch_stack().map(|_| ())
+    }
+
+    /// Run stack-VM frames until the program finishes or, with the
+    /// `register-vm` feature, the top frame runs register code.
+    fn dispatch_stack(&mut self) -> Result<Flow, RuntimeError> {
         // The chunk of the current frame's function, looked up again only when
         // the frame's function changes. The protos and the main chunk never
         // change while a VM runs; holding them here lets `chunk` borrow from
@@ -48,18 +66,15 @@ impl VM {
         }
 
         loop {
-            if let Some(ref mut fuel) = self.fuel {
-                if *fuel == 0 {
-                    return Err(RuntimeError {
-                        message: "fuel exhausted (execution limit reached)".into(),
-                    });
-                }
-                *fuel -= 1;
-            }
-
             let fi = self.current_frame_index()?;
             let proto_idx = self.frames[fi].proto_idx;
             if code_proto != Some(proto_idx) {
+                // Before fuel is charged: the register VM charges for the
+                // instruction itself.
+                #[cfg(feature = "register-vm")]
+                if self.register_code.is_register(proto_idx) {
+                    return Ok(Flow::Switch);
+                }
                 chunk = if proto_idx == usize::MAX {
                     &main_chunk
                 } else {
@@ -70,6 +85,14 @@ impl VM {
                 };
                 code = &chunk.code;
                 code_proto = Some(proto_idx);
+            }
+            if let Some(ref mut fuel) = self.fuel {
+                if *fuel == 0 {
+                    return Err(RuntimeError {
+                        message: "fuel exhausted (execution limit reached)".into(),
+                    });
+                }
+                *fuel -= 1;
             }
             let ip = self.frames[fi].ip;
             let Some(&op_byte) = code.get(ip) else {
@@ -86,7 +109,7 @@ impl VM {
             })?;
 
             match op {
-                Op::Halt => return Ok(()),
+                Op::Halt => return Ok(Flow::Done),
 
                 Op::Const => {
                     let idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
@@ -531,6 +554,8 @@ impl VM {
                 }
 
                 Op::Return => {
+                    // The same steps as `return_from_frame`, written out:
+                    // calling it here made `fib` about 55% slower.
                     let result = self.pop()?;
                     let frame = self.frames.pop().ok_or_else(|| RuntimeError {
                         message: "Return: call frame underflow".into(),
@@ -546,7 +571,7 @@ impl VM {
                         self.handlers.extend(hidden.handlers);
                     }
                     if self.frames.is_empty() {
-                        return Ok(());
+                        return Ok(Flow::Done);
                     }
                 }
 
@@ -987,8 +1012,29 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
+    /// Pop the top frame and push its result for the caller, for the
+    /// register VM's `Return`. Returns whether that was the last frame.
+    #[cfg(feature = "register-vm")]
     #[inline(always)]
-    fn current_frame_index(&self) -> Result<usize, RuntimeError> {
+    pub(super) fn return_from_frame(&mut self, result: Value) -> Result<bool, RuntimeError> {
+        let frame = self.frames.pop().ok_or_else(|| RuntimeError {
+            message: "Return: call frame underflow".into(),
+        })?;
+        self.stack.truncate(frame.base);
+        self.push(result)?;
+        if self
+            .hidden_handlers
+            .last()
+            .is_some_and(|h| h.clause_frame_idx == self.frames.len())
+            && let Some(hidden) = self.hidden_handlers.pop()
+        {
+            self.handlers.extend(hidden.handlers);
+        }
+        Ok(self.frames.is_empty())
+    }
+
+    #[inline(always)]
+    pub(super) fn current_frame_index(&self) -> Result<usize, RuntimeError> {
         self.frames
             .len()
             .checked_sub(1)
@@ -1088,12 +1134,21 @@ impl VM {
     }
 }
 
+/// Why a dispatch loop stopped.
+pub(super) enum Flow {
+    /// The program finished.
+    Done,
+    /// The top frame runs on the other VM (`register-vm` only).
+    #[cfg_attr(not(feature = "register-vm"), allow(dead_code))]
+    Switch,
+}
+
 // Errors for the helpers above, built out of line so the helpers stay small
 // enough to inline into the dispatch loop.
 
 #[cold]
 #[inline(never)]
-fn error(message: &'static str) -> RuntimeError {
+pub(super) fn error(message: &'static str) -> RuntimeError {
     RuntimeError {
         message: message.into(),
     }
@@ -1101,7 +1156,7 @@ fn error(message: &'static str) -> RuntimeError {
 
 #[cold]
 #[inline(never)]
-fn error_fmt(message: std::fmt::Arguments<'_>) -> RuntimeError {
+pub(super) fn error_fmt(message: std::fmt::Arguments<'_>) -> RuntimeError {
     RuntimeError {
         message: message.to_string(),
     }
