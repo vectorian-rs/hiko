@@ -1322,6 +1322,24 @@ mod tests {
     }
 
     #[test]
+    fn test_local_block_is_one_declaration_for_operators() {
+        // The body of a `local` decides the `+` in its private part.
+        let vm = run("local fun f x = x + x in val y = f 21 end");
+        assert_eq!(global_int(&vm, "y"), 42);
+        let tokens = Lexer::new("local fun f x = x + x in val y = 1 end", 0)
+            .tokenize()
+            .expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let Err(err) = Compiler::compile(program) else {
+            panic!("an operator nothing decides must not compile");
+        };
+        assert!(
+            format!("{err:?}").contains("cannot tell whether"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn test_higher_order() {
         let vm = run("fun twice f x = f (f x)
              val result = twice (fn x => x + 1) 0");

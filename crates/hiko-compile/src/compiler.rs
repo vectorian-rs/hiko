@@ -1967,13 +1967,15 @@ impl Compiler {
                 Ok(())
             }
             DeclKind::Local(locals, body) => {
-                for d in locals {
-                    self.infer_decl_pass(d)?;
-                }
-                for d in body {
-                    self.infer_decl_pass(d)?;
-                }
-                Ok(())
+                // One declaration for overloaded operators, like `local` in
+                // the type checker.
+                self.infer_ctx.begin_declaration();
+                let result = locals
+                    .iter()
+                    .chain(body)
+                    .try_for_each(|d| self.infer_decl_pass(d));
+                let ended = self.infer_ctx.end_declaration(Ok(()));
+                result.and(ended.map_err(CompileError::from))
             }
             _ => {
                 self.infer_ctx.infer_decl(decl)?;

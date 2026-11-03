@@ -759,25 +759,38 @@ impl InferCtx {
 
     // ── Declaration inference ────────────────────────────────────────
 
+    /// Infer the declarations up to the matching [`Self::end_declaration`]
+    /// as one top-level declaration: an overloaded operator in any of them
+    /// may be decided by any later one. The compiler uses this for a
+    /// `local` block, whose parts it infers one by one.
+    pub fn begin_declaration(&mut self) {
+        self.decl_depth += 1;
+    }
+
+    /// End what [`Self::begin_declaration`] began, passing the result of
+    /// inferring it. At the end of a top-level declaration, every
+    /// overloaded operator must have been decided.
+    pub fn end_declaration(&mut self, result: Result<(), TypeError>) -> Result<(), TypeError> {
+        self.decl_depth -= 1;
+        if self.decl_depth > 0 {
+            return result;
+        }
+        let result = result.and_then(|()| self.finish_overloads());
+        self.pending.clear();
+        result
+    }
+
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
         let scopes = self.scopes.len();
-        self.decl_depth += 1;
-        let mut result = self.infer_decl_inner(decl);
-        self.decl_depth -= 1;
+        self.begin_declaration();
+        let result = self.infer_decl_inner(decl);
         if result.is_err() {
             // An error leaves inference mid-way. Drop the scopes it left
             // open: their monomorphic bindings hold variables above this
             // level, which a later declaration must not see.
             self.scopes.truncate(scopes);
         }
-        // An overloaded operator must be decided by the end of its top-level
-        // declaration.
-        if self.decl_depth == 0 {
-            if result.is_ok() {
-                result = self.finish_overloads();
-            }
-            self.pending.clear();
-        }
+        let result = self.end_declaration(result);
         if self.work_exhausted() {
             return Err(self.err(
                 &format!(
