@@ -2064,8 +2064,11 @@ mod tests {
         let sleep_ms: u64 = output[0].trim().parse().unwrap();
         let fast_ms: u64 = output[1].trim().parse().unwrap();
         eprintln!("sleep 10 took {sleep_ms}ms, fast request took {fast_ms}ms");
-        assert!(sleep_ms <= 60, "sleep 10 took {sleep_ms}ms");
-        assert!(fast_ms <= 100, "fast request took {fast_ms}ms");
+        // Blocked behind the slow requests, either would take 2,000ms. The
+        // bounds leave room for slow, shared CI runners (a macOS runner took
+        // 77ms for the sleep) without hiding that.
+        assert!(sleep_ms <= 500, "sleep 10 took {sleep_ms}ms");
+        assert!(fast_ms <= 500, "fast request took {fast_ms}ms");
     }
 
     /// `count` spawned `http_get url` children, then await each one's result
