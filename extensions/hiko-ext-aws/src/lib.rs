@@ -198,70 +198,110 @@ fn block_on<T>(
         .block_on(f)
 }
 
-/// The SDK config for `auth`, with exactly one source for credentials and
-/// one for the region; the SDK's default chains, which try environment
-/// variables, web identity, ECS and the instance metadata service in turn,
-/// are not used:
+/// The instance metadata service. Fixed, so `AWS_EC2_METADATA_SERVICE_ENDPOINT`
+/// and the profile setting that moves it are not used.
+const IMDS_ENDPOINT: &str = "http://169.254.169.254";
+
+/// The SDK config for `auth`. Credentials and region each come from exactly
+/// one source, never from the SDK's default chains (which try environment
+/// variables, web identity, ECS and the instance metadata service in turn):
 ///
 /// - `SsoProfile`: the named profile in the AWS config and credentials
-///   files, for both. What the profile itself says (SSO, `source_profile`,
-///   `credential_process`, `credential_source`) applies; a profile that does
-///   not exist is an error.
-/// - `InstanceProfile`: the instance metadata service, for both.
+///   files. A profile that does not exist or sets no region is an error.
+///   What the profile itself says (SSO, `role_arn` with `source_profile` or
+///   `credential_source`, `credential_process`) applies; an assumed role's
+///   STS call uses the profile's region.
+/// - `InstanceProfile`: the instance metadata service at `IMDS_ENDPOINT`.
 ///
-/// Other settings (endpoint URL, FIPS, retries, timeouts) still come from
-/// the environment and the profile, as the SDK reads them.
-async fn load_sdk_config(auth: &Auth) -> aws_config::SdkConfig {
-    use aws_config::imds::{credentials::ImdsCredentialsProvider, region::ImdsRegionProvider};
+/// Endpoint URLs are cleared on each service client by `no_endpoint_override`.
+/// FIPS, dual-stack, retry and timeout settings still come from the
+/// environment and the profile, as the SDK reads them.
+async fn load_sdk_config(auth: &Auth) -> Result<aws_config::SdkConfig, String> {
+    use aws_config::imds::{
+        self, credentials::ImdsCredentialsProvider, region::ImdsRegionProvider,
+    };
+    use aws_config::meta::region::ProvideRegion;
     use aws_config::profile::{ProfileFileCredentialsProvider, ProfileFileRegionProvider};
+    use aws_config::provider_config::ProviderConfig;
+    let base = ProviderConfig::without_region();
     let loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
     match auth {
         Auth::SsoProfile(profile) => {
-            loader
+            let region = ProfileFileRegionProvider::builder()
+                .configure(&base)
                 .profile_name(profile)
-                .credentials_provider(
-                    ProfileFileCredentialsProvider::builder()
-                        .profile_name(profile)
-                        .build(),
-                )
-                .region(
-                    ProfileFileRegionProvider::builder()
-                        .profile_name(profile)
-                        .build(),
-                )
-                .load()
+                .build()
+                .region()
                 .await
+                .ok_or_else(|| {
+                    format!("AWS profile '{profile}' does not exist or sets no region")
+                })?;
+            let credentials = ProfileFileCredentialsProvider::builder()
+                .configure(&base.with_region(Some(region.clone())))
+                .profile_name(profile)
+                .build();
+            Ok(loader
+                .profile_name(profile)
+                .region(region)
+                .credentials_provider(credentials)
+                .load()
+                .await)
         }
         Auth::InstanceProfile => {
-            loader
-                .credentials_provider(ImdsCredentialsProvider::builder().build())
-                .region(ImdsRegionProvider::builder().build())
-                .load()
+            let client = imds::Client::builder()
+                .endpoint(IMDS_ENDPOINT)
+                .map_err(|e| format!("instance metadata endpoint: {e}"))?
+                .build();
+            let region = ImdsRegionProvider::builder()
+                .configure(&base)
+                .imds_client(client.clone())
+                .build()
+                .region()
                 .await
+                .ok_or("the instance metadata service gave no region")?;
+            let credentials = ImdsCredentialsProvider::builder()
+                .configure(&base.with_region(Some(region.clone())))
+                .imds_client(client)
+                .build();
+            Ok(loader
+                .region(region)
+                .credentials_provider(credentials)
+                .load()
+                .await)
         }
     }
 }
 
-/// Resolve credentials as a client made from `sso_profile profile`
-/// (`Some`) or `instance_profile ()` (`None`) would, for
-/// `tests/credentials.rs`: whether a source outside the one chosen is used
-/// can only be seen from what is resolved.
-#[doc(hidden)]
-pub fn resolve_credentials(profile: Option<&str>) -> Result<(), String> {
+/// Clear the endpoint URL a service config takes from `AWS_ENDPOINT_URL`,
+/// `AWS_ENDPOINT_URL_<SERVICE>` or the profile: requests go to the
+/// service's own endpoint for the region.
+macro_rules! no_endpoint_override {
+    ($builder:expr) => {{
+        let mut builder = $builder;
+        builder.set_endpoint_url(None);
+        builder.build()
+    }};
+}
+
+/// Resolve the access key ID a client made from `sso_profile profile`
+/// (`Some`) or `instance_profile ()` (`None`) would use, without the
+/// policy check. For `tests/credentials.rs` only.
+#[cfg(feature = "test-support")]
+pub fn resolve_access_key_id(profile: Option<&str>) -> Result<String, String> {
     use aws_sdk_s3::config::ProvideCredentials;
     let auth = match profile {
         Some(profile) => Auth::SsoProfile(profile.to_string()),
         None => Auth::InstanceProfile,
     };
-    block_on("resolve_credentials", async {
-        let config = load_sdk_config(&auth).await;
+    block_on("resolve_access_key_id", async {
+        let config = load_sdk_config(&auth).await?;
         let provider = config
             .credentials_provider()
             .ok_or("no credentials provider")?;
         provider
             .provide_credentials()
             .await
-            .map(|_| ())
+            .map(|c| c.access_key_id().to_string())
             .map_err(|e| format!("{e:?}"))
     })
 }
@@ -285,14 +325,9 @@ fn s3_list_buckets(args: &[Value], heap: &mut Heap) -> Result<AsyncJob, String> 
     Ok(Box::new(move || {
         let result = block_on(name, async {
             if client.sdk.get().is_none() {
-                let config = load_sdk_config(&client.auth).await;
-                let mut builder = aws_sdk_s3::config::Builder::from(&config);
-                if config.region().is_none() {
-                    builder = builder.region(aws_sdk_s3::config::Region::new("us-east-1"));
-                }
-                let _ = client
-                    .sdk
-                    .set(aws_sdk_s3::Client::from_conf(builder.build()));
+                let config = load_sdk_config(&client.auth).await?;
+                let conf = no_endpoint_override!(aws_sdk_s3::config::Builder::from(&config));
+                let _ = client.sdk.set(aws_sdk_s3::Client::from_conf(conf));
             }
             let output = client
                 .sdk
@@ -331,8 +366,9 @@ fn sqs_list_queues(args: &[Value], heap: &mut Heap) -> Result<AsyncJob, String> 
     Ok(Box::new(move || {
         let result = block_on(name, async {
             if client.sdk.get().is_none() {
-                let config = load_sdk_config(&client.auth).await;
-                let _ = client.sdk.set(aws_sdk_sqs::Client::new(&config));
+                let config = load_sdk_config(&client.auth).await?;
+                let conf = no_endpoint_override!(aws_sdk_sqs::config::Builder::from(&config));
+                let _ = client.sdk.set(aws_sdk_sqs::Client::from_conf(conf));
             }
             let output = client
                 .sdk

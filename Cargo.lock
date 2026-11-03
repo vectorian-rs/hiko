@@ -1355,6 +1355,7 @@ dependencies = [
  "aws-sdk-sqs",
  "hiko-builtin-meta",
  "hiko-compile",
+ "hiko-ext-aws",
  "hiko-syntax",
  "hiko-vm",
  "serde",

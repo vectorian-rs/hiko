@@ -6,6 +6,10 @@ license = "MIT"
 description = "hiko-ext-aws: AWS config, S3 and SQS builtins for hiko, as an extension"
 repository = "https://github.com/vectorian-rs/hiko"
 
+[features]
+# `resolve_access_key_id`, for tests/credentials.rs only.
+test-support = []
+
 [dependencies]
 hiko-builtin-meta = { version = "0.8.0", path = "../../crates/hiko-builtin-meta", default-features = false }
 hiko-vm = { version = "0.8.0", path = "../../crates/hiko-vm", default-features = false }
@@ -17,5 +21,6 @@ aws-sdk-sqs = { version = "1.90.0", default-features = false, features = ["defau
 tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
+hiko-ext-aws = { path = ".", features = ["test-support"] }
 hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false }
 hiko-syntax = { version = "0.8.0", path = "../../crates/hiko-syntax" }
