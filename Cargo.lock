@@ -1353,6 +1353,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "aws-sdk-sqs",
+ "aws-types",
  "hiko-builtin-meta",
  "hiko-compile",
  "hiko-ext-aws",

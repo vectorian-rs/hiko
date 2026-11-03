@@ -16,6 +16,7 @@ hiko-vm = { version = "0.8.0", path = "../../crates/hiko-vm", default-features =
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 aws-config = { version = "1.8.16", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio", "sso"] }
+aws-types = "1.7.0"
 aws-sdk-s3 = { version = "1.131.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 aws-sdk-sqs = { version = "1.90.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 tokio = { version = "1", features = ["rt", "time"] }

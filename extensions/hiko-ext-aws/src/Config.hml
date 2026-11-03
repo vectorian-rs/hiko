@@ -1,25 +1,23 @@
 (*!
  * AWS configuration, from the hiko-ext-aws extension.
  *
- * A config records where credentials and the region come from: exactly
- * one source, never the SDK's default chain, so `AWS_ACCESS_KEY_ID`,
- * `AWS_REGION` and the other providers are not tried in turn. Endpoint
- * URLs set in the environment or the profile are not used either. What a
- * profile itself says still applies, including `credential_source`,
- * `credential_process` and `role_arn`. Nothing is loaded until a service
- * call needs it, on the I/O pool. The run config's `[extensions.aws]`
- * table lists the SSO profiles a script may use and whether it may use the
- * instance profile.
+ * Credentials come only from AWS SSO: a config names a direct SSO profile
+ * (`sso_session` or `sso_start_url`, with `sso_account_id`,
+ * `sso_role_name` and `region`), and its cached SSO token is exchanged for
+ * role credentials. A profile with static keys, `credential_process`,
+ * `role_arn`, `source_profile`, `credential_source` or a web identity is
+ * refused. Environment variables, the instance metadata service and the
+ * SDK's other providers are never used, nor are endpoint URLs set in the
+ * environment or the profile. Nothing is loaded until a service call
+ * needs it, on the I/O pool. The run config's `[extensions.aws]` table
+ * lists the profiles a script may use.
  *)
 structure Config = struct
   (*! An AWS configuration. *)
   type config = aws_config
 
-  (*! Credentials and region from the named profile in the AWS config and
-   * credentials files. A profile that does not exist or sets no region
-   * is an error. *)
+  (*! Credentials from the named SSO profile's cached token, and the
+   * profile's region. A profile that is not a direct SSO profile is an
+   * error when a service call loads it. *)
   fun sso_profile profile = aws_config_sso_profile profile
-
-  (*! Credentials and region from the instance metadata service only. *)
-  fun instance_profile () = aws_config_instance_profile ()
 end

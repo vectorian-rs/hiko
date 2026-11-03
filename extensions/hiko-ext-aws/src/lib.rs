@@ -6,7 +6,6 @@
 //! ```toml
 //! [extensions.aws]
 //! sso_profiles = ["dev"]     # profiles Aws.Config.sso_profile may name
-//! instance_profile = false   # whether Aws.Config.instance_profile works
 //! s3 = true                  # whether S3 clients may be created
 //! sqs = false
 //! ```
@@ -45,11 +44,6 @@ pub static AWS: Extension = Extension {
             "aws_config_sso_profile",
             "string -> aws_config",
             sso_profile,
-        ),
-        sync(
-            "aws_config_instance_profile",
-            "unit -> aws_config",
-            instance_profile,
         ),
         sync("aws_s3_client", "aws_config -> aws_s3_client", s3_client),
         asynchronous(
@@ -99,8 +93,6 @@ struct Policy {
     #[serde(default)]
     sso_profiles: Vec<String>,
     #[serde(default)]
-    instance_profile: bool,
-    #[serde(default)]
     s3: bool,
     #[serde(default)]
     sqs: bool,
@@ -116,11 +108,11 @@ fn policy(heap: &Heap, builtin: &str) -> Result<Arc<Policy>, String> {
         .ok_or_else(|| format!("{builtin}: the aws extension is not configured"))
 }
 
-/// Where a config's credentials come from.
+/// Where a config's credentials come from: an AWS SSO profile, the only
+/// source the extension supports.
 #[derive(Debug, Clone)]
-enum Auth {
-    SsoProfile(String),
-    InstanceProfile,
+struct Auth {
+    profile: String,
 }
 
 /// A service client: the auth it was made from, and the SDK client, built
@@ -146,15 +138,7 @@ fn sso_profile(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             policy.sso_profiles
         ));
     }
-    heap.alloc_extension_resource(CONFIG, Arc::new(Auth::SsoProfile(profile)))
-}
-
-fn instance_profile(_args: &[Value], heap: &mut Heap) -> Result<Value, String> {
-    let name = "aws_config_instance_profile";
-    if !policy(heap, name)?.instance_profile {
-        return Err(format!("{name}: instance_profile is not enabled"));
-    }
-    heap.alloc_extension_resource(CONFIG, Arc::new(Auth::InstanceProfile))
+    heap.alloc_extension_resource(CONFIG, Arc::new(Auth { profile }))
 }
 
 /// A client handle of `kind` for the config in `args[0]`, if `enabled`.
@@ -198,78 +182,120 @@ fn block_on<T>(
         .block_on(f)
 }
 
-/// The instance metadata service. Fixed, so `AWS_EC2_METADATA_SERVICE_ENDPOINT`
-/// and the profile setting that moves it are not used.
-const IMDS_ENDPOINT: &str = "http://169.254.169.254";
+/// Profile keys that make credentials come from anywhere but an SSO token.
+/// A profile that sets one is refused, not used.
+const NOT_SSO_KEYS: &[&str] = &[
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+    "credential_process",
+    "credential_source",
+    "role_arn",
+    "source_profile",
+    "web_identity_token_file",
+];
 
-/// The SDK config for `auth`. Credentials and region each come from exactly
-/// one source, never from the SDK's default chains (which try environment
-/// variables, web identity, ECS and the instance metadata service in turn):
-///
-/// - `SsoProfile`: the named profile in the AWS config and credentials
-///   files. A profile that does not exist or sets no region is an error.
-///   What the profile itself says (SSO, `role_arn` with `source_profile` or
-///   `credential_source`, `credential_process`) applies; an assumed role's
-///   STS call uses the profile's region.
-/// - `InstanceProfile`: the instance metadata service at `IMDS_ENDPOINT`.
+/// What an SSO profile says, read from the AWS config files.
+#[derive(Debug, PartialEq)]
+struct SsoProfile {
+    account_id: String,
+    role_name: String,
+    start_url: String,
+    sso_region: String,
+    /// `None` for a legacy profile that sets `sso_start_url` itself.
+    session: Option<String>,
+    region: String,
+}
+
+/// Read profile `name` from `profiles` and check it is a direct SSO profile:
+/// `sso_account_id`, `sso_role_name` and `region`, with `sso_session` (whose
+/// section gives `sso_start_url` and `sso_region`) or the legacy
+/// `sso_start_url` and `sso_region`, and none of `NOT_SSO_KEYS`.
+fn sso_profile_settings(
+    profiles: &aws_config::profile::ProfileSet,
+    name: &str,
+) -> Result<SsoProfile, String> {
+    let profile = profiles
+        .get_profile(name)
+        .ok_or_else(|| format!("AWS profile '{name}' does not exist"))?;
+    if let Some(key) = NOT_SSO_KEYS.iter().find(|key| profile.get(key).is_some()) {
+        return Err(format!(
+            "AWS profile '{name}' sets {key}; only SSO profiles are supported \
+             (sso_session or sso_start_url, with sso_account_id and sso_role_name)"
+        ));
+    }
+    let required = |key: &str| {
+        profile
+            .get(key)
+            .map(str::to_string)
+            .ok_or_else(|| format!("AWS profile '{name}' does not set {key}"))
+    };
+    let (start_url, sso_region, session) = match profile.get("sso_session") {
+        Some(session) => {
+            let section = profiles.sso_session(session).ok_or_else(|| {
+                format!("AWS profile '{name}' names sso_session '{session}', which does not exist")
+            })?;
+            let get = |key: &str| {
+                section
+                    .get(key)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("AWS sso_session '{session}' does not set {key}"))
+            };
+            (
+                get("sso_start_url")?,
+                get("sso_region")?,
+                Some(session.to_string()),
+            )
+        }
+        None => (required("sso_start_url")?, required("sso_region")?, None),
+    };
+    Ok(SsoProfile {
+        account_id: required("sso_account_id")?,
+        role_name: required("sso_role_name")?,
+        start_url,
+        sso_region,
+        session,
+        region: required("region")?,
+    })
+}
+
+/// The SDK config for `auth`. Credentials come only from the profile's SSO
+/// token, through the SSO portal, and the region only from the profile;
+/// the SDK's default chains (environment variables, the profile's other
+/// credential settings, web identity, ECS, the instance metadata service)
+/// are never used, and a profile that is not a direct SSO profile is an
+/// error.
 ///
 /// Endpoint URLs are cleared on each service client by `no_endpoint_override`.
 /// FIPS, dual-stack, retry and timeout settings still come from the
 /// environment and the profile, as the SDK reads them.
 async fn load_sdk_config(auth: &Auth) -> Result<aws_config::SdkConfig, String> {
-    use aws_config::imds::{
-        self, credentials::ImdsCredentialsProvider, region::ImdsRegionProvider,
-    };
-    use aws_config::meta::region::ProvideRegion;
-    use aws_config::profile::{ProfileFileCredentialsProvider, ProfileFileRegionProvider};
+    use aws_config::Region;
     use aws_config::provider_config::ProviderConfig;
-    let base = ProviderConfig::without_region();
-    let loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-    match auth {
-        Auth::SsoProfile(profile) => {
-            let region = ProfileFileRegionProvider::builder()
-                .configure(&base)
-                .profile_name(profile)
-                .build()
-                .region()
-                .await
-                .ok_or_else(|| {
-                    format!("AWS profile '{profile}' does not exist or sets no region")
-                })?;
-            let credentials = ProfileFileCredentialsProvider::builder()
-                .configure(&base.with_region(Some(region.clone())))
-                .profile_name(profile)
-                .build();
-            Ok(loader
-                .profile_name(profile)
-                .region(region)
-                .credentials_provider(credentials)
-                .load()
-                .await)
-        }
-        Auth::InstanceProfile => {
-            let client = imds::Client::builder()
-                .endpoint(IMDS_ENDPOINT)
-                .map_err(|e| format!("instance metadata endpoint: {e}"))?
-                .build();
-            let region = ImdsRegionProvider::builder()
-                .configure(&base)
-                .imds_client(client.clone())
-                .build()
-                .region()
-                .await
-                .ok_or("the instance metadata service gave no region")?;
-            let credentials = ImdsCredentialsProvider::builder()
-                .configure(&base.with_region(Some(region.clone())))
-                .imds_client(client)
-                .build();
-            Ok(loader
-                .region(region)
-                .credentials_provider(credentials)
-                .load()
-                .await)
-        }
-    }
+    use aws_config::sso::SsoCredentialsProvider;
+    let profiles = aws_config::profile::load(
+        &aws_types::os_shim_internal::Fs::real(),
+        &aws_types::os_shim_internal::Env::real(),
+        &Default::default(),
+        None,
+    )
+    .await
+    .map_err(|e| format!("cannot read the AWS config files: {e}"))?;
+    let sso = sso_profile_settings(&profiles, &auth.profile)?;
+    let region = Region::new(sso.region);
+    let mut credentials = SsoCredentialsProvider::builder()
+        .configure(&ProviderConfig::without_region().with_region(Some(region.clone())))
+        .account_id(sso.account_id)
+        .role_name(sso.role_name)
+        .start_url(sso.start_url)
+        .region(Region::new(sso.sso_region));
+    credentials.set_session_name(sso.session);
+    Ok(aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .profile_name(&auth.profile)
+        .region(region)
+        .credentials_provider(credentials.build())
+        .load()
+        .await)
 }
 
 /// Clear the endpoint URL a service config takes from `AWS_ENDPOINT_URL`,
@@ -284,14 +310,12 @@ macro_rules! no_endpoint_override {
 }
 
 /// Resolve the access key ID a client made from `sso_profile profile`
-/// (`Some`) or `instance_profile ()` (`None`) would use, without the
-/// policy check. For `tests/credentials.rs` only.
+/// would use, without the policy check. For `tests/credentials.rs` only.
 #[cfg(feature = "test-support")]
-pub fn resolve_access_key_id(profile: Option<&str>) -> Result<String, String> {
+pub fn resolve_access_key_id(profile: &str) -> Result<String, String> {
     use aws_sdk_s3::config::ProvideCredentials;
-    let auth = match profile {
-        Some(profile) => Auth::SsoProfile(profile.to_string()),
-        None => Auth::InstanceProfile,
+    let auth = Auth {
+        profile: profile.to_string(),
     };
     block_on("resolve_access_key_id", async {
         let config = load_sdk_config(&auth).await?;
@@ -416,4 +440,110 @@ fn format_aws_error(context: &str, err: &dyn std::error::Error) -> String {
         message.push_str(&causes.join("; "));
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Profiles parsed from an AWS config file at `/home/.aws/config`.
+    fn profiles(config: &str) -> aws_config::profile::ProfileSet {
+        use aws_types::os_shim_internal::{Env, Fs};
+        block_on("profiles", async {
+            aws_config::profile::load(
+                &Fs::from_slice(&[("/home/.aws/config", config)]),
+                &Env::from_slice(&[("HOME", "/home")]),
+                &Default::default(),
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+        .unwrap()
+    }
+
+    const SSO: &str = "[profile dev]\nsso_session = corp\nsso_account_id = 111\n\
+        sso_role_name = Dev\nregion = eu-west-1\n\n[sso-session corp]\n\
+        sso_start_url = https://corp.awsapps.com/start\nsso_region = us-east-1\n";
+
+    #[test]
+    fn an_sso_session_profile_is_read() {
+        assert_eq!(
+            sso_profile_settings(&profiles(SSO), "dev"),
+            Ok(SsoProfile {
+                account_id: "111".into(),
+                role_name: "Dev".into(),
+                start_url: "https://corp.awsapps.com/start".into(),
+                sso_region: "us-east-1".into(),
+                session: Some("corp".into()),
+                region: "eu-west-1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_legacy_sso_profile_is_read() {
+        let config = "[profile dev]\nsso_start_url = https://corp.awsapps.com/start\n\
+            sso_region = us-east-1\nsso_account_id = 111\nsso_role_name = Dev\nregion = eu-west-1\n";
+        let sso = sso_profile_settings(&profiles(config), "dev").unwrap();
+        assert_eq!(sso.session, None);
+        assert_eq!(sso.start_url, "https://corp.awsapps.com/start");
+    }
+
+    #[test]
+    fn only_direct_sso_profiles_are_accepted() {
+        for (extra, key) in [
+            (
+                "aws_access_key_id = AKID\naws_secret_access_key = s\n",
+                "aws_access_key_id",
+            ),
+            ("credential_process = /bin/creds\n", "credential_process"),
+            (
+                "role_arn = arn:aws:iam::1:role/r\nsource_profile = base\n",
+                "role_arn",
+            ),
+            ("credential_source = Environment\n", "credential_source"),
+            ("web_identity_token_file = /t\n", "web_identity_token_file"),
+        ] {
+            let config = SSO.replacen(
+                "region = eu-west-1\n",
+                &format!("region = eu-west-1\n{extra}"),
+                1,
+            );
+            let err = sso_profile_settings(&profiles(&config), "dev").unwrap_err();
+            assert!(
+                err.contains(&format!("AWS profile 'dev' sets {key}")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_settings_are_errors_naming_them() {
+        let p = |config: &str| sso_profile_settings(&profiles(config), "dev").unwrap_err();
+        assert_eq!(
+            sso_profile_settings(&profiles(SSO), "prod").unwrap_err(),
+            "AWS profile 'prod' does not exist"
+        );
+        assert_eq!(
+            p(&SSO.replace("region = eu-west-1\n", "")),
+            "AWS profile 'dev' does not set region"
+        );
+        assert_eq!(
+            p(&SSO.replace("sso_role_name = Dev\n", "")),
+            "AWS profile 'dev' does not set sso_role_name"
+        );
+        assert_eq!(
+            p(&SSO.replace("[sso-session corp]", "[sso-session other]")),
+            "AWS profile 'dev' names sso_session 'corp', which does not exist"
+        );
+        assert_eq!(
+            p(&SSO.replace("sso_region = us-east-1\n", "")),
+            "AWS sso_session 'corp' does not set sso_region"
+        );
+        assert_eq!(
+            p("[profile dev]\nsso_account_id = 1\nsso_role_name = r\nregion = x\n"),
+            "AWS profile 'dev' does not set sso_start_url"
+        );
+    }
 }

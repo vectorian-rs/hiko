@@ -49,13 +49,11 @@ fn an_sso_profile_outside_the_policy_is_refused() {
 }
 
 #[test]
-fn the_instance_profile_is_off_by_default() {
-    let err = run(
-        "import Aws.Config\nval c = Config.instance_profile ()",
-        "[extensions.aws]\n",
-    )
-    .unwrap_err();
-    assert!(err.contains("instance_profile is not enabled"), "{err}");
+fn there_is_no_instance_profile() {
+    // Credentials come only from SSO profiles; the old key is refused.
+    let table: toml::Value = toml::from_str("instance_profile = true").unwrap();
+    let err = (AWS.configure)(&table).map(|_| ()).unwrap_err();
+    assert!(err.contains("instance_profile"), "{err}");
 }
 
 #[test]
