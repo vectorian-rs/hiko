@@ -9,7 +9,7 @@ fun append xs ys =
       [] => ys
     | x :: rest => x :: append rest ys
 
-fun sort xs =
+fun sort (xs : int list) =
   case xs of
       [] => []
     | pivot :: rest =>

@@ -15,7 +15,7 @@ val _ = println ("Counter after 5 increments: " ^ int_to_string result)
 val _ = assert_eq (result, 5, "counter")
 
 (* Accumulate a sum: the accumulator is the state *)
-fun sum_list (xs, total) =
+fun sum_list (xs, total : int) =
   case xs of
       [] => total
     | x :: rest => sum_list (rest, total + x)

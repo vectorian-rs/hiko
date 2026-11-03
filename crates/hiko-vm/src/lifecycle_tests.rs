@@ -557,7 +557,7 @@ fn child_calls_top_level_functions_and_constructors() {
         fun len xs = case xs of [] => 0 | _ :: rest => 1 + len rest\n\
         val add5 = let val k = 5 in fn x => x + k end\n\
         val show = int_to_string\n\
-        structure M = struct fun sq x = x * x end\n\
+        structure M = struct fun sq (x : int) = x * x end\n\
         fun show_pid p = show (await_process p)\n\
         val _ = println (show_pid (spawn (fn () => fact 5)))\n\
         val _ = println (show_pid (spawn (fn () => if even 10 then 1 else 0)))\n\

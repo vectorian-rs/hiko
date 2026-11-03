@@ -1,4 +1,4 @@
 (* Helper functions included by import_test.hml. *)
-fun square x = x * x
+fun square (x : int) = x * x
 
-fun double x = x + x
+fun double (x : int) = x + x

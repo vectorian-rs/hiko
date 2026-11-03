@@ -13,7 +13,7 @@ val _ = assert_eq (joined_value, 42, "join")
 
 val both_value =
   case Fiber.both ((fn () => 21), (fn () => 21)) of
-      Ok (left, right) => left + right
+      Ok (left : int, right) => left + right
     | Err err => panic ("both failed: " ^ Fiber.render_error err)
     | _ => panic "both failed: unexpected result shape"
 

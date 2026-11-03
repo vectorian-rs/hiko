@@ -14,7 +14,7 @@ val count = 6000
 
 fun spawn_many n acc = if n = 0 then acc else spawn_many (n - 1) (spawn (fn () => n) :: acc)
 
-fun await_all pids acc =
+fun await_all pids (acc : int) =
   case pids of
       [] => acc
     | pid :: rest => await_all rest (acc + await_process pid)

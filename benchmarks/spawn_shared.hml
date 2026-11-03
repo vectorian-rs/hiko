@@ -8,7 +8,7 @@ fun first xs = case xs of [] => 0 | x :: _ => x
 
 fun spawn_all (n, mk, acc) = if n = 0 then acc else spawn_all (n - 1, mk, spawn (mk ()) :: acc)
 
-fun await_all (pids, acc) =
+fun await_all (pids, acc : int) =
   case pids of
       [] => acc
     | pid :: rest => await_all (rest, acc + await_process pid)

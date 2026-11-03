@@ -2,7 +2,7 @@
  * through the threaded runtime. *)
 fun spawn_all (n, acc) = if n = 0 then acc else spawn_all (n - 1, spawn (fn () => n) :: acc)
 
-fun await_all (pids, acc) =
+fun await_all (pids, acc : int) =
   case pids of
       [] => acc
     | pid :: rest => await_all (rest, acc + await_process pid)

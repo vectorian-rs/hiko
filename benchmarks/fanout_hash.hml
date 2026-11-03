@@ -35,7 +35,7 @@ fun spawn_all (lists, acc) =
       [] => acc
     | l :: ls => spawn_all (ls, spawn (fn () => hash_all (l, 0)) :: acc)
 
-fun await_all (pids, acc) =
+fun await_all (pids, acc : int) =
   case pids of
       [] => acc
     | pid :: rest => await_all (rest, acc + await_process pid)

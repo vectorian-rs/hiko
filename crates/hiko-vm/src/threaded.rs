@@ -1576,7 +1576,7 @@ mod tests {
     fn test_threaded_children_capturing_the_same_list() {
         let program = compile(
             "fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)\n\
-             fun sum (xs, acc) = case xs of [] => acc | x :: r => sum (r, acc + x)\n\
+             fun sum (xs, acc : int) = case xs of [] => acc | x :: r => sum (r, acc + x)\n\
              fun run () =\n\
                let\n\
                  val xs = range (1000, [])\n\
