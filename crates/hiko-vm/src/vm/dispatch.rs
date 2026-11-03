@@ -97,15 +97,14 @@ impl VM {
                         Constant::Char(c) => Value::Char(*c),
                         Constant::Word(w) => Value::Word(*w),
                         Constant::String(s) => {
-                            let key = (proto_idx, idx);
-                            if let Some(&cached) = self.string_cache.get(&key) {
+                            if let Some(cached) = self.string_cache.get(proto_idx, idx) {
                                 Value::Heap(cached)
                             } else {
                                 // Only clone the constant on the first load.
                                 let s = s.clone();
                                 let v = self.alloc_string(s)?;
                                 if let Value::Heap(r) = v {
-                                    self.string_cache.insert(key, r);
+                                    self.string_cache.insert(proto_idx, idx, r);
                                 }
                                 v
                             }

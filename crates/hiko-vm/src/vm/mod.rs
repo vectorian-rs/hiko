@@ -94,6 +94,37 @@ struct HiddenHandlers {
     handlers: Vec<HandlerFrame>,
 }
 
+/// The heap string of each string constant already loaded, by function and
+/// constant index, so a `Const` of a string allocates once. Function `i` is
+/// row `i + 1`; the main chunk (`usize::MAX`) is row 0.
+#[derive(Default)]
+struct StringCache {
+    rows: Vec<Vec<Option<GcRef>>>,
+}
+
+impl StringCache {
+    #[inline]
+    fn get(&self, proto_idx: usize, idx: usize) -> Option<GcRef> {
+        *self.rows.get(proto_idx.wrapping_add(1))?.get(idx)?
+    }
+
+    fn insert(&mut self, proto_idx: usize, idx: usize, r: GcRef) {
+        let row = proto_idx.wrapping_add(1);
+        if self.rows.len() <= row {
+            self.rows.resize_with(row + 1, Vec::new);
+        }
+        let row = &mut self.rows[row];
+        if row.len() <= idx {
+            row.resize(idx + 1, None);
+        }
+        row[idx] = Some(r);
+    }
+
+    fn values(&self) -> impl Iterator<Item = GcRef> + '_ {
+        self.rows.iter().flatten().filter_map(|r| *r)
+    }
+}
+
 /// An allowed executable as it was when the policy was applied. `exec`
 /// refuses a command whose identity no longer matches, such as a file
 /// replaced after the check.
@@ -208,7 +239,7 @@ pub struct VM {
     builtins: Arc<BuiltinTable>,
     handlers: Vec<HandlerFrame>,
     hidden_handlers: Vec<HiddenHandlers>,
-    string_cache: HashMap<(usize, usize), GcRef>,
+    string_cache: StringCache,
     /// Reused buffer for `ConcatString`, so a concatenation allocates only
     /// the new string's shared payload.
     concat_buf: String,
@@ -261,10 +292,14 @@ fn scalars_equal(a: Value, b: Value) -> bool {
 
 pub(crate) fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     // Comparing scalars, the common case, must not allocate the worklist.
-    if !matches!((a, b), (Value::Heap(_), Value::Heap(_))) {
+    let (Value::Heap(ra), Value::Heap(rb)) = (a, b) else {
         return scalars_equal(a, b);
+    };
+    // Two strings, the common heap case, need no worklist.
+    if let (Ok(HeapObject::String(sa)), Ok(HeapObject::String(sb))) = (heap.get(ra), heap.get(rb)) {
+        return sa == sb;
     }
-    let mut worklist = vec![(a, b)];
+    let mut worklist: smallvec::SmallVec<[(Value, Value); 8]> = smallvec::smallvec![(a, b)];
 
     while let Some((left, right)) = worklist.pop() {
         match (left, right) {
@@ -364,7 +399,7 @@ impl VM {
             builtins: Arc::default(),
             handlers: Vec::with_capacity(4),
             hidden_handlers: Vec::new(),
-            string_cache: HashMap::new(),
+            string_cache: StringCache::default(),
             concat_buf: String::new(),
             no_captures: Arc::from([]),
             fuel: None,
