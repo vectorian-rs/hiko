@@ -17,6 +17,35 @@ struct RecClosurePatch {
 
 impl VM {
     pub(super) fn dispatch(&mut self) -> Result<(), RuntimeError> {
+        // The code of the current frame's function, looked up again only when
+        // the frame's function changes. The protos and the main chunk never
+        // change while a VM runs; holding them here lets `code` borrow from
+        // locals instead of `self`.
+        let protos = Arc::clone(&self.protos);
+        let main_chunk = Arc::clone(&self.main_chunk);
+        let mut code_proto = None;
+        let mut code: &[u8] = &[];
+
+        // The next operand bytes of the current instruction, from `code`.
+        macro_rules! operand {
+            ($fi:ident, $n:literal) => {{
+                let frame = &mut self.frames[$fi];
+                let ip = frame.ip;
+                let bytes: [u8; $n] = ip
+                    .checked_add($n)
+                    .and_then(|end| code.get(ip..end))
+                    .and_then(|b| b.try_into().ok())
+                    .ok_or_else(|| {
+                        error_fmt(format_args!(
+                            "truncated bytecode: expected {}-byte operand",
+                            $n
+                        ))
+                    })?;
+                frame.ip = ip + $n;
+                bytes
+            }};
+        }
+
         loop {
             if let Some(ref mut fuel) = self.fuel {
                 if *fuel == 0 {
@@ -29,16 +58,22 @@ impl VM {
 
             let fi = self.current_frame_index()?;
             let proto_idx = self.frames[fi].proto_idx;
-            let chunk = self.chunk_for_checked(proto_idx)?;
-            let ip = self.frames[fi].ip;
-
-            if ip >= chunk.code.len() {
-                return Err(RuntimeError {
-                    message: "unexpected end of bytecode".into(),
-                });
+            if code_proto != Some(proto_idx) {
+                code = if proto_idx == usize::MAX {
+                    &main_chunk.code
+                } else {
+                    &protos
+                        .get(proto_idx)
+                        .ok_or_else(|| Self::unknown_proto_error(proto_idx))?
+                        .chunk
+                        .code
+                };
+                code_proto = Some(proto_idx);
             }
-
-            let op_byte = chunk.code[ip];
+            let ip = self.frames[fi].ip;
+            let Some(&op_byte) = code.get(ip) else {
+                return Err(error("unexpected end of bytecode"));
+            };
             self.frames[fi].ip = ip + 1;
             let op = Op::try_from(op_byte).map_err(|b| RuntimeError {
                 message: format!("invalid opcode: {b}"),
@@ -48,7 +83,7 @@ impl VM {
                 Op::Halt => return Ok(()),
 
                 Op::Const => {
-                    let idx = self.read_u16()? as usize;
+                    let idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let constant = self
                         .chunk_for_checked(proto_idx)?
                         .constants
@@ -83,7 +118,7 @@ impl VM {
                 Op::False => self.push(Value::Bool(false))?,
 
                 Op::GetLocal => {
-                    let slot = self.read_u16()? as usize;
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let idx = self.local_stack_index(fi, slot, "GetLocal")?;
                     let val = self.stack[idx];
                     self.push(val)?;
@@ -101,7 +136,7 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::SetLocal => {
-                    let slot = self.read_u16()? as usize;
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let val = self.pop()?;
                     let idx = self.local_stack_index(fi, slot, "SetLocal")?;
                     self.stack[idx] = val;
@@ -119,7 +154,7 @@ impl VM {
                     self.stack[idx] = val;
                 }
                 Op::GetUpvalue => {
-                    let idx = self.read_u16()? as usize;
+                    let idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let val =
                         self.frames[fi]
                             .captures
@@ -131,7 +166,7 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::GetGlobal => {
-                    let slot = self.read_u16()? as usize;
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let val = match self.globals.get(slot) {
                         Some(&Some(val)) => val,
                         _ => self.load_global(slot)?,
@@ -139,7 +174,7 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::SetGlobal => {
-                    let slot = self.read_u16()? as usize;
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let val = self.pop()?;
                     *self.global_mut(slot) = Some(val);
                     self.note_global_defined(slot);
@@ -247,7 +282,7 @@ impl VM {
                 }
 
                 Op::MakeTuple => {
-                    let arity = self.read_u8()? as usize;
+                    let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let start = self.stack_start_for_arity(arity, "MakeTuple")?;
                     let elems = Fields::from_slice(&self.stack[start..]);
                     self.stack.truncate(start);
@@ -255,14 +290,14 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::GetField => {
-                    let idx = self.read_u8()? as usize;
+                    let idx = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     self.push_field(idx)?;
                 }
                 Op::GetField0 => self.push_field(0)?,
                 Op::GetField1 => self.push_field(1)?,
                 Op::MakeData => {
-                    let tag = self.read_u16()?;
-                    let arity = self.read_u8()? as usize;
+                    let tag = u16::from_le_bytes(operand!(fi, 2));
+                    let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let start = self.stack_start_for_arity(arity, "MakeData")?;
                     let fields = Fields::from_slice(&self.stack[start..]);
                     self.stack.truncate(start);
@@ -277,14 +312,14 @@ impl VM {
                     self.push(val)?;
                 }
                 Op::Jump => {
-                    let offset = self.read_i16()?;
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
                     let ip = self.frames[fi].ip;
                     let target = self.checked_relative_ip(proto_idx, ip, offset, "Jump")?;
                     self.frames[fi].ip = target;
                 }
                 Op::JumpIfNotTag => {
-                    let tag = self.read_u16()?;
-                    let offset = self.read_i16()?;
+                    let tag = u16::from_le_bytes(operand!(fi, 2));
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
                     let actual = match self.pop()? {
                         Value::Heap(r) => match self.heap_get(r)? {
                             HeapObject::Data { tag, .. } => Some(*tag),
@@ -305,7 +340,7 @@ impl VM {
                     }
                 }
                 Op::JumpIfNotEq | Op::JumpIfEq => {
-                    let offset = self.read_i16()?;
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
                     let b = self.pop()?;
                     let a = self.pop()?;
                     let equal = values_equal(a, b, &self.heap);
@@ -317,7 +352,7 @@ impl VM {
                 | Op::JumpIfNotGtInt
                 | Op::JumpIfNotLeInt
                 | Op::JumpIfNotGeInt => {
-                    let offset = self.read_i16()?;
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
                     let b = self.pop_int()?;
                     let a = self.pop_int()?;
                     let holds = match op {
@@ -331,7 +366,7 @@ impl VM {
                     }
                 }
                 Op::JumpIfFalse => {
-                    let offset = self.read_i16()?;
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
                     let cond = self.pop_bool()?;
                     if !cond {
                         let ip = self.frames[fi].ip;
@@ -342,12 +377,12 @@ impl VM {
                 }
 
                 Op::MakeClosure => {
-                    let func_proto_idx = self.read_u16()? as usize;
-                    let n_captures = self.read_u8()? as usize;
+                    let func_proto_idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
+                    let n_captures = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let mut captures = Vec::with_capacity(n_captures);
                     for _ in 0..n_captures {
-                        let is_local = self.read_u8()? != 0;
-                        let index = self.read_u16()? as usize;
+                        let is_local = u8::from_le_bytes(operand!(fi, 1)) != 0;
+                        let index = u16::from_le_bytes(operand!(fi, 2)) as usize;
                         let val = self.capture_value(fi, is_local, index)?;
                         captures.push(val);
                     }
@@ -362,7 +397,7 @@ impl VM {
                 Op::MakeRecClosures => self.make_rec_closures(fi)?,
 
                 Op::Call => {
-                    let arity = self.read_u8()? as usize;
+                    let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let callee_pos = self.callee_pos_for_arity(arity, "Call")?;
                     match self.stack[callee_pos] {
                         Value::Builtin(id) => self.call_builtin(id, callee_pos, arity)?,
@@ -371,7 +406,7 @@ impl VM {
                 }
 
                 Op::TailCall => {
-                    let arity = self.read_u8()? as usize;
+                    let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let callee_pos = self.callee_pos_for_arity(arity, "TailCall")?;
                     let callee = self.stack[callee_pos];
                     match callee {
@@ -422,7 +457,7 @@ impl VM {
                 }
 
                 Op::CallDirect => {
-                    let proto_idx = self.read_u16()? as usize;
+                    let proto_idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let proto = self.proto(proto_idx)?;
                     let arity = proto.arity as usize;
                     let arg_start = self.stack_start_for_arity(arity, "CallDirect")?;
@@ -470,7 +505,7 @@ impl VM {
                 }
 
                 Op::TailCallDirect => {
-                    let proto_idx = self.read_u16()? as usize;
+                    let proto_idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let proto = self.proto(proto_idx)?;
                     let arity = proto.arity as usize;
                     let args_start = self.stack_start_for_arity(arity, "TailCallDirect")?;
@@ -508,7 +543,7 @@ impl VM {
                 }
 
                 Op::Panic => {
-                    let idx = self.read_u16()? as usize;
+                    let idx = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let msg = self.read_const_string(proto_idx, idx)?.to_string();
                     return Err(RuntimeError { message: msg });
                 }
@@ -519,20 +554,20 @@ impl VM {
                             message: "too many installed effect handlers".into(),
                         });
                     }
-                    let n_clauses = self.read_u16()? as usize;
+                    let n_clauses = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let mut clauses = Vec::with_capacity(n_clauses);
                     for _ in 0..n_clauses {
-                        let effect_tag = self.read_u16()?;
-                        let flags = self.read_u8()?;
+                        let effect_tag = u16::from_le_bytes(operand!(fi, 2));
+                        let flags = u8::from_le_bytes(operand!(fi, 1));
                         let action = match flags {
                             HANDLER_CLAUSE_PROVIDER => {
-                                let slot = self.read_u16()? as usize;
+                                let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
                                 let closure_slot =
                                     self.local_stack_index(fi, slot, "InstallHandler provider")?;
                                 ClauseAction::Provide { closure_slot }
                             }
                             0 => {
-                                let offset = self.read_i16()?;
+                                let offset = i16::from_le_bytes(operand!(fi, 2));
                                 let ip = self.checked_relative_ip(
                                     self.frames[fi].proto_idx,
                                     self.frames[fi].ip,
@@ -565,7 +600,7 @@ impl VM {
                 }
 
                 Op::Perform => {
-                    let effect_tag = self.read_u16()?;
+                    let effect_tag = u16::from_le_bytes(operand!(fi, 2));
                     let payload = self.pop()?;
 
                     let user_handler =
@@ -1033,11 +1068,6 @@ impl VM {
     #[inline(always)]
     fn read_u16(&mut self) -> Result<u16, RuntimeError> {
         self.read_operand::<2>().map(u16::from_le_bytes)
-    }
-
-    #[inline(always)]
-    fn read_i16(&mut self) -> Result<i16, RuntimeError> {
-        self.read_u16().map(|v| v as i16)
     }
 }
 
