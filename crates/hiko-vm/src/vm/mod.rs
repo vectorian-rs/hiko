@@ -29,6 +29,8 @@ mod child_globals;
 mod dispatch;
 mod gc;
 mod host;
+#[cfg(feature = "register-vm")]
+mod register;
 mod runtime_bridge;
 
 pub use host::{OutputSink, StderrOutputSink, StdoutOutputSink};
@@ -272,6 +274,14 @@ pub struct VM {
     protos: Arc<[FunctionProto]>,
     main_chunk: Arc<Chunk>,
     main_n_locals: u16,
+    /// Register code for the functions that translate; shared with child
+    /// VMs. See `register.rs`.
+    #[cfg(feature = "register-vm")]
+    register_code: Arc<register::RegisterCode>,
+    /// Fuel already paid towards the register instruction a fuel yield
+    /// stopped on.
+    #[cfg(feature = "register-vm")]
+    register_paid: u32,
     output: Option<Vec<String>>,
     /// Shared with child processes; only a VM that is being set up
     /// registers builtins, so the table is never copied after a spawn.
@@ -422,7 +432,32 @@ impl VM {
     }
 
     fn from_verified_program(program: CompiledProgram, startup_error: Option<String>) -> Self {
+        // Translate only verified code; a program that failed verification
+        // never runs.
+        #[cfg(feature = "register-vm")]
+        let register_code = Arc::new(if startup_error.is_none() {
+            register::RegisterCode::translate(&program)
+        } else {
+            register::RegisterCode::default()
+        });
+        Self::from_parts(
+            program,
+            startup_error,
+            #[cfg(feature = "register-vm")]
+            register_code,
+        )
+    }
+
+    fn from_parts(
+        program: CompiledProgram,
+        startup_error: Option<String>,
+        #[cfg(feature = "register-vm")] register_code: Arc<register::RegisterCode>,
+    ) -> Self {
         VM {
+            #[cfg(feature = "register-vm")]
+            register_code,
+            #[cfg(feature = "register-vm")]
+            register_paid: 0,
             heap: Heap::new(),
             stack: Vec::with_capacity(32),
             frames: Vec::with_capacity(16),
@@ -648,6 +683,11 @@ impl VM {
     pub fn error_span(&self) -> Option<hiko_syntax::span::Span> {
         let frame = self.frames.last()?;
         let chunk = self.chunk_for_checked(frame.proto_idx).ok()?;
+        // A register frame stops on the failing instruction.
+        #[cfg(feature = "register-vm")]
+        if let Some(f) = self.register_code.get(frame.proto_idx) {
+            return chunk.span_at(*f.src_ip.get(frame.ip)? as usize);
+        }
         chunk.span_at(frame.ip.saturating_sub(1))
     }
 

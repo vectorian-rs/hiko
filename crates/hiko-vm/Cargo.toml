@@ -9,6 +9,9 @@ repository = "https://github.com/vectorian-rs/hiko"
 [features]
 # Count executed opcodes and opcode pairs (HIKO_OPCODE_STATS=<path>); slow.
 opcode-stats = []
+# Run functions that translate to register code on the register VM (#155);
+# off by default while it is measured.
+register-vm = []
 default = ["builtin-default"]
 # The default build leaves out regex, JSON and dates; see PR #141.
 builtin-default = [

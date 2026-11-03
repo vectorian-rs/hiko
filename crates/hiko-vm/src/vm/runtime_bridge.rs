@@ -128,7 +128,14 @@ impl VM {
     ///
     /// See `docs/architecture/performance.md` for measured numbers.
     pub fn create_child(&self) -> VM {
-        let mut child = Self::from_verified_program(self.get_program(), self.startup_error.clone());
+        // The child runs the parent's code, so it shares the register code
+        // instead of translating again.
+        let mut child = Self::from_parts(
+            self.get_program(),
+            self.startup_error.clone(),
+            #[cfg(feature = "register-vm")]
+            Arc::clone(&self.register_code),
+        );
         child.builtins = self.builtins.clone();
         child.inherit_globals(self.spawn_snapshot.clone());
         // `exec` permissions are immutable capability data, so a child can
