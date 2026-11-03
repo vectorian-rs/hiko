@@ -1,0 +1,41 @@
+(* Logging with a logger value (Std.Log). The same program as
+   examples/log_effect.hml, which logs through an effect instead.
+
+   The logger is made once, at the top, and passed down: every function on
+   the way to a log call takes `log`, even `process`, which only hands it
+   on. In exchange, a function's arguments show that it logs.
+
+   Run with HIKO_LOG=debug to see the debug lines. Both examples print the
+   same lines to stderr. *)
+import Std.List
+import Std.Log
+
+fun validate log (name, quantity) =
+  if quantity <= 0 then
+    let val _ = Log.warn log ("skipping " ^ name ^ ": quantity " ^ int_to_string quantity)
+    in false end
+  else
+    let val _ = Log.debug log ("valid: " ^ name)
+    in true end
+
+fun process log orders =
+  case orders of
+      [] => 0
+    | (name, quantity) :: rest =>
+      if validate log (name, quantity) then quantity + process log rest
+      else process log rest
+
+fun run log orders =
+  let
+    val _ = Log.info log ("processing " ^ int_to_string (List.length orders) ^ " orders")
+    val total = process log orders
+    val _ = Log.info log (Log.kv "done" [("total", int_to_string total)])
+  in
+    total
+  end
+
+val orders = [("apples", 3), ("pears", 0), ("plums", 5)]
+
+val log = Log.make (Log.from_env "HIKO_LOG" Log.Info, "shop")
+
+val _ = println ("total: " ^ int_to_string (run log orders))

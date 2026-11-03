@@ -48,3 +48,8 @@ fn test_stdlib_wrappers() {
 fn test_numeric_module_examples() {
     run_hiko_file("../../examples/numeric_modules.hml");
 }
+
+#[test]
+fn test_stdlib_log() {
+    run_hiko_file("../../tests/run/test_log.hml");
+}

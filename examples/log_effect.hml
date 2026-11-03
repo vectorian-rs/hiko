@@ -1,0 +1,45 @@
+(* Logging through the LogEvent effect (Std.Log). The same program as
+   examples/log_plain.hml, which passes a logger value instead.
+
+   No function takes a logger: `validate` performs LogEvent, and the handler
+   installed at the top decides what a line does. Swap `Log.to_stderr` for
+   `Log.discard` to silence it, or for `Log.handle_with` to send lines
+   anywhere, without touching `validate`, `process` or `run`. In exchange,
+   nothing in their arguments shows that they log, and calling `run`
+   outside a handler fails when it logs. Effect typing (#144) will make
+   that a compile error and show the effect in their types.
+
+   Run with HIKO_LOG=debug to see the debug lines. Both examples print the
+   same lines to stderr. *)
+import Std.List
+import Std.Log
+
+fun validate (name, quantity) =
+  if quantity <= 0 then
+    let val _ = Log.emit_warn "shop" ("skipping " ^ name ^ ": quantity " ^ int_to_string quantity)
+    in false end
+  else
+    let val _ = Log.emit_debug "shop" ("valid: " ^ name)
+    in true end
+
+fun process orders =
+  case orders of
+      [] => 0
+    | (name, quantity) :: rest =>
+      if validate (name, quantity) then quantity + process rest
+      else process rest
+
+fun run orders =
+  let
+    val _ = Log.emit_info "shop" ("processing " ^ int_to_string (List.length orders) ^ " orders")
+    val total = process orders
+    val _ = Log.emit_info "shop" (Log.kv "done" [("total", int_to_string total)])
+  in
+    total
+  end
+
+val orders = [("apples", 3), ("pears", 0), ("plums", 5)]
+
+val total = Log.to_stderr (Log.from_env "HIKO_LOG" Log.Info) (fn () => run orders)
+
+val _ = println ("total: " ^ int_to_string total)

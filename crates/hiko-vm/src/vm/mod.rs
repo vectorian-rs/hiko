@@ -31,7 +31,7 @@ mod gc;
 mod host;
 mod runtime_bridge;
 
-pub use host::{OutputSink, StdoutOutputSink};
+pub use host::{OutputSink, StderrOutputSink, StdoutOutputSink};
 pub use runtime_bridge::{RunResult, RuntimeRequest};
 
 /// Default hard limit on the VM value stack, measured in `Value` slots.
@@ -153,6 +153,8 @@ enum BuiltinKind {
     Plain,
     Print,
     Println,
+    Eprint,
+    Eprintln,
     Exec,
     Spawn,
     Await,
@@ -181,6 +183,8 @@ impl BuiltinKind {
         match name {
             "print" => Self::Print,
             "println" => Self::Println,
+            "eprint" => Self::Eprint,
+            "eprintln" => Self::Eprintln,
             "exec" => Self::Exec,
             "spawn" => Self::Spawn,
             "await_process" => Self::Await,
@@ -277,6 +281,7 @@ pub struct VM {
     cancelled: bool,
     startup_error: Option<String>,
     output_sink: Option<Arc<dyn OutputSink>>,
+    error_sink: Option<Arc<dyn OutputSink>>,
 }
 
 /// Equality of two values that are not both heap values.
@@ -422,6 +427,7 @@ impl VM {
             cancelled: false,
             startup_error,
             output_sink: None,
+            error_sink: None,
         }
     }
 

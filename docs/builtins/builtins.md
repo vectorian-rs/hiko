@@ -33,6 +33,8 @@ builtins and is not exhaustive.
 | ------------ | ---------------- | ----------------------------------- |
 | `print`      | `string -> unit` | Print string to stdout (no newline) |
 | `println`    | `string -> unit` | Print string to stdout with newline |
+| `eprint`     | `string -> unit` | Print string to stderr (no newline) |
+| `eprintln`   | `string -> unit` | Print string to stderr with newline |
 | `read_line`  | `unit -> string` | Read a line from stdin              |
 | `read_stdin` | `unit -> string` | Read all remaining stdin            |
 

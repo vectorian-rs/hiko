@@ -5,8 +5,11 @@
 //! per-process temporary directory instead of `~/.hiko/lib-cache`. Modules
 //! are still verified against the lockfile BLAKE3 hashes. Mirrors
 //! `src/test_support.rs`, which unit tests use.
+// Each test crate uses a different subset of these helpers.
+#![allow(dead_code)]
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use hiko_compile::chunk::CompiledProgram;
 use hiko_compile::compiler::{Compiler, ModuleLoaderOptions};
@@ -38,4 +41,26 @@ pub fn compile_file_hermetic(path: &str) -> CompiledProgram {
         eprintln!("Warning: {}", w.message);
     }
     compiled
+}
+
+/// Compile `source` with no imports.
+pub fn compile_source(source: &str) -> CompiledProgram {
+    let tokens = hiko_syntax::lexer::Lexer::new(source, 0)
+        .tokenize()
+        .expect("lex error");
+    let program = hiko_syntax::parser::Parser::new(tokens)
+        .parse_program()
+        .expect("parse error");
+    Compiler::compile(program).expect("compile error").0
+}
+
+/// An output sink that keeps everything written to it.
+#[derive(Default)]
+pub struct Captured(pub Mutex<String>);
+
+impl hiko_vm::vm::OutputSink for Captured {
+    fn write(&self, text: &str) -> std::io::Result<()> {
+        self.0.lock().unwrap().push_str(text);
+        Ok(())
+    }
 }

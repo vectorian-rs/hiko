@@ -28,6 +28,19 @@ impl OutputSink for StdoutOutputSink {
     }
 }
 
+/// The host's stderr, for `eprint` and `eprintln`.
+#[derive(Default)]
+pub struct StderrOutputSink;
+
+impl OutputSink for StderrOutputSink {
+    fn write(&self, text: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+
+        // Stderr is unbuffered; one write per call keeps a line whole.
+        std::io::stderr().lock().write_all(text.as_bytes())
+    }
+}
+
 pub(super) struct ResolvedExec {
     display_command: String,
     allowed_path: ExecAllowedPath,
@@ -275,6 +288,13 @@ impl VM {
 
     pub fn set_output_sink(&mut self, sink: Arc<dyn OutputSink>) {
         self.output_sink = Some(sink);
+    }
+
+    /// Where `eprint` and `eprintln` write, as `set_output_sink` is for
+    /// `print` and `println`. Without one their output is dropped. Child
+    /// processes inherit it.
+    pub fn set_error_sink(&mut self, sink: Arc<dyn OutputSink>) {
+        self.error_sink = Some(sink);
     }
 
     pub fn clear_output_sink(&mut self) {

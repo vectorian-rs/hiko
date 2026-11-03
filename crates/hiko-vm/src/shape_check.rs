@@ -1568,6 +1568,14 @@ mod tests {
                 "VM intercept normalizes the raw helper result to unit; covered by VM output tests",
             ),
             ("read_line", "would block on host stdin in unit tests"),
+            (
+                "eprint",
+                "VM intercept writes to the error sink and returns unit; covered by tests/log_examples.rs",
+            ),
+            (
+                "eprintln",
+                "VM intercept writes to the error sink and returns unit; covered by tests/log_examples.rs",
+            ),
             ("http_get", "network I/O is policy/runtime-dependent"),
             ("http", "network I/O is policy/runtime-dependent"),
             ("http_json", "network I/O is policy/runtime-dependent"),

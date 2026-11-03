@@ -297,6 +297,8 @@ macro_rules! http_family {
 enabled_family!(StdioCapabilities {
     print => "print",
     println => "println",
+    eprint => "eprint",
+    eprintln => "eprintln",
     read_line => "read_line",
     read_stdin => "read_stdin",
 });
@@ -1032,6 +1034,7 @@ impl RunConfig {
         s.push_str(
             "    vm.set_output_sink(std::sync::Arc::new(hiko_vm::vm::StdoutOutputSink::default()));\n",
         );
+        s.push_str("    vm.set_error_sink(std::sync::Arc::new(hiko_vm::vm::StderrOutputSink));\n");
         s.push_str("    match vm.run() {\n");
         s.push_str("        Ok(()) => {}\n");
         s.push_str("        Err(e) => {\n");

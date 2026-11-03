@@ -1,0 +1,173 @@
+import Std.Option
+
+(* Log lines in the format of Rust's env_logger, written to stderr:
+
+     2026-11-02T20:41:07Z INFO  app: message
+
+   Two ways to log:
+
+   - A logger value: `val log = Log.make (Log.Info, "app")`, then
+     `Log.info log "message"`. The logger is passed to the code that logs.
+   - The `LogEvent` effect: `Log.emit_info "app" "message"` anywhere, and a
+     handler around the code decides what happens to the line:
+     `Log.to_stderr Log.Info (fn () => ...)`, `Log.discard`, or
+     `Log.handle_with` and any function.
+
+   Code that logs needs the capabilities eprintln, epoch_ms, int_to_string,
+   string_length and string_join, plus getenv, to_lower and trim for
+   from_env. The module calls those builtins directly: importing Std.Stdio,
+   Std.String or Std.Time would need every builtin those modules wrap. *)
+structure Log = struct
+  datatype level = Trace | Debug | Info | Warn | Error
+
+  fun severity level =
+    case level of
+        Trace => 0
+      | Debug => 1
+      | Info => 2
+      | Warn => 3
+      | Error => 4
+
+  fun level_name level =
+    case level of
+        Trace => "TRACE"
+      | Debug => "DEBUG"
+      | Info => "INFO"
+      | Warn => "WARN"
+      | Error => "ERROR"
+
+  (* Whether a line at `level` passes a minimum level `min`. *)
+  fun enabled (min, level) = severity level >= severity min
+
+  fun parse_level text =
+    case to_lower (trim text) of
+        "trace" => Option.Some Trace
+      | "debug" => Option.Some Debug
+      | "info" => Option.Some Info
+      | "warn" => Option.Some Warn
+      | "error" => Option.Some Error
+      | _ => Option.None
+
+  (* The level named by environment variable `name` (any case), as
+     RUST_LOG does without per-target filters; `default` when it is unset
+     or names no level. *)
+  fun from_env name default =
+    case parse_level (getenv name) of
+        Option.Some level => level
+      | Option.None => default
+
+  fun pad_right width text =
+    if string_length text >= width then text else pad_right width (text ^ " ")
+
+  fun two n = if n < 10 then "0" ^ int_to_string n else int_to_string n
+
+  fun concat parts = string_join (parts, "")
+
+  (* (year, month, day) of a day count since 1970-01-01, in the proleptic
+     Gregorian calendar (Howard Hinnant's civil_from_days). Std.Date can
+     format times too, but it needs builtin-date, which the default build
+     leaves out; logging should work in every build. *)
+  fun civil days =
+    let
+      val z = days + 719468
+      val era = (if z >= 0 then z else z - 146096) / 146097
+      val doe = z - era * 146097
+      val yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+      val doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+      val mp = (5 * doy + 2) / 153
+      val day = doy - (153 * mp + 2) / 5 + 1
+      val month = if mp < 10 then mp + 3 else mp - 9
+      val year = yoe + era * 400 + (if month <= 2 then 1 else 0)
+    in
+      (year, month, day)
+    end
+
+  (* RFC 3339 UTC, to the second, of milliseconds since the Unix epoch. *)
+  fun timestamp ms =
+    let
+      val secs = ms / 1000
+      val (year, month, day) = civil (secs / 86400)
+      val time = secs mod 86400
+    in
+      concat [
+        int_to_string year, "-", two month, "-", two day, "T",
+        two (time / 3600), ":", two (time mod 3600 / 60), ":", two (time mod 60), "Z"
+      ]
+    end
+
+  fun format_line (ms, level, target, message) =
+    concat [timestamp ms, " ", pad_right 5 (level_name level), " ", target, ": ", message]
+
+  fun field_parts fields =
+    case fields of
+        [] => []
+      | (key, value) :: rest => " " :: key :: "=" :: value :: field_parts rest
+
+  (* `message k1=v1 k2=v2` *)
+  fun kv message fields = concat (message :: field_parts fields)
+
+  fun now_ms () = epoch_ms ()
+
+  (* Logger values *)
+
+  datatype logger = Logger of level * string
+
+  (* A logger for `target` that writes lines at `min` or above. *)
+  fun make (min, target) = Logger (min, target)
+
+  fun log (Logger (min, target)) level message =
+    if enabled (min, level) then
+      eprintln (format_line (now_ms (), level, target, message))
+    else ()
+
+  fun trace logger message = log logger Trace message
+
+  fun debug logger message = log logger Debug message
+
+  fun info logger message = log logger Info message
+
+  fun warn logger message = log logger Warn message
+
+  fun error logger message = log logger Error message
+
+  (* The effect: (level, target, message) *)
+
+  effect LogEvent of level * string * string
+
+  fun emit level target message = perform LogEvent (level, target, message)
+
+  fun emit_trace target message = emit Trace target message
+
+  fun emit_debug target message = emit Debug target message
+
+  fun emit_info target message = emit Info target message
+
+  fun emit_warn target message = emit Warn target message
+
+  fun emit_error target message = emit Error target message
+
+  (* Run `f`, passing each line at `min` or above to `sink`. *)
+  fun handle_with sink min f =
+    handle
+      f ()
+    with
+      return x => x
+    | LogEvent event k =>
+      let
+        val (level, target, message) = event
+        val _ =
+          if enabled (min, level) then sink (format_line (now_ms (), level, target, message))
+          else ()
+      in
+        resume k ()
+      end
+
+  fun to_stderr min f = handle_with eprintln min f
+
+  fun discard f =
+    handle
+      f ()
+    with
+      return x => x
+    | LogEvent _ k => resume k ()
+end

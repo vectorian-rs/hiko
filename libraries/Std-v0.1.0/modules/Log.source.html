@@ -1,0 +1,174 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.Log source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.Log</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Log</span></code></pre><p class="meta">Raw source: <a href="./Log.hml">Log.hml</a><br>BLAKE3: <code title="blake3:fae826a2602c60005de2b5b73615967bfbbf670b360276eedc80a66218b127a7">blake3:fae826a2...18b127a7</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>datatype</code> <strong>level</strong> <span class="meta">Trace | Debug | Info | Warn | Error</span></li><li><code>fun</code> <strong>severity</strong></li><li><code>fun</code> <strong>level_name</strong></li><li><code>fun</code> <strong>enabled</strong></li><li><code>fun</code> <strong>parse_level</strong></li><li><code>fun</code> <strong>from_env</strong></li><li><code>fun</code> <strong>pad_right</strong></li><li><code>fun</code> <strong>two</strong></li><li><code>fun</code> <strong>concat</strong></li><li><code>fun</code> <strong>civil</strong></li><li><code>fun</code> <strong>timestamp</strong></li><li><code>fun</code> <strong>format_line</strong></li><li><code>fun</code> <strong>field_parts</strong></li><li><code>fun</code> <strong>kv</strong></li><li><code>fun</code> <strong>now_ms</strong></li><li><code>datatype</code> <strong>logger</strong> <span class="meta">Logger</span></li><li><code>fun</code> <strong>make</strong></li><li><code>fun</code> <strong>log</strong></li><li><code>fun</code> <strong>trace</strong></li><li><code>fun</code> <strong>debug</strong></li><li><code>fun</code> <strong>info</strong></li><li><code>fun</code> <strong>warn</strong></li><li><code>fun</code> <strong>error</strong></li><li><code>effect</code> <strong>LogEvent</strong></li><li><code>fun</code> <strong>emit</strong></li><li><code>fun</code> <strong>emit_trace</strong></li><li><code>fun</code> <strong>emit_debug</strong></li><li><code>fun</code> <strong>emit_info</strong></li><li><code>fun</code> <strong>emit_warn</strong></li><li><code>fun</code> <strong>emit_error</strong></li><li><code>fun</code> <strong>handle_with</strong></li><li><code>fun</code> <strong>to_stderr</strong></li><li><code>fun</code> <strong>discard</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">Option</span>
+
+<span class="tok-comment">(* Log lines in the format of Rust&#39;s env_logger, written to stderr:
+
+     2026-11-02T20:41:07Z INFO  app: message
+
+   Two ways to log:
+
+   - A logger value: `val log = Log.make (Log.Info, &quot;app&quot;)`, then
+     `Log.info log &quot;message&quot;`. The logger is passed to the code that logs.
+   - The `LogEvent` effect: `Log.emit_info &quot;app&quot; &quot;message&quot;` anywhere, and a
+     handler around the code decides what happens to the line:
+     `Log.to_stderr Log.Info (fn () =&gt; ...)`, `Log.discard`, or
+     `Log.handle_with` and any function.
+
+   Code that logs needs the capabilities eprintln, epoch_ms, int_to_string,
+   string_length and string_join, plus getenv, to_lower and trim for
+   from_env. The module calls those builtins directly: importing Std.Stdio,
+   Std.String or Std.Time would need every builtin those modules wrap. *)</span>
+<span class="tok-keyword">structure</span> <span class="tok-module">Log</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">datatype</span> <span class="tok-type">level</span> = <span class="tok-constructor">Trace</span> | <span class="tok-constructor">Debug</span> | <span class="tok-constructor">Info</span> | <span class="tok-constructor">Warn</span> | <span class="tok-constructor">Error</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">severity</span> <span class="tok-variable">level</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">level</span> <span class="tok-keyword">of</span>
+        <span class="tok-constructor">Trace</span> =&gt; <span class="tok-number">0</span>
+      | <span class="tok-constructor">Debug</span> =&gt; <span class="tok-number">1</span>
+      | <span class="tok-constructor">Info</span> =&gt; <span class="tok-number">2</span>
+      | <span class="tok-constructor">Warn</span> =&gt; <span class="tok-number">3</span>
+      | <span class="tok-constructor">Error</span> =&gt; <span class="tok-number">4</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">level_name</span> <span class="tok-variable">level</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">level</span> <span class="tok-keyword">of</span>
+        <span class="tok-constructor">Trace</span> =&gt; <span class="tok-string">&quot;TRACE&quot;</span>
+      | <span class="tok-constructor">Debug</span> =&gt; <span class="tok-string">&quot;DEBUG&quot;</span>
+      | <span class="tok-constructor">Info</span> =&gt; <span class="tok-string">&quot;INFO&quot;</span>
+      | <span class="tok-constructor">Warn</span> =&gt; <span class="tok-string">&quot;WARN&quot;</span>
+      | <span class="tok-constructor">Error</span> =&gt; <span class="tok-string">&quot;ERROR&quot;</span>
+
+  <span class="tok-comment">(* Whether a line at `level` passes a minimum level `min`. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">enabled</span> (<span class="tok-variable">min</span>, <span class="tok-variable">level</span>) = <span class="tok-variable">severity</span> <span class="tok-variable">level</span> &gt;= <span class="tok-variable">severity</span> <span class="tok-variable">min</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">parse_level</span> <span class="tok-variable">text</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">to_lower</span> (<span class="tok-variable">trim</span> <span class="tok-variable">text</span>) <span class="tok-keyword">of</span>
+        <span class="tok-string">&quot;trace&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Trace</span>
+      | <span class="tok-string">&quot;debug&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Debug</span>
+      | <span class="tok-string">&quot;info&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Info</span>
+      | <span class="tok-string">&quot;warn&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Warn</span>
+      | <span class="tok-string">&quot;error&quot;</span> =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">Some</span> <span class="tok-constructor">Error</span>
+      | _ =&gt; <span class="tok-namespace">Option</span>.<span class="tok-module">None</span>
+
+  <span class="tok-comment">(* The level named by environment variable `name` (any case), as
+     RUST_LOG does without per-target filters; `default` when it is unset
+     or names no level. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">from_env</span> <span class="tok-variable">name</span> <span class="tok-variable">default</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">parse_level</span> (<span class="tok-variable">getenv</span> <span class="tok-variable">name</span>) <span class="tok-keyword">of</span>
+        <span class="tok-namespace">Option</span>.<span class="tok-constructor">Some</span> <span class="tok-variable">level</span> =&gt; <span class="tok-variable">level</span>
+      | <span class="tok-namespace">Option</span>.<span class="tok-constructor">None</span> =&gt; <span class="tok-variable">default</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">pad_right</span> <span class="tok-variable">width</span> <span class="tok-variable">text</span> =
+    <span class="tok-keyword">if</span> <span class="tok-variable">string_length</span> <span class="tok-variable">text</span> &gt;= <span class="tok-variable">width</span> <span class="tok-keyword">then</span> <span class="tok-variable">text</span> <span class="tok-keyword">else</span> <span class="tok-variable">pad_right</span> <span class="tok-variable">width</span> (<span class="tok-variable">text</span> ^ <span class="tok-string">&quot; &quot;</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">two</span> <span class="tok-variable">n</span> = <span class="tok-keyword">if</span> <span class="tok-variable">n</span> &lt; <span class="tok-number">10</span> <span class="tok-keyword">then</span> <span class="tok-string">&quot;0&quot;</span> ^ <span class="tok-variable">int_to_string</span> <span class="tok-variable">n</span> <span class="tok-keyword">else</span> <span class="tok-variable">int_to_string</span> <span class="tok-variable">n</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">concat</span> <span class="tok-variable">parts</span> = <span class="tok-variable">string_join</span> (<span class="tok-variable">parts</span>, <span class="tok-string">&quot;&quot;</span>)
+
+  <span class="tok-comment">(* (year, month, day) of a day count since 1970-01-01, in the proleptic
+     Gregorian calendar (Howard Hinnant&#39;s civil_from_days). Std.Date can
+     format times too, but it needs builtin-date, which the default build
+     leaves out; logging should work in every build. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">civil</span> <span class="tok-variable">days</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">z</span> = <span class="tok-variable">days</span> + <span class="tok-number">719468</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">era</span> = (<span class="tok-keyword">if</span> <span class="tok-variable">z</span> &gt;= <span class="tok-number">0</span> <span class="tok-keyword">then</span> <span class="tok-variable">z</span> <span class="tok-keyword">else</span> <span class="tok-variable">z</span> - <span class="tok-number">146096</span>) / <span class="tok-number">146097</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">doe</span> = <span class="tok-variable">z</span> - <span class="tok-variable">era</span> * <span class="tok-number">146097</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">yoe</span> = (<span class="tok-variable">doe</span> - <span class="tok-variable">doe</span> / <span class="tok-number">1460</span> + <span class="tok-variable">doe</span> / <span class="tok-number">36524</span> - <span class="tok-variable">doe</span> / <span class="tok-number">146096</span>) / <span class="tok-number">365</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">doy</span> = <span class="tok-variable">doe</span> - (<span class="tok-number">365</span> * <span class="tok-variable">yoe</span> + <span class="tok-variable">yoe</span> / <span class="tok-number">4</span> - <span class="tok-variable">yoe</span> / <span class="tok-number">100</span>)
+      <span class="tok-keyword">val</span> <span class="tok-variable">mp</span> = (<span class="tok-number">5</span> * <span class="tok-variable">doy</span> + <span class="tok-number">2</span>) / <span class="tok-number">153</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">day</span> = <span class="tok-variable">doy</span> - (<span class="tok-number">153</span> * <span class="tok-variable">mp</span> + <span class="tok-number">2</span>) / <span class="tok-number">5</span> + <span class="tok-number">1</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">month</span> = <span class="tok-keyword">if</span> <span class="tok-variable">mp</span> &lt; <span class="tok-number">10</span> <span class="tok-keyword">then</span> <span class="tok-variable">mp</span> + <span class="tok-number">3</span> <span class="tok-keyword">else</span> <span class="tok-variable">mp</span> - <span class="tok-number">9</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">year</span> = <span class="tok-variable">yoe</span> + <span class="tok-variable">era</span> * <span class="tok-number">400</span> + (<span class="tok-keyword">if</span> <span class="tok-variable">month</span> &lt;= <span class="tok-number">2</span> <span class="tok-keyword">then</span> <span class="tok-number">1</span> <span class="tok-keyword">else</span> <span class="tok-number">0</span>)
+    <span class="tok-keyword">in</span>
+      (<span class="tok-variable">year</span>, <span class="tok-variable">month</span>, <span class="tok-variable">day</span>)
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-comment">(* RFC 3339 UTC, to the second, of milliseconds since the Unix epoch. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">timestamp</span> <span class="tok-variable">ms</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">secs</span> = <span class="tok-variable">ms</span> / <span class="tok-number">1000</span>
+      <span class="tok-keyword">val</span> (<span class="tok-variable">year</span>, <span class="tok-variable">month</span>, <span class="tok-variable">day</span>) = <span class="tok-variable">civil</span> (<span class="tok-variable">secs</span> / <span class="tok-number">86400</span>)
+      <span class="tok-keyword">val</span> <span class="tok-variable">time</span> = <span class="tok-variable">secs</span> mod <span class="tok-number">86400</span>
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">concat</span> [
+        <span class="tok-variable">int_to_string</span> <span class="tok-variable">year</span>, <span class="tok-string">&quot;-&quot;</span>, <span class="tok-variable">two</span> <span class="tok-variable">month</span>, <span class="tok-string">&quot;-&quot;</span>, <span class="tok-variable">two</span> <span class="tok-variable">day</span>, <span class="tok-string">&quot;T&quot;</span>,
+        <span class="tok-variable">two</span> (<span class="tok-variable">time</span> / <span class="tok-number">3600</span>), <span class="tok-string">&quot;:&quot;</span>, <span class="tok-variable">two</span> (<span class="tok-variable">time</span> mod <span class="tok-number">3600</span> / <span class="tok-number">60</span>), <span class="tok-string">&quot;:&quot;</span>, <span class="tok-variable">two</span> (<span class="tok-variable">time</span> mod <span class="tok-number">60</span>), <span class="tok-string">&quot;Z&quot;</span>
+      ]
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">format_line</span> (<span class="tok-variable">ms</span>, <span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>) =
+    <span class="tok-variable">concat</span> [<span class="tok-variable">timestamp</span> <span class="tok-variable">ms</span>, <span class="tok-string">&quot; &quot;</span>, <span class="tok-variable">pad_right</span> <span class="tok-number">5</span> (<span class="tok-variable">level_name</span> <span class="tok-variable">level</span>), <span class="tok-string">&quot; &quot;</span>, <span class="tok-variable">target</span>, <span class="tok-string">&quot;: &quot;</span>, <span class="tok-variable">message</span>]
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">field_parts</span> <span class="tok-variable">fields</span> =
+    <span class="tok-keyword">case</span> <span class="tok-variable">fields</span> <span class="tok-keyword">of</span>
+        [] =&gt; []
+      | (<span class="tok-variable">key</span>, <span class="tok-variable">value</span>) :: <span class="tok-variable">rest</span> =&gt; <span class="tok-string">&quot; &quot;</span> :: <span class="tok-variable">key</span> :: <span class="tok-string">&quot;=&quot;</span> :: <span class="tok-variable">value</span> :: <span class="tok-variable">field_parts</span> <span class="tok-variable">rest</span>
+
+  <span class="tok-comment">(* `message k1=v1 k2=v2` *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">kv</span> <span class="tok-variable">message</span> <span class="tok-variable">fields</span> = <span class="tok-variable">concat</span> (<span class="tok-variable">message</span> :: <span class="tok-variable">field_parts</span> <span class="tok-variable">fields</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">now_ms</span> () = <span class="tok-variable">epoch_ms</span> ()
+
+  <span class="tok-comment">(* Logger values *)</span>
+
+  <span class="tok-keyword">datatype</span> <span class="tok-type">logger</span> = <span class="tok-constructor">Logger</span> <span class="tok-keyword">of</span> <span class="tok-type">level</span> * <span class="tok-type">string</span>
+
+  <span class="tok-comment">(* A logger for `target` that writes lines at `min` or above. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">make</span> (<span class="tok-variable">min</span>, <span class="tok-variable">target</span>) = <span class="tok-constructor">Logger</span> (<span class="tok-variable">min</span>, <span class="tok-variable">target</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">log</span> (<span class="tok-constructor">Logger</span> (<span class="tok-variable">min</span>, <span class="tok-variable">target</span>)) <span class="tok-variable">level</span> <span class="tok-variable">message</span> =
+    <span class="tok-keyword">if</span> <span class="tok-variable">enabled</span> (<span class="tok-variable">min</span>, <span class="tok-variable">level</span>) <span class="tok-keyword">then</span>
+      <span class="tok-variable">eprintln</span> (<span class="tok-variable">format_line</span> (<span class="tok-variable">now_ms</span> (), <span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>))
+    <span class="tok-keyword">else</span> ()
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">trace</span> <span class="tok-variable">logger</span> <span class="tok-variable">message</span> = <span class="tok-variable">log</span> <span class="tok-variable">logger</span> <span class="tok-constructor">Trace</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">debug</span> <span class="tok-variable">logger</span> <span class="tok-variable">message</span> = <span class="tok-variable">log</span> <span class="tok-variable">logger</span> <span class="tok-constructor">Debug</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">info</span> <span class="tok-variable">logger</span> <span class="tok-variable">message</span> = <span class="tok-variable">log</span> <span class="tok-variable">logger</span> <span class="tok-constructor">Info</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">warn</span> <span class="tok-variable">logger</span> <span class="tok-variable">message</span> = <span class="tok-variable">log</span> <span class="tok-variable">logger</span> <span class="tok-constructor">Warn</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">error</span> <span class="tok-variable">logger</span> <span class="tok-variable">message</span> = <span class="tok-variable">log</span> <span class="tok-variable">logger</span> <span class="tok-constructor">Error</span> <span class="tok-variable">message</span>
+
+  <span class="tok-comment">(* The effect: (level, target, message) *)</span>
+
+  <span class="tok-keyword">effect</span> <span class="tok-function-special">LogEvent</span> <span class="tok-keyword">of</span> <span class="tok-type">level</span> * <span class="tok-type">string</span> * <span class="tok-type">string</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">emit</span> <span class="tok-variable">level</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span> = <span class="tok-keyword">perform</span> <span class="tok-function-special">LogEvent</span> (<span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">emit_trace</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span> = <span class="tok-variable">emit</span> <span class="tok-constructor">Trace</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">emit_debug</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span> = <span class="tok-variable">emit</span> <span class="tok-constructor">Debug</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">emit_info</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span> = <span class="tok-variable">emit</span> <span class="tok-constructor">Info</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">emit_warn</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span> = <span class="tok-variable">emit</span> <span class="tok-constructor">Warn</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">emit_error</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span> = <span class="tok-variable">emit</span> <span class="tok-constructor">Error</span> <span class="tok-variable">target</span> <span class="tok-variable">message</span>
+
+  <span class="tok-comment">(* Run `f`, passing each line at `min` or above to `sink`. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">handle_with</span> <span class="tok-variable">sink</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span> =
+    <span class="tok-keyword">handle</span>
+      <span class="tok-variable">f</span> ()
+    <span class="tok-keyword">with</span>
+      <span class="tok-keyword">return</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span>
+    | <span class="tok-function-special">LogEvent</span> <span class="tok-variable">event</span> <span class="tok-variable">k</span> =&gt;
+      <span class="tok-keyword">let</span>
+        <span class="tok-keyword">val</span> (<span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>) = <span class="tok-variable">event</span>
+        <span class="tok-keyword">val</span> _ =
+          <span class="tok-keyword">if</span> <span class="tok-variable">enabled</span> (<span class="tok-variable">min</span>, <span class="tok-variable">level</span>) <span class="tok-keyword">then</span> <span class="tok-variable">sink</span> (<span class="tok-variable">format_line</span> (<span class="tok-variable">now_ms</span> (), <span class="tok-variable">level</span>, <span class="tok-variable">target</span>, <span class="tok-variable">message</span>))
+          <span class="tok-keyword">else</span> ()
+      <span class="tok-keyword">in</span>
+        <span class="tok-keyword">resume</span> <span class="tok-variable">k</span> ()
+      <span class="tok-keyword">end</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">to_stderr</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span> = <span class="tok-variable">handle_with</span> <span class="tok-variable">eprintln</span> <span class="tok-variable">min</span> <span class="tok-variable">f</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">discard</span> <span class="tok-variable">f</span> =
+    <span class="tok-keyword">handle</span>
+      <span class="tok-variable">f</span> ()
+    <span class="tok-keyword">with</span>
+      <span class="tok-keyword">return</span> <span class="tok-variable">x</span> =&gt; <span class="tok-variable">x</span>
+    | <span class="tok-function-special">LogEvent</span> _ <span class="tok-variable">k</span> =&gt; <span class="tok-keyword">resume</span> <span class="tok-variable">k</span> ()
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

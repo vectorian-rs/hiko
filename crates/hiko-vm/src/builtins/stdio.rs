@@ -4,6 +4,8 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
     &[
         ("print", print as BuiltinFn),
         ("println", println),
+        ("eprint", eprint),
+        ("eprintln", eprintln),
         ("read_line", read_line),
         ("read_stdin", read_stdin),
     ]
@@ -14,6 +16,14 @@ pub(super) fn print(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
 }
 
 pub(super) fn println(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Ok(args[0])
+}
+
+pub(super) fn eprint(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Ok(args[0])
+}
+
+pub(super) fn eprintln(args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Ok(args[0])
 }
 

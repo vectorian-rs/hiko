@@ -2,8 +2,11 @@
 //! reads configured state, a host resource, an async builtin, a module, and
 //! child processes that inherit all of it.
 
+mod common;
+
+use common::Captured;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use hiko_builtin_meta::BuiltinTypeSignature;
 use hiko_compile::chunk::CompiledProgram;
@@ -14,7 +17,6 @@ use hiko_vm::heap::Heap;
 use hiko_vm::sendable::SendableValue;
 use hiko_vm::threaded::ThreadedRuntime;
 use hiko_vm::value::{HeapObject, Value};
-use hiko_vm::vm::OutputSink;
 
 struct Greeting {
     prefix: String,
@@ -138,16 +140,6 @@ fn config(extra: &str) -> RunConfig {
 }
 
 const CONFIGURED: &str = "[extensions.test]\nprefix = \"hi \"\n";
-
-#[derive(Default)]
-struct Captured(Mutex<String>);
-
-impl OutputSink for Captured {
-    fn write(&self, text: &str) -> std::io::Result<()> {
-        self.0.lock().unwrap().push_str(text);
-        Ok(())
-    }
-}
 
 #[test]
 fn sync_builtin_module_and_host_resource() {
