@@ -1,3 +1,4 @@
+import Std.Either
 import Std.Result (Ok, Err)
 import __Builtin.Process
 
@@ -31,6 +32,18 @@ structure FiberInternal = struct
         in
           reap_all rest
         end
+
+  (* The value joined from `fiber`, in a list of (fiber, value) pairs. *)
+  fun value_of (fiber : 'a pid) joined =
+    case joined of
+        [] => panic "Fiber.join_all: a fiber was not joined"
+      | (other, value) :: rest => if other = fiber then value else value_of fiber rest
+
+  (* The values of `fibers`, in order, from (fiber, value) pairs. *)
+  fun in_order fibers joined =
+    case fibers of
+        [] => []
+      | fiber :: rest => value_of fiber joined :: in_order rest joined
 end
 
 structure Fiber = struct
@@ -61,32 +74,44 @@ structure Fiber = struct
 
   fun cancel fiber = BuiltinProcess.cancel_raw fiber
 
-  fun both (f, g) =
+  (* Join every fiber, as they finish. The first failure cancels and reaps
+     the others and is returned; otherwise the values, in the order of
+     `fibers`. *)
+  fun join_all fibers =
     let
-      val left = BuiltinProcess.spawn_raw f
-      val right = BuiltinProcess.spawn_raw g
-      val left_result = Fiber.join left
-      val right_result = Fiber.join right
+      fun wait pending joined =
+        case pending of
+            [] => Ok (FiberInternal.in_order fibers joined)
+          | _ =>
+            let
+              val done = BuiltinProcess.wait_any_raw pending
+              val rest = FiberInternal.remove_first done pending
+            in
+              case Fiber.join done of
+                  Ok value => wait rest ((done, value) :: joined)
+                | Err err =>
+                  let
+                    val _ = FiberInternal.cancel_all rest
+                    val _ = FiberInternal.reap_all rest
+                  in
+                    Err err
+                  end
+            end
     in
-      case (left_result, right_result) of
-          (Ok left_value, Ok right_value) => Ok (left_value, right_value)
-        | (Err err, _) => Err err
-        | (_, Err err) => Err err
+      wait fibers []
     end
 
-  fun join_all fibers =
-    case fibers of
-        [] => Ok []
-      | fiber :: rest =>
-        let
-          val head = Fiber.join fiber
-          val tail = Fiber.join_all rest
-        in
-          case (head, tail) of
-              (Ok value, Ok values) => Ok (value :: values)
-            | (Err err, _) => Err err
-            | (_, Err err) => Err err
-        end
+  (* Run `f` and `g` at once. The first failure cancels the other. *)
+  fun both (f, g) =
+    let
+      val left = BuiltinProcess.spawn_raw (fn () => Either.Left (f ()))
+      val right = BuiltinProcess.spawn_raw (fn () => Either.Right (g ()))
+    in
+      case Fiber.join_all [left, right] of
+          Ok [Either.Left left_value, Either.Right right_value] => Ok (left_value, right_value)
+        | Ok _ => panic "Fiber.both: results out of order"
+        | Err err => Err err
+    end
 
   fun all fs = Fiber.join_all (FiberInternal.spawn_all fs)
 

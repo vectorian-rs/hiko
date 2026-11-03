@@ -1759,6 +1759,28 @@ mod tests {
     }
 
     #[test]
+    fn test_stdlib_fiber_both_and_all_fail_fast() {
+        // Real timers: the fibers that do not fail sleep for a minute, so
+        // finishing early shows they were cancelled, not waited for.
+        let program = compile_file(&test_program_path("test_fiber_fail_fast.hml"));
+        let runtime = ThreadedRuntime::new(1);
+        let pid = runtime.spawn_root(program);
+        let started = std::time::Instant::now();
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+        assert_eq!(
+            runtime.table.get_output(pid),
+            vec!["fiber fail-fast tests passed\n"]
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "took {:?}",
+            started.elapsed()
+        );
+        runtime.check_invariants().unwrap();
+    }
+
+    #[test]
     fn test_join_on_child_that_fails_during_io_returns_error() {
         let program = compile_file(&test_program_path("test_fiber_io_failure.hml"));
         let runtime = ThreadedRuntime::new(1);
