@@ -71,8 +71,8 @@ the same size into a reuse. In Hiko:
   slot reuse) but not last uses; Perceus needs a liveness pass over each
   function, with care at pattern matches (each branch drops what it does not
   use) and at tail calls.
-- New instructions (`Dup`, `Drop`, `ReuseCons` or a reuse token on
-  `MakeData`) need verifier rules. The verifier cannot prove counts correct;
+- New instructions (`Dup`, `Drop`, and a reuse form of `MakeCons`) need
+  verifier rules. The verifier cannot prove counts correct;
   a wrong count is a use-after-free, so counts must stay checked at run time
   (a freed slot is `None`, and `heap.get` already returns an error for it),
   turning a compiler bug into a runtime error rather than memory unsafety.
@@ -107,11 +107,13 @@ If revisited, the cheapest test of the idea keeps the tracing collector:
   at compile time when the input list is a parameter used exactly once on
   each path. For those functions only, the compiler emits a reuse form of
   `MakeCons` that overwrites the matched cell instead of allocating.
-- **Safety net.** The reuse instruction checks at run time that the cell is
-  not reachable from elsewhere; without counts it cannot, so the experiment
-  is only sound if the compiler's analysis is. That is the reason to build
-  it behind a cargo feature and fuzz it with `fuzz_typecheck`, not to ship
-  it by default.
+- **No runtime safety net.** Without reference counts, nothing at run time
+  can tell whether the cell is reachable from elsewhere, so the experiment
+  is sound only if the compiler's uniqueness analysis is. That is the reason
+  to build it behind a cargo feature, not to ship it by default, and to test
+  it with an equivalence fuzzer: run each program with reuse on and off and
+  require the same results (a type-checker fuzzer never executes the reuse
+  path).
 - **Measure** on `list` and `binary_trees` with the method in
   `docs/architecture/performance.md`.
 
