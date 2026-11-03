@@ -66,24 +66,13 @@ impl VM {
         }
 
         loop {
-            if let Some(ref mut fuel) = self.fuel {
-                if *fuel == 0 {
-                    return Err(RuntimeError {
-                        message: "fuel exhausted (execution limit reached)".into(),
-                    });
-                }
-                *fuel -= 1;
-            }
-
             let fi = self.current_frame_index()?;
             let proto_idx = self.frames[fi].proto_idx;
             if code_proto != Some(proto_idx) {
+                // Before fuel is charged: the register VM charges for the
+                // instruction itself.
                 #[cfg(feature = "register-vm")]
                 if self.register_code.is_register(proto_idx) {
-                    // The register VM charges for the instruction itself.
-                    if let Some(fuel) = self.fuel.as_mut() {
-                        *fuel += 1;
-                    }
                     return Ok(Flow::Switch);
                 }
                 chunk = if proto_idx == usize::MAX {
@@ -96,6 +85,14 @@ impl VM {
                 };
                 code = &chunk.code;
                 code_proto = Some(proto_idx);
+            }
+            if let Some(ref mut fuel) = self.fuel {
+                if *fuel == 0 {
+                    return Err(RuntimeError {
+                        message: "fuel exhausted (execution limit reached)".into(),
+                    });
+                }
+                *fuel -= 1;
             }
             let ip = self.frames[fi].ip;
             let Some(&op_byte) = code.get(ip) else {

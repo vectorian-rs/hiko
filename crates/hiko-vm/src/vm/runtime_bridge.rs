@@ -217,6 +217,12 @@ impl VM {
             base: 0,
             captures: Captures::Empty,
         });
+        // A fresh run owes nothing for an instruction an earlier run
+        // stopped on.
+        #[cfg(feature = "register-vm")]
+        {
+            self.register_paid = 0;
+        }
         self.dispatch()
     }
 

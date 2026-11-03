@@ -132,6 +132,9 @@ pub(super) struct RegFunction {
     pub(super) code: Vec<(RegOp, u32)>,
     /// Stack bytecode offset each instruction came from, for error spans.
     pub(super) src_ip: Vec<u32>,
+    /// The deepest stack, relative to the frame, that the stack VM would
+    /// have reached by each instruction; 0 where it pushes nothing.
+    pub(super) peak: Vec<u16>,
     /// Scalar constants, already converted.
     pub(super) consts: Vec<Value>,
     /// `Panic` messages.
@@ -202,15 +205,32 @@ enum Entry {
 struct Builder {
     code: Vec<(RegOp, u32)>,
     src_ip: Vec<u32>,
+    peak: Vec<u16>,
+    /// Stack instructions translated since the last instruction that does
+    /// their work, and the deepest stack they reached.
     pending: u32,
+    pending_peak: u16,
     current_ip: u32,
 }
 
 impl Builder {
+    /// Emit the instruction that does the pending stack instructions' work;
+    /// it is charged for them.
     fn emit(&mut self, op: RegOp) {
         self.code.push((op, self.pending));
         self.src_ip.push(self.current_ip);
+        self.peak.push(self.pending_peak);
         self.pending = 0;
+        self.pending_peak = 0;
+    }
+
+    /// Emit a copy into a register, which the stack VM has no instruction
+    /// for. It costs nothing, so a fuel stop falls on the instruction that
+    /// does the work, as on the stack VM.
+    fn spill(&mut self, op: RegOp) {
+        self.code.push((op, 0));
+        self.src_ip.push(self.current_ip);
+        self.peak.push(0);
     }
 
     /// Write every symbolic entry to its own stack-slot register.
@@ -219,8 +239,8 @@ impl Builder {
             let dst = k as Reg;
             match *entry {
                 Entry::Reg(r) if r == dst => {}
-                Entry::Reg(src) => self.emit(RegOp::Move { dst, src }),
-                Entry::Const(idx) => self.emit(RegOp::LoadConst { dst, idx }),
+                Entry::Reg(src) => self.spill(RegOp::Move { dst, src }),
+                Entry::Const(idx) => self.spill(RegOp::LoadConst { dst, idx }),
             }
             *entry = Entry::Reg(dst);
         }
@@ -233,7 +253,7 @@ impl Builder {
             Entry::Reg(r) => r,
             Entry::Const(idx) => {
                 let dst = pos as Reg;
-                self.emit(RegOp::LoadConst { dst, idx });
+                self.spill(RegOp::LoadConst { dst, idx });
                 dst
             }
         }
@@ -294,13 +314,14 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
 
     // Offsets that jumps land on.
     let mut is_target = vec![false; chunk.code.len() + 1];
-    for inst in insts {
-        if is_jump(inst.op) {
-            is_target[*inst.successors.first()?] = true;
-        }
+    for target in insts.iter().filter_map(|inst| inst.jump_target) {
+        is_target[target] = true;
     }
 
+    // Each constant once: by chunk constant index, and Unit, true, false.
     let mut consts = Vec::new();
+    let mut const_of: Vec<Option<u16>> = vec![None; chunk.constants.len()];
+    let mut fixed: [Option<u16>; 3] = [None; 3];
     let mut messages = Vec::new();
     let mut b = Builder::default();
     // Register pc of each jump target, by stack offset, and jumps to patch.
@@ -330,6 +351,12 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
         }
         debug_assert_eq!(stack.len(), d);
         b.pending += 1;
+        if let StackRule::Exact { delta, .. } = inst.stack
+            && delta > 0
+        {
+            // The stack VM's limit applies when this instruction pushes.
+            b.pending_peak = b.pending_peak.max(u16::try_from(d + delta as usize).ok()?);
+        }
         reachable_prev = true;
 
         // The u16 operand right after the opcode, for ops that have one.
@@ -349,7 +376,8 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
 
         match inst.op {
             Op::Const => {
-                let value = match chunk.constants.get(operand()? as usize)? {
+                let idx = operand()? as usize;
+                let value = match chunk.constants.get(idx)? {
                     Constant::Int(n) => Value::Int(*n),
                     Constant::Float(f) => Value::Float(*f),
                     Constant::Char(c) => Value::Char(*c),
@@ -357,11 +385,27 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
                     // Strings need the heap; stage 1 leaves them to the stack VM.
                     Constant::String(_) => return None,
                 };
-                stack.push(Entry::Const(push_const(&mut consts, value)?));
+                stack.push(Entry::Const(intern(
+                    &mut consts,
+                    const_of.get_mut(idx)?,
+                    value,
+                )?));
             }
-            Op::Unit => stack.push(Entry::Const(push_const(&mut consts, Value::Unit)?)),
-            Op::True => stack.push(Entry::Const(push_const(&mut consts, Value::Bool(true))?)),
-            Op::False => stack.push(Entry::Const(push_const(&mut consts, Value::Bool(false))?)),
+            Op::Unit => stack.push(Entry::Const(intern(
+                &mut consts,
+                &mut fixed[0],
+                Value::Unit,
+            )?)),
+            Op::True => stack.push(Entry::Const(intern(
+                &mut consts,
+                &mut fixed[1],
+                Value::Bool(true),
+            )?)),
+            Op::False => stack.push(Entry::Const(intern(
+                &mut consts,
+                &mut fixed[2],
+                Value::Bool(false),
+            )?)),
             Op::GetLocal | Op::GetLocal0 | Op::GetLocal1 | Op::GetLocal2 | Op::GetLocal3 => {
                 // The value currently in that slot (a register or constant).
                 stack.push(*stack.get(local()?)?);
@@ -376,7 +420,7 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
                 // Entries that still read the slot's old value keep it.
                 for (k, entry) in stack.iter_mut().enumerate() {
                     if k != slot && *entry == Entry::Reg(target) {
-                        b.emit(RegOp::Move {
+                        b.spill(RegOp::Move {
                             dst: k as Reg,
                             src: target,
                         });
@@ -420,7 +464,7 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
                 b.materialize(&mut stack);
                 let a = b.operand(lhs, pos);
                 let bb = b.operand(rhs, pos + 1);
-                patches.push((b.code.len(), *inst.successors.first()?));
+                patches.push((b.code.len(), inst.jump_target?));
                 b.emit(RegOp::JumpIfNotCmpInt {
                     cmp: cmp_op(inst.op)?,
                     a,
@@ -433,12 +477,12 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
                 let pos = stack.len();
                 b.materialize(&mut stack);
                 let cond = b.operand(cond, pos);
-                patches.push((b.code.len(), *inst.successors.first()?));
+                patches.push((b.code.len(), inst.jump_target?));
                 b.emit(RegOp::JumpIfFalse { cond, target: 0 });
             }
             Op::Jump => {
                 b.materialize(&mut stack);
-                patches.push((b.code.len(), *inst.successors.first()?));
+                patches.push((b.code.len(), inst.jump_target?));
                 b.emit(RegOp::Jump { target: 0 });
                 reachable_prev = false;
             }
@@ -510,6 +554,7 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
     let function = RegFunction {
         code: b.code,
         src_ip: b.src_ip,
+        peak: b.peak,
         consts,
         messages,
         n_regs,
@@ -517,22 +562,14 @@ fn translate(chunk: &Chunk, insts: &[DecodedInst], arity: u8) -> Option<RegFunct
     check(&function).then_some(function)
 }
 
-fn is_jump(op: Op) -> bool {
-    matches!(
-        op,
-        Op::Jump
-            | Op::JumpIfFalse
-            | Op::JumpIfNotLtInt
-            | Op::JumpIfNotGtInt
-            | Op::JumpIfNotLeInt
-            | Op::JumpIfNotGeInt
-    )
-}
-
-fn push_const(consts: &mut Vec<Value>, value: Value) -> Option<u16> {
-    let idx = u16::try_from(consts.len()).ok()?;
-    consts.push(value);
-    Some(idx)
+/// The index of `value` in `consts`, adding it the first time; `slot`
+/// remembers it.
+fn intern(consts: &mut Vec<Value>, slot: &mut Option<u16>, value: Value) -> Option<u16> {
+    if slot.is_none() {
+        *slot = Some(u16::try_from(consts.len()).ok()?);
+        consts.push(value);
+    }
+    *slot
 }
 
 /// Every register below `n_regs`, every constant and jump target valid.
@@ -592,11 +629,11 @@ impl VM {
             let Some(func) = code.get(proto_idx) else {
                 return Ok(Flow::Switch);
             };
-            // A register frame owns registers base .. base + n_regs.
+            // A register frame owns registers base .. base + n_regs. Near
+            // the stack limit, each instruction checks the depth the stack
+            // VM would have reached, so both fail at the same point.
             let top = base + func.n_regs as usize;
-            if top > DEFAULT_MAX_STACK_SLOTS {
-                return Err(error("stack overflow"));
-            }
+            let near_limit = top > DEFAULT_MAX_STACK_SLOTS;
             self.stack.resize(top, Value::Unit);
             let regs = &mut self.stack[base..top];
 
@@ -649,7 +686,7 @@ impl VM {
                     // in part now and the rest after the yield, so every
                     // slice makes progress and the total charged is exactly
                     // the stack VM's.
-                    let due = u64::from(weight - self.register_paid);
+                    let due = u64::from(weight.saturating_sub(self.register_paid));
                     if *fuel < due {
                         self.register_paid += *fuel as u32;
                         *fuel = 0;
@@ -657,6 +694,12 @@ impl VM {
                     }
                     *fuel -= due;
                     self.register_paid = 0;
+                }
+                if near_limit
+                    && base + func.peak.get(pc).copied().unwrap_or(0) as usize
+                        > DEFAULT_MAX_STACK_SLOTS
+                {
+                    fail!(error("stack overflow"));
                 }
                 match op {
                     RegOp::Nop => {}
@@ -912,6 +955,55 @@ mod tests {
                 if stack { hi = mid } else { lo = mid }
             }
             assert_eq!(finishes(hi - 1), [false, false]);
+        }
+    }
+
+    #[test]
+    fn fuel_stops_at_the_same_call_depth() {
+        // Running out of fuel leaves both VMs in the same call frame, so a
+        // call is never made with no fuel left for it.
+        let program = compile(FIB);
+        for fuel in 0..400 {
+            let depths = [false, true].map(|register| {
+                let mut vm = VM::new(program.clone());
+                if !register {
+                    vm.register_code = Arc::default();
+                }
+                vm.fuel = Some(fuel);
+                let err = vm.run().expect_err("fib needs more fuel");
+                assert!(err.is_fuel_exhausted(), "{}", err.message);
+                vm.frames.len()
+            });
+            assert_eq!(depths[0], depths[1], "fuel {fuel}");
+        }
+    }
+
+    #[test]
+    fn stack_overflow_at_the_same_depth() {
+        // A register frame reserves all its registers on entry; near the
+        // stack limit it still fails only where the stack VM would.
+        let src = |n: i64| {
+            format!(
+                "fun d n = if n < 1 then 0 else 1 + d (n - 1)
+                 val _ = println (int_to_string (d {n}))"
+            )
+        };
+        assert!(translates(&src(1), "d"));
+        let finishes = |n: i64| run_both(&src(n), None);
+        // The deepest n the stack VM finishes.
+        let (mut lo, mut hi) = (1i64, 100_000i64);
+        assert!(finishes(lo)[0].is_ok() && finishes(hi)[0].is_err());
+        while lo + 1 < hi {
+            let mid = (lo + hi) / 2;
+            if finishes(mid)[0].is_ok() {
+                lo = mid
+            } else {
+                hi = mid
+            }
+        }
+        for n in lo - 2..=lo + 2 {
+            let [stack, register] = finishes(n);
+            assert_eq!(stack, register, "n = {n}");
         }
     }
 

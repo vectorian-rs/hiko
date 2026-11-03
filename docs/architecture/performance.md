@@ -739,3 +739,37 @@ of medians.
 
 Together, call-heavy programs are 6 to 8% faster (`fib` 377 to 353 ms,
 `tak` 192 to 182 ms), and nothing is slower.
+
+### Register VM, stage 1 (#155, behind `register-vm`)
+
+Functions whose bytecode uses only integer arithmetic and comparisons,
+locals, jumps, direct and self calls, tail calls, `Return`, `Panic` and
+`Halt` run as register code; everything else stays on the stack VM. See
+`docs/rnd/2026-11-register-vm-design.md`. Interleaved A/B against `main`,
+10 rounds, on AC, load average 2.3 to 3.2. B/A is the ratio of medians.
+
+| Program | feature off | `register-vm` |
+|---|---|---|
+| `compare/fib` | 0.971 | 0.781 |
+| `compare/tak` | 0.988 | 0.614 |
+| `ack` | 0.981 | 1.001 |
+| `compare/sieve` | 0.995 | 0.994 |
+| `compare/list` | 0.988 | 0.998 |
+| `compare/queens` | 0.997 | 0.988 |
+| `compare/binary_trees` | 0.982 | 0.988 |
+| `compare/mandelbrot` | 0.992 | 1.002 |
+| `compare/nbody` | 0.998 | 0.990 |
+
+`fib` and `tak` translate whole and are 22% and 39% faster. `ack` uses `=`,
+which stage 1 does not translate, and runs on the stack VM.
+
+Three changes to the stack VM had to be undone because they slowed it with
+the feature off, though none of them adds work per instruction:
+
+- `Return` calling a helper shared with the register VM made `fib` about
+  55% slower; the stack VM keeps its own copy.
+- An always-present `register_code` field on the VM (empty when the feature
+  is off) made `sieve` 19% and `binary_trees` 5% slower; the field exists
+  only with the feature.
+- Moving the stack loop's fuel check after the function-change check made
+  no difference once the field was gone, and is kept.
