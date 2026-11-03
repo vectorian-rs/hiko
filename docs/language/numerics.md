@@ -28,6 +28,31 @@ Core numeric operators are a closed compiler-resolved surface over the core
 numeric primitives. They are not an extensible typeclass, trait, or implicit
 conversion mechanism.
 
+| Operators | Operand types | Result |
+| --- | --- | --- |
+| `+ - * / mod` | `int`, `float` or `word` (both operands the same) | the operand type |
+| `< > <= >=` | `int`, `float` or `word` (both operands the same) | `bool` |
+| `~` | `int` or `float` | the operand type |
+| `= <>` | an equality type: `int`, `float`, `word`, `bool`, `char`, `string`, `unit`, `bytes`, `pid`, or tuples of these | `bool` |
+
+The compiler decides each operator's operand type from the program and emits
+the typed instruction (`AddInt`, `AddFloat`, `AddWord`, ...). There is no
+dispatch at run time.
+
+**Resolution rule.** An operator whose operand type is still unknown where it
+appears waits: code later in the same top-level declaration may decide the
+type, and until then the operand type is not generalized. If the type is still
+unknown at the end of the top-level declaration, that is an error asking for
+an annotation. Hiko never picks a default type, unlike Standard ML, which
+defaults to `int`. Literals are not overloaded: `1` is always `int`, `1.0`
+always `float`, `0w1` always `word`.
+
+```sml
+fun f (a, b) = let val d = a - b in d * sqrt d end  (* float: sqrt decides *)
+fun square x = x * x                                (* error: nothing decides *)
+fun square (x : int) = x * x                        (* int *)
+```
+
 Width-specific numeric types must not add new meanings to core operators. For
 example, `Int32.t` values must use `Int32.add`, not `+`.
 
