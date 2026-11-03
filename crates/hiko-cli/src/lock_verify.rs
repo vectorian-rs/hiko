@@ -7,69 +7,68 @@ use std::time::Duration;
 
 use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct LockManifestDefaults {
-    lockfile: Option<String>,
+pub(crate) struct LockManifestDefaults {
+    pub(crate) lockfile: Option<String>,
     #[serde(default)]
     #[serde(rename = "policy")]
     _policy: Option<String>,
     #[serde(default)]
-    #[serde(rename = "lib_cache")]
-    _lib_cache: Option<String>,
+    pub(crate) lib_cache: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LockRegistry {
-    url: String,
+pub(crate) struct LockRegistry {
+    pub(crate) url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LockDependency {
-    version: String,
-    registry: String,
+pub(crate) struct LockDependency {
+    pub(crate) version: String,
+    pub(crate) registry: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct LockProjectManifest {
+pub(crate) struct LockProjectManifest {
     #[serde(default)]
     #[serde(rename = "project")]
     _project: toml::Table,
     #[serde(default)]
-    defaults: LockManifestDefaults,
+    pub(crate) defaults: LockManifestDefaults,
     #[serde(default)]
-    registries: BTreeMap<String, LockRegistry>,
+    pub(crate) registries: BTreeMap<String, LockRegistry>,
     #[serde(default)]
-    dependencies: BTreeMap<String, LockDependency>,
+    pub(crate) dependencies: BTreeMap<String, LockDependency>,
     #[serde(default)]
     #[serde(rename = "policies")]
     _policies: toml::Table,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ModuleLockfile {
-    schema_version: u32,
+pub(crate) struct ModuleLockfile {
+    pub(crate) schema_version: u32,
     #[serde(default)]
-    packages: BTreeMap<String, ModuleLockPackage>,
+    pub(crate) packages: BTreeMap<String, ModuleLockPackage>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ModuleLockPackage {
-    version: String,
-    base_url: String,
+pub(crate) struct ModuleLockPackage {
+    pub(crate) version: String,
+    pub(crate) base_url: String,
     #[serde(default)]
-    modules: BTreeMap<String, String>,
+    pub(crate) modules: BTreeMap<String, String>,
 }
 
-const LOCK_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
-const LOCK_VERIFY_MAX_BYTES: u64 = 1024 * 1024;
+pub(crate) const LOCK_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const LOCK_VERIFY_MAX_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn lock_command(args: &[String]) {
     let usage = "Usage: hiko lock verify [--config <hiko.toml>]";
@@ -108,7 +107,7 @@ fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
     config_path
 }
 
-fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(path) = config_path {
         return Ok(path);
     }
@@ -119,13 +118,7 @@ fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<PathBuf, String
 
 fn verify_lockfile(manifest_path: &Path) -> Result<(), String> {
     let manifest = load_project_manifest(manifest_path)?;
-    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let lockfile_name = manifest
-        .defaults
-        .lockfile
-        .as_deref()
-        .unwrap_or("hiko.lock.toml");
-    let lockfile_path = manifest_dir.join(lockfile_name);
+    let lockfile_path = project_lockfile_path(manifest_path, &manifest);
     let lockfile = load_module_lockfile(&lockfile_path)?;
 
     validate_module_lockfile(&lockfile, &lockfile_path)?;
@@ -158,19 +151,45 @@ fn verify_locked_modules(lockfile: &ModuleLockfile) -> Result<(), String> {
     }
 }
 
-fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
+/// The lockfile the project at `manifest_path` uses: `[defaults] lockfile`,
+/// relative to the manifest, else `hiko.lock.toml` next to it.
+pub(crate) fn project_lockfile_path(
+    manifest_path: &Path,
+    manifest: &LockProjectManifest,
+) -> PathBuf {
+    manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(
+            manifest
+                .defaults
+                .lockfile
+                .as_deref()
+                .unwrap_or("hiko.lock.toml"),
+        )
+}
+
+/// Where a registry serves version `version` of package `name`.
+pub(crate) fn dependency_base_url(registry_url: &str, name: &str, version: &str) -> String {
+    format!("{}/{name}-v{version}", registry_url.trim_end_matches('/'))
+}
+
+pub(crate) fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read project manifest '{}': {e}", path.display()))?;
     toml::from_str(&text).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
 }
 
-fn load_module_lockfile(path: &Path) -> Result<ModuleLockfile, String> {
+pub(crate) fn load_module_lockfile(path: &Path) -> Result<ModuleLockfile, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read module lockfile '{}': {e}", path.display()))?;
     toml::from_str(&text).map_err(|e| format!("Invalid module lockfile '{}': {e}", path.display()))
 }
 
-fn validate_module_lockfile(lockfile: &ModuleLockfile, path: &Path) -> Result<(), String> {
+pub(crate) fn validate_module_lockfile(
+    lockfile: &ModuleLockfile,
+    path: &Path,
+) -> Result<(), String> {
     if lockfile.schema_version != 1 {
         return Err(format!(
             "unsupported module lockfile schema_version {} in '{}'; expected 1",
@@ -198,7 +217,7 @@ fn validate_module_lockfile(lockfile: &ModuleLockfile, path: &Path) -> Result<()
     Ok(())
 }
 
-fn validate_module_lockfile_against_manifest(
+pub(crate) fn validate_module_lockfile_against_manifest(
     lockfile: &ModuleLockfile,
     lockfile_path: &Path,
     manifest: &LockProjectManifest,
@@ -264,12 +283,7 @@ fn validate_dependency_source(
                 manifest_path.display()
             )
         })?;
-    let expected_base_url = format!(
-        "{}/{}-v{}",
-        registry.url.trim_end_matches('/'),
-        package_name,
-        dependency.version
-    );
+    let expected_base_url = dependency_base_url(&registry.url, package_name, &dependency.version);
     if package.base_url.trim_end_matches('/') != expected_base_url {
         return Err(format!(
             "dependency '{package_name}' source mismatch: project manifest '{}' expects '{}', but module lockfile '{}' resolves '{}'",
@@ -282,7 +296,11 @@ fn validate_dependency_source(
     Ok(())
 }
 
-fn validate_remote_base_url(package_name: &str, base_url: &str, path: &Path) -> Result<(), String> {
+pub(crate) fn validate_remote_base_url(
+    package_name: &str,
+    base_url: &str,
+    path: &Path,
+) -> Result<(), String> {
     let base_url = base_url.trim();
     if base_url.starts_with("https://") {
         return Ok(());
@@ -328,7 +346,7 @@ fn verify_locked_module(
     }
 }
 
-fn normalize_blake3(hash: &str) -> String {
+pub(crate) fn normalize_blake3(hash: &str) -> String {
     hash.trim()
         .strip_prefix("blake3:")
         .unwrap_or(hash.trim())

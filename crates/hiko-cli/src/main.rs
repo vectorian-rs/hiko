@@ -29,6 +29,8 @@ use serde::Deserialize;
 
 mod build_vm;
 #[cfg(feature = "cli-lock")]
+mod install;
+#[cfg(feature = "cli-lock")]
 mod lock_verify;
 
 fn main() {
@@ -44,6 +46,10 @@ fn main() {
             "  check [--config <hiko.toml>] [--policy <name>] [--strict] <file.hml>  Type-check without executing"
         );
         eprintln!("  fmt [--check] [--recurse] <file.hml|dir>...  Format Hiko source files");
+        #[cfg(feature = "cli-lock")]
+        eprintln!(
+            "  install [--config <hiko.toml>] [--check]  Lock and download the dependencies in hiko.toml"
+        );
         #[cfg(feature = "cli-lock")]
         eprintln!("  lock verify [--config <hiko.toml>]  Verify locked remote modules");
         eprintln!("  inspect-work <file.hml>  Print static bytecode opcode counts");
@@ -71,6 +77,15 @@ fn main() {
         "inspect-work" => {
             let path = parse_inspect_work_args(&args[2..]);
             inspect_work_file(&path);
+        }
+        "install" => {
+            #[cfg(feature = "cli-lock")]
+            install::install_command(&args[2..]);
+            #[cfg(not(feature = "cli-lock"))]
+            {
+                eprintln!("This build of hiko was compiled without the 'install' command");
+                process::exit(1);
+            }
         }
         "lock" => {
             #[cfg(feature = "cli-lock")]

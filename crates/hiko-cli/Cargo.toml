@@ -46,7 +46,8 @@ loader-http = ["loader-named-imports", "hiko-compile/loader-http"]
 loader-integrity-blake3 = ["loader-http", "hiko-compile/loader-integrity-blake3"]
 loader-embedded = ["hiko-compile/loader-embedded"]
 cli-hash = ["dep:hiko-common", "hiko-common/hash"]
-cli-lock = ["dep:hiko-common", "hiko-common/hash", "hiko-common/http"]
+# `lock verify` and `install`; install fills the loader's module cache.
+cli-lock = ["dep:hiko-common", "hiko-common/hash", "hiko-common/http", "loader-integrity-blake3"]
 # Extensions under extensions/, linked in when their feature is on.
 ext-github = ["dep:hiko-ext-github"]
 ext-aws = ["dep:hiko-ext-aws"]
