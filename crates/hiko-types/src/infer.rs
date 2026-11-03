@@ -72,7 +72,8 @@ pub struct InferCtx {
 pub const DEFAULT_MAX_TYPE_WORK: u64 = 10_000_000;
 
 /// The level of type variables that are never generalized: an effect's
-/// result type, shared by every `perform` and handler of the effect.
+/// result type and the row variables of its payload, shared by every
+/// `perform` and handler of the effect.
 const NEVER_GENERALIZED: u32 = 0;
 /// The level between top-level declarations.
 const TOP_LEVEL: u32 = 1;
@@ -363,6 +364,17 @@ impl InferCtx {
         self.subst.insert(v, ty);
     }
 
+    /// Unify two distinct unbound variables. The newer one (higher level,
+    /// then higher id) is bound to the older, so the older stays the
+    /// representative: binding the other way round would let
+    /// `val u0 = y  val u1 = y ...` grow `y`'s type into a chain
+    /// `'a -> 'u0 -> 'u1 -> ...` that every later `apply` walks.
+    fn link_vars(&mut self, a: u32, b: u32) {
+        let key = |v: u32| (self.levels[v as usize], v);
+        let (newer, older) = if key(a) > key(b) { (a, b) } else { (b, a) };
+        self.bind_var(newer, Type::Var(older));
+    }
+
     /// Lower the level of every variable of `ty` (unbound variables only) to
     /// at most `level`.
     fn lower_levels(&mut self, ty: &Type, level: u32) {
@@ -515,6 +527,10 @@ impl InferCtx {
         let t2 = self.apply(t2);
         match (&t1, &t2) {
             (Type::Var(a), Type::Var(b)) if a == b => Ok(()),
+            (Type::Var(a), Type::Var(b)) => {
+                self.link_vars(*a, *b);
+                Ok(())
+            }
             (Type::Var(v), _) => {
                 if self.occurs(*v, &t2) {
                     return Err(self.err("infinite type (occurs check failed)", span));
@@ -602,7 +618,7 @@ impl InferCtx {
             (Some(a), Some(b)) => {
                 if only1.is_empty() && only2.is_empty() {
                     // Same labels: the tails stand for the same effects.
-                    self.bind_var(a, Type::Var(b));
+                    self.link_vars(a, b);
                 } else {
                     let tail = self.fresh();
                     self.bind_var(a, Type::row(only2, Some(tail.clone())));
@@ -712,7 +728,14 @@ impl InferCtx {
     // ── Declaration inference ────────────────────────────────────────
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
+        let scopes = self.scopes.len();
         let result = self.infer_decl_inner(decl);
+        if result.is_err() {
+            // An error leaves inference mid-way. Drop the scopes it left
+            // open: their monomorphic bindings hold variables above this
+            // level, which a later declaration must not see.
+            self.scopes.truncate(scopes);
+        }
         if self.work_exhausted() {
             return Err(self.err(
                 &format!(
@@ -841,6 +864,10 @@ impl InferCtx {
                 } else {
                     Type::unit()
                 };
+                // The payload has no type variables, but a function type in
+                // it has a row variable, which every `perform` and handler
+                // shares like the result type.
+                self.lower_levels(&arg_type, NEVER_GENERALIZED);
                 let result_id = self.fresh_id();
                 self.levels[result_id as usize] = NEVER_GENERALIZED;
                 self.effect_sigs
@@ -1118,11 +1145,12 @@ impl InferCtx {
             )
         })?;
         #[cfg(any(test, feature = "check-generalization"))]
-        assert_eq!(
-            escaped,
-            env_vars
-                .iter()
-                .any(|&v| mentions_rigid_var(&self.apply_with(&Type::Var(v), false))),
+        assert!(
+            self.work_exhausted()
+                || escaped
+                    == env_vars
+                        .iter()
+                        .any(|&v| mentions_rigid_var(&self.apply_with(&Type::Var(v), false))),
             "rigid escape by levels disagrees for {name}"
         );
         if escaped {
@@ -1907,6 +1935,11 @@ impl InferCtx {
     /// Levels must generalize exactly the variables of `ty` that are free
     /// nowhere in the environment.
     fn check_levels_agree(&self, ty: &Type, vars: &[u32]) {
+        // Past the work limit, `apply` returns placeholders and the
+        // declaration fails anyway.
+        if self.work_exhausted() {
+            return;
+        }
         let env_vars = self.env_free_vars();
         let expected: Vec<u32> = ty
             .free_vars()
@@ -1931,7 +1964,8 @@ impl InferCtx {
                 }
             }
         }
-        for (_, result_ty) in self.effect_sigs.values() {
+        for (arg_ty, result_ty) in self.effect_sigs.values() {
+            vars.extend(self.apply_with(arg_ty, false).free_vars());
             vars.extend(self.apply_with(result_ty, false).free_vars());
         }
         vars
@@ -2135,6 +2169,47 @@ mod tests {
         let ty = type_of(&ctx, "pair");
         let var = ty.split(' ').next().unwrap();
         assert_eq!(ty.replace(var, "'a"), "'a -> ('a * int) * ('a * string)");
+    }
+
+    #[test]
+    fn test_bindings_sharing_one_variable_do_not_chain() {
+        // Each `val u = y` unifies two variables; binding the older one to
+        // the newer made `y`'s type a chain every later lookup walked.
+        let src = format!(
+            "fun f y = let\n{}\nin u0 end",
+            (0..800)
+                .map(|i| format!("val u{i} = y\n"))
+                .collect::<String>()
+        );
+        let ctx = infer(&src);
+        assert!(ctx.type_work() < 50_000, "{}", ctx.type_work());
+    }
+
+    #[test]
+    fn test_effect_payload_row_is_never_generalized() {
+        // A function-typed payload has a row variable that every `perform`
+        // and handler shares, wherever the effect is declared.
+        let ctx = infer(
+            "effect E of int -> int
+             fun g f = perform E f",
+        );
+        assert!(type_of(&ctx, "g").starts_with("(int -> int) -> "));
+        infer(
+            "fun h u = let effect E of int -> int in u end
+             fun g f = perform E f",
+        );
+    }
+
+    #[test]
+    fn test_a_failed_declaration_leaves_no_scope_behind() {
+        let tokens = Lexer::new("fun f x = x + \"a\"", 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let program = hiko_syntax::desugar::desugar_program(program);
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner.clone();
+        let scopes = ctx.scopes.len();
+        assert!(ctx.infer_program(&program).is_err());
+        assert_eq!(ctx.scopes.len(), scopes);
     }
 
     #[test]
