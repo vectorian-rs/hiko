@@ -328,6 +328,15 @@ fn collect_sealed(
         None => None,
     };
     let sealed = Sealed { modules, script };
+    // An extension's modules import what it requires; the artifact resolves
+    // named imports only from what is sealed into it.
+    for extension in extensions {
+        for import in extension.requires {
+            if !sealed.modules.iter().any(|m| m.import_name == *import) {
+                return Err(hiko_compile::compiler::not_embedded(extension.name, import));
+            }
+        }
+    }
     check_sealed_program(&sealed, extensions)?;
     Ok(sealed)
 }
@@ -835,6 +844,31 @@ mod tests {
         let err =
             generate(&options, &config, &[&hiko_ext_github::GITHUB]).expect_err("unknown key");
         assert!(err.contains("[extensions.github]"), "{err}");
+    }
+
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+    #[cfg(feature = "ext-aws")]
+    #[test]
+    fn a_sealed_artifact_must_embed_what_its_extensions_require() {
+        // The AWS modules import Std.Result; without --lock nothing is
+        // sealed, so build-vm refuses instead of building an artifact
+        // whose every `import Aws.*` fails.
+        let dir = temp_dir("ext-requires");
+        write(&dir.join("main.hml"), "val _ = println \"hi\"\n").unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            script: Some(dir.join("main.hml")),
+            out_dir: Some(dir.join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
+            ..BuildVmOptions::default()
+        };
+        let config = RunConfig::from_toml("[extensions.aws]\n").unwrap();
+        let err = generate(&options, &config, &[&hiko_ext_aws::AWS]).expect_err("not embedded");
+        assert!(
+            err.contains("extension 'aws' needs Std.Result, which this artifact does not embed"),
+            "{err}"
+        );
     }
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]

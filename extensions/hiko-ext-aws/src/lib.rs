@@ -924,10 +924,6 @@ mod tests {
 
     use aws_sdk_cloudwatch::primitives::DateTime;
 
-    #[test]
-    fn requires_lists_every_library_import() {
-        assert_eq!(AWS.undeclared_imports(), Ok(vec![]));
-    }
     use aws_sdk_cloudwatch::types::{CompositeAlarm, MetricAlarm, StateValue};
 
     fn row(value: SendableValue) -> Vec<String> {
@@ -984,5 +980,10 @@ mod tests {
             row(composite_alarm_row(&composite)),
             ["service-down", "OK", "composite", "", ""]
         );
+    }
+
+    #[test]
+    fn requires_lists_every_library_import() {
+        assert_eq!(AWS.undeclared_imports(), Ok(vec![]));
     }
 }

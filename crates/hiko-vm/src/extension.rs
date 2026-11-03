@@ -115,7 +115,7 @@ impl Extension {
             if !extension.requires.is_empty() {
                 surface.requires.push(ExtensionRequires {
                     extension: extension.name,
-                    modules: extension.modules.iter().map(|(name, _)| *name).collect(),
+                    modules: extension.modules,
                     imports: extension.requires,
                 });
             }

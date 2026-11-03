@@ -69,8 +69,27 @@ pub struct ExtensionSurface {
 pub struct ExtensionRequires {
     pub extension: &'static str,
     /// The extension's own module import names.
-    pub modules: Vec<&'static str>,
+    pub modules: &'static [(&'static str, &'static str)],
     pub imports: &'static [&'static str],
+}
+
+/// The first of `imports` that `embedded` does not hold.
+pub fn missing_embedded(
+    embedded: &EmbeddedSources,
+    imports: &[&'static str],
+) -> Option<&'static str> {
+    imports
+        .iter()
+        .copied()
+        .find(|import| !embedded.modules.iter().any(|m| m.import_name == *import))
+}
+
+/// The error for an extension whose required module a sealed artifact does
+/// not embed.
+pub fn not_embedded(extension: &str, import: &str) -> String {
+    format!(
+        "extension '{extension}' needs {import}, which this artifact does not embed; build it with --lock and a lockfile that pins {import}"
+    )
 }
 
 impl ExtensionSurface {
@@ -82,7 +101,9 @@ impl ExtensionSurface {
     }
 
     fn requires_for(&self, module: &str) -> Option<&ExtensionRequires> {
-        self.requires.iter().find(|r| r.modules.contains(&module))
+        self.requires
+            .iter()
+            .find(|r| r.modules.iter().any(|(name, _)| *name == module))
     }
 
     fn has_builtin(&self, name: &str) -> bool {
@@ -1850,18 +1871,15 @@ impl Compiler {
             return Ok(());
         };
         let (extension, imports) = (requires.extension, requires.imports);
-        for import in imports {
-            if let Some(embedded) = self.loader_options.embedded {
-                if !embedded.modules.iter().any(|m| m.import_name == *import) {
-                    return Err(CompileError::codegen(format!(
-                        "extension '{extension}' needs {import}, which this artifact does not embed; build it with --lock and a lockfile that pins {import}"
-                    )));
-                }
-            } else {
-                self.check_locked_for_extension(extension, import)?;
-            }
+        match self.loader_options.embedded {
+            Some(embedded) => match missing_embedded(embedded, imports) {
+                Some(import) => Err(CompileError::codegen(not_embedded(extension, import))),
+                None => Ok(()),
+            },
+            None => imports
+                .iter()
+                .try_for_each(|import| self.check_locked_for_extension(extension, import)),
         }
-        Ok(())
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
@@ -1871,17 +1889,22 @@ impl Compiler {
         import: &str,
     ) -> Result<(), CompileError> {
         let (package, leaf) = split_import_name(import)?;
-        let fix = format!("add {package} to [dependencies] in hiko.toml and run 'hiko install'");
+        let fix = || format!("add {package} to [dependencies] in hiko.toml and run 'hiko install'");
         if self.entry_file.is_none() {
             return Err(CompileError::codegen(format!(
-                "extension '{extension}' needs {import}, which comes from a project's lockfile, but this program is not compiled from a file in a project; {fix}"
+                "extension '{extension}' needs {import}, which comes from a project's lockfile, but this program is not compiled from a file in a project; {}",
+                fix()
             )));
         }
-        let (lockfile, _) = self.ensure_import_loader(import).map_err(|e| match e {
-            CompileError::Codegen(message) => CompileError::codegen(format!(
-                "extension '{extension}' needs {import}: {message}; {fix}"
-            )),
-            other => other,
+        let (lockfile, _) = self.ensure_import_loader(import).map_err(|e| {
+            let message = match e {
+                CompileError::Codegen(message) => message,
+                other => format!("{other:?}"),
+            };
+            CompileError::codegen(format!(
+                "extension '{extension}' needs {import}: {message}; {}",
+                fix()
+            ))
         })?;
         if lockfile
             .packages
@@ -1891,7 +1914,8 @@ impl Compiler {
             Ok(())
         } else {
             Err(CompileError::codegen(format!(
-                "extension '{extension}' needs {import}, which hiko.lock.toml does not pin; {fix}"
+                "extension '{extension}' needs {import}, which hiko.lock.toml does not pin; {}",
+                fix()
             )))
         }
     }
