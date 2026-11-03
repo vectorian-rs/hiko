@@ -1,3 +1,4 @@
+import Std.List
 import Aws.CloudWatch
 import Sre.Health
 
@@ -17,15 +18,17 @@ structure CloudWatchAlarms = struct
       | "OK" => Health.Healthy
       | _ => Health.Unknown
 
-  fun to_check (name, state, source, updated, reason) =
-    (name, status state, updated, if reason = "" then source else source ^ ": " ^ reason)
-
-  fun map f xs =
-    Health.fold (fn (acc, x) => x :: acc) [] (Health.fold (fn (acc, x) => f x :: acc) [] xs)
+  fun to_check alarm =
+    (CloudWatch.name alarm,
+     status (CloudWatch.state alarm),
+     CloudWatch.updated alarm,
+     case CloudWatch.reason alarm of
+         "" => CloudWatch.source alarm
+       | reason => CloudWatch.source alarm ^ ": " ^ reason)
 
   (* Every alarm in the client's region, as a check. *)
   fun checks client =
     case CloudWatch.alarms client of
-        CloudWatch.Ok alarms => CloudWatch.Ok (map to_check alarms)
+        CloudWatch.Ok alarms => CloudWatch.Ok (List.map to_check alarms)
       | CloudWatch.Err message => CloudWatch.Err message
 end

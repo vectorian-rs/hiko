@@ -9,19 +9,35 @@ use hiko_vm::extension::Extension;
 
 const LINKED: &[&Extension] = &[&AWS];
 
-fn compile(source: &str, config: &RunConfig) -> CompiledProgram {
+fn repo() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn parse(source: &str) -> hiko_syntax::ast::Program {
     let tokens = hiko_syntax::lexer::Lexer::new(source, 0)
         .tokenize()
         .expect("lex");
-    let program = hiko_syntax::parser::Parser::new(tokens)
+    hiko_syntax::parser::Parser::new(tokens)
         .parse_program()
-        .expect("parse");
+        .expect("parse")
+}
+
+/// The extension surface `config` turns on, and the repository's packages
+/// without the module server or the user's cache.
+fn loader_options(config: &RunConfig) -> ModuleLoaderOptions {
     let configured = config.configured_extensions(LINKED).expect("linked");
-    let options = ModuleLoaderOptions {
+    ModuleLoaderOptions {
         extensions: Extension::compile_surface(&configured),
+        local_package_root: Some(repo().join("libraries")),
+        cache_dir: Some(
+            std::env::temp_dir().join(format!("hiko-ext-aws-test-cache-{}", std::process::id())),
+        ),
         ..Default::default()
-    };
-    Compiler::compile_with_options(program, options)
+    }
+}
+
+fn compile(source: &str, config: &RunConfig) -> CompiledProgram {
+    Compiler::compile_with_options(parse(source), loader_options(config))
         .expect("compile")
         .0
 }
@@ -112,25 +128,9 @@ fn an_enabled_cloudwatch_client_is_created_without_io() {
 
 #[test]
 fn the_sre_cloudwatch_example_type_checks() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = root.join("examples/sre/cloudwatch_alarms.hml");
+    let path = repo().join("examples/sre/cloudwatch_alarms.hml");
     let source = std::fs::read_to_string(&path).expect("example");
-    let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
-        .tokenize()
-        .expect("lex");
-    let program = hiko_syntax::parser::Parser::new(tokens)
-        .parse_program()
-        .expect("parse");
     let config = RunConfig::from_toml("[extensions.aws]\ncloudwatch = true\n").expect("config");
-    let configured = config.configured_extensions(LINKED).expect("linked");
-    let options = ModuleLoaderOptions {
-        extensions: Extension::compile_surface(&configured),
-        local_package_root: Some(root.join("libraries")),
-        cache_dir: Some(
-            std::env::temp_dir().join(format!("hiko-ext-aws-test-cache-{}", std::process::id())),
-        ),
-        ..Default::default()
-    };
-    Compiler::compile_file_with_options(program, &path, options)
+    Compiler::compile_file_with_options(parse(&source), &path, loader_options(&config))
         .unwrap_or_else(|e| panic!("{e:?}"));
 }

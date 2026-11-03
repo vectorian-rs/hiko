@@ -12,6 +12,12 @@ structure CloudWatch = struct
       last changed (RFC 3339, whole seconds), and the reason CloudWatch gives. *)
   type alarm = string * string * string * string * string
 
+  fun name (name, _, _, _, _) = name
+  fun state (_, state, _, _, _) = state
+  fun source (_, _, source, _, _) = source
+  fun updated (_, _, _, updated, _) = updated
+  fun reason (_, _, _, _, reason) = reason
+
   datatype ('a, 'e) result =
       Ok of 'a
     | Err of 'e

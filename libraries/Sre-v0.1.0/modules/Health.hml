@@ -1,3 +1,5 @@
+import Std.List
+
 (* Health checks: what every Sre source produces and Sre.Report prints.
 
    A check is a name, a status, when its status last changed, and a detail.
@@ -34,16 +36,14 @@ structure Health = struct
 
   fun status_of (_, status, _, _) = status
 
-  fun needs_attention check = urgency (status_of check) > 0
+  (* Statuses are not equality types, so they compare by urgency. *)
+  fun has_status status check = urgency (status_of check) = urgency status
 
-  fun fold f acc xs =
-    case xs of
-        [] => acc
-      | x :: rest => fold f (f (acc, x)) rest
+  fun needs_attention check = urgency (status_of check) > 0
 
   (* The worst status among `checks`; Healthy for none. *)
   fun overall checks =
-    fold
+    List.foldl
       (fn (worst, check) =>
         if urgency (status_of check) > urgency worst then status_of check else worst)
       Healthy
@@ -51,8 +51,5 @@ structure Health = struct
 
   (* How many of `checks` have `status`. *)
   fun count status checks =
-    fold
-      (fn (n, check) => if urgency (status_of check) = urgency status then n + 1 else n)
-      0
-      checks
+    List.foldl (fn (n, check) => if has_status status check then n + 1 else n) 0 checks
 end

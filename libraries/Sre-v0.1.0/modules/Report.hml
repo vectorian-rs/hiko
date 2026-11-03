@@ -1,3 +1,4 @@
+import Std.List
 import Sre.Health
 
 (* Health checks, reported the same way to people and to agents.
@@ -20,42 +21,30 @@ import Sre.Health
    Code that reports needs the capabilities println, int_to_string,
    string_length, string_join and string_replace. The module calls those
    builtins directly: importing Std.Stdio or Std.String would need every
-   builtin those modules wrap. *)
+   builtin those modules wrap. Std.List wraps none. *)
 structure Report = struct
-  fun reverse xs = Health.fold (fn (acc, x) => x :: acc) [] xs
-
-  fun map f xs = reverse (Health.fold (fn (acc, x) => f x :: acc) [] xs)
-
-  fun filter keep xs =
-    reverse (Health.fold (fn (acc, x) => if keep x then x :: acc else acc) [] xs)
-
-  fun append (xs, ys) = Health.fold (fn (acc, x) => x :: acc) ys (reverse xs)
-
-  fun with_status status checks =
-    filter (fn check => Health.urgency (Health.status_of check) = Health.urgency status) checks
-
   (* Worst first; checks with the same status keep their order. *)
   fun ordered checks =
-    append (with_status Health.Critical checks,
-      append (with_status Health.Unknown checks,
-        append (with_status Health.Warning checks, with_status Health.Healthy checks)))
+    List.foldr
+      (fn (status, rest) => List.append (List.filter (Health.has_status status) checks) rest)
+      []
+      [Health.Critical, Health.Unknown, Health.Warning, Health.Healthy]
 
-  fun concat parts = string_join (parts, "")
+  (* `text` repeated `n` times, by doubling. *)
+  fun repeat (text, n) =
+    if n <= 0 then ""
+    else
+      let val half = repeat (text, n / 2)
+      in if n mod 2 = 0 then half ^ half else half ^ half ^ text end
 
-  fun pad_right width text =
-    if string_length text >= width then text else pad_right width (text ^ " ")
-
-  fun dashes width = string_replace (pad_right width "", " ", "-")
+  fun pad_right width text = text ^ repeat (" ", width - string_length text)
 
   (* A table cell: `|` escaped, line breaks as spaces. *)
   fun cell text =
     string_replace (string_replace (string_replace (text, "|", "\\|"), "\r", ""), "\n", " ")
 
-  fun widest (header, cells) =
-    Health.fold
-      (fn (width, text) => if string_length text > width then string_length text else width)
-      (string_length header)
-      cells
+  fun wider (width, text) =
+    if string_length text > width then string_length text else width
 
   (* `key=value` pairs; spaces in `source` become `-`, so every field is
      one word. *)
@@ -63,7 +52,7 @@ structure Report = struct
     string_join ([
       "status=" ^ Health.status_name (Health.overall checks),
       "source=" ^ string_replace (source, " ", "-"),
-      "total=" ^ int_to_string (Health.fold (fn (n, _) => n + 1) 0 checks),
+      "total=" ^ int_to_string (List.length checks),
       "crit=" ^ int_to_string (Health.count Health.Critical checks),
       "unknown=" ^ int_to_string (Health.count Health.Unknown checks),
       "warn=" ^ int_to_string (Health.count Health.Warning checks),
@@ -74,44 +63,42 @@ structure Report = struct
      then one row per check. *)
   fun table checks =
     let
+      val header = ("STATUS", "NAME", "SINCE", "DETAIL")
       val rows =
-        map (fn (name, status, since, detail) =>
+        List.map (fn (name, status, since, detail) =>
           (Health.status_name status, cell name, cell since, cell detail)) (ordered checks)
-      val w1 = widest ("STATUS", map (fn (a, _, _, _) => a) rows)
-      val w2 = widest ("NAME", map (fn (_, b, _, _) => b) rows)
-      val w3 = widest ("SINCE", map (fn (_, _, c, _) => c) rows)
-      val w4 = widest ("DETAIL", map (fn (_, _, _, d) => d) rows)
+      val (w1, w2, w3, w4) =
+        List.foldl
+          (fn ((w1, w2, w3, w4), (a, b, c, d)) =>
+            (wider (w1, a), wider (w2, b), wider (w3, c), wider (w4, d)))
+          (0, 0, 0, 0)
+          (header :: rows)
       fun line (a, b, c, d) =
-        concat ["| ", pad_right w1 a, " | ", pad_right w2 b, " | ", pad_right w3 c,
-          " | ", pad_right w4 d, " |"]
+        string_join (["|", pad_right w1 a, "|", pad_right w2 b, "|", pad_right w3 c,
+          "|", pad_right w4 d, "|"], " ")
     in
-      line ("STATUS", "NAME", "SINCE", "DETAIL")
-        :: line (dashes w1, dashes w2, dashes w3, dashes w4)
-        :: map line rows
+      line header
+        :: line (repeat ("-", w1), repeat ("-", w2), repeat ("-", w3), repeat ("-", w4))
+        :: List.map line rows
     end
 
-  fun print_lines lines = Health.fold (fn ((), text) => println text) () lines
-
-  (* Print the summary line, then the table of the checks that are not OK
-     (only the summary when every check is OK); OK checks are counted in
-     the summary. Returns the overall status. *)
-  fun print (source, checks) =
+  (* Print the summary line, then the table of the checks `keep` selects
+     (only the summary when it selects none). Returns the overall status. *)
+  fun report keep (source, checks) =
     let
       val _ = println (summary (source, checks))
       val _ =
-        case filter Health.needs_attention checks of
+        case List.filter keep checks of
             [] => ()
-          | problems => print_lines (table problems)
+          | shown => List.foldl (fn ((), text) => println text) () (table shown)
     in
       Health.overall checks
     end
 
-  (* Like `print`, with every check in the table. *)
-  fun print_all (source, checks) =
-    let
-      val _ = println (summary (source, checks))
-      val _ = print_lines (table checks)
-    in
-      Health.overall checks
-    end
+  (* The summary, then the checks that are not OK; OK checks are counted in
+     the summary. *)
+  fun print (source, checks) = report Health.needs_attention (source, checks)
+
+  (* The summary, then every check. *)
+  fun print_all (source, checks) = report (fn _ => true) (source, checks)
 end
