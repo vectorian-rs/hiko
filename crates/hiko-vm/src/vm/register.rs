@@ -841,15 +841,21 @@ impl VM {
 
 #[cfg(test)]
 mod tests {
+    use super::super::register_check;
     use super::*;
-    use hiko_compile::compiler::Compiler;
-    use hiko_syntax::lexer::Lexer;
-    use hiko_syntax::parser::Parser;
 
     fn compile(src: &str) -> CompiledProgram {
-        let tokens = Lexer::new(src, 0).tokenize().expect("lex error");
-        let program = Parser::new(tokens).parse_program().expect("parse error");
-        Compiler::compile(program).expect("compile error").0
+        register_check::compile(src).expect("does not compile")
+    }
+
+    /// A VM for `program`, on the stack VM alone or with register code.
+    fn vm(program: &CompiledProgram, register: bool) -> VM {
+        let code = if register {
+            Arc::new(RegisterCode::translate(program))
+        } else {
+            Arc::default()
+        };
+        register_check::vm(program, &code)
     }
 
     /// Whether the body of function `name` translated. A function over a
@@ -871,12 +877,9 @@ mod tests {
     /// Run `src` on the stack VM alone and with register code, returning
     /// both outputs (or errors).
     fn run_both(src: &str, fuel: Option<u64>) -> [Result<Vec<String>, String>; 2] {
+        let program = compile(src);
         [false, true].map(|register| {
-            let mut vm = VM::new(compile(src));
-            if !register {
-                vm.register_code = Arc::default();
-            }
-            vm.enable_output_capture();
+            let mut vm = vm(&program, register);
             vm.fuel = fuel;
             match vm.run() {
                 Ok(()) => Ok(vm.get_output().to_vec()),
@@ -928,11 +931,9 @@ mod tests {
                 .contains("integer overflow (multiplication)")
         );
 
+        let program = compile(src);
         let spans = [false, true].map(|register| {
-            let mut vm = VM::new(compile(src));
-            if !register {
-                vm.register_code = Arc::default();
-            }
+            let mut vm = vm(&program, register);
             assert!(vm.run().is_err());
             vm.error_span()
         });
@@ -965,10 +966,7 @@ mod tests {
         let program = compile(FIB);
         for fuel in 0..400 {
             let depths = [false, true].map(|register| {
-                let mut vm = VM::new(program.clone());
-                if !register {
-                    vm.register_code = Arc::default();
-                }
+                let mut vm = vm(&program, register);
                 vm.fuel = Some(fuel);
                 let err = vm.run().expect_err("fib needs more fuel");
                 assert!(err.is_fuel_exhausted(), "{}", err.message);
@@ -1012,12 +1010,9 @@ mod tests {
         // A scheduler slice can grant less fuel than one register
         // instruction is worth; the program still finishes, in exactly as
         // many slices as on the stack VM.
+        let program = compile(TAK);
         let slices = [false, true].map(|register| {
-            let mut vm = VM::new(compile(TAK));
-            if !register {
-                vm.register_code = Arc::default();
-            }
-            vm.enable_output_capture();
+            let mut vm = vm(&program, register);
             let mut slices = 0u64;
             loop {
                 slices += 1;

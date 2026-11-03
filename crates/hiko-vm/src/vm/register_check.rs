@@ -11,7 +11,8 @@ use hiko_compile::compiler::Compiler;
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 
-use super::{RunResult, VM};
+use super::{RegisterCode, RunResult, VM};
+use crate::verify::verify_program;
 
 /// Fuel for one run; it bounds generated programs that never finish.
 const FUEL: u64 = 20_000;
@@ -180,16 +181,15 @@ fn program_from_bytes(bytes: &[u8]) -> String {
     };
     for f in 0..g.arities.len() {
         let params: Vec<String> = (0..g.arities[f]).map(|i| format!("p{i}")).collect();
-        let typed: Vec<String> = params.iter().map(|p| format!("{p} : int")).collect();
+        let typed = params
+            .iter()
+            .map(|p| format!("{p} : int"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let keyword = if f == 0 { "fun" } else { "and" };
         // The result is annotated too: a function whose result comes only
         // from recursive calls would leave its operators unresolved.
-        write!(
-            g.out,
-            "{keyword} f{f} ({}) = (if p0 < 1 then ",
-            typed.join(", ")
-        )
-        .unwrap();
+        write!(g.out, "{keyword} f{f} ({typed}) = (if p0 < 1 then ").unwrap();
         g.scope = params;
         g.calls = false;
         g.expr(2);
@@ -211,19 +211,42 @@ fn program_from_bytes(bytes: &[u8]) -> String {
 
 /// Compile `src` without type checking, as the VM tests do. `None` when
 /// it does not compile.
-fn compile(src: &str) -> Option<CompiledProgram> {
+pub(super) fn compile(src: &str) -> Option<CompiledProgram> {
     let tokens = Lexer::new(src, 0).tokenize().ok()?;
     let program = Parser::new(tokens).parse_program().ok()?;
     Some(Compiler::compile(program).ok()?.0)
 }
 
-fn vm(program: &CompiledProgram, register: bool) -> VM {
-    let mut vm = VM::new(program.clone());
-    if !register {
-        vm.register_code = Arc::default();
-    }
+/// A VM for a verified `program` with all builtins and captured output,
+/// running `code`: the program's register code, or none for the stack VM
+/// alone.
+pub(super) fn vm(program: &CompiledProgram, code: &Arc<RegisterCode>) -> VM {
+    let mut vm = VM::from_parts(program.clone(), None, Arc::clone(code));
+    vm.register_builtins();
     vm.enable_output_capture();
     vm
+}
+
+/// The register code for `program`, and none, in the order the checks
+/// compare them: stack VM first.
+fn both_codes(program: &CompiledProgram) -> Result<[Arc<RegisterCode>; 2], String> {
+    verify_program(program).map_err(|e| format!("does not verify: {e}"))?;
+    Ok([Arc::default(), Arc::new(RegisterCode::translate(program))])
+}
+
+/// `Err` naming `what` when the stack VM's result differs from the
+/// register VM's.
+fn same<T: PartialEq + std::fmt::Debug>(
+    what: impl std::fmt::Display,
+    [stack, register]: [T; 2],
+) -> Result<(), String> {
+    if stack == register {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}:\n stack:    {stack:?}\n register: {register:?}"
+        ))
+    }
 }
 
 /// Everything a run shows from outside: the output, the error, where the
@@ -242,8 +265,8 @@ struct Outcome {
     frames: usize,
 }
 
-fn run(program: &CompiledProgram, register: bool, fuel: u64) -> Outcome {
-    let mut vm = vm(program, register);
+fn run(program: &CompiledProgram, code: &Arc<RegisterCode>, fuel: u64) -> Outcome {
+    let mut vm = vm(program, code);
     vm.fuel = Some(fuel);
     let error = vm.run().err();
     let span = match &error {
@@ -260,8 +283,12 @@ fn run(program: &CompiledProgram, register: bool, fuel: u64) -> Outcome {
 
 /// Run in slices of `size` fuel until the program stops or `FUEL` is
 /// spent; the slice count and the end state.
-fn run_slices(program: &CompiledProgram, register: bool, size: u64) -> (u64, String, Vec<String>) {
-    let mut vm = vm(program, register);
+fn run_slices(
+    program: &CompiledProgram,
+    code: &Arc<RegisterCode>,
+    size: u64,
+) -> (u64, String, Vec<String>) {
+    let mut vm = vm(program, code);
     let mut slices = 0;
     let end = loop {
         slices += 1;
@@ -277,23 +304,18 @@ fn run_slices(program: &CompiledProgram, register: bool, size: u64) -> (u64, Str
 /// finish or a fuel limit, at a small fuel limit taken from `seed` (where
 /// it stops, and in which frame), and run in small scheduler slices.
 fn check(program: &CompiledProgram, seed: u8) -> Result<(), String> {
-    let small = u64::from(seed) * 7;
-    for fuel in [FUEL, small] {
-        let [stack, register] = [false, true].map(|r| run(program, r, fuel));
-        if stack != register {
-            return Err(format!(
-                "fuel {fuel}:\n stack:    {stack:?}\n register: {register:?}"
-            ));
-        }
+    let codes = both_codes(program)?;
+    for fuel in [FUEL, u64::from(seed) * 7] {
+        same(
+            format_args!("fuel {fuel}"),
+            codes.each_ref().map(|c| run(program, c, fuel)),
+        )?;
     }
     let size = 1 + u64::from(seed % 16);
-    let [stack, register] = [false, true].map(|r| run_slices(program, r, size));
-    if stack != register {
-        return Err(format!(
-            "slices of {size}:\n stack:    {stack:?}\n register: {register:?}"
-        ));
-    }
-    Ok(())
+    same(
+        format_args!("slices of {size}"),
+        codes.each_ref().map(|c| run_slices(program, c, size)),
+    )
 }
 
 /// Generate a program from `bytes` and check it on both VMs. The error
@@ -308,7 +330,6 @@ pub fn check_bytes(bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::RegisterCode;
     use super::*;
     use proptest::prelude::*;
 
