@@ -82,7 +82,7 @@ impl VM {
             proto_idx,
             ip: 0,
             base: 0,
-            captures: Arc::from(captures),
+            captures: Captures::from(Arc::<[Value]>::from(captures)),
         });
     }
 
@@ -203,7 +203,7 @@ impl VM {
             proto_idx: usize::MAX,
             ip: 0,
             base: 0,
-            captures: Arc::from([]),
+            captures: Captures::Empty,
         });
         self.dispatch()
     }
@@ -246,7 +246,7 @@ impl VM {
                 proto_idx: usize::MAX,
                 ip: 0,
                 base: 0,
-                captures: Arc::from([]),
+                captures: Captures::Empty,
             });
         }
 

@@ -451,7 +451,7 @@ impl VM {
                             self.stack.truncate(base + arity);
                             self.frames[fi].ip = 0;
                             self.frames[fi].proto_idx = closure_proto;
-                            self.frames[fi].captures = closure_captures;
+                            self.frames[fi].captures = closure_captures.into();
                         }
                         Value::Builtin(id) => {
                             self.call_builtin(id, callee_pos, arity)?;
@@ -478,7 +478,7 @@ impl VM {
                         proto_idx,
                         ip: 0,
                         base: arg_start,
-                        captures: self.no_captures.clone(),
+                        captures: Captures::Empty,
                     });
                 }
 
@@ -527,7 +527,7 @@ impl VM {
                     self.stack.truncate(base + arity);
                     self.frames[fi].ip = 0;
                     self.frames[fi].proto_idx = proto_idx;
-                    self.frames[fi].captures = self.no_captures.clone();
+                    self.frames[fi].captures = Captures::Empty;
                 }
 
                 Op::Return => {
@@ -732,7 +732,7 @@ impl VM {
             proto_idx: closure_proto,
             ip: 0,
             base: callee_pos,
-            captures: closure_captures,
+            captures: closure_captures.into(),
         });
         Ok(())
     }
