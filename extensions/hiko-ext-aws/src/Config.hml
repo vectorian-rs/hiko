@@ -1,18 +1,20 @@
 (*!
  * AWS configuration, from the hiko-ext-aws extension.
  *
- * A config records where credentials come from. Nothing is loaded until a
- * service call needs it, on the I/O pool. The run config's
- * `[extensions.aws]` table lists the SSO profiles a script may use and
- * whether it may use the instance profile.
+ * A config records where credentials come from: one source, never the
+ * SDK's default chain, so environment variables and other providers are
+ * not consulted. Nothing is loaded until a service call needs it, on the
+ * I/O pool. The run config's `[extensions.aws]` table lists the SSO
+ * profiles a script may use and whether it may use the instance profile.
  *)
 structure Config = struct
   (*! An AWS configuration. *)
   type config = aws_config
 
-  (*! Credentials from the named SSO profile. *)
+  (*! Credentials and region from the named profile in the AWS config and
+   * credentials files only. A profile that does not exist is an error. *)
   fun sso_profile profile = aws_config_sso_profile profile
 
-  (*! Credentials from the instance profile (the ambient provider chain). *)
+  (*! Credentials and region from the instance metadata service only. *)
   fun instance_profile () = aws_config_instance_profile ()
 end

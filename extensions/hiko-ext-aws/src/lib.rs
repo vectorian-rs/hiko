@@ -198,12 +198,72 @@ fn block_on<T>(
         .block_on(f)
 }
 
+/// The SDK config for `auth`, with exactly one source for credentials and
+/// one for the region; the SDK's default chains, which try environment
+/// variables, web identity, ECS and the instance metadata service in turn,
+/// are not used:
+///
+/// - `SsoProfile`: the named profile in the AWS config and credentials
+///   files, for both. What the profile itself says (SSO, `source_profile`,
+///   `credential_process`, `credential_source`) applies; a profile that does
+///   not exist is an error.
+/// - `InstanceProfile`: the instance metadata service, for both.
+///
+/// Other settings (endpoint URL, FIPS, retries, timeouts) still come from
+/// the environment and the profile, as the SDK reads them.
 async fn load_sdk_config(auth: &Auth) -> aws_config::SdkConfig {
+    use aws_config::imds::{credentials::ImdsCredentialsProvider, region::ImdsRegionProvider};
+    use aws_config::profile::{ProfileFileCredentialsProvider, ProfileFileRegionProvider};
     let loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
     match auth {
-        Auth::SsoProfile(profile) => loader.profile_name(profile).load().await,
-        Auth::InstanceProfile => loader.load().await,
+        Auth::SsoProfile(profile) => {
+            loader
+                .profile_name(profile)
+                .credentials_provider(
+                    ProfileFileCredentialsProvider::builder()
+                        .profile_name(profile)
+                        .build(),
+                )
+                .region(
+                    ProfileFileRegionProvider::builder()
+                        .profile_name(profile)
+                        .build(),
+                )
+                .load()
+                .await
+        }
+        Auth::InstanceProfile => {
+            loader
+                .credentials_provider(ImdsCredentialsProvider::builder().build())
+                .region(ImdsRegionProvider::builder().build())
+                .load()
+                .await
+        }
     }
+}
+
+/// Resolve credentials as a client made from `sso_profile profile`
+/// (`Some`) or `instance_profile ()` (`None`) would, for
+/// `tests/credentials.rs`: whether a source outside the one chosen is used
+/// can only be seen from what is resolved.
+#[doc(hidden)]
+pub fn resolve_credentials(profile: Option<&str>) -> Result<(), String> {
+    use aws_sdk_s3::config::ProvideCredentials;
+    let auth = match profile {
+        Some(profile) => Auth::SsoProfile(profile.to_string()),
+        None => Auth::InstanceProfile,
+    };
+    block_on("resolve_credentials", async {
+        let config = load_sdk_config(&auth).await;
+        let provider = config
+            .credentials_provider()
+            .ok_or("no credentials provider")?;
+        provider
+            .provide_credentials()
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    })
 }
 
 /// `(ok, payload, error)`, with `empty` as the payload on failure.
