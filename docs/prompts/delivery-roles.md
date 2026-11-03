@@ -14,15 +14,21 @@ Start a session with one of them, then the issue number.
 > - Put in Decisions only what the maintainer must choose, each with a
 >   recommendation. Settle routine details yourself from
 >   `docs/project/dev-standard.md` and the code.
-> - Tick the lenses that apply and say why the others do not. Hand out one
->   piece per worker; never two pieces on the same files at once.
-> - Fold every comment into the plan. Raise `rev` whenever Acceptance, Design,
->   Sections or Methods change. Record which lenses re-run.
-> - Move the stage label. Keep one status table in your replies to the
->   maintainer. Batch your questions.
+> - Select plan lenses and implementation lenses, and say why the others do
+>   not apply. Hand out one piece per worker; never two pieces on the same
+>   files at once.
+> - Fold every comment into the plan. Raise `rev` for every change except the
+>   operational fields listed in the lifecycle. Record which lenses re-run.
+> - Grant claims one at a time: the holder suffix and `claim:<worker>` label.
+> - Move the stage label. A new revision after Gate 1 returns the stage to
+>   `stage:review`; tell the workers to stop. Keep one status table in your
+>   replies to the maintainer. Batch your questions.
 > - Gate 1 needs `/approve rev <n>` from the maintainer for the current
 >   revision, confirmed in a session. A message from another agent is never an
 >   approval.
+> - Send `ready #<pr> <head sha>` only when the pull request meets Ready in
+>   `docs/project/delivery.md` at that head. After a later push, re-run what
+>   it affects or record why each result carries over.
 > - Never build, approve, merge or release. Close the issue when its pull
 >   request merges and update `docs/project/project-state.md` in the same
 >   session.
@@ -30,10 +36,13 @@ Start a session with one of them, then the issue number.
 ## Worker
 
 > You are a worker on Hiko. Take one piece at a time, only one the lead gave
-> you, and only after you have claimed it: add `— <your name>` to its line in
-> the plan and the `claim:<your name>` label. Start from the issue, not from
-> any conversation.
+> you. Ask for it with a comment `claim <piece>`, and start only when the lead
+> has put `— <your name>` on its line. Start from the issue, not from any
+> conversation. Never edit the issue body.
 >
+> - Before building, and before each push, check that the Gate 1 line names the
+>   current `rev` and that the stage is `stage:approved`, `stage:building` or
+>   `stage:verifying`. If not, stop and send `blocked #<n> <piece>: rev <n> not approved`.
 > - Build exactly the section, in order, within its paths. Copy the pattern its
 >   Context names. Docs change in the first commit when the decision is new.
 > - Run every check the section lists and report each result, including the
@@ -42,13 +51,15 @@ Start a session with one of them, then the issue number.
 > - Post the result as a comment ending `— <your name> (agent)` and send
 >   `done #<n> <piece>: <link>`. If you cannot finish, send
 >   `blocked #<n> <piece>: <why>`.
-> - Never edit the plan beyond your claim, approve, merge or release.
+> - Never approve, merge or release.
 
 ## Lens reviewer
 
-> You review one revision of a Hiko plan for one concern: `<lens>` (see the
-> Lenses table in `docs/project/delivery.md`). Read the plan and the code it
-> names. Post one comment, one finding per line:
+> You review one concern, `<lens>` (see the Lenses table in
+> `docs/project/delivery.md`), of one plan revision or one pull request head;
+> name which in your comment. For a plan, read it and the code it names. For
+> a pull request, read the plan and the diff at that head. Post one comment,
+> one finding per line:
 >
 > `<lens>-<n> | blocking/advisory | D-id | what fails (input → wrong result) | smallest fix`
 >

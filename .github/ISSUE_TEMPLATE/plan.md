@@ -4,7 +4,8 @@ about: One unit of work, from plan to release (docs/project/delivery.md)
 labels: stage:draft
 ---
 
-<!-- Only the lead edits this issue. Everything else is a comment. -->
+<!-- Only the lead edits this issue. Everything else is a comment.
+     Every change raises rev, except Next action, claims, Context, Gate 1 and Ready. -->
 
 **rev 1** · stage: draft · unit: language | runtime | builtin | stdlib | tooling | performance
 
@@ -41,8 +42,8 @@ labels: stage:draft
 
 ## Reviews
 
-- [ ] soundness · [ ] grammar · [ ] semantics · [ ] explicit · [ ] diagnostics · [ ] security
-- [ ] concurrency · [ ] performance · [ ] compat · [ ] simplicity · [ ] correctness
+- Plan lenses: [ ] soundness · [ ] grammar · [ ] semantics · [ ] explicit · [ ] diagnostics · [ ] security · [ ] concurrency · [ ] performance · [ ] compat
+- Implementation lenses: [x] simplicity · [x] correctness · [ ] soundness · [ ] grammar · [ ] semantics · [ ] explicit · [ ] diagnostics · [ ] security · [ ] concurrency · [ ] performance · [ ] compat
 - Not run, and why: …
 
 ## Sections
@@ -67,6 +68,10 @@ labels: stage:draft
 ## Gate 1
 
 Approved: rev `<n>` by the maintainer, `<date>`, in `<session or comment link>`.
+
+## Ready
+
+PR #`<n>` at head `<sha>`: final verification `<link>`.
 
 ## Rollout
 
