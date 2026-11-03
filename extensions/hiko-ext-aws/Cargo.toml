@@ -24,5 +24,5 @@ tokio = { version = "1", features = ["rt", "time"] }
 aws-sdk-cloudwatch = { version = "1.140.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 
 [dev-dependencies]
-hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false }
+hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false, features = ["loader-all", "builtin-default"] }
 hiko-syntax = { version = "0.8.0", path = "../../crates/hiko-syntax" }

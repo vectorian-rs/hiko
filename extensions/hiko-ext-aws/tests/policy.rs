@@ -109,3 +109,28 @@ fn an_enabled_cloudwatch_client_is_created_without_io() {
     )
     .expect("no I/O happens before a listing");
 }
+
+#[test]
+fn the_sre_cloudwatch_example_type_checks() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples/sre/cloudwatch_alarms.hml");
+    let source = std::fs::read_to_string(&path).expect("example");
+    let tokens = hiko_syntax::lexer::Lexer::new(&source, 0)
+        .tokenize()
+        .expect("lex");
+    let program = hiko_syntax::parser::Parser::new(tokens)
+        .parse_program()
+        .expect("parse");
+    let config = RunConfig::from_toml("[extensions.aws]\ncloudwatch = true\n").expect("config");
+    let configured = config.configured_extensions(LINKED).expect("linked");
+    let options = ModuleLoaderOptions {
+        extensions: Extension::compile_surface(&configured),
+        local_package_root: Some(root.join("libraries")),
+        cache_dir: Some(
+            std::env::temp_dir().join(format!("hiko-ext-aws-test-cache-{}", std::process::id())),
+        ),
+        ..Default::default()
+    };
+    Compiler::compile_file_with_options(program, &path, options)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+}

@@ -37,3 +37,6 @@ path = "policies/work-demo-tight.policy.toml"
 
 [policies.work-demo-enough]
 path = "policies/work-demo-enough.policy.toml"
+
+[policies.sre-cloudwatch]
+path = "policies/sre-cloudwatch.policy.toml"

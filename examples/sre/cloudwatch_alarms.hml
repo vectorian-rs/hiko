@@ -1,0 +1,26 @@
+(* Check this account's CloudWatch alarms, for people and agents alike: one
+   summary line, then a Markdown table of the alarms that need attention,
+   worst first. The exit status says the same thing: 0 OK, 2 CRIT (an alarm
+   is firing), 3 UNKNOWN (an alarm has insufficient data, or the alarms
+   could not be read).
+
+   Needs a hiko built with `--features ext-aws`, an SSO session for the
+   profile (`aws sso login --profile dev`), and a run config that allows the
+   profile: policies/sre-cloudwatch.policy.toml lists `dev`.
+
+     AWS_PROFILE=dev hiko run --policy sre-cloudwatch examples/sre/cloudwatch_alarms.hml *)
+import Aws.Config
+import Aws.CloudWatch
+import Sre.Health
+import Sre.Report
+import Sre.CloudWatchAlarms
+
+val client = CloudWatch.client (Config.sso_profile (getenv "AWS_PROFILE"))
+
+val status =
+  case CloudWatchAlarms.checks client of
+      CloudWatch.Ok checks => Report.print ("cloudwatch", checks)
+    | CloudWatch.Err message =>
+        Report.print ("cloudwatch", [("cloudwatch", Health.Unknown, "", message)])
+
+val _ = exit (Health.exit_code status)
