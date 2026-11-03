@@ -209,9 +209,13 @@ rest = "any"   # default "none"
   open while it runs, so the file's inode cannot be freed and reused. A
   file created at the same path, by deleting and recreating it or by
   renaming over it, always has a different inode, and `exec` refuses it.
-  This does not depend on timestamps (#160). An executable the VM cannot
-  open (mode `--x`, or no file descriptors left) is not held open; it is
-  checked by device, inode, change time and size only.
+  This does not depend on timestamps (#160). An execute-only executable
+  (mode `--x`), which the VM cannot open, is not held open; it is checked by
+  device, inode, change time and size only. Any other error opening it
+  (no file descriptors left, say) leaves the command out of the policy, and
+  a refusal lists the error.
+- **A refusal does not show the arguments**, only how many there were:
+  arguments can hold secrets, and refusals end up in logs.
 - **Arguments match as strings, exactly.** There is no globbing, trimming or
   splitting: `"run check"` is one argument and does not match `"run",
   "check"`; an empty string is an argument. With `rest = "any"`, only
@@ -229,12 +233,15 @@ What the allowlist does **not** guarantee:
   link, an extended attribute) makes `exec` refuse it until the VM is
   started again, with an error that says the file changed. Keep allowed executables
   in directories, and as files, that the script's user cannot write.
-- **A replacement between the check and the spawn.** The VM checks the path
-  just before it spawns, and then the OS opens the path again. A file swapped
-  in during that short window runs. macOS cannot run a program through an
-  open descriptor (`execve` of `/dev/fd/N` fails with `EACCES`), so the
-  window is not closed portably. The defence is the same: the script's user
-  must not be able to write to the allowed executable's directory.
+- **A replacement between the check and the spawn, except on Linux.** On
+  Linux the VM runs the file it holds open, through `/proc/self/fd`, so a
+  file swapped in at the path does not run. Elsewhere, and on Linux for a
+  script (`#!`, whose interpreter opens the path itself) or without `/proc`,
+  the VM checks the path just before it spawns and the OS then opens the
+  path again; a file swapped in during that short window runs. macOS cannot
+  run a program through an open descriptor (`execve` of `/dev/fd/N` fails
+  with `EACCES`). The defence is the same: the script's user must not be
+  able to write to the allowed executable's directory.
 - **What the program does.** Arguments are fixed, but the program itself
   may read files, environment variables or configuration that the script can
   change.
