@@ -445,6 +445,23 @@ fn decode_instruction(
                 delta: -1,
             }
         }
+        Op::JumpIfLocalNotTag => {
+            let slot = read_u16(chunk, ip, "JumpIfLocalNotTag")? as usize;
+            if slot >= n_locals {
+                return Err(format!(
+                    "JumpIfLocalNotTag at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
+            read_u16(chunk, ip, "JumpIfLocalNotTag")?;
+            let offset = read_i16(chunk, ip, "JumpIfLocalNotTag")?;
+            let target = read_relative_target(*ip, offset, "JumpIfLocalNotTag")?;
+            successors.push(target);
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: slot + 1,
+                delta: 0,
+            }
+        }
         Op::JumpIfNotEq
         | Op::JumpIfEq
         | Op::JumpIfNotLtInt
@@ -1132,6 +1149,71 @@ mod tests {
             let err = verify_program(&out_of_range).expect_err("slot 5 is out of range");
             assert!(err.message().contains("local slot 5"), "{}", err.message());
         }
+    }
+
+    #[test]
+    fn local_tag_jumps_check_slot_and_target() {
+        // Unit; JumpIfLocalNotTag slot 0, tag 0, offset 0; Halt
+        let ok = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::JumpIfLocalNotTag as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Op::Halt as u8,
+            ],
+            1,
+            Vec::new(),
+        );
+        verify_program(&ok).unwrap_or_else(|e| panic!("{e}"));
+
+        let not_on_stack = program_with_effects(
+            vec![
+                Op::JumpIfLocalNotTag as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Op::Halt as u8,
+            ],
+            1,
+            Vec::new(),
+        );
+        let err = verify_program(&not_on_stack).expect_err("slot 0 is not on the stack");
+        assert!(
+            err.message().contains("requires stack depth"),
+            "{}",
+            err.message()
+        );
+
+        // Offset -2 lands inside the instruction.
+        let inside = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::JumpIfLocalNotTag as u8,
+                0,
+                0,
+                0,
+                0,
+                0xfe,
+                0xff,
+                Op::Halt as u8,
+            ],
+            1,
+            Vec::new(),
+        );
+        let err = verify_program(&inside).expect_err("target inside an instruction");
+        assert!(
+            err.message().contains("instruction boundary"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]

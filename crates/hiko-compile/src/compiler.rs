@@ -1532,10 +1532,9 @@ impl Compiler {
         Ok(self.add_local("_tmp".to_string()))
     }
 
-    /// Emit tag check: GetLocal slot, JumpIfNotTag tag → fail.
+    /// Emit tag check: JumpIfLocalNotTag slot tag → fail.
     fn emit_tag_check(&mut self, slot: u16, tag: u16, fail_jumps: &mut Vec<(usize, usize)>) {
-        self.emit_get_local(slot);
-        let jmp = self.chunk().emit_tag_jump(tag);
+        let jmp = self.chunk().emit_local_tag_jump(slot, tag);
         fail_jumps.push((jmp, self.ctx().locals.len()));
     }
 
@@ -3971,8 +3970,11 @@ mod tests {
                 .iter()
                 .find(|proto| proto.name.as_deref() == Some(name))
                 .expect("function proto");
-            assert!(proto.chunk.ops().contains(&Op::JumpIfNotTag), "{name}");
-            assert!(!proto.chunk.ops().contains(&Op::Eq), "{name}");
+            let ops = proto.chunk.ops();
+            // The tag test reads the scrutinee's local directly.
+            assert!(ops.contains(&Op::JumpIfLocalNotTag), "{name}: {ops:?}");
+            assert!(!ops.contains(&Op::JumpIfNotTag), "{name}: {ops:?}");
+            assert!(!ops.contains(&Op::Eq), "{name}");
         }
     }
 

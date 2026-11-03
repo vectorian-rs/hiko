@@ -350,6 +350,25 @@ impl VM {
                         self.frames[fi].ip = target;
                     }
                 }
+                Op::JumpIfLocalNotTag => {
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
+                    let tag = u16::from_le_bytes(operand!(fi, 2));
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
+                    let idx = self.local_stack_index(fi, slot, "JumpIfLocalNotTag")?;
+                    let actual = match self.stack[idx] {
+                        Value::Heap(r) => match self.heap_get(r)? {
+                            HeapObject::Data { tag, .. } => *tag,
+                            _ => return Err(error("JumpIfLocalNotTag: expected data value")),
+                        },
+                        _ => return Err(error("JumpIfLocalNotTag: expected data value")),
+                    };
+                    if actual != tag {
+                        let ip = self.frames[fi].ip;
+                        let target =
+                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfLocalNotTag")?;
+                        self.frames[fi].ip = target;
+                    }
+                }
                 Op::JumpIfNotEq | Op::JumpIfEq => {
                     let offset = i16::from_le_bytes(operand!(fi, 2));
                     let b = self.pop()?;
