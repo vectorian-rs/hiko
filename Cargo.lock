@@ -1351,13 +1351,19 @@ name = "hiko-ext-aws"
 version = "0.8.0"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
+ "aws-runtime",
  "aws-sdk-s3",
  "aws-sdk-sqs",
+ "aws-sdk-sso",
+ "aws-types",
  "hiko-builtin-meta",
  "hiko-compile",
  "hiko-syntax",
  "hiko-vm",
  "serde",
+ "serde_json",
+ "sha1 0.10.7",
  "tokio",
  "toml",
 ]
