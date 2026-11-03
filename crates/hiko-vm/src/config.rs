@@ -140,8 +140,40 @@ struct HttpLeaf {
 struct ExecLeaf {
     #[serde(default)]
     enabled: bool,
+    /// Commands allowed with any arguments.
     #[serde(default)]
     allowed_commands: Vec<String>,
+    /// `[[capabilities.exec.exec.allow]]`: commands allowed only with these
+    /// arguments.
+    #[serde(default)]
+    allow: Vec<ExecAllowLeaf>,
+}
+
+/// One `allow` rule: the exact argv, or with `rest = "any"` a fixed prefix.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecAllowLeaf {
+    argv: Vec<String>,
+    #[serde(default)]
+    rest: ExecRest,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ExecRest {
+    #[default]
+    None,
+    Any,
+}
+
+impl ExecAllowLeaf {
+    #[cfg(feature = "builtin-exec")]
+    fn rule(&self) -> crate::builder::ExecArgvRule {
+        crate::builder::ExecArgvRule {
+            argv: self.argv.clone(),
+            rest_any: self.rest == ExecRest::Any,
+        }
+    }
 }
 
 macro_rules! enabled_family {
@@ -519,6 +551,7 @@ impl ExecCapabilities {
             {
                 return builder.with_exec(VmExecPolicy {
                     allowed: leaf.allowed_commands.clone(),
+                    rules: leaf.allow.iter().map(ExecAllowLeaf::rule).collect(),
                 });
             }
         }
@@ -529,11 +562,24 @@ impl ExecCapabilities {
         if let Some(leaf) = &self.exec
             && leaf.enabled
         {
+            let rules: Vec<String> = leaf
+                .allow
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "hiko_vm::builder::ExecArgvRule {{ argv: vec![{}], rest_any: {} }}",
+                        rust_string_vec(&rule.argv),
+                        rule.rest == ExecRest::Any
+                    )
+                })
+                .collect();
             out.push_str(&format!(
                 "            .with_exec(hiko_vm::builder::ExecPolicy {{\n\
                  \x20               allowed: vec![{}],\n\
+                 \x20               rules: vec![{}],\n\
                  \x20           }})\n",
                 rust_string_vec(&leaf.allowed_commands),
+                rules.join(", "),
             ));
         }
     }
@@ -716,6 +762,17 @@ fn validate_config_paths(config: &RunConfig) -> Result<(), String> {
         config.capabilities.filesystem.glob.as_ref(),
         config.capabilities.filesystem.walk_dir.as_ref(),
     ];
+
+    if let Some(exec) = &config.capabilities.exec.exec {
+        for rule in &exec.allow {
+            if rule.argv.is_empty() || rule.argv[0].is_empty() {
+                return Err("exec allow rules need a command: argv must not be empty".into());
+            }
+            if rule.argv.iter().any(|arg| arg.contains('\0')) {
+                return Err(format!("exec allow rule {:?} contains NUL", rule.argv));
+            }
+        }
+    }
 
     for leaf in filesystem_families.into_iter().flatten() {
         for folder in &leaf.folders {

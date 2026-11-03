@@ -14,6 +14,7 @@ url = "http://127.0.0.1:8000"
 [dependencies]
 Hash = { version = "0.1.0", registry = "local" }
 Http = { version = "0.1.0", registry = "local" }
+Sre = { version = "0.1.0", registry = "local" }
 Std = { version = "0.1.0", registry = "local" }
 
 [policies.docs-writer]
@@ -36,3 +37,6 @@ path = "policies/work-demo-tight.policy.toml"
 
 [policies.work-demo-enough]
 path = "policies/work-demo-enough.policy.toml"
+
+[policies.sre-cloudwatch]
+path = "policies/sre-cloudwatch.policy.toml"

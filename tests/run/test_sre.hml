@@ -1,0 +1,70 @@
+import Sre.Health
+import Sre.Report
+
+fun check (actual, expected) =
+  assert_eq (actual, expected, "expected " ^ expected ^ ", got " ^ actual)
+
+fun check_int (actual, expected) =
+  assert_eq (int_to_string actual, int_to_string expected, "exit code")
+
+val checks = [
+  ("db", Health.Healthy, "2026-11-03T09:00:00Z", "fine"),
+  ("api-5xx", Health.Critical, "2026-11-03T10:00:00Z", "AWS/ELB/5XX: Threshold | crossed"),
+  ("lag", Health.Unknown, "", ""),
+  ("disk", Health.Warning, "2026-11-03T08:00:00Z", "line1\nline2")
+]
+
+(* Overall status and exit codes: CRIT beats UNKNOWN beats WARN beats OK. *)
+val _ = check (Health.status_name (Health.overall checks), "CRIT")
+val _ = check (Health.status_name (Health.overall []), "OK")
+val _ = check (Health.status_name (Health.overall [("a", Health.Warning, "", ""), ("b", Health.Unknown, "", "")]), "UNKNOWN")
+val _ = check_int (Health.exit_code Health.Healthy, 0)
+val _ = check_int (Health.exit_code Health.Warning, 1)
+val _ = check_int (Health.exit_code Health.Critical, 2)
+val _ = check_int (Health.exit_code Health.Unknown, 3)
+
+(* The summary counts every check; spaces in the source become dashes. *)
+val _ = check (Report.summary ("cloud watch", checks),
+  "status=CRIT source=cloud-watch total=4 crit=1 unknown=1 warn=1 ok=1")
+val _ = check (Report.summary ("empty", []),
+  "status=OK source=empty total=0 crit=0 unknown=0 warn=0 ok=0")
+
+(* The table: worst first, columns padded, `|` escaped, line breaks as
+   spaces. *)
+val _ = check (string_join (Report.table checks, "\n"), string_join ([
+  "| STATUS  | NAME    | SINCE                | DETAIL                            |",
+  "| ------- | ------- | -------------------- | --------------------------------- |",
+  "| CRIT    | api-5xx | 2026-11-03T10:00:00Z | AWS/ELB/5XX: Threshold \\| crossed |",
+  "| UNKNOWN | lag     |                      |                                   |",
+  "| WARN    | disk    | 2026-11-03T08:00:00Z | line1 line2                       |",
+  "| OK      | db      | 2026-11-03T09:00:00Z | fine                              |"
+], "\n"))
+
+(* Checks with the same status keep their order. *)
+val _ = check (string_join (Report.table [("b", Health.Critical, "", ""), ("a", Health.Critical, "", "")], "\n"),
+  string_join ([
+    "| STATUS | NAME | SINCE | DETAIL |",
+    "| ------ | ---- | ----- | ------ |",
+    "| CRIT   | b    |       |        |",
+    "| CRIT   | a    |       |        |"
+  ], "\n"))
+
+(* A cell splits back exactly: `\` is written `\\`, then `|` is written `\|`. *)
+val _ = check (Report.cell "a\\|b|c", "a\\\\\\|b\\|c")
+
+(* Every line break is one space: CRLF, a lone CR and LF. *)
+val _ = check (Report.cell "a\r\nb\rc\nd", "a b c d")
+
+(* Order comes from Health.urgency alone: CRIT, UNKNOWN, WARN, OK, and
+   checks of one status keep their order. *)
+val _ =
+  check (string_join (List.map (fn (name, _, _, _) => name)
+    (Report.ordered [("ok1", Health.Healthy, "", ""), ("warn", Health.Warning, "", ""),
+      ("unk", Health.Unknown, "", ""), ("crit1", Health.Critical, "", ""),
+      ("ok2", Health.Healthy, "", ""), ("crit2", Health.Critical, "", "")]), " "),
+    "crit1 crit2 unk warn ok1 ok2")
+
+(* The source is one word, so the summary stays one line of key=value
+   fields. *)
+val _ = check (Report.summary ("cloud\twatch=prod|x\ny", []),
+  "status=OK source=cloud-watch-prod-x-y total=0 crit=0 unknown=0 warn=0 ok=0")

@@ -1,0 +1,116 @@
+import Std.List
+import Sre.Health
+
+(* Health checks, reported the same way to people and to agents.
+
+   `Report.print` prints one summary line of key=value pairs, then a
+   Markdown table of the checks that need attention, worst first:
+
+     status=CRIT source=cloudwatch total=4 crit=1 unknown=1 warn=0 ok=2
+     | STATUS  | NAME    | SINCE                | DETAIL            |
+     | ------- | ------- | -------------------- | ----------------- |
+     | CRIT    | api-5xx | 2026-11-03T10:00:00Z | Threshold Crossed |
+     | UNKNOWN | db-lag  |                      |                   |
+
+   A person scans the table. An agent reads the summary line's fields, and
+   the table's cells, which `|` separates (inside a cell, `\` is written
+   `\\`, `|` is written `\|`, and a line break is a space). The table renders as Markdown
+   wherever Markdown does. A script ends with
+   `exit (Health.exit_code (Report.print (source, checks)))`.
+
+   Code that reports needs the capabilities println, int_to_string,
+   string_length, string_join and string_replace. The module calls those
+   builtins directly: importing Std.Stdio or Std.String would need every
+   builtin those modules wrap. Std.List wraps none. *)
+structure Report = struct
+  (* `check` placed after every check at least as urgent. *)
+  fun insert (check, sorted) =
+    case sorted of
+        [] => [check]
+      | first :: rest =>
+        if Health.urgency (Health.status_of check) > Health.urgency (Health.status_of first) then
+          check :: sorted
+        else
+          first :: insert (check, rest)
+
+  (* Worst first, by Health.urgency; checks with the same status keep their
+     order. *)
+  fun ordered checks = List.foldl (fn (sorted, check) => insert (check, sorted)) [] checks
+
+  (* `text` repeated `n` times, by doubling. *)
+  fun repeat (text, n) =
+    if n <= 0 then ""
+    else
+      let val half = repeat (text, n / 2)
+      in if n mod 2 = 0 then half ^ half else half ^ half ^ text end
+
+  fun pad_right width text = text ^ repeat (" ", width - string_length text)
+
+  (* A table cell: `\` written `\\` and `|` written `\|`, so a cell
+     splits back exactly; a line break (`\r\n`, `\r` or `\n`) as a space. *)
+  fun cell text =
+    string_replace (string_replace (string_replace (string_replace (string_replace (text, "\\", "\\\\"),
+      "|", "\\|"), "\r\n", " "), "\r", " "), "\n", " ")
+
+  (* One word: whitespace, `=` and `|` become `-`. *)
+  fun word text =
+    List.foldl (fn (text, c) => string_replace (text, c, "-")) text [" ", "\t", "\r", "\n", "=", "|"]
+
+  fun wider (width, text) =
+    if string_length text > width then string_length text else width
+
+  (* `key=value` pairs; `source` is made one word, so every field is. *)
+  fun summary (source, checks) =
+    string_join ([
+      "status=" ^ Health.status_name (Health.overall checks),
+      "source=" ^ word source,
+      "total=" ^ int_to_string (List.length checks),
+      "crit=" ^ int_to_string (Health.count Health.Critical checks),
+      "unknown=" ^ int_to_string (Health.count Health.Unknown checks),
+      "warn=" ^ int_to_string (Health.count Health.Warning checks),
+      "ok=" ^ int_to_string (Health.count Health.Healthy checks)
+    ], " ")
+
+  (* The table of `checks`, worst first, as lines: a header, a separator,
+     then one row per check. *)
+  fun table checks =
+    let
+      val header = ("STATUS", "NAME", "SINCE", "DETAIL")
+      val rows =
+        List.map (fn (name, status, since, detail) =>
+          (Health.status_name status, cell name, cell since, cell detail)) (ordered checks)
+      val (w1, w2, w3, w4) =
+        List.foldl
+          (fn ((w1, w2, w3, w4), (a, b, c, d)) =>
+            (wider (w1, a), wider (w2, b), wider (w3, c), wider (w4, d)))
+          (0, 0, 0, 0)
+          (header :: rows)
+      fun line (a, b, c, d) =
+        string_join (["|", pad_right w1 a, "|", pad_right w2 b, "|", pad_right w3 c,
+          "|", pad_right w4 d, "|"], " ")
+    in
+      line header
+        :: line (repeat ("-", w1), repeat ("-", w2), repeat ("-", w3), repeat ("-", w4))
+        :: List.map line rows
+    end
+
+  (* Print the summary line, then the table of the checks `keep` selects
+     (only the summary when it selects none). Returns the overall status. *)
+  fun report keep (source, checks) =
+    let
+      val _ = println (summary (source, checks))
+      val _ =
+        case List.filter keep checks of
+            [] => ()
+          | shown => List.foldl (fn ((), text) => println text) () (table shown)
+    in
+      Health.overall checks
+    end
+
+  (* The summary, then the checks that are not OK; OK checks are counted in
+     the summary. *)
+  fun print (source, checks) = report Health.needs_attention (source, checks)
+
+  (* The summary, then every check. *)
+  fun print_all (source, checks) = report (fn _ => true) (source, checks)
+end

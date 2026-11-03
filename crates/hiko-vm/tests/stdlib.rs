@@ -50,6 +50,11 @@ fn test_numeric_module_examples() {
 }
 
 #[test]
+fn test_sre_health_and_report() {
+    run_hiko_file("../../tests/run/test_sre.hml");
+}
+
+#[test]
 fn test_stdlib_log() {
     run_hiko_file("../../tests/run/test_log.hml");
 }

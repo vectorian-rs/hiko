@@ -62,3 +62,10 @@ required-features = ["register-vm"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_exec_argv"
+path = "fuzz_targets/fuzz_exec_argv.rs"
+test = false
+doc = false
+bench = false

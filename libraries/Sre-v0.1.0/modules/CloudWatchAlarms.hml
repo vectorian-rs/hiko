@@ -1,0 +1,34 @@
+import Std.List
+import Aws.CloudWatch
+import Sre.Health
+
+(* CloudWatch alarms as health checks. Needs the hiko-ext-aws extension,
+   with `cloudwatch = true` in `[extensions.aws]`.
+
+     ALARM             -> CRIT
+     INSUFFICIENT_DATA -> UNKNOWN
+     OK                -> OK
+
+   A check's detail is the alarm's source (`Namespace/MetricName`, `metric
+   math` or `composite`) and the reason CloudWatch gives for its state. *)
+structure CloudWatchAlarms = struct
+  fun status state =
+    case state of
+        "ALARM" => Health.Critical
+      | "OK" => Health.Healthy
+      | _ => Health.Unknown
+
+  fun to_check alarm =
+    (CloudWatch.name alarm,
+     status (CloudWatch.state alarm),
+     CloudWatch.updated alarm,
+     case CloudWatch.reason alarm of
+         "" => CloudWatch.source alarm
+       | reason => CloudWatch.source alarm ^ ": " ^ reason)
+
+  (* Every alarm in the client's region, as a check. *)
+  fun checks client =
+    case CloudWatch.alarms client of
+        CloudWatch.Ok alarms => CloudWatch.Ok (List.map to_check alarms)
+      | CloudWatch.Err message => CloudWatch.Err message
+end

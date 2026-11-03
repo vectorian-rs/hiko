@@ -1,0 +1,55 @@
+import Std.List
+
+(* Health checks: what every Sre source produces and Sre.Report prints.
+
+   A check is a name, a status, when its status last changed, and a detail.
+   The statuses follow the monitoring convention, OK, WARN, CRIT and
+   UNKNOWN, and so do their exit codes: 0, 1, 2 and 3. *)
+structure Health = struct
+  datatype status = Healthy | Warning | Critical | Unknown
+
+  (* name, status, since, detail *)
+  type check = string * status * string * string
+
+  fun status_name status =
+    case status of
+        Healthy => "OK"
+      | Warning => "WARN"
+      | Critical => "CRIT"
+      | Unknown => "UNKNOWN"
+
+  fun exit_code status =
+    case status of
+        Healthy => 0
+      | Warning => 1
+      | Critical => 2
+      | Unknown => 3
+
+  (* How soon a status needs someone: a failing check first, then one that
+     cannot be seen, then a warning. *)
+  fun urgency status =
+    case status of
+        Critical => 3
+      | Unknown => 2
+      | Warning => 1
+      | Healthy => 0
+
+  fun status_of (_, status, _, _) = status
+
+  (* Statuses are not equality types, so they compare by urgency. *)
+  fun has_status status check = urgency (status_of check) = urgency status
+
+  fun needs_attention check = urgency (status_of check) > 0
+
+  (* The worst status among `checks`; Healthy for none. *)
+  fun overall checks =
+    List.foldl
+      (fn (worst, check) =>
+        if urgency (status_of check) > urgency worst then status_of check else worst)
+      Healthy
+      checks
+
+  (* How many of `checks` have `status`. *)
+  fun count status checks =
+    List.foldl (fn (n, check) => if has_status status check then n + 1 else n) 0 checks
+end

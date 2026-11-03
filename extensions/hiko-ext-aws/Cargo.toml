@@ -3,7 +3,7 @@ name = "hiko-ext-aws"
 version = "0.8.0"
 edition = "2024"
 license = "MIT"
-description = "hiko-ext-aws: AWS config, S3 and SQS builtins for hiko, as an extension"
+description = "hiko-ext-aws: AWS config, S3, SQS and CloudWatch builtins for hiko, as an extension"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [dependencies]
@@ -21,7 +21,8 @@ sha1 = "0.10.7"
 aws-sdk-s3 = { version = "1.131.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 aws-sdk-sqs = { version = "1.90.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 tokio = { version = "1", features = ["rt", "time"] }
+aws-sdk-cloudwatch = { version = "1.140.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 
 [dev-dependencies]
-hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false }
+hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false, features = ["loader-all", "builtin-default"] }
 hiko-syntax = { version = "0.8.0", path = "../../crates/hiko-syntax" }

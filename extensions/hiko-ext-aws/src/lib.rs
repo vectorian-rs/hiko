@@ -1,4 +1,4 @@
-//! AWS config, S3 and SQS builtins for Hiko, as an extension.
+//! AWS config, S3, SQS and CloudWatch builtins for Hiko, as an extension.
 //!
 //! The run config turns the extension on and says which credentials and
 //! services a script may use:
@@ -8,10 +8,12 @@
 //! sso_profiles = ["dev"]     # profiles Aws.Config.sso_profile may name
 //! s3 = true                  # whether S3 clients may be created
 //! sqs = false
+//! cloudwatch = false         # whether CloudWatch clients may be created
 //! ```
 //!
 //! Everything defaults to off. Configs and clients are host resources
-//! (kinds `aws_config`, `aws_s3_client`, `aws_sqs_client`), so
+//! (kinds `aws_config`, `aws_s3_client`, `aws_sqs_client`,
+//! `aws_cloudwatch_client`), so
 //! `max_host_resources` and `[limits.host_resources]` cap them.
 //!
 //! Creating a config or a client only checks the policy and records the
@@ -34,12 +36,13 @@ use serde::Deserialize;
 const CONFIG: &str = "aws_config";
 const S3_CLIENT: &str = "aws_s3_client";
 const SQS_CLIENT: &str = "aws_sqs_client";
+const CLOUDWATCH_CLIENT: &str = "aws_cloudwatch_client";
 
 /// The extension, to link into a host and pass to
 /// `RunConfig::build_vm_with_extensions`.
 pub static AWS: Extension = Extension {
     name: "aws",
-    types: &[CONFIG, S3_CLIENT, SQS_CLIENT],
+    types: &[CONFIG, S3_CLIENT, SQS_CLIENT, CLOUDWATCH_CLIENT],
     builtins: &[
         sync(
             "aws_config_sso_profile",
@@ -58,11 +61,22 @@ pub static AWS: Extension = Extension {
             "aws_sqs_client -> bool * string list * string",
             sqs_list_queues,
         ),
+        sync(
+            "aws_cloudwatch_client",
+            "aws_config -> aws_cloudwatch_client",
+            cloudwatch_client,
+        ),
+        asynchronous(
+            "aws_cloudwatch_describe_alarms",
+            "aws_cloudwatch_client -> bool * (string * string * string * string * string) list * string",
+            cloudwatch_describe_alarms,
+        ),
     ],
     modules: &[
         ("Aws.Config", include_str!("Config.hml")),
         ("Aws.S3", include_str!("S3.hml")),
         ("Aws.SQS", include_str!("SQS.hml")),
+        ("Aws.CloudWatch", include_str!("CloudWatch.hml")),
     ],
     configure,
 };
@@ -97,6 +111,8 @@ struct Policy {
     s3: bool,
     #[serde(default)]
     sqs: bool,
+    #[serde(default)]
+    cloudwatch: bool,
 }
 
 fn configure(table: &toml::Value) -> Result<ExtensionState, String> {
@@ -169,6 +185,16 @@ fn s3_client(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
 
 fn sqs_client(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
     client::<aws_sdk_sqs::Client>(args, heap, "aws_sqs_client", SQS_CLIENT, |p| p.sqs)
+}
+
+fn cloudwatch_client(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
+    client::<aws_sdk_cloudwatch::Client>(
+        args,
+        heap,
+        "aws_cloudwatch_client",
+        CLOUDWATCH_CLIENT,
+        |p| p.cloudwatch,
+    )
 }
 
 /// Run `f` on a current-thread Tokio runtime, on the I/O pool thread.
@@ -549,6 +575,99 @@ fn sqs_list_queues(args: &[Value], heap: &mut Heap) -> Result<AsyncJob, String> 
     }))
 }
 
+/// Every metric and composite alarm, all pages, as alarm rows.
+fn cloudwatch_describe_alarms(args: &[Value], heap: &mut Heap) -> Result<AsyncJob, String> {
+    use aws_sdk_cloudwatch::types::AlarmType;
+    let name = "aws_cloudwatch_describe_alarms";
+    let client = heap.extension_resource::<Client<aws_sdk_cloudwatch::Client>>(
+        args[0],
+        CLOUDWATCH_CLIENT,
+        name,
+    )?;
+    Ok(Box::new(move || {
+        let result = block_on(name, async {
+            if client.sdk.get().is_none() {
+                let config = load_sdk_config(&client.auth).await?;
+                let conf =
+                    no_endpoint_override!(aws_sdk_cloudwatch::config::Builder::from(&config));
+                let _ = client.sdk.set(aws_sdk_cloudwatch::Client::from_conf(conf));
+            }
+            let pages = client
+                .sdk
+                .get()
+                .expect("set above")
+                .describe_alarms()
+                .alarm_types(AlarmType::MetricAlarm)
+                .alarm_types(AlarmType::CompositeAlarm)
+                .into_paginator()
+                .send()
+                .try_collect()
+                .await
+                .map_err(|e| format_aws_error(name, &e))?;
+            let mut alarms = Vec::new();
+            for page in &pages {
+                alarms.extend(page.metric_alarms().iter().map(metric_alarm_row));
+                alarms.extend(page.composite_alarms().iter().map(composite_alarm_row));
+            }
+            Ok(SendableValue::List(alarms))
+        });
+        Ok(outcome(result, SendableValue::List(Vec::new())))
+    }))
+}
+
+/// `(name, state, source, updated, reason)`, as `Aws.CloudWatch.alarm`
+/// documents it.
+fn alarm_row(
+    name: Option<&str>,
+    state: Option<&aws_sdk_cloudwatch::types::StateValue>,
+    source: &str,
+    updated: Option<&aws_sdk_cloudwatch::primitives::DateTime>,
+    reason: Option<&str>,
+) -> SendableValue {
+    SendableValue::Tuple(vec![
+        string(name.unwrap_or("")),
+        string(state.map(|s| s.as_str()).unwrap_or("")),
+        string(source),
+        // Whole seconds: CloudWatch's fractions vary in length.
+        string(
+            &updated
+                .map(|d| aws_sdk_cloudwatch::primitives::DateTime::from_secs(d.secs()).to_string())
+                .unwrap_or_default(),
+        ),
+        string(reason.unwrap_or("")),
+    ])
+}
+
+/// A metric alarm's source is `Namespace/MetricName`, or `metric math`
+/// for an alarm on an expression.
+fn metric_alarm_row(alarm: &aws_sdk_cloudwatch::types::MetricAlarm) -> SendableValue {
+    let source = match (alarm.namespace(), alarm.metric_name()) {
+        (Some(namespace), Some(metric)) => format!("{namespace}/{metric}"),
+        _ => "metric math".to_string(),
+    };
+    alarm_row(
+        alarm.alarm_name(),
+        alarm.state_value(),
+        &source,
+        alarm
+            .state_transitioned_timestamp()
+            .or(alarm.state_updated_timestamp()),
+        alarm.state_reason(),
+    )
+}
+
+fn composite_alarm_row(alarm: &aws_sdk_cloudwatch::types::CompositeAlarm) -> SendableValue {
+    alarm_row(
+        alarm.alarm_name(),
+        alarm.state_value(),
+        "composite",
+        alarm
+            .state_transitioned_timestamp()
+            .or(alarm.state_updated_timestamp()),
+        alarm.state_reason(),
+    )
+}
+
 fn string(s: &str) -> SendableValue {
     SendableValue::String(s.into())
 }
@@ -799,6 +918,65 @@ mod tests {
         assert!(
             request.iter().any(|h| h == "x-amz-sso_bearer_token: token"),
             "{request:?}"
+        );
+    }
+
+    use aws_sdk_cloudwatch::primitives::DateTime;
+    use aws_sdk_cloudwatch::types::{CompositeAlarm, MetricAlarm, StateValue};
+
+    fn row(value: SendableValue) -> Vec<String> {
+        let SendableValue::Tuple(fields) = &value else {
+            panic!("an alarm row is a tuple: {value:?}");
+        };
+        fields
+            .iter()
+            .map(|field| match field {
+                SendableValue::String(s) => s.to_string(),
+                other => panic!("an alarm field is a string: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_metric_alarm_names_its_metric() {
+        let alarm = MetricAlarm::builder()
+            .alarm_name("api-5xx")
+            .state_value(StateValue::Alarm)
+            .namespace("AWS/ApplicationELB")
+            .metric_name("HTTPCode_Target_5XX_Count")
+            .state_transitioned_timestamp(DateTime::from_millis(1_793_700_000_875))
+            .state_updated_timestamp(DateTime::from_secs(1_793_790_000))
+            .state_reason("Threshold Crossed: 1 datapoint [12.0] was greater than 5.0")
+            .build();
+        assert_eq!(
+            row(metric_alarm_row(&alarm)),
+            [
+                "api-5xx",
+                "ALARM",
+                "AWS/ApplicationELB/HTTPCode_Target_5XX_Count",
+                "2026-11-03T10:00:00Z",
+                "Threshold Crossed: 1 datapoint [12.0] was greater than 5.0",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_metric_math_alarm_and_a_composite_alarm_say_so() {
+        let math = MetricAlarm::builder()
+            .alarm_name("error-rate")
+            .state_value(StateValue::InsufficientData)
+            .build();
+        assert_eq!(
+            row(metric_alarm_row(&math)),
+            ["error-rate", "INSUFFICIENT_DATA", "metric math", "", ""]
+        );
+        let composite = CompositeAlarm::builder()
+            .alarm_name("service-down")
+            .state_value(StateValue::Ok)
+            .build();
+        assert_eq!(
+            row(composite_alarm_row(&composite)),
+            ["service-down", "OK", "composite", "", ""]
         );
     }
 }

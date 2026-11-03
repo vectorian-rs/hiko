@@ -24,7 +24,7 @@ use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
 use hiko_vm::extension::Extension;
 use hiko_vm::threaded::ThreadedRuntime;
-use hiko_vm::vm::{StderrOutputSink, StdoutOutputSink};
+use hiko_vm::vm::{StderrOutputSink, StdoutOutputSink, VM};
 use serde::Deserialize;
 
 mod build_vm;
@@ -1060,6 +1060,7 @@ fn run_file(options: &ScriptOptions) {
     let output_sink = Arc::new(StdoutOutputSink::default());
     if let Some(config) = config.as_ref().filter(|config| config.requires_runtime()) {
         let mut vm = build_vm_or_exit(config, compiled.program);
+        report_exec_notes(&vm);
         vm.set_output_sink(output_sink);
         vm.set_error_sink(Arc::new(StderrOutputSink));
 
@@ -1083,12 +1084,20 @@ fn run_file(options: &ScriptOptions) {
     } else {
         VMBuilder::new(compiled.program).with_core().build()
     };
+    report_exec_notes(&vm);
     vm.set_output_sink(output_sink);
     vm.set_error_sink(Arc::new(StderrOutputSink));
     if let Err(e) = vm.run() {
         let message = runtime_error_message(&e.message, &surface);
         compiled.ctx.error(&message, vm.error_span());
         process::exit(1);
+    }
+}
+
+/// Allowed executables with weaker protection than this platform gives.
+fn report_exec_notes(vm: &VM) {
+    for note in vm.exec_policy_notes() {
+        eprintln!("info: {note}");
     }
 }
 

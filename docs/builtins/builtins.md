@@ -177,6 +177,87 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 | `exit`   | `int -> unit`                                   | Exit process with status code                               |
 | `panic`  | `string -> 'a`                                  | Abort with error message                                    |
 
+### Exec policy
+
+`exec` runs a program directly, with no shell, and only as the run config
+allows. There are two kinds of permission, and a call needs one of them:
+
+```toml
+[capabilities.exec.exec]
+enabled = true
+# These commands may run with any arguments.
+allowed_commands = ["git"]
+
+# This command may run only with exactly these arguments.
+[[capabilities.exec.exec.allow]]
+argv = ["mise", "run", "//cell:sre-check"]
+
+# With rest = "any", these arguments are a fixed prefix: more may follow.
+[[capabilities.exec.exec.allow]]
+argv = ["mise", "run", "//cell:logs", "--"]
+rest = "any"   # default "none"
+```
+
+- **The command matches by file, not by name.** When the VM is built, each
+  configured command (an `allowed_commands` entry, or `argv[0]` of a rule) is
+  resolved to a file: a path is used as written, and a bare name is looked
+  up in `PATH`. A call's program is resolved the same way when it runs, and
+  must be the same file (device and inode on Unix). So `./mise` or
+  `/opt/other/mise` is refused unless it is the configured file, and a
+  symlink is followed to its target.
+- **A replaced file is refused.** The VM holds each allowed executable
+  open while it runs, so the file's inode cannot be freed and reused. A
+  file created at the same path, by deleting and recreating it or by
+  renaming over it, always has a different inode, and `exec` refuses it.
+  This does not depend on timestamps (#160). An execute-only executable
+  (no read permission bits at all), which the VM cannot open, is not held
+  open; it is checked by device, inode, change time and size only. Any other
+  error opening it (no file descriptors left, or a permission denied by an
+  ACL or a security module) leaves the command out of the policy, and a
+  refusal lists the error.
+- **A refusal does not show the arguments**, only how many there were:
+  arguments can hold secrets, and refusals end up in logs.
+- **Arguments match as strings, exactly.** There is no globbing, trimming or
+  splitting: `"run check"` is one argument and does not match `"run",
+  "check"`; an empty string is an argument. With `rest = "any"`, only
+  arguments after the prefix are free.
+- A NUL in the program or an argument is refused. A rule with an empty
+  `argv`, or an empty command, is a config error.
+- Child processes have the same permissions as their parent.
+- The program's `argv[0]` is the command the script ran (`git`, or
+  `/bin/ls`), as a shell would pass it, not the resolved file or
+  `/proc/self/fd/N`: busybox-style tools dispatch on it.
+
+What the allowlist does **not** guarantee:
+
+- **Writes to the allowed file itself.** The check compares the file's
+  change time and size, so a write that keeps the size and lands within one
+  timestamp tick of the policy can go unnoticed. The other way round, any
+  change to the file's change time (a write, `chmod`, `touch`, a new hard
+  link, an extended attribute) makes `exec` refuse it until the VM is
+  started again, with an error that says the file changed. Keep allowed executables
+  in directories, and as files, that the script's user cannot write.
+- **A replacement between the check and the spawn, except for ELF binaries
+  on Linux.** On Linux the VM runs an allowed ELF binary through the file it
+  holds open (`/proc/self/fd/N`), so a file swapped in at the path does not
+  run. Everything else runs by path: the VM checks the path just before it
+  spawns and the OS then opens it again, so a file swapped in during that
+  short window runs. On Linux that is a `#!` script or a binfmt_misc binary
+  (their interpreter opens the path itself), an execute-only file (not held
+  open), or a system without `/proc`. `hiko run` prints an `info:` line for
+  each such command when it starts, so the weaker protection is never
+  silent. macOS and other systems always run by path: macOS cannot run a
+  program through an open descriptor (`execve` of `/dev/fd/N` fails with
+  `EACCES`). The defence is the same: the script's user must not be able to
+  write to the allowed executable or its directory.
+- **A write in place after the check.** The descriptor names the same inode
+  as the path, so on Linux too, a write to the allowed file itself between
+  the check and the spawn runs the new content.
+- **What the program does.** Arguments are fixed, but the program itself
+  may read files, environment variables or configuration that the script can
+  change.
+- `build-vm` writes the rules into the generated binary.
+
 ## Concurrency (threaded runtime)
 
 | Builtin         | Type                  | Description                              |
