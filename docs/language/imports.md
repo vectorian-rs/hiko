@@ -211,10 +211,17 @@ For each `[dependencies]` entry it:
 
 Then it writes every module of every dependency to the lockfile, and prints
 one line per difference from the lockfile it replaces (`+` added, `-` removed,
-`~` changed). If any package or module fails, nothing is written: not the
-lockfile and not the cache. Packages are locked whole, as `package.toml` lists
-them; there is no per-module selection. A package removed from
-`[dependencies]` is removed from the lockfile.
+`~` changed). If any package or module fails to download or verify, nothing is
+written. If storing a module in the cache fails, the lockfile is not written;
+modules stored before the failure stay in the cache, which is safe because the
+loader checks every cached module against its hash when it reads it. Packages
+are locked whole, as `package.toml` lists them; there is no per-module
+selection. A package removed from `[dependencies]` is removed from the
+lockfile, and with no dependencies left the lockfile lists no packages. An
+existing lockfile that does not read (a merge conflict, an unknown schema) is
+replaced, with a line saying so. Package names must be identifiers and versions
+may hold only letters, digits, `.`, `-` and `+`, since both become part of the
+package URL.
 
 A module already in the cache is not downloaded again if it still matches its
 hash; a cached copy that does not match is downloaded again, as the loader

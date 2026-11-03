@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -50,7 +50,7 @@ pub(crate) struct LockProjectManifest {
     _policies: toml::Table,
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModuleLockfile {
     pub(crate) schema_version: u32,
@@ -58,7 +58,7 @@ pub(crate) struct ModuleLockfile {
     pub(crate) packages: BTreeMap<String, ModuleLockPackage>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModuleLockPackage {
     pub(crate) version: String,
@@ -67,8 +67,8 @@ pub(crate) struct ModuleLockPackage {
     pub(crate) modules: BTreeMap<String, String>,
 }
 
-const LOCK_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
-const LOCK_VERIFY_MAX_BYTES: u64 = 1024 * 1024;
+pub(crate) const LOCK_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const LOCK_VERIFY_MAX_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn lock_command(args: &[String]) {
     let usage = "Usage: hiko lock verify [--config <hiko.toml>]";

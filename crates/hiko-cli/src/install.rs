@@ -11,28 +11,23 @@
 //! the lockfile; this command is the one place that does.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::Duration;
 
 use hiko_common::{blake3_hex, http_get_text_limited};
 use serde::Deserialize;
 
 use crate::lock_verify::{
-    LockProjectManifest, ModuleLockPackage, ModuleLockfile, dependency_base_url,
-    load_module_lockfile, load_project_manifest, normalize_blake3, project_lockfile_path,
-    resolve_manifest_path, validate_module_lockfile, validate_module_lockfile_against_manifest,
-    validate_remote_base_url,
+    LOCK_VERIFY_MAX_BYTES, LOCK_VERIFY_TIMEOUT, LockProjectManifest, ModuleLockPackage,
+    ModuleLockfile, dependency_base_url, load_module_lockfile, load_project_manifest,
+    normalize_blake3, project_lockfile_path, resolve_manifest_path, validate_module_lockfile,
+    validate_module_lockfile_against_manifest, validate_remote_base_url,
 };
 use crate::parse_flag_value;
 use hiko_compile::compiler::{
     CompileError, module_cache_path, project_module_cache_dir, store_cached_module,
 };
-
-const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_BYTES: u64 = 1024 * 1024;
 
 /// A published package's `package.toml`.
 #[derive(Debug, Deserialize)]
@@ -86,13 +81,16 @@ fn parse_install_args(args: &[String], usage: &str) -> (Option<PathBuf>, bool) {
 
 fn install(manifest_path: &Path, check: bool) -> Result<(), String> {
     let manifest = load_project_manifest(manifest_path)?;
-    if manifest.dependencies.is_empty() {
-        return Err(format!(
-            "project manifest '{}' declares no [dependencies]; nothing to install",
-            manifest_path.display()
-        ));
-    }
     let lockfile_path = project_lockfile_path(manifest_path, &manifest);
+    // An existing lockfile that does not read is replaced, and said so:
+    // install is the command that repairs it.
+    let old = if lockfile_path.exists() {
+        load_module_lockfile(&lockfile_path)
+            .and_then(|old| validate_module_lockfile(&old, &lockfile_path).map(|()| old))
+            .map(Some)
+    } else {
+        Ok(None)
+    };
 
     let mut packages = BTreeMap::new();
     for name in manifest.dependencies.keys() {
@@ -109,14 +107,14 @@ fn install(manifest_path: &Path, check: bool) -> Result<(), String> {
     validate_module_lockfile(&new, &lockfile_path)?;
     validate_module_lockfile_against_manifest(&new, &lockfile_path, &manifest, manifest_path)?;
 
-    let old = if lockfile_path.exists() {
-        let old = load_module_lockfile(&lockfile_path)?;
-        validate_module_lockfile(&old, &lockfile_path)?;
-        Some(old)
-    } else {
-        None
+    let changes = match &old {
+        Ok(old) => describe_changes(old.as_ref(), &new),
+        Err(reason) => {
+            let mut lines = vec![format!("! replacing an invalid lockfile: {reason}")];
+            lines.extend(describe_changes(None, &new));
+            lines
+        }
     };
-    let changes = describe_changes(old.as_ref(), &new);
     for line in &changes {
         println!("{line}");
     }
@@ -139,7 +137,7 @@ fn install(manifest_path: &Path, check: bool) -> Result<(), String> {
             lockfile_path.display()
         ));
     }
-    write_atomically(&lockfile_path, &render_lockfile(&new))?;
+    write_atomically(&lockfile_path, &render_lockfile(&new)?)?;
     println!("wrote {}", lockfile_path.display());
     Ok(())
 }
@@ -152,6 +150,9 @@ fn resolve_package(
     name: &str,
 ) -> Result<ModuleLockPackage, String> {
     let dependency = &manifest.dependencies[name];
+    // Both become part of a URL and of the lockfile's table names.
+    check_name(name, "package name", manifest_path)?;
+    check_version(&dependency.version, name, manifest_path)?;
     let registry = manifest
         .registries
         .get(&dependency.registry)
@@ -180,7 +181,7 @@ fn resolve_package(
     }
     let mut modules = BTreeMap::new();
     for (module, hash) in package.modules {
-        check_module_name(&module, &package_url)?;
+        check_name(&module, "module name", Path::new(&package_url))?;
         let hex = parse_blake3(&hash)
             .ok_or_else(|| format!("'{package_url}': module {module} has invalid hash '{hash}'"))?;
         modules.insert(module, format!("blake3:{hex}"));
@@ -230,21 +231,41 @@ fn compile_error(e: CompileError) -> String {
 }
 
 fn fetch(url: &str) -> Result<String, String> {
-    http_get_text_limited(url, FETCH_TIMEOUT, MAX_BYTES)
+    http_get_text_limited(url, LOCK_VERIFY_TIMEOUT, LOCK_VERIFY_MAX_BYTES)
         .map_err(|e| format!("cannot fetch '{url}': {e}"))
 }
 
-/// A module name becomes part of a URL and a file name, so it must be an
-/// identifier: a letter, then letters, digits or `_`.
-fn check_module_name(module: &str, package_url: &str) -> Result<(), String> {
-    let mut chars = module.chars();
+/// Package and module names become parts of URLs, file names and TOML
+/// keys, so they must be identifiers: a letter, then letters, digits or
+/// `_`. `source` is where the name was read.
+fn check_name(name: &str, what: &str, source: &Path) -> Result<(), String> {
+    let mut chars = name.chars();
     let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     if valid {
         Ok(())
     } else {
         Err(format!(
-            "'{package_url}' lists invalid module name '{module}'"
+            "'{}': invalid {what} '{name}'; use a letter, then letters, digits or '_'",
+            source.display()
+        ))
+    }
+}
+
+/// A version is part of the package URL: letters, digits, `.`, `-` and
+/// `+`, not starting with `.`.
+fn check_version(version: &str, package: &str, source: &Path) -> Result<(), String> {
+    let valid = !version.is_empty()
+        && !version.starts_with('.')
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "'{}': invalid version '{version}' for {package}",
+            source.display()
         ))
     }
 }
@@ -270,11 +291,16 @@ fn describe_changes(old: Option<&ModuleLockfile>, new: &ModuleLockfile) -> Vec<S
                 "+ {name} {} ({})",
                 package.version, package.base_url
             )),
-            Some(p) if p.version != package.version || p.base_url != package.base_url => lines
-                .push(format!(
+            Some(p)
+                if p.version != package.version
+                    || p.base_url.trim_end_matches('/')
+                        != package.base_url.trim_end_matches('/') =>
+            {
+                lines.push(format!(
                     "~ {name} {} ({}) -> {} ({})",
                     p.version, p.base_url, package.version, package.base_url
-                )),
+                ))
+            }
             Some(_) => {}
         }
         let old_modules = previous.map_or(&no_modules, |p| &p.modules);
@@ -301,24 +327,8 @@ fn describe_changes(old: Option<&ModuleLockfile>, new: &ModuleLockfile) -> Vec<S
     lines
 }
 
-fn render_lockfile(lockfile: &ModuleLockfile) -> String {
-    let mut out = format!("schema_version = {}\n", lockfile.schema_version);
-    for (name, package) in &lockfile.packages {
-        let _ = write!(
-            out,
-            "\n[packages.{name}]\nversion = {}\nbase_url = {}\n\n[packages.{name}.modules]\n",
-            toml_string(&package.version),
-            toml_string(&package.base_url)
-        );
-        for (module, hash) in &package.modules {
-            let _ = writeln!(out, "{module} = {}", toml_string(hash));
-        }
-    }
-    out
-}
-
-fn toml_string(s: &str) -> String {
-    toml::Value::String(s.to_string()).to_string()
+fn render_lockfile(lockfile: &ModuleLockfile) -> Result<String, String> {
+    toml::to_string(lockfile).map_err(|e| format!("cannot write the lockfile: {e}"))
 }
 
 /// Replace `path` with `text` through a temporary file next to it, so a
@@ -337,6 +347,7 @@ fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -525,12 +536,44 @@ mod tests {
     }
 
     #[test]
-    fn module_names_must_be_identifiers() {
-        assert!(check_module_name("Result", "p").is_ok());
-        assert!(check_module_name("Int32", "p").is_ok());
-        for bad in ["", "../x", "a/b", "1x", "x.y", "x y"] {
-            assert!(check_module_name(bad, "p").is_err(), "{bad:?}");
+    fn names_must_be_identifiers_and_versions_plain() {
+        let p = Path::new("p");
+        assert!(check_name("Result", "module name", p).is_ok());
+        assert!(check_name("Int32", "module name", p).is_ok());
+        for bad in ["", "../x", "a/b", "1x", "x.y", "x y", "a]"] {
+            assert!(check_name(bad, "module name", p).is_err(), "{bad:?}");
         }
+        for good in ["0.1.0", "1.0.0-rc.1", "2.0.0+build"] {
+            assert!(check_version(good, "Pkg", p).is_ok(), "{good:?}");
+        }
+        for bad in ["", "../x", ".1", "0.1.0/../Other-v9", "1 0", "1?x"] {
+            assert!(check_version(bad, "Pkg", p).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_lockfile_is_replaced_and_check_reports_it() {
+        let (project, _) = setup("invalid-lock", &[("A", "val a = 1\n")]);
+        let manifest = project.join("hiko.toml");
+        fs::write(project.join("hiko.lock.toml"), "<<<<<<< HEAD\n").unwrap();
+        let err = install(&manifest, true).unwrap_err();
+        assert!(err.contains("out of date"), "{err}");
+        install(&manifest, false).unwrap();
+        install(&manifest, true).unwrap();
+    }
+
+    #[test]
+    fn removing_every_dependency_empties_the_lockfile() {
+        let (project, _) = setup("emptied", &[("A", "val a = 1\n")]);
+        let manifest = project.join("hiko.toml");
+        install(&manifest, false).unwrap();
+        let text = fs::read_to_string(&manifest).unwrap();
+        let without = text.split("[dependencies]").next().unwrap().to_string();
+        fs::write(&manifest, without).unwrap();
+        install(&manifest, false).unwrap();
+        let lock = load_module_lockfile(&project.join("hiko.lock.toml")).unwrap();
+        assert!(lock.packages.is_empty());
+        install(&manifest, true).unwrap();
     }
 
     #[test]
@@ -557,7 +600,7 @@ mod tests {
                 },
             )]),
         };
-        let text = render_lockfile(&lockfile);
+        let text = render_lockfile(&lockfile).unwrap();
         let read: ModuleLockfile = toml::from_str(&text).unwrap();
         assert_eq!(read, lockfile);
     }
