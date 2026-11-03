@@ -112,6 +112,7 @@ cap-std = { version = "4", optional = true }
 rustix = { version = "1", default-features = false, features = ["fs", "process", "std"] }
 
 [dev-dependencies]
+hiko-types = { version = "0.8.0", path = "../hiko-types", default-features = false, features = ["check-generalization"] }
 hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false, features = ["hash"] }
 hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false, features = ["loader-all"] }
 proptest = "1"

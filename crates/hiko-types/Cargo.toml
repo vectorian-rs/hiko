@@ -33,6 +33,9 @@ builtin-all = [
     "builtin-json",
     "builtin-date",
 ]
+# Test and fuzz builds: check every generalization by levels against a walk
+# of the environment. Slow; never in a shipped build.
+check-generalization = []
 builtin-stdio = ["hiko-builtin-meta/builtin-stdio"]
 builtin-convert = ["hiko-builtin-meta/builtin-convert"]
 builtin-string = ["hiko-builtin-meta/builtin-string"]

@@ -70,3 +70,6 @@ hiko-syntax = { version = "0.8.0", path = "../hiko-syntax" }
 hiko-types = { version = "0.8.0", path = "../hiko-types", default-features = false }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+hiko-types = { version = "0.8.0", path = "../hiko-types", default-features = false, features = ["check-generalization"] }

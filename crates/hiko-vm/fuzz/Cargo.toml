@@ -14,7 +14,7 @@ syn = { version = "2", features = ["full", "visit"] }
 hiko-builtin-meta = { path = "../../hiko-builtin-meta", features = ["builtin-all"] }
 hiko-compile = { path = "../../hiko-compile", features = ["builtin-all"] }
 hiko-syntax = { path = "../../hiko-syntax" }
-hiko-types = { path = "../../hiko-types", features = ["builtin-all"] }
+hiko-types = { path = "../../hiko-types", features = ["builtin-all", "check-generalization"] }
 hiko-vm = { path = "..", features = ["builtin-all"] }
 
 # Prevent this from interfering with workspaces

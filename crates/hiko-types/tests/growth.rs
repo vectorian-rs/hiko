@@ -91,18 +91,61 @@ fn many_constructors_and_matches() {
     });
 }
 
-/// Many local values whose types share one free type variable. On main
-/// this grows about 8x per doubling (generalization walks the environment);
-/// with type levels (#168) about 4x. Enable when it is linear.
+/// `fun f params = let <prelude> <binding 1> ... <binding n> in result end`.
+fn let_chain(
+    params: &str,
+    prelude: &str,
+    result: &str,
+    n: usize,
+    binding: impl Fn(usize) -> String,
+) -> String {
+    let mut s = format!("fun id x = x\nfun f {params} =\n let\n{prelude}");
+    for i in 1..=n {
+        s.push_str(&binding(i));
+        s.push('\n');
+    }
+    s.push_str(&format!(" in {result} end\n"));
+    s
+}
+
+/// Many local values whose types share one free type variable. Walking the
+/// environment at each generalization made this cubic; binding the older of
+/// two unified variables to the newer one made it quadratic, through a chain
+/// of substitutions every lookup walked.
 #[test]
-#[ignore = "super-linear on main; type levels (#168) and a follow-up should make it linear"]
 fn many_local_values_sharing_a_type_variable() {
-    assert_linear_at("local values sharing a type variable", 100, |n| {
-        let mut s = String::from("fun f y =\n let\n");
-        for i in 0..n {
-            s.push_str(&format!("  val u{i} = y\n"));
-        }
-        s.push_str(" in u0 end\n");
-        s
+    assert_linear("local values sharing a type variable", |n| {
+        let_chain("y", "", "y", n, |i| format!("  val u{i} = y"))
+    });
+}
+
+#[test]
+fn many_local_values_each_copying_the_previous() {
+    assert_linear("local values chained", |n| {
+        let_chain("y", "  val a0 = y\n", "a0", n, |i| {
+            format!("  val a{i} = a{}", i - 1)
+        })
+    });
+}
+
+#[test]
+fn many_local_values_passed_through_a_function() {
+    assert_linear("local values through calls", |n| {
+        let_chain("y", "  val b0 = y\n", "b0", n, |i| {
+            format!("  val b{i} = id b{}", i - 1)
+        })
+    });
+}
+
+#[test]
+fn many_local_tuples_swapping_their_components() {
+    assert_linear("local tuples swapped", |n| {
+        let_chain(
+            "(y, z)",
+            "  val c0 = y\n  val d0 = z\n",
+            "(c0, d0)",
+            n,
+            |i| format!("  val (c{i}, d{i}) = (d{}, c{})", i - 1, i - 1),
+        )
     });
 }
