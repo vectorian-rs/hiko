@@ -1,3 +1,5 @@
+import Std.Result
+
 (*!
  * Amazon S3, from the hiko-ext-aws extension. Needs `s3 = true` in
  * `[extensions.aws]`.
@@ -10,16 +12,12 @@ structure S3 = struct
   (*! Bucket name, creation date and ARN. *)
   type bucket = string * string * string
 
-  datatype ('a, 'e) result =
-      Ok of 'a
-    | Err of 'e
-
   (*! A reusable client. *)
   fun client config = aws_s3_client config
 
   (*! Every bucket in the account. *)
   fun list_buckets client =
     case aws_s3_list_buckets client of
-        (true, buckets, _) => Ok buckets
-      | (false, _, message) => Err message
+        (true, buckets, _) => Result.Ok buckets
+      | (false, _, message) => Result.Err message
 end

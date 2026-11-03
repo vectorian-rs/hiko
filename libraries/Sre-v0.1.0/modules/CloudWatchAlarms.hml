@@ -1,4 +1,5 @@
 import Std.List
+import Std.Result
 import Aws.CloudWatch
 import Sre.Health
 
@@ -27,8 +28,5 @@ structure CloudWatchAlarms = struct
        | reason => CloudWatch.source alarm ^ ": " ^ reason)
 
   (* Every alarm in the client's region, as a check. *)
-  fun checks client =
-    case CloudWatch.alarms client of
-        CloudWatch.Ok alarms => CloudWatch.Ok (List.map to_check alarms)
-      | CloudWatch.Err message => CloudWatch.Err message
+  fun checks client = Result.map (List.map to_check) (CloudWatch.alarms client)
 end

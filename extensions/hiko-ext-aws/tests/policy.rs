@@ -35,10 +35,17 @@ fn loader_options(config: &RunConfig) -> ModuleLoaderOptions {
     }
 }
 
+/// Compiles `source` as a file at the repository root, so its imports
+/// resolve through the repository's project, as a script's would: the AWS
+/// modules import Std.Result.
 fn compile(source: &str, config: &RunConfig) -> CompiledProgram {
-    Compiler::compile_with_options(parse(source), loader_options(config))
-        .expect("compile")
-        .0
+    Compiler::compile_file_with_options(
+        parse(source),
+        &repo().join("script.hml"),
+        loader_options(config),
+    )
+    .expect("compile")
+    .0
 }
 
 fn run(source: &str, policy: &str) -> Result<(), String> {
