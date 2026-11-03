@@ -1317,11 +1317,17 @@ impl Compiler {
 
     /// The start of the last instruction, if it is a `GetLocal*` that is
     /// still the last thing emitted and no jump lands after its start.
-    fn fusable_get_local(&self) -> Option<usize> {
+    ///
+    /// Jumps are all forward and patched through `patch_jump`, which records
+    /// `last_jump_target`; a backward jump would need its target recorded
+    /// when it is created. A wrong fusion fails closed: the verifier rejects
+    /// a jump into the middle of an instruction.
+    fn fusable_get_local(&self) -> Option<(usize, u16)> {
         let ctx = self.ctx();
         let (start, slot) = ctx.last_get_local?;
         let width = if slot <= 3 { 1 } else { 3 };
-        (ctx.chunk.code.len() == start + width && ctx.last_jump_target <= start).then_some(start)
+        (ctx.chunk.code.len() == start + width && ctx.last_jump_target <= start)
+            .then_some((start, slot))
     }
 
     fn emit_set_local(&mut self, slot: u16) {
@@ -1339,10 +1345,9 @@ impl Compiler {
 
     fn emit_get_field(&mut self, idx: usize) -> Result<(), CompileError> {
         if idx <= 1
-            && let Some(start) = self.fusable_get_local()
+            && let Some((start, slot)) = self.fusable_get_local()
         {
             // `GetLocal slot; GetField0/1` becomes one instruction.
-            let slot = self.ctx().last_get_local.expect("checked").1;
             self.chunk().truncate_to(start);
             self.ctx_mut().last_get_local = None;
             self.emit(if idx == 0 {

@@ -331,18 +331,8 @@ impl VM {
                 Op::JumpIfNotTag => {
                     let tag = u16::from_le_bytes(operand!(fi, 2));
                     let offset = i16::from_le_bytes(operand!(fi, 2));
-                    let actual = match self.pop()? {
-                        Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Data { tag, .. } => Some(*tag),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    let Some(actual) = actual else {
-                        return Err(RuntimeError {
-                            message: "JumpIfNotTag: expected data value".into(),
-                        });
-                    };
+                    let value = self.pop()?;
+                    let actual = self.data_tag(value, "JumpIfNotTag")?;
                     if actual != tag {
                         let ip = self.frames[fi].ip;
                         let target =
@@ -355,13 +345,7 @@ impl VM {
                     let tag = u16::from_le_bytes(operand!(fi, 2));
                     let offset = i16::from_le_bytes(operand!(fi, 2));
                     let idx = self.local_stack_index(fi, slot, "JumpIfLocalNotTag")?;
-                    let actual = match self.stack[idx] {
-                        Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Data { tag, .. } => *tag,
-                            _ => return Err(error("JumpIfLocalNotTag: expected data value")),
-                        },
-                        _ => return Err(error("JumpIfLocalNotTag: expected data value")),
-                    };
+                    let actual = self.data_tag(self.stack[idx], "JumpIfLocalNotTag")?;
                     if actual != tag {
                         let ip = self.frames[fi].ip;
                         let target =
@@ -844,6 +828,17 @@ impl VM {
         let val = self.pop()?;
         let field = self.field_of(val, idx)?;
         self.push(field)
+    }
+
+    /// The constructor tag of a data value.
+    #[inline(always)]
+    fn data_tag(&self, val: Value, what: &str) -> Result<u16, RuntimeError> {
+        if let Value::Heap(r) = val
+            && let HeapObject::Data { tag, .. } = self.heap_get(r)?
+        {
+            return Ok(*tag);
+        }
+        Err(error_fmt(format_args!("{what}: expected data value")))
     }
 
     /// Field `idx` of a tuple or data value.

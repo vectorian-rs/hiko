@@ -220,11 +220,7 @@ fn decode_instruction(
         }
         Op::GetLocal => {
             let slot = read_u16(chunk, ip, "GetLocal")? as usize;
-            if slot >= n_locals {
-                return Err(format!(
-                    "GetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("GetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 1,
@@ -239,11 +235,7 @@ fn decode_instruction(
                 Op::GetLocal3 => 3,
                 _ => unreachable!(),
             };
-            if slot >= n_locals {
-                return Err(format!(
-                    "GetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("GetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 1,
@@ -252,11 +244,7 @@ fn decode_instruction(
         }
         Op::SetLocal => {
             let slot = read_u16(chunk, ip, "SetLocal")? as usize;
-            if slot >= n_locals {
-                return Err(format!(
-                    "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("SetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 2,
@@ -271,11 +259,7 @@ fn decode_instruction(
                 Op::SetLocal3 => 3,
                 _ => unreachable!(),
             };
-            if slot >= n_locals {
-                return Err(format!(
-                    "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("SetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 2,
@@ -379,8 +363,7 @@ fn decode_instruction(
         }
         Op::Neg | Op::NegFloat | Op::Not | Op::GetField | Op::GetField0 | Op::GetField1 => {
             if matches!(op, Op::GetField) {
-                let idx = read_u8(chunk, ip, "GetField")? as usize;
-                let _ = idx;
+                read_u8(chunk, ip, "GetField")?;
             }
             successors.push(*ip);
             StackRule::Exact {
@@ -390,11 +373,7 @@ fn decode_instruction(
         }
         Op::GetLocalField0 | Op::GetLocalField1 => {
             let slot = read_u16(chunk, ip, "GetLocalField")? as usize;
-            if slot >= n_locals {
-                return Err(format!(
-                    "{op:?} at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot(&format!("{op:?}"), start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 1,
@@ -447,11 +426,7 @@ fn decode_instruction(
         }
         Op::JumpIfLocalNotTag => {
             let slot = read_u16(chunk, ip, "JumpIfLocalNotTag")? as usize;
-            if slot >= n_locals {
-                return Err(format!(
-                    "JumpIfLocalNotTag at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("JumpIfLocalNotTag", start, slot, n_locals)?;
             read_u16(chunk, ip, "JumpIfLocalNotTag")?;
             let offset = read_i16(chunk, ip, "JumpIfLocalNotTag")?;
             let target = read_relative_target(*ip, offset, "JumpIfLocalNotTag")?;
@@ -677,6 +652,16 @@ fn decode_instruction(
         handler_clause_targets,
         provider_slots,
     })
+}
+
+/// Reject a local slot outside the chunk's declared locals.
+fn check_local_slot(what: &str, start: usize, slot: usize, n_locals: usize) -> Result<(), String> {
+    if slot >= n_locals {
+        return Err(format!(
+            "{what} at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_effect_tag(
