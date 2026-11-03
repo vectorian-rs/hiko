@@ -4,7 +4,13 @@
 //!
 //! Each case type-checks generated programs of size N and 2N and requires
 //! the type work, which is deterministic, to grow by at most `MAX_RATIO`.
-//! Linear growth gives 2; quadratic gives 4.
+//! Linear growth gives 2; quadratic gives 4. The work of an empty program
+//! (builtins, prelude) is subtracted first, so a fixed cost cannot hide a
+//! quadratic term.
+//!
+//! `type_work` counts nodes visited by apply, unify and the occurs check.
+//! Work outside them (scope lookups, exhaustiveness checking) is not
+//! counted, so this test can miss a pass that is quadratic only there.
 
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
@@ -25,13 +31,18 @@ fn type_work(source: &str) -> u64 {
 }
 
 fn assert_linear(name: &str, generate: impl Fn(usize) -> String) {
-    let small = type_work(&generate(N));
-    let large = type_work(&generate(2 * N));
+    assert_linear_at(name, N, generate);
+}
+
+fn assert_linear_at(name: &str, n: usize, generate: impl Fn(usize) -> String) {
+    let base = type_work("");
+    let small = type_work(&generate(n)) - base;
+    let large = type_work(&generate(2 * n)) - base;
     let ratio = large as f64 / small as f64;
     assert!(
         ratio <= MAX_RATIO,
-        "{name}: type work grew {ratio:.2}x from N={N} ({small}) to N={} ({large})",
-        2 * N
+        "{name}: type work grew {ratio:.2}x from N={n} ({small}) to N={} ({large})",
+        2 * n
     );
 }
 
@@ -76,6 +87,22 @@ fn many_constructors_and_matches() {
         for i in 0..n {
             s.push_str(&format!("fun g{i} v = case v of C{i} x => x | _ => 0\n"));
         }
+        s
+    });
+}
+
+/// Many local values whose types share one free type variable. On main
+/// this grows about 8x per doubling (generalization walks the environment);
+/// with type levels (#168) about 4x. Enable when it is linear.
+#[test]
+#[ignore = "super-linear on main; type levels (#168) and a follow-up should make it linear"]
+fn many_local_values_sharing_a_type_variable() {
+    assert_linear_at("local values sharing a type variable", 100, |n| {
+        let mut s = String::from("fun f y =\n let\n");
+        for i in 0..n {
+            s.push_str(&format!("  val u{i} = y\n"));
+        }
+        s.push_str(" in u0 end\n");
         s
     });
 }
