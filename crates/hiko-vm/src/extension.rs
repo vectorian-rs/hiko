@@ -61,9 +61,10 @@ pub struct Extension {
     /// Hiko modules by import name, such as `("Github.Issue", source)`.
     pub modules: &'static [(&'static str, &'static str)],
     /// Library modules those modules import, such as `"Std.Result"`. They
-    /// come from the project's lockfile like any named import; importing
-    /// one of the extension's modules fails with an error naming the
-    /// extension when one of these is not pinned.
+    /// come from the project's lockfile like any named import. When one of
+    /// the extension's modules imports one that is not pinned, or one not
+    /// listed here, compiling fails with an error naming the module and the
+    /// extension.
     pub requires: &'static [&'static str],
     /// Turn the run-config table into the extension's state. An error stops
     /// the VM from being built.
@@ -71,12 +72,26 @@ pub struct Extension {
 }
 
 impl Extension {
-    /// The named imports in the extension's modules that are neither its
-    /// own modules nor listed in `requires`, as `"<module> imports <name>"`.
-    /// Each extension's tests assert this is empty, so `requires` cannot
-    /// fall behind the sources.
+    /// The named imports in the extension's modules, at any depth, that are
+    /// neither its own modules nor listed in `requires`, as `"<module>
+    /// imports <name>"`. Compiling such an import is an error; each
+    /// extension's tests assert this is empty, so the error cannot reach a
+    /// user.
     pub fn undeclared_imports(&self) -> Result<Vec<String>, String> {
-        use hiko_syntax::ast::DeclKind;
+        use hiko_syntax::ast::{Decl, DeclKind};
+        fn imports(decls: &[Decl], out: &mut Vec<hiko_syntax::intern::Symbol>) {
+            for decl in decls {
+                match &decl.kind {
+                    DeclKind::Import(name) | DeclKind::ImportWithNames(name, _) => out.push(*name),
+                    DeclKind::Local(locals, body) => {
+                        imports(locals, out);
+                        imports(body, out);
+                    }
+                    DeclKind::Structure { decls, .. } => imports(decls, out),
+                    _ => {}
+                }
+            }
+        }
         let mut undeclared = Vec::new();
         for (module, source) in self.modules {
             let tokens = hiko_syntax::lexer::Lexer::new(source, 0)
@@ -85,12 +100,10 @@ impl Extension {
             let program = hiko_syntax::parser::Parser::new(tokens)
                 .parse_program()
                 .map_err(|e| format!("{module}: {}", e.message))?;
-            for decl in &program.decls {
-                let (DeclKind::Import(name) | DeclKind::ImportWithNames(name, _)) = &decl.kind
-                else {
-                    continue;
-                };
-                let import = program.interner.resolve(*name);
+            let mut names = Vec::new();
+            imports(&program.decls, &mut names);
+            for name in names {
+                let import = program.interner.resolve(name);
                 let own = self.modules.iter().any(|(m, _)| *m == import);
                 if !own && !self.requires.contains(&import) {
                     undeclared.push(format!("{module} imports {import}"));
@@ -112,13 +125,11 @@ impl Extension {
                     .map(|builtin| (builtin.name, builtin.signature)),
             );
             surface.modules.extend_from_slice(extension.modules);
-            if !extension.requires.is_empty() {
-                surface.requires.push(ExtensionRequires {
-                    extension: extension.name,
-                    modules: extension.modules,
-                    imports: extension.requires,
-                });
-            }
+            surface.requires.push(ExtensionRequires {
+                extension: extension.name,
+                modules: extension.modules,
+                imports: extension.requires,
+            });
         }
         surface
     }

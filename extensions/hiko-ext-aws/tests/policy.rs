@@ -115,18 +115,17 @@ fn aws_listings_are_std_results() {
 }
 
 #[test]
-fn a_lockfile_without_std_result_is_an_error_naming_the_extension() {
-    // `requires` is one rule for all of the extension's modules, so this
-    // holds for Aws.Config too, which itself imports nothing.
+fn a_lockfile_without_std_result_is_an_error_naming_the_module() {
     let dir = project("without-result", &["List"]);
-    for import in ["import Aws.S3", "import Aws.Config"] {
-        let err = compile_in(&dir, import, s3_options()).unwrap_err();
-        assert!(
-            err.contains("extension 'aws' needs Std.Result, which hiko.lock.toml does not pin")
-                && err.contains("hiko install"),
-            "{import}: {err}"
-        );
-    }
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert!(
+        err.contains(
+            "module Aws.S3 of extension 'aws' needs Std.Result, which hiko.lock.toml does not pin"
+        ) && err.contains("hiko install"),
+        "{err}"
+    );
+    // Aws.Config imports nothing, so it needs nothing.
+    compile_in(&dir, "import Aws.Config", s3_options()).expect("Aws.Config alone");
 }
 
 #[test]
@@ -134,7 +133,9 @@ fn outside_a_project_the_error_names_the_extension() {
     let dir = temp_dir("no-project");
     let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
     assert!(
-        err.contains("extension 'aws' needs Std.Result") && err.contains("hiko.toml"),
+        err.contains("module Aws.S3 of extension 'aws' needs Std.Result")
+            && err.contains("not in a project")
+            && err.contains("hiko install"),
         "{err}"
     );
 }
@@ -152,7 +153,9 @@ fn a_sealed_artifact_without_std_result_is_an_error_naming_the_extension() {
     };
     let err = compile_in(with_result(), "import Aws.S3", options).unwrap_err();
     assert!(
-        err.contains("extension 'aws' needs Std.Result, which this artifact does not embed"),
+        err.contains(
+            "module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed"
+        ),
         "{err}"
     );
 }

@@ -61,35 +61,17 @@ pub struct ExtensionSurface {
 }
 
 /// The library modules, such as `Std.Result`, that one extension's modules
-/// import. They resolve like any named import, through the project's
-/// lockfile or a sealed artifact's embedded sources; listing them lets an
-/// import of the extension's modules fail with an explicit error naming the
-/// extension when they are not there.
-#[derive(Debug, Clone)]
+/// may import. They resolve like any named import, through the project's
+/// lockfile or a sealed artifact's embedded sources. While an extension
+/// module is compiled, each of its library imports must be listed here, and
+/// one that is not available fails with an error naming the module and the
+/// extension.
+#[derive(Debug, Clone, Copy)]
 pub struct ExtensionRequires {
     pub extension: &'static str,
     /// The extension's own module import names.
     pub modules: &'static [(&'static str, &'static str)],
     pub imports: &'static [&'static str],
-}
-
-/// The first of `imports` that `embedded` does not hold.
-pub fn missing_embedded(
-    embedded: &EmbeddedSources,
-    imports: &[&'static str],
-) -> Option<&'static str> {
-    imports
-        .iter()
-        .copied()
-        .find(|import| !embedded.modules.iter().any(|m| m.import_name == *import))
-}
-
-/// The error for an extension whose required module a sealed artifact does
-/// not embed.
-pub fn not_embedded(extension: &str, import: &str) -> String {
-    format!(
-        "extension '{extension}' needs {import}, which this artifact does not embed; build it with --lock and a lockfile that pins {import}"
-    )
 }
 
 impl ExtensionSurface {
@@ -100,10 +82,11 @@ impl ExtensionSurface {
             .copied()
     }
 
-    fn requires_for(&self, module: &str) -> Option<&ExtensionRequires> {
+    fn requires_for(&self, module: &str) -> Option<ExtensionRequires> {
         self.requires
             .iter()
             .find(|r| r.modules.iter().any(|(name, _)| *name == module))
+            .copied()
     }
 
     fn has_builtin(&self, name: &str) -> bool {
@@ -959,6 +942,9 @@ pub struct Compiler {
     /// `use` is rejected there: a hash-pinned module must not pull in
     /// unverified files relative to the shared module cache.
     in_remote_import: bool,
+    /// The extension module being inferred, if any: its library imports are
+    /// checked against its extension's `requires`.
+    importing_extension: Option<(ExtensionRequires, &'static str)>,
     /// Imports whose type inference is complete.
     inferred_imports: HashSet<ImportKey>,
     /// Imports whose codegen is complete.
@@ -1139,6 +1125,7 @@ impl Compiler {
             entry_file,
             loading_imports,
             in_remote_import: false,
+            importing_extension: None,
             inferred_imports: HashSet::new(),
             compiled_imports: HashSet::new(),
             imported_programs: HashMap::new(),
@@ -1843,8 +1830,12 @@ impl Compiler {
 
     fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
+        if let Some((requires, importer)) = self.importing_extension
+            && self.loader_options.extensions.module(module_name).is_none()
+        {
+            self.check_extension_import(&requires, importer, module_name)?;
+        }
         if let Some((import_name, source)) = self.loader_options.extensions.module(module_name) {
-            self.check_extension_requires(module_name)?;
             return Ok(ResolvedImport::Synthetic {
                 import_name,
                 display_name: module_name.to_string(),
@@ -1866,33 +1857,38 @@ impl Compiler {
     /// lockfile. Checked when the extension's module is imported, so the
     /// error names the extension rather than an import the user never
     /// wrote.
-    fn check_extension_requires(&mut self, module_name: &str) -> Result<(), CompileError> {
-        let Some(requires) = self.loader_options.extensions.requires_for(module_name) else {
-            return Ok(());
-        };
-        let (extension, imports) = (requires.extension, requires.imports);
+    fn check_extension_import(
+        &mut self,
+        requires: &ExtensionRequires,
+        importer: &str,
+        import: &str,
+    ) -> Result<(), CompileError> {
+        let who = format!("module {importer} of extension '{}'", requires.extension);
+        if !requires.imports.contains(&import) {
+            return Err(CompileError::codegen(format!(
+                "{who} imports {import}, which the extension does not list in its requires"
+            )));
+        }
         match self.loader_options.embedded {
-            Some(embedded) => match missing_embedded(embedded, imports) {
-                Some(import) => Err(CompileError::codegen(not_embedded(extension, import))),
-                None => Ok(()),
-            },
-            None => imports
-                .iter()
-                .try_for_each(|import| self.check_locked_for_extension(extension, import)),
+            Some(embedded) if embedded.modules.iter().any(|m| m.import_name == import) => Ok(()),
+            Some(_) => Err(CompileError::codegen(format!(
+                "{who} needs {import}, which this artifact does not embed; build it with --lock and a lockfile that pins {import}"
+            ))),
+            None => self.check_locked_for_extension(&who, import),
         }
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
-    fn check_locked_for_extension(
-        &mut self,
-        extension: &str,
-        import: &str,
-    ) -> Result<(), CompileError> {
+    fn check_locked_for_extension(&mut self, who: &str, import: &str) -> Result<(), CompileError> {
         let (package, leaf) = split_import_name(import)?;
         let fix = || format!("add {package} to [dependencies] in hiko.toml and run 'hiko install'");
-        if self.entry_file.is_none() {
+        let in_project = self
+            .entry_file
+            .as_deref()
+            .is_some_and(|entry| find_project_manifest_path(entry).is_some());
+        if !in_project {
             return Err(CompileError::codegen(format!(
-                "extension '{extension}' needs {import}, which comes from a project's lockfile, but this program is not compiled from a file in a project; {}",
+                "{who} needs {import}, which comes from a project's lockfile, but this program is not in a project; {}",
                 fix()
             )));
         }
@@ -1901,10 +1897,7 @@ impl Compiler {
                 CompileError::Codegen(message) => message,
                 other => format!("{other:?}"),
             };
-            CompileError::codegen(format!(
-                "extension '{extension}' needs {import}: {message}; {}",
-                fix()
-            ))
+            CompileError::codegen(format!("{who} needs {import}: {message}"))
         })?;
         if lockfile
             .packages
@@ -1914,20 +1907,16 @@ impl Compiler {
             Ok(())
         } else {
             Err(CompileError::codegen(format!(
-                "extension '{extension}' needs {import}, which hiko.lock.toml does not pin; {}",
+                "{who} needs {import}, which hiko.lock.toml does not pin; {}",
                 fix()
             )))
         }
     }
 
     #[cfg(not(feature = "loader-integrity-blake3"))]
-    fn check_locked_for_extension(
-        &mut self,
-        extension: &str,
-        import: &str,
-    ) -> Result<(), CompileError> {
+    fn check_locked_for_extension(&mut self, who: &str, import: &str) -> Result<(), CompileError> {
         Err(CompileError::codegen(format!(
-            "extension '{extension}' needs {import}, but this build cannot load library modules; enable cargo feature 'loader-integrity-blake3'"
+            "{who} needs {import}, but this build cannot load library modules; enable cargo feature 'loader-integrity-blake3'"
         )))
     }
 
@@ -2177,6 +2166,12 @@ impl Compiler {
         self.base_dir = imported_base_dir.clone();
         let old_in_remote = self.in_remote_import;
         self.in_remote_import |= is_remote;
+        let old_extension = self.importing_extension;
+        if let ImportKey::Synthetic(name) = key
+            && let Some(requires) = self.loader_options.extensions.requires_for(name)
+        {
+            self.importing_extension = Some((requires, name));
+        }
 
         // The module's declarations are top-level ones of their own, even
         // when a `use` inside `local` brings it in.
@@ -2185,6 +2180,7 @@ impl Compiler {
         self.infer_ctx.resume_declaration(importer);
 
         self.in_remote_import = old_in_remote;
+        self.importing_extension = old_extension;
         self.base_dir = old_base;
         self.loading_imports.remove(&key);
 

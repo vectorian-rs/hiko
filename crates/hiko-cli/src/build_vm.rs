@@ -328,15 +328,6 @@ fn collect_sealed(
         None => None,
     };
     let sealed = Sealed { modules, script };
-    // An extension's modules import what it requires; the artifact resolves
-    // named imports only from what is sealed into it.
-    for extension in extensions {
-        for import in extension.requires {
-            if !sealed.modules.iter().any(|m| m.import_name == *import) {
-                return Err(hiko_compile::compiler::not_embedded(extension.name, import));
-            }
-        }
-    }
     check_sealed_program(&sealed, extensions)?;
     Ok(sealed)
 }
@@ -849,26 +840,32 @@ mod tests {
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[cfg(feature = "ext-aws")]
     #[test]
-    fn a_sealed_artifact_must_embed_what_its_extensions_require() {
-        // The AWS modules import Std.Result; without --lock nothing is
-        // sealed, so build-vm refuses instead of building an artifact
-        // whose every `import Aws.*` fails.
-        let dir = temp_dir("ext-requires");
-        write(&dir.join("main.hml"), "val _ = println \"hi\"\n").unwrap();
-        let options = BuildVmOptions {
-            config_path: "run.toml".into(),
-            script: Some(dir.join("main.hml")),
-            out_dir: Some(dir.join("out")),
-            local_package_root: Some(repo().join("libraries")),
-            cache_dir: Some(temp_dir("cache")),
-            ..BuildVmOptions::default()
-        };
+    fn a_sealed_script_must_embed_what_its_extension_modules_import() {
+        // Aws.S3 imports Std.Result; without --lock nothing is sealed, so
+        // build-vm refuses the script instead of building an artifact that
+        // fails on its import. A script that imports no AWS module needs
+        // nothing.
         let config = RunConfig::from_toml("[extensions.aws]\n").unwrap();
-        let err = generate(&options, &config, &[&hiko_ext_aws::AWS]).expect_err("not embedded");
+        let build = |name: &str, source: &str| {
+            let dir = temp_dir(name);
+            write(&dir.join("main.hml"), source).unwrap();
+            let options = BuildVmOptions {
+                config_path: "run.toml".into(),
+                script: Some(dir.join("main.hml")),
+                out_dir: Some(dir.join("out")),
+                local_package_root: Some(repo().join("libraries")),
+                cache_dir: Some(temp_dir("cache")),
+                ..BuildVmOptions::default()
+            };
+            generate(&options, &config, &[&hiko_ext_aws::AWS])
+        };
+        let err =
+            build("ext-s3", "import Aws.S3\nval _ = println \"hi\"\n").expect_err("not embedded");
         assert!(
-            err.contains("extension 'aws' needs Std.Result, which this artifact does not embed"),
+            err.contains("module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed"),
             "{err}"
         );
+        build("ext-none", "val _ = println \"hi\"\n").expect("needs nothing");
     }
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]

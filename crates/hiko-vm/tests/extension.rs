@@ -239,3 +239,40 @@ val _ = println (await_process child)"#,
     assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
     assert_eq!(*sink.0.lock().unwrap(), "HI BOB\n");
 }
+
+#[test]
+fn an_import_missing_from_requires_is_an_error_naming_the_module() {
+    // A module that imports a library module its extension does not list.
+    static UNDECLARED: Extension = Extension {
+        name: "undeclared",
+        types: &[],
+        builtins: &[],
+        modules: &[(
+            "Undeclared.M",
+            "import Std.List\nstructure M = struct\n  val n = 1\nend\n",
+        )],
+        requires: &[],
+        configure,
+    };
+    assert_eq!(
+        UNDECLARED.undeclared_imports(),
+        Ok(vec!["Undeclared.M imports Std.List".to_string()])
+    );
+    let config = RunConfig::from_toml("[extensions.undeclared]\n").expect("config");
+    let configured = config
+        .configured_extensions(&[&UNDECLARED])
+        .expect("linked");
+    let options = ModuleLoaderOptions {
+        extensions: Extension::compile_surface(&configured),
+        ..Default::default()
+    };
+    let err = Compiler::compile_with_options(parse("import Undeclared.M"), options)
+        .map(|_| ())
+        .expect_err("undeclared import");
+    assert!(
+        format!("{err:?}").contains(
+            "module Undeclared.M of extension 'undeclared' imports Std.List, which the extension does not list in its requires"
+        ),
+        "{err:?}"
+    );
+}
