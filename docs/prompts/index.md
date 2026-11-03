@@ -5,6 +5,7 @@ Reusable prompts and skills for coding agents working on Hiko.
 | File                                           | Status                     | Summary                                                                                                                   |
 | ---------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | [`code-simplifier.md`](code-simplifier.md)                       | Current operational prompt | Project-specific code simplification skill for Hiko/Rust changes, focused on preserving behavior while improving clarity. |
+| [`delivery-roles.md`](delivery-roles.md) | Current operational prompt | Lead, worker, lens reviewer and external reviewer prompts for the delivery lifecycle. |
 | [`docs-quality-score.md`](docs-quality-score.md)                 | Review prompt              | Prompt for scoring the `docs/` folder on concision, correctness, completeness, understandability, terseness, and agent usefulness. |
 | [`docs-simplifier.md`](docs-simplifier.md)                       | Operational prompt         | Prompt for compressing and clarifying docs while preserving technical meaning and source-of-truth boundaries. |
 | [`language-evaluation-prompt.md`](language-evaluation-prompt.md) | Review prompt              | Prompt for skeptical grading of Hiko correctness, performance, and safety. |
