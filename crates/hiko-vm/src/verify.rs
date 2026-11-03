@@ -220,11 +220,7 @@ fn decode_instruction(
         }
         Op::GetLocal => {
             let slot = read_u16(chunk, ip, "GetLocal")? as usize;
-            if slot >= n_locals {
-                return Err(format!(
-                    "GetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("GetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 1,
@@ -239,11 +235,7 @@ fn decode_instruction(
                 Op::GetLocal3 => 3,
                 _ => unreachable!(),
             };
-            if slot >= n_locals {
-                return Err(format!(
-                    "GetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("GetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 1,
@@ -252,11 +244,7 @@ fn decode_instruction(
         }
         Op::SetLocal => {
             let slot = read_u16(chunk, ip, "SetLocal")? as usize;
-            if slot >= n_locals {
-                return Err(format!(
-                    "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("SetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 2,
@@ -271,11 +259,7 @@ fn decode_instruction(
                 Op::SetLocal3 => 3,
                 _ => unreachable!(),
             };
-            if slot >= n_locals {
-                return Err(format!(
-                    "SetLocal at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
-                ));
-            }
+            check_local_slot("SetLocal", start, slot, n_locals)?;
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: slot + 2,
@@ -379,13 +363,21 @@ fn decode_instruction(
         }
         Op::Neg | Op::NegFloat | Op::Not | Op::GetField | Op::GetField0 | Op::GetField1 => {
             if matches!(op, Op::GetField) {
-                let idx = read_u8(chunk, ip, "GetField")? as usize;
-                let _ = idx;
+                read_u8(chunk, ip, "GetField")?;
             }
             successors.push(*ip);
             StackRule::Exact {
                 min_depth: 1,
                 delta: 0,
+            }
+        }
+        Op::GetLocalField0 | Op::GetLocalField1 => {
+            let slot = read_u16(chunk, ip, "GetLocalField")? as usize;
+            check_local_slot(&format!("{op:?}"), start, slot, n_locals)?;
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: slot + 1,
+                delta: 1,
             }
         }
         Op::MakeTuple => {
@@ -430,6 +422,19 @@ fn decode_instruction(
             StackRule::Exact {
                 min_depth: 1,
                 delta: -1,
+            }
+        }
+        Op::JumpIfLocalNotTag => {
+            let slot = read_u16(chunk, ip, "JumpIfLocalNotTag")? as usize;
+            check_local_slot("JumpIfLocalNotTag", start, slot, n_locals)?;
+            read_u16(chunk, ip, "JumpIfLocalNotTag")?;
+            let offset = read_i16(chunk, ip, "JumpIfLocalNotTag")?;
+            let target = read_relative_target(*ip, offset, "JumpIfLocalNotTag")?;
+            successors.push(target);
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: slot + 1,
+                delta: 0,
             }
         }
         Op::JumpIfNotEq
@@ -647,6 +652,16 @@ fn decode_instruction(
         handler_clause_targets,
         provider_slots,
     })
+}
+
+/// Reject a local slot outside the chunk's declared locals.
+fn check_local_slot(what: &str, start: usize, slot: usize, n_locals: usize) -> Result<(), String> {
+    if slot >= n_locals {
+        return Err(format!(
+            "{what} at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_effect_tag(
@@ -1083,6 +1098,107 @@ mod tests {
                 err.message()
             );
         }
+    }
+
+    #[test]
+    fn local_field_reads_need_their_local_on_the_stack() {
+        for op in [Op::GetLocalField0, Op::GetLocalField1] {
+            let ok = program_with_effects(
+                vec![
+                    Op::Unit as u8,
+                    op as u8,
+                    0,
+                    0,
+                    Op::Pop as u8,
+                    Op::Halt as u8,
+                ],
+                1,
+                Vec::new(),
+            );
+            verify_program(&ok).unwrap_or_else(|e| panic!("{op:?}: {e}"));
+
+            let not_on_stack =
+                program_with_effects(vec![op as u8, 0, 0, Op::Halt as u8], 1, Vec::new());
+            let err = verify_program(&not_on_stack).expect_err("slot 0 is not on the stack");
+            assert!(
+                err.message().contains("requires stack depth"),
+                "{}",
+                err.message()
+            );
+
+            let out_of_range = program_with_effects(
+                vec![Op::Unit as u8, op as u8, 5, 0, Op::Halt as u8],
+                1,
+                Vec::new(),
+            );
+            let err = verify_program(&out_of_range).expect_err("slot 5 is out of range");
+            assert!(err.message().contains("local slot 5"), "{}", err.message());
+        }
+    }
+
+    #[test]
+    fn local_tag_jumps_check_slot_and_target() {
+        // Unit; JumpIfLocalNotTag slot 0, tag 0, offset 0; Halt
+        let ok = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::JumpIfLocalNotTag as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Op::Halt as u8,
+            ],
+            1,
+            Vec::new(),
+        );
+        verify_program(&ok).unwrap_or_else(|e| panic!("{e}"));
+
+        let not_on_stack = program_with_effects(
+            vec![
+                Op::JumpIfLocalNotTag as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Op::Halt as u8,
+            ],
+            1,
+            Vec::new(),
+        );
+        let err = verify_program(&not_on_stack).expect_err("slot 0 is not on the stack");
+        assert!(
+            err.message().contains("requires stack depth"),
+            "{}",
+            err.message()
+        );
+
+        // Offset -2 lands inside the instruction.
+        let inside = program_with_effects(
+            vec![
+                Op::Unit as u8,
+                Op::JumpIfLocalNotTag as u8,
+                0,
+                0,
+                0,
+                0,
+                0xfe,
+                0xff,
+                Op::Halt as u8,
+            ],
+            1,
+            Vec::new(),
+        );
+        let err = verify_program(&inside).expect_err("target inside an instruction");
+        assert!(
+            err.message().contains("instruction boundary"),
+            "{}",
+            err.message()
+        );
     }
 
     #[test]

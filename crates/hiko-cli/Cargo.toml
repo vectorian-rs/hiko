@@ -7,6 +7,7 @@ description = "hiko-cli: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
+opcode-stats = ["hiko-vm/opcode-stats"]
 default = ["builtin-default", "loader-all", "cli-hash", "cli-lock"]
 # The default build leaves out regex, JSON and dates; see PR #141.
 builtin-default = [

@@ -140,6 +140,15 @@ pub enum Op {
     CallSelf = 79,
     /// `CallSelf` in tail position: reuse the current frame.
     TailCallSelf = 80,
+    /// `GetLocal slot; GetField0` in one instruction: push field 0 of the
+    /// tuple or data value in local `slot` (u16).
+    GetLocalField0 = 81,
+    /// `GetLocal slot; GetField1`.
+    GetLocalField1 = 82,
+    /// `GetLocal slot; JumpIfNotTag tag offset` without the push and pop:
+    /// jump unless the data value in local `slot` (u16) has constructor
+    /// `tag` (u16). Offset (i16) is relative to the end of the instruction.
+    JumpIfLocalNotTag = 83,
 }
 
 impl TryFrom<u8> for Op {
@@ -228,6 +237,9 @@ impl TryFrom<u8> for Op {
             78 => Ok(Op::JumpIfNotGeInt),
             79 => Ok(Op::CallSelf),
             80 => Ok(Op::TailCallSelf),
+            81 => Ok(Op::GetLocalField0),
+            82 => Ok(Op::GetLocalField1),
+            83 => Ok(Op::JumpIfLocalNotTag),
             _ => Err(b),
         }
     }

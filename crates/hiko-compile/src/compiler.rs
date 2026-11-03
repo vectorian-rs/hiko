@@ -1316,6 +1316,26 @@ impl Compiler {
         }
     }
 
+    /// Push field `idx` of the tuple or data value in local `slot`: one
+    /// `GetLocalField0`/`GetLocalField1` for the first two fields.
+    fn emit_local_field(&mut self, slot: u16, idx: usize) -> Result<(), CompileError> {
+        match idx {
+            0 | 1 => {
+                self.emit(if idx == 0 {
+                    Op::GetLocalField0
+                } else {
+                    Op::GetLocalField1
+                });
+                self.emit_u16(slot);
+                Ok(())
+            }
+            _ => {
+                self.emit_get_local(slot);
+                self.emit_get_field(idx)
+            }
+        }
+    }
+
     fn emit_get_field(&mut self, idx: usize) -> Result<(), CompileError> {
         match idx {
             0 => self.emit(Op::GetField0),
@@ -1491,15 +1511,13 @@ impl Compiler {
 
     /// Emit GetLocal slot + GetField idx, add as temp local, return new slot.
     fn emit_field_extract(&mut self, slot: u16, idx: usize) -> Result<u16, CompileError> {
-        self.emit_get_local(slot);
-        self.emit_get_field(idx)?;
+        self.emit_local_field(slot, idx)?;
         Ok(self.add_local("_tmp".to_string()))
     }
 
-    /// Emit tag check: GetLocal slot, JumpIfNotTag tag → fail.
+    /// Emit tag check: JumpIfLocalNotTag slot tag → fail.
     fn emit_tag_check(&mut self, slot: u16, tag: u16, fail_jumps: &mut Vec<(usize, usize)>) {
-        self.emit_get_local(slot);
-        let jmp = self.chunk().emit_tag_jump(tag);
+        let jmp = self.chunk().emit_local_tag_jump(slot, tag);
         fail_jumps.push((jmp, self.ctx().locals.len()));
     }
 
@@ -2217,8 +2235,7 @@ impl Compiler {
             PatKind::Tuple(pats) => {
                 let tup_slot = self.add_local("_tup".to_string());
                 for (i, p) in pats.iter().enumerate() {
-                    self.emit_get_local(tup_slot);
-                    self.emit_get_field(i)?;
+                    self.emit_local_field(tup_slot, i)?;
                     self.compile_binding_pattern(p)?;
                 }
                 // At top level the fields went to globals, so the tuple is
@@ -3642,12 +3659,13 @@ mod tests {
     }
 
     #[test]
-    fn compile_emits_quick_local_and_field_opcodes() {
+    fn compile_fuses_local_and_field_reads() {
         let program = parse_program("val (a, b) = (1, 2)\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        assert!(compiled.main.ops().contains(&Op::GetLocal0));
-        assert!(compiled.main.ops().contains(&Op::GetField0));
-        assert!(compiled.main.ops().contains(&Op::GetField1));
+        let ops = compiled.main.ops();
+        assert!(ops.contains(&Op::GetLocalField0), "{ops:?}");
+        assert!(ops.contains(&Op::GetLocalField1), "{ops:?}");
+        assert!(!ops.contains(&Op::GetField0), "{ops:?}");
     }
 
     #[test]
@@ -3913,8 +3931,11 @@ mod tests {
                 .iter()
                 .find(|proto| proto.name.as_deref() == Some(name))
                 .expect("function proto");
-            assert!(proto.chunk.ops().contains(&Op::JumpIfNotTag), "{name}");
-            assert!(!proto.chunk.ops().contains(&Op::Eq), "{name}");
+            let ops = proto.chunk.ops();
+            // The tag test reads the scrutinee's local directly.
+            assert!(ops.contains(&Op::JumpIfLocalNotTag), "{name}: {ops:?}");
+            assert!(!ops.contains(&Op::JumpIfNotTag), "{name}: {ops:?}");
+            assert!(!ops.contains(&Op::Eq), "{name}");
         }
     }
 

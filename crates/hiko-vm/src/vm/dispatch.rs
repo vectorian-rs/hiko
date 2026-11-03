@@ -75,6 +75,11 @@ impl VM {
                 return Err(error("unexpected end of bytecode"));
             };
             self.frames[fi].ip = ip + 1;
+            #[cfg(feature = "opcode-stats")]
+            {
+                crate::opcode_stats::record(self.last_op, op_byte);
+                self.last_op = op_byte;
+            }
             let op = Op::try_from(op_byte).map_err(|b| RuntimeError {
                 message: format!("invalid opcode: {b}"),
             })?;
@@ -294,6 +299,13 @@ impl VM {
                 }
                 Op::GetField0 => self.push_field(0)?,
                 Op::GetField1 => self.push_field(1)?,
+                Op::GetLocalField0 | Op::GetLocalField1 => {
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
+                    let idx = self.local_stack_index(fi, slot, "GetLocalField")?;
+                    let field = (op == Op::GetLocalField1) as usize;
+                    let val = self.field_of(self.stack[idx], field, "GetLocalField")?;
+                    self.push(val)?;
+                }
                 Op::MakeData => {
                     let tag = u16::from_le_bytes(operand!(fi, 2));
                     let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
@@ -319,22 +331,25 @@ impl VM {
                 Op::JumpIfNotTag => {
                     let tag = u16::from_le_bytes(operand!(fi, 2));
                     let offset = i16::from_le_bytes(operand!(fi, 2));
-                    let actual = match self.pop()? {
-                        Value::Heap(r) => match self.heap_get(r)? {
-                            HeapObject::Data { tag, .. } => Some(*tag),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    let Some(actual) = actual else {
-                        return Err(RuntimeError {
-                            message: "JumpIfNotTag: expected data value".into(),
-                        });
-                    };
+                    let value = self.pop()?;
+                    let actual = self.data_tag(value, "JumpIfNotTag")?;
                     if actual != tag {
                         let ip = self.frames[fi].ip;
                         let target =
                             self.checked_relative_ip(proto_idx, ip, offset, "JumpIfNotTag")?;
+                        self.frames[fi].ip = target;
+                    }
+                }
+                Op::JumpIfLocalNotTag => {
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
+                    let tag = u16::from_le_bytes(operand!(fi, 2));
+                    let offset = i16::from_le_bytes(operand!(fi, 2));
+                    let idx = self.local_stack_index(fi, slot, "JumpIfLocalNotTag")?;
+                    let actual = self.data_tag(self.stack[idx], "JumpIfLocalNotTag")?;
+                    if actual != tag {
+                        let ip = self.frames[fi].ip;
+                        let target =
+                            self.checked_relative_ip(proto_idx, ip, offset, "JumpIfLocalNotTag")?;
                         self.frames[fi].ip = target;
                     }
                 }
@@ -811,28 +826,36 @@ impl VM {
 
     fn push_field(&mut self, idx: usize) -> Result<(), RuntimeError> {
         let val = self.pop()?;
-        match val {
-            Value::Heap(r) => match self.heap_get(r)? {
-                HeapObject::Tuple(t) => {
-                    let field = t.get(idx).copied().ok_or_else(|| RuntimeError {
-                        message: format!("GetField: field index {idx} out of bounds"),
-                    })?;
-                    self.push(field)
-                }
-                HeapObject::Data { fields, .. } => {
-                    let field = fields.get(idx).copied().ok_or_else(|| RuntimeError {
-                        message: format!("GetField: field index {idx} out of bounds"),
-                    })?;
-                    self.push(field)
-                }
-                _ => Err(RuntimeError {
-                    message: "GetField: expected tuple or data".into(),
-                }),
-            },
-            _ => Err(RuntimeError {
-                message: "GetField: expected tuple or data".into(),
-            }),
+        let field = self.field_of(val, idx, "GetField")?;
+        self.push(field)
+    }
+
+    /// The constructor tag of a data value.
+    #[inline(always)]
+    fn data_tag(&self, val: Value, what: &str) -> Result<u16, RuntimeError> {
+        if let Value::Heap(r) = val
+            && let HeapObject::Data { tag, .. } = self.heap_get(r)?
+        {
+            return Ok(*tag);
         }
+        Err(error_fmt(format_args!("{what}: expected data value")))
+    }
+
+    /// Field `idx` of a tuple or data value.
+    #[inline(always)]
+    fn field_of(&self, val: Value, idx: usize, what: &str) -> Result<Value, RuntimeError> {
+        let fields = match val {
+            Value::Heap(r) => match self.heap_get(r)? {
+                HeapObject::Tuple(t) => t,
+                HeapObject::Data { fields, .. } => fields,
+                _ => return Err(error_fmt(format_args!("{what}: expected tuple or data"))),
+            },
+            _ => return Err(error_fmt(format_args!("{what}: expected tuple or data"))),
+        };
+        fields
+            .get(idx)
+            .copied()
+            .ok_or_else(|| error_fmt(format_args!("{what}: field index {idx} out of bounds")))
     }
 
     fn pop_int(&mut self) -> Result<i64, RuntimeError> {

@@ -7,6 +7,8 @@ description = "hiko-vm: part of the hiko ML-family scripting language"
 repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
+# Count executed opcodes and opcode pairs (HIKO_OPCODE_STATS=<path>); slow.
+opcode-stats = []
 default = ["builtin-default"]
 # The default build leaves out regex, JSON and dates; see PR #141.
 builtin-default = [

@@ -610,3 +610,103 @@ against the one before.
   avoid runs only when `max_memory_bytes` is set, which no benchmark does,
   and reserving in chunks would let one process take budget its siblings
   could use near the limit.
+
+### What the VM executes (opcode counts, #152)
+
+Counted with the `opcode-stats` feature (`HIKO_OPCODE_STATS=<path>`) on
+`main` plus #149, #159 and #164. "Move" is the share of executed instructions
+that only move values between locals and the stack: `GetLocal*`,
+`SetLocal*`, `Pop`.
+
+| Program | Executed | Move share | Top opcodes |
+|---|---|---|---|
+| `compare/tak` | 38.0M | 67% | `GetLocal` 21%, `GetLocal3` 11%, `Pop` 10% |
+| `compare/sieve` | 67.7M | 65% | `GetLocal` 44%, `JumpIfNotTag` 9%, `GetLocal3` 7% |
+| `compare/nbody` | 72.2M | 65% | `GetLocal` 50%, `GetField` 8%, `GetLocal0` 6% |
+| `compare/list` | 231.9M | 63% | `GetLocal` 40%, `GetField0` 15%, `JumpIfNotTag` 10% |
+| `compare/queens` | 47.1M | 63% | `GetLocal` 38%, `GetLocal3` 9%, `JumpIfNotEq` 5% |
+| `list_length` | 171.2M | 59% | `GetLocal` 35%, `JumpIfNotTag` 12%, `GetLocal2` 6% |
+| `compare/mandelbrot` | 89.1M | 55% | `GetLocal` 43%, `Const` 11%, `MulFloat` 10% |
+| `compare/binary_trees` | 164.6M | 46% | `GetLocal1` 10%, `GetLocal0` 10%, `Pop` 10% |
+| `ack` | 167.5M | 43% | `Const` 20%, `GetLocal2` 13%, `JumpIfNotEq` 10% |
+| `compare/fib` | 67.0M | 26% | `GetLocal0` 26%, `Const` 21%, `Return` 11% |
+
+Over all ten programs, 1.12 billion instructions, 54% are moves. The generic
+`GetLocal` (2-byte operand) alone is 35 to 50% on most programs: the short
+forms cover only slots 0 to 3.
+
+Most frequent consecutive pairs, as a share of all pairs: `GetLocal ->
+GetLocal` 6.3%, `GetLocal -> JumpIfNotTag` 4.7%, `JumpIfNotTag -> GetLocal`
+4.7%, `GetLocal -> GetField0` 4.4%, `GetLocal0 -> GetLocal1` 4.1%,
+`GetField0 -> GetLocal` 3.4%, `GetLocal1 -> GetLocal2` 2.9%, `GetField1 ->
+GetLocal` 2.8%, `GetLocal -> GetField1` 2.4%, `Const -> JumpIfNotEq` 2.1%.
+
+### Superinstruction: field of a local (PR #165, #152)
+
+`GetLocal slot; GetField0` and `GetLocal slot; GetField1` (6.8% of executed
+pairs) became `GetLocalField0 slot` / `GetLocalField1 slot`. The compiler
+fuses them only when no jump lands between the two. Interleaved, 10 rounds,
+on AC, load average 3 to 3.7:
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/list` | 1163 ms | 997 ms | -14% |
+| `list_length` | 885 ms | 809 ms | -9% |
+| `compare/sieve` | 405 ms | 382 ms | -6% |
+| `compare/nbody` | 395 ms | 382 ms | -3% |
+| `compare/queens` | 257 ms | 250 ms | -3% |
+| `compare/binary_trees` | 1067 ms | 1042 ms | -2% |
+| `compare/tak`, `compare/fib`, `compare/mandelbrot`, `ack` | | | within 1% |
+
+Medians; the minimums agree.
+
+### Superinstruction: tag test on a local (PR #165, #152)
+
+Pattern tag checks were `GetLocal slot; JumpIfNotTag tag` (4.7% of executed
+pairs). The compiler now emits `JumpIfLocalNotTag slot tag offset`, which
+reads the local in place. Interleaved, 10 rounds, on AC, load average 2 to
+3.2; "before" includes the field-of-a-local superinstruction.
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `compare/list` | 995 ms | 926 ms | -7% |
+| `list_length` | 806 ms | 751 ms | -7% |
+| `compare/sieve` | 376 ms | 358 ms | -5% |
+| `compare/queens` | 247 ms | 240 ms | -3% |
+| `compare/binary_trees` | 1035 ms | 1017 ms | -2% |
+| `compare/nbody` | 382 ms | 376 ms | -1% |
+| `compare/tak`, `compare/fib`, `ack` | | | 0% |
+
+Medians; the minimums agree.
+
+### Superinstruction: two local reads (PR #165, not kept)
+
+`GetLocal a; GetLocal b` (6.3% of executed pairs, the most frequent) as one
+`GetLocalPair a b`. Interleaved, 10 rounds, on AC, load average 1.4 to 2.6:
+`compare/mandelbrot` -8%, `compare/nbody` -5%, `compare/queens` -3%,
+`list_length` -2%, `compare/list` -1%; but `compare/sieve` +17%,
+`compare/binary_trees` +11%, `compare/fib` +8%, `ack` +5%, `compare/tak`
++3%. `fib` and `ack` barely use the pair, so the loss is likely the dispatch
+loop's code layout or register allocation rather than the fusion. Reverted.
+A register VM (#155) removes these reads without adding opcodes to the
+stack VM's loop.
+
+### Against Lua and Python, after #159, #164 and #165
+
+`scripts/compare.sh`, 10 runs each, on AC, load average about 2.5, with
+#159 (code slice in `dispatch`), #164 (string fixes) and #165's kept
+superinstructions (field of a local, tag test on a local). "#146" is the
+first comparison above.
+
+| Program | Hiko (#146) | Hiko | Lua | Python | LuaJIT | Hiko / Lua | Hiko / Python |
+|---|---|---|---|---|---|---|---|
+| `binary_trees` | 1454 ms | 1053 ms | 504 ms | 294 ms | 134 ms | 2.1x | 3.6x |
+| `fib` | 472 ms | 391 ms | 137 ms | 241 ms | 18 ms | 2.9x | 1.6x |
+| `list` | 1755 ms | 962 ms | 125 ms | 171 ms | 19 ms | 7.7x | 5.6x |
+| `mandelbrot` | 636 ms | 466 ms | 105 ms | 210 ms | 12 ms | 4.4x | 2.2x |
+| `nbody` | 642 ms | 406 ms | 96 ms | 113 ms | 17 ms | 4.2x | 3.6x |
+| `queens` | 351 ms | 250 ms | 51 ms | 101 ms | 11 ms | 4.9x | 2.5x |
+| `sieve` | 608 ms | 373 ms | 341 ms | 157 ms | 101 ms | 1.1x | 2.4x |
+| `tak` | 257 ms | 195 ms | 54 ms | 82 ms | 12 ms | 3.6x | 2.4x |
+
+Hiko is 17 to 45% faster than at #146, and 1.1x to 7.7x slower than Lua 5.5.
