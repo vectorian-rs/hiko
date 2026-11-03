@@ -325,6 +325,13 @@ worst inputs found fail in under 1.5 s (release build). Ordinary programs use
 far less: the largest program in this repository uses about 30,000, and a
 generated 15,000-line program about 1,000,000.
 
+Generalization does not walk the environment: each type variable records the
+let-nesting level it belongs to, and a binding generalizes the variables above
+the current level (as in OCaml). Its cost is linear in the program. Before
+this, every generalization re-read each binding that still had free type
+variables, so 4,000 value-restricted `val`s each followed by a `fun` cost
+128,000,000 work and failed; they now cost 532,000.
+
 The limit is not a `hiko.toml` key. Code that drives `InferCtx` directly can
 change it with `InferCtx::set_max_type_work`.
 
