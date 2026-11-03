@@ -38,10 +38,6 @@ pub struct InferCtx {
     /// The current level: [`TOP_LEVEL`] between top-level declarations, one
     /// more inside each let-bound right-hand side.
     level: u32,
-    /// While a value is checked against its signature: the level at and
-    /// below which a variable belongs to the environment, and whether such a
-    /// variable was bound to a type mentioning a rigid signature variable.
-    rigid_watch: Option<(u32, bool)>,
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     /// Opaque types declared by extensions (see `add_opaque_type`).
@@ -260,7 +256,6 @@ impl InferCtx {
             scopes: vec![HashMap::new()],
             levels: Vec::new(),
             level: TOP_LEVEL,
-            rigid_watch: None,
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             opaque_types: Vec::new(),
@@ -349,38 +344,49 @@ impl InferCtx {
         v
     }
 
-    /// Infer a let-bound right-hand side one level deeper, so that
-    /// `generalize` afterwards takes the variables it created and did not
-    /// share with the environment.
-    fn enter_level(&mut self) {
+    /// Run `f` one level deeper: inference of a let-bound right-hand side,
+    /// so that `generalize` afterwards takes the variables it created and
+    /// did not share with the environment. The level is restored whatever
+    /// `f` returns.
+    fn at_inner_level<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.level += 1;
-    }
-
-    fn leave_level(&mut self) {
+        let result = f(self);
         self.level -= 1;
+        result
     }
 
     /// Bind the unbound variable `v` to `ty`, whose variables are unbound
     /// too. They now occur wherever `v` does, so none may stay above `v`'s
     /// level.
     fn bind_var(&mut self, v: u32, ty: Type) {
-        let level = self.levels[v as usize];
-        self.lower_levels(&ty, level);
-        if let Some((watch, escaped)) = &mut self.rigid_watch
-            && level <= *watch
-            && mentions_rigid_var(&ty)
-        {
-            *escaped = true;
-        }
+        self.lower_levels(&ty, self.levels[v as usize]);
         self.subst.insert(v, ty);
     }
 
     /// Lower the level of every variable of `ty` (unbound variables only) to
     /// at most `level`.
     fn lower_levels(&mut self, ty: &Type, level: u32) {
-        for u in ty.free_vars() {
-            let l = &mut self.levels[u as usize];
-            *l = (*l).min(level);
+        match ty {
+            Type::Var(u) => {
+                let l = &mut self.levels[*u as usize];
+                *l = (*l).min(level);
+            }
+            Type::Arrow(a, b, row) => {
+                self.lower_levels(a, level);
+                self.lower_levels(b, level);
+                self.lower_levels(row, level);
+            }
+            Type::Row(_, tail) => {
+                if let Some(tail) = tail {
+                    self.lower_levels(tail, level);
+                }
+            }
+            Type::Tuple(ts) | Type::App(_, ts) => {
+                for t in ts {
+                    self.lower_levels(t, level);
+                }
+            }
+            Type::Con(_) => {}
         }
     }
 
@@ -438,26 +444,28 @@ impl InferCtx {
     // ── Substitution ─────────────────────────────────────────────────
 
     fn apply(&self, ty: &Type) -> Type {
-        if !self.charge() {
+        self.apply_with(ty, true)
+    }
+
+    /// `apply`, charging the work counter only if `charge`: the test-only
+    /// checks must not change what a program may cost.
+    fn apply_with(&self, ty: &Type, charge: bool) -> Type {
+        if charge && !self.charge() {
             return Type::unit();
         }
+        let apply = |t| self.apply_with(t, charge);
         match ty {
-            Type::Var(v) => {
-                if let Some(t) = self.subst.get(v) {
-                    self.apply(t)
-                } else {
-                    ty.clone()
-                }
-            }
-            Type::Arrow(a, b, row) => Type::arrow(self.apply(a), self.apply(b), self.apply(row)),
+            Type::Var(v) => match self.subst.get(v) {
+                Some(t) => apply(t),
+                None => ty.clone(),
+            },
+            Type::Arrow(a, b, row) => Type::arrow(apply(a), apply(b), apply(row)),
             Type::Row(labels, tail) => match tail {
                 None => ty.clone(),
-                Some(tail) => extend_row(labels, self.apply(tail)),
+                Some(tail) => extend_row(labels, apply(tail)),
             },
-            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply(t)).collect()),
-            Type::App(n, args) => {
-                Type::App(n.clone(), args.iter().map(|t| self.apply(t)).collect())
-            }
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(apply).collect()),
+            Type::App(n, args) => Type::App(n.clone(), args.iter().map(apply).collect()),
             Type::Con(_) => ty.clone(),
         }
     }
@@ -642,14 +650,8 @@ impl InferCtx {
 
     /// Generalize `ty` over its variables above the current level: those
     /// created in the right-hand side just inferred and not shared with the
-    /// environment. `self_scope` says whether the innermost scope holds the
-    /// monomorphic bindings of the functions being generalized; only the
-    /// debug check needs it.
-    #[cfg_attr(
-        not(any(test, feature = "check-generalization")),
-        allow(unused_variables)
-    )]
-    fn generalize(&self, ty: &Type, self_scope: bool) -> Scheme {
+    /// environment.
+    fn generalize(&self, ty: &Type) -> Scheme {
         let ty = self.apply(ty);
         let vars: Vec<u32> = ty
             .free_vars()
@@ -657,74 +659,16 @@ impl InferCtx {
             .filter(|&v| self.levels[v as usize] > self.level)
             .collect();
         #[cfg(any(test, feature = "check-generalization"))]
-        self.check_levels_agree(&ty, &vars, self_scope);
+        self.check_levels_agree(&ty, &vars);
         Scheme { vars, ty }
     }
 
-    /// Test builds: generalization by levels must agree with the
-    /// definition, which generalizes the variables of `ty` that are free
-    /// nowhere in the environment. The innermost scope is left out when it
-    /// holds the monomorphic bindings of the functions being generalized.
-    #[cfg(any(test, feature = "check-generalization"))]
-    fn check_levels_agree(&self, ty: &Type, vars: &[u32], self_scope: bool) {
-        let env_vars = self.env_free_vars(self_scope);
-        let expected: Vec<u32> = ty
-            .free_vars()
-            .into_iter()
-            .filter(|v| !env_vars.contains(v))
-            .collect();
-        assert_eq!(
-            vars, expected,
-            "generalization by levels disagrees for {ty}"
-        );
-    }
-
-    /// Test builds: the variables free in the environment, by walking it,
-    /// leaving out the innermost scope if `self_scope`.
-    #[cfg(any(test, feature = "check-generalization"))]
-    fn env_free_vars(&self, self_scope: bool) -> HashSet<u32> {
-        let mut vars = HashSet::new();
-        let scopes = self.scopes.len() - usize::from(self_scope);
-        for scope in &self.scopes[..scopes] {
-            for scheme in scope.values() {
-                for v in self.resolve_uncharged(&scheme.ty).free_vars() {
-                    if !scheme.vars.contains(&v) {
-                        vars.insert(v);
-                    }
-                }
-            }
-        }
-        for (_, result_ty) in self.effect_sigs.values() {
-            vars.extend(self.resolve_uncharged(result_ty).free_vars());
-        }
-        vars
-    }
-
-    /// Test builds: `apply` without charging the work counter, so the
-    /// checks above do not change what a program may cost.
-    #[cfg(any(test, feature = "check-generalization"))]
-    fn resolve_uncharged(&self, ty: &Type) -> Type {
-        match ty {
-            Type::Var(v) => match self.subst.get(v) {
-                Some(t) => self.resolve_uncharged(t),
-                None => ty.clone(),
-            },
-            Type::Arrow(a, b, row) => Type::arrow(
-                self.resolve_uncharged(a),
-                self.resolve_uncharged(b),
-                self.resolve_uncharged(row),
-            ),
-            Type::Row(labels, tail) => match tail {
-                None => ty.clone(),
-                Some(tail) => extend_row(labels, self.resolve_uncharged(tail)),
-            },
-            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.resolve_uncharged(t)).collect()),
-            Type::App(n, args) => Type::App(
-                n.clone(),
-                args.iter().map(|t| self.resolve_uncharged(t)).collect(),
-            ),
-            Type::Con(_) => ty.clone(),
-        }
+    /// The scheme of a binding that is not generalized (the value
+    /// restriction): its type now belongs to the environment at this level.
+    fn monomorphize(&mut self, ty: &Type) -> Scheme {
+        let ty = self.apply(ty);
+        self.lower_levels(&ty, self.level);
+        Scheme::mono(ty)
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
@@ -768,11 +712,7 @@ impl InferCtx {
     // ── Declaration inference ────────────────────────────────────────
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
-        let level = self.level;
         let result = self.infer_decl_inner(decl);
-        // An error leaves inference mid-way; the next declaration starts at
-        // the level this one started at.
-        self.level = level;
         if self.work_exhausted() {
             return Err(self.err(
                 &format!(
@@ -789,11 +729,12 @@ impl InferCtx {
     fn infer_decl_inner(&mut self, decl: &Decl) -> Result<(), TypeError> {
         match &decl.kind {
             DeclKind::Val(pat, expr) => {
-                self.enter_level();
-                let expr_ty = self.infer_expr(expr)?;
-                let (pat_ty, bindings) = self.infer_pat(pat)?;
-                self.unify(&expr_ty, &pat_ty, decl.span)?;
-                self.leave_level();
+                let bindings = self.at_inner_level(|this| {
+                    let expr_ty = this.infer_expr(expr)?;
+                    let (pat_ty, bindings) = this.infer_pat(pat)?;
+                    this.unify(&expr_ty, &pat_ty, decl.span)?;
+                    Ok::<_, TypeError>(bindings)
+                })?;
                 let can_gen = is_syntactic_value(expr);
                 for (name, ty) in bindings {
                     if self.constructors.contains_key(&name) {
@@ -803,30 +744,28 @@ impl InferCtx {
                         ));
                     }
                     let scheme = if can_gen {
-                        self.generalize(&ty, false)
+                        self.generalize(&ty)
                     } else {
-                        // Not generalized: the type now belongs to the
-                        // environment at this level.
-                        let ty = self.apply(&ty);
-                        self.lower_levels(&ty, self.level);
-                        Scheme::mono(ty)
+                        self.monomorphize(&ty)
                     };
                     self.bind(name, scheme);
                 }
                 Ok(())
             }
             DeclKind::ValRec(sym, expr) => {
-                // Push scope for the monomorphic self-binding, generalize excluding it
+                // A scope for the monomorphic self-binding, gone before
+                // generalizing.
                 let name = self.interner.resolve(*sym).to_string();
                 self.push_scope();
-                self.enter_level();
-                let func_var = self.fresh();
-                self.bind(name.clone(), Scheme::mono(func_var.clone()));
-                let expr_ty = self.infer_expr(expr)?;
-                self.unify(&func_var, &expr_ty, decl.span)?;
-                self.leave_level();
-                let scheme = self.generalize(&func_var, true);
+                let func_var = self.at_inner_level(|this| {
+                    let func_var = this.fresh();
+                    this.bind(name.clone(), Scheme::mono(func_var.clone()));
+                    let expr_ty = this.infer_expr(expr)?;
+                    this.unify(&func_var, &expr_ty, decl.span)?;
+                    Ok::<_, TypeError>(func_var)
+                })?;
                 self.pop_scope();
+                let scheme = self.generalize(&func_var);
                 self.bind(name, scheme);
                 Ok(())
             }
@@ -913,37 +852,33 @@ impl InferCtx {
 
     fn infer_fun_bindings(&mut self, bindings: &[FunBinding]) -> Result<(), TypeError> {
         self.push_scope();
-        self.enter_level();
+        let func_vars = self.at_inner_level(|this| {
+            // Monomorphic bindings for all functions (enables mutual recursion)
+            let func_vars: Vec<Type> = bindings
+                .iter()
+                .map(|b| {
+                    let v = this.fresh();
+                    let name = this.interner.resolve(b.name).to_string();
+                    this.bind(name, Scheme::mono(v.clone()));
+                    v
+                })
+                .collect();
+            for (binding, func_var) in bindings.iter().zip(func_vars.iter()) {
+                let func_ty = this.infer_fun_binding(binding)?;
+                this.unify(func_var, &func_ty, binding.span)?;
+            }
+            Ok::<_, TypeError>(func_vars)
+        })?;
+        self.pop_scope();
 
-        // Add monomorphic bindings for all functions (enables mutual recursion)
-        let func_vars: Vec<Type> = bindings
-            .iter()
-            .map(|b| {
-                let v = self.fresh();
-                let name = self.interner.resolve(b.name).to_string();
-                self.bind(name, Scheme::mono(v.clone()));
-                v
-            })
-            .collect();
-
-        // Infer each function's type
-        for (binding, func_var) in bindings.iter().zip(func_vars.iter()) {
-            let func_ty = self.infer_fun_binding(binding)?;
-            self.unify(func_var, &func_ty, binding.span)?;
-        }
-        self.leave_level();
-
-        // Generalize (exclude the current scope with monomorphic bindings)
         let schemes: Vec<(String, Scheme)> = bindings
             .iter()
             .zip(func_vars.iter())
             .map(|(b, v)| {
                 let name = self.interner.resolve(b.name).to_string();
-                (name, self.generalize(v, true))
+                (name, self.generalize(v))
             })
             .collect();
-
-        self.pop_scope();
 
         for (name, scheme) in schemes {
             self.bind(name, scheme);
@@ -1157,20 +1092,25 @@ impl InferCtx {
             .map(|(tv, &v)| (v, Type::Con(tv.clone())))
             .collect();
         #[cfg(any(test, feature = "check-generalization"))]
-        let env_vars = self.env_free_vars(false);
+        let env_vars = self.env_free_vars();
         // Everything this check creates is one level deeper than the
-        // environment, so a variable at or below the current level that gets
-        // bound to a type mentioning a rigid variable belongs to the
-        // environment: the value is not polymorphic in that variable (for
-        // example, a weak type variable).
-        self.enter_level();
-        self.rigid_watch = Some((self.level - 1, false));
-        let revealed = self.reveal_abstract_types(spec_ty, spec);
-        let expected = self.substitute_vars(&revealed, &rigid);
-        let actual = self.instantiate(scheme);
-        let unified = self.unify(&actual, &expected, span);
-        let escaped = self.rigid_watch.take().is_some_and(|(_, escaped)| escaped);
-        self.leave_level();
+        // environment, so the variables of these types at or below the outer
+        // level belong to the environment. One that unification binds to a
+        // type mentioning a rigid variable means the value is not polymorphic
+        // in it (for example, a weak type variable).
+        let (unified, escaped) = self.at_inner_level(|this| {
+            let revealed = this.reveal_abstract_types(spec_ty, spec);
+            let expected = this.substitute_vars(&revealed, &rigid);
+            let actual = this.instantiate(scheme);
+            let mut outer_vars = actual.free_vars();
+            outer_vars.extend(this.apply(&expected).free_vars());
+            outer_vars.retain(|&v| this.levels[v as usize] < this.level);
+            let unified = this.unify(&actual, &expected, span);
+            let escaped = outer_vars
+                .iter()
+                .any(|&v| mentions_rigid_var(&this.apply(&Type::Var(v))));
+            (unified, escaped)
+        });
         unified.map_err(|e| {
             self.err(
                 &format!("value {name} does not match its signature: {}", e.message),
@@ -1182,7 +1122,7 @@ impl InferCtx {
             escaped,
             env_vars
                 .iter()
-                .any(|&v| mentions_rigid_var(&self.resolve_uncharged(&Type::Var(v)))),
+                .any(|&v| mentions_rigid_var(&self.apply_with(&Type::Var(v), false))),
             "rigid escape by levels disagrees for {name}"
         );
         if escaped {
@@ -1956,6 +1896,45 @@ fn extend_row(labels: &[String], tail: Type) -> Type {
             Type::Row(all, rest)
         }
         tail => Type::Row(labels.to_vec(), Some(Box::new(tail))),
+    }
+}
+
+/// Checks that generalization by levels agrees with its definition, which
+/// walks the environment. Slow; only in tests and with the
+/// `check-generalization` feature.
+#[cfg(any(test, feature = "check-generalization"))]
+impl InferCtx {
+    /// Levels must generalize exactly the variables of `ty` that are free
+    /// nowhere in the environment.
+    fn check_levels_agree(&self, ty: &Type, vars: &[u32]) {
+        let env_vars = self.env_free_vars();
+        let expected: Vec<u32> = ty
+            .free_vars()
+            .into_iter()
+            .filter(|v| !env_vars.contains(v))
+            .collect();
+        assert_eq!(
+            vars, expected,
+            "generalization by levels disagrees for {ty}"
+        );
+    }
+
+    /// The variables free in the environment, found by walking it.
+    fn env_free_vars(&self) -> HashSet<u32> {
+        let mut vars = HashSet::new();
+        for scope in &self.scopes {
+            for scheme in scope.values() {
+                for v in self.apply_with(&scheme.ty, false).free_vars() {
+                    if !scheme.vars.contains(&v) {
+                        vars.insert(v);
+                    }
+                }
+            }
+        }
+        for (_, result_ty) in self.effect_sigs.values() {
+            vars.extend(self.apply_with(result_ty, false).free_vars());
+        }
+        vars
     }
 }
 
