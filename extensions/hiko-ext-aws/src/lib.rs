@@ -19,6 +19,7 @@
 //! which loads the SDK config on first use and keeps the SDK client for
 //! later calls through the same handle.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use hiko_builtin_meta::BuiltinTypeSignature;
@@ -185,6 +186,7 @@ fn block_on<T>(
 /// Profile keys that make credentials come from anywhere but an SSO token.
 /// A profile that sets one is refused, not used.
 const NOT_SSO_KEYS: &[&str] = &[
+    "login_session",
     "aws_access_key_id",
     "aws_secret_access_key",
     "aws_session_token",
@@ -232,6 +234,15 @@ fn sso_profile_settings(
     };
     let (start_url, sso_region, session) = match profile.get("sso_session") {
         Some(session) => {
+            // One portal, named once: the session's.
+            if let Some(key) = ["sso_start_url", "sso_region"]
+                .into_iter()
+                .find(|key| profile.get(key).is_some())
+            {
+                return Err(format!(
+                    "AWS profile '{name}' sets both sso_session and {key}; set {key} in the sso-session section only"
+                ));
+            }
             let section = profiles.sso_session(session).ok_or_else(|| {
                 format!("AWS profile '{name}' names sso_session '{session}', which does not exist")
             })?;
@@ -259,9 +270,159 @@ fn sso_profile_settings(
     })
 }
 
+/// The user's home directory, from `HOME` (`USERPROFILE` on Windows): the
+/// one input from the environment, for the AWS files and the SSO token
+/// cache under it.
+fn home_dir() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "cannot find the AWS files: HOME is not set".to_string())
+}
+
+/// `~/.aws/config` and `~/.aws/credentials`, and nothing else:
+/// `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` are not used.
+fn aws_files(home: &Path) -> aws_runtime::env_config::file::EnvConfigFiles {
+    use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
+    EnvConfigFiles::builder()
+        .include_default_config_file(false)
+        .include_default_credentials_file(false)
+        .with_file(EnvConfigFileKind::Config, home.join(".aws").join("config"))
+        .with_file(
+            EnvConfigFileKind::Credentials,
+            home.join(".aws").join("credentials"),
+        )
+        .build()
+}
+
+/// Role credentials for an SSO profile: the cached SSO token from
+/// `~/.aws/sso/cache`, exchanged with the SSO portal's GetRoleCredentials.
+/// The SSO client is built from the profile's `sso_region` alone, so no
+/// environment variable or profile setting can move the portal endpoint
+/// (the SDK's own SSO provider takes `AWS_ENDPOINT_URL_SSO` from the
+/// environment). The token is never refreshed here: an expired one is an
+/// error asking for `aws sso login`.
+#[derive(Debug)]
+struct SsoRole {
+    profile: String,
+    sso: SsoProfile,
+    home: PathBuf,
+    /// The SSO portal's endpoint: `None`, AWS's own for the region, except
+    /// in tests, which point it at a local server.
+    endpoint: Option<String>,
+}
+
+impl SsoRole {
+    fn cached_token(&self) -> Result<String, String> {
+        use sha1::{Digest, Sha1};
+        let login = format!("run 'aws sso login --profile {}'", self.profile);
+        let id = self.sso.session.as_deref().unwrap_or(&self.sso.start_url);
+        let hash: String = Sha1::digest(id.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let path = self
+            .home
+            .join(".aws")
+            .join("sso")
+            .join("cache")
+            .join(format!("{hash}.json"));
+        let text = std::fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "no SSO token for AWS profile '{}' ({}: {e}); {login}",
+                self.profile,
+                path.display()
+            )
+        })?;
+        #[derive(Deserialize)]
+        struct Cached {
+            #[serde(rename = "accessToken")]
+            access_token: String,
+            #[serde(rename = "expiresAt")]
+            expires_at: String,
+        }
+        let cached: Cached = serde_json::from_str(&text)
+            .map_err(|e| format!("invalid SSO token cache {}: {e}", path.display()))?;
+        let expires = aws_sdk_s3::primitives::DateTime::from_str(
+            &cached.expires_at,
+            aws_sdk_s3::primitives::DateTimeFormat::DateTime,
+        )
+        .map_err(|e| format!("invalid expiresAt in {}: {e}", path.display()))?;
+        if std::time::SystemTime::try_from(expires)
+            .is_ok_and(|expires| expires <= std::time::SystemTime::now())
+        {
+            return Err(format!(
+                "the SSO token for AWS profile '{}' expired at {}; {login}",
+                self.profile, cached.expires_at
+            ));
+        }
+        Ok(cached.access_token)
+    }
+
+    async fn credentials(
+        &self,
+    ) -> Result<
+        aws_credential_types::Credentials,
+        aws_credential_types::provider::error::CredentialsError,
+    > {
+        use aws_credential_types::provider::error::CredentialsError;
+        let token = self.cached_token().map_err(CredentialsError::not_loaded)?;
+        let mut config = aws_sdk_sso::Config::builder()
+            .behavior_version(aws_sdk_sso::config::BehaviorVersion::latest())
+            .region(aws_sdk_sso::config::Region::new(
+                self.sso.sso_region.clone(),
+            ));
+        if let Some(endpoint) = &self.endpoint {
+            config = config.endpoint_url(endpoint);
+        }
+        let output = aws_sdk_sso::Client::from_conf(config.build())
+            .get_role_credentials()
+            .account_id(&self.sso.account_id)
+            .role_name(&self.sso.role_name)
+            .access_token(token)
+            .send()
+            .await
+            .map_err(|e| {
+                CredentialsError::provider_error(format_aws_error(
+                    &format!("SSO GetRoleCredentials for AWS profile '{}'", self.profile),
+                    &e,
+                ))
+            })?;
+        let missing = |field: &str| {
+            CredentialsError::provider_error(format!(
+                "SSO GetRoleCredentials for AWS profile '{}' returned no {field}",
+                self.profile
+            ))
+        };
+        let role = output
+            .role_credentials()
+            .ok_or_else(|| missing("credentials"))?;
+        let expiration = u64::try_from(role.expiration()).map_err(|_| missing("expiration"))?;
+        Ok(aws_credential_types::Credentials::new(
+            role.access_key_id().ok_or_else(|| missing("access key"))?,
+            role.secret_access_key()
+                .ok_or_else(|| missing("secret key"))?,
+            role.session_token().map(str::to_string),
+            Some(std::time::UNIX_EPOCH + std::time::Duration::from_millis(expiration)),
+            "hiko-ext-aws-sso",
+        ))
+    }
+}
+
+impl aws_credential_types::provider::ProvideCredentials for SsoRole {
+    fn provide_credentials<'a>(
+        &'a self,
+    ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        aws_credential_types::provider::future::ProvideCredentials::new(self.credentials())
+    }
+}
+
 /// The SDK config for `auth`. Credentials come only from the profile's SSO
-/// token, through the SSO portal, and the region only from the profile;
-/// the SDK's default chains (environment variables, the profile's other
+/// token, through `SsoRole`, and the region only from the profile. The
+/// SDK's default chains (environment variables, the profile's other
 /// credential settings, web identity, ECS, the instance metadata service)
 /// are never used, and a profile that is not a direct SSO profile is an
 /// error.
@@ -270,30 +431,29 @@ fn sso_profile_settings(
 /// FIPS, dual-stack, retry and timeout settings still come from the
 /// environment and the profile, as the SDK reads them.
 async fn load_sdk_config(auth: &Auth) -> Result<aws_config::SdkConfig, String> {
-    use aws_config::Region;
-    use aws_config::provider_config::ProviderConfig;
-    use aws_config::sso::SsoCredentialsProvider;
+    let home = home_dir()?;
+    let files = aws_files(&home);
     let profiles = aws_config::profile::load(
         &aws_types::os_shim_internal::Fs::real(),
         &aws_types::os_shim_internal::Env::real(),
-        &Default::default(),
+        &files,
         None,
     )
     .await
     .map_err(|e| format!("cannot read the AWS config files: {e}"))?;
     let sso = sso_profile_settings(&profiles, &auth.profile)?;
-    let region = Region::new(sso.region);
-    let mut credentials = SsoCredentialsProvider::builder()
-        .configure(&ProviderConfig::without_region().with_region(Some(region.clone())))
-        .account_id(sso.account_id)
-        .role_name(sso.role_name)
-        .start_url(sso.start_url)
-        .region(Region::new(sso.sso_region));
-    credentials.set_session_name(sso.session);
+    let region = aws_config::Region::new(sso.region.clone());
+    let role = SsoRole {
+        profile: auth.profile.clone(),
+        sso,
+        home,
+        endpoint: None,
+    };
     Ok(aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .profile_files(files)
         .profile_name(&auth.profile)
         .region(region)
-        .credentials_provider(credentials.build())
+        .credentials_provider(role)
         .load()
         .await)
 }
@@ -307,27 +467,6 @@ macro_rules! no_endpoint_override {
         builder.set_endpoint_url(None);
         builder.build()
     }};
-}
-
-/// Resolve the access key ID a client made from `sso_profile profile`
-/// would use, without the policy check. For `tests/credentials.rs` only.
-#[cfg(feature = "test-support")]
-pub fn resolve_access_key_id(profile: &str) -> Result<String, String> {
-    use aws_sdk_s3::config::ProvideCredentials;
-    let auth = Auth {
-        profile: profile.to_string(),
-    };
-    block_on("resolve_access_key_id", async {
-        let config = load_sdk_config(&auth).await?;
-        let provider = config
-            .credentials_provider()
-            .ok_or("no credentials provider")?;
-        provider
-            .provide_credentials()
-            .await
-            .map(|c| c.access_key_id().to_string())
-            .map_err(|e| format!("{e:?}"))
-    })
 }
 
 /// `(ok, payload, error)`, with `empty` as the payload on failure.
@@ -544,6 +683,122 @@ mod tests {
         assert_eq!(
             p("[profile dev]\nsso_account_id = 1\nsso_role_name = r\nregion = x\n"),
             "AWS profile 'dev' does not set sso_start_url"
+        );
+    }
+
+    #[test]
+    fn a_session_profile_names_its_portal_once() {
+        let config = SSO.replacen(
+            "sso_session = corp\n",
+            "sso_session = corp\nsso_start_url = https://other.awsapps.com/start\n",
+            1,
+        );
+        assert_eq!(
+            sso_profile_settings(&profiles(&config), "dev").unwrap_err(),
+            "AWS profile 'dev' sets both sso_session and sso_start_url; set sso_start_url in the sso-session section only"
+        );
+        let config = SSO.replacen(
+            "sso_session = corp\n",
+            "sso_session = corp\nlogin_session = x\n",
+            1,
+        );
+        let err = sso_profile_settings(&profiles(&config), "dev").unwrap_err();
+        assert!(
+            err.contains("AWS profile 'dev' sets login_session"),
+            "{err}"
+        );
+    }
+
+    /// An `SsoRole` for the profile in `SSO`, with its home in a new
+    /// temporary directory holding `token` as the cached SSO token, if any.
+    fn role(name: &str, token: Option<&str>, endpoint: Option<String>) -> SsoRole {
+        use sha1::{Digest, Sha1};
+        let home = std::env::temp_dir().join(format!("hiko-ext-aws-{name}-{}", std::process::id()));
+        let cache = home.join(".aws").join("sso").join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let hash: String = Sha1::digest(b"corp")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let file = cache.join(format!("{hash}.json"));
+        match token {
+            Some(token) => std::fs::write(&file, token).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(&file);
+            }
+        }
+        SsoRole {
+            profile: "dev".into(),
+            sso: sso_profile_settings(&profiles(SSO), "dev").unwrap(),
+            home,
+            endpoint,
+        }
+    }
+
+    fn credentials(role: &SsoRole) -> Result<aws_credential_types::Credentials, String> {
+        block_on("credentials", async {
+            role.credentials().await.map_err(|e| format!("{e:?}"))
+        })
+    }
+
+    #[test]
+    fn without_a_cached_token_the_error_says_to_log_in() {
+        let err = credentials(&role("no-token", None, None)).unwrap_err();
+        assert!(
+            err.contains("no SSO token for AWS profile 'dev'")
+                && err.contains("aws sso login --profile dev"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_expired_token_is_an_error_not_refreshed() {
+        let token = r#"{"accessToken": "T", "expiresAt": "2020-01-01T00:00:00Z"}"#;
+        let err = credentials(&role("expired", Some(token), None)).unwrap_err();
+        assert!(
+            err.contains("expired at 2020-01-01T00:00:00Z")
+                && err.contains("aws sso login --profile dev"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_cached_token_is_exchanged_with_the_sso_portal() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                request.push(line.to_ascii_lowercase());
+            }
+            let body = r#"{"roleCredentials":{"accessKeyId":"AKIDSSO","secretAccessKey":"s","sessionToken":"t","expiration":4102444800000}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            request
+        });
+        let token = r#"{"accessToken": "TOKEN", "expiresAt": "2099-01-01T00:00:00Z"}"#;
+        let creds = credentials(&role("portal", Some(token), Some(endpoint))).unwrap();
+        assert_eq!(creds.access_key_id(), "AKIDSSO");
+        let request = server.join().unwrap();
+        assert!(
+            request[0].starts_with("get /federation/credentials?")
+                && request[0].contains("account_id=111")
+                && request[0].contains("role_name=dev"),
+            "{request:?}"
+        );
+        assert!(
+            request.iter().any(|h| h == "x-amz-sso_bearer_token: token"),
+            "{request:?}"
         );
     }
 }

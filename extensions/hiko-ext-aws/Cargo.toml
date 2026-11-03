@@ -6,10 +6,6 @@ license = "MIT"
 description = "hiko-ext-aws: AWS config, S3 and SQS builtins for hiko, as an extension"
 repository = "https://github.com/vectorian-rs/hiko"
 
-[features]
-# `resolve_access_key_id`, for tests/credentials.rs only.
-test-support = []
-
 [dependencies]
 hiko-builtin-meta = { version = "0.8.0", path = "../../crates/hiko-builtin-meta", default-features = false }
 hiko-vm = { version = "0.8.0", path = "../../crates/hiko-vm", default-features = false }
@@ -17,11 +13,15 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 aws-config = { version = "1.8.16", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio", "sso"] }
 aws-types = "1.7.0"
+aws-runtime = "1.10.2"
+aws-credential-types = "1.3.1"
+aws-sdk-sso = { version = "1.117.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
+serde_json = "1"
+sha1 = "0.10.7"
 aws-sdk-s3 = { version = "1.131.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 aws-sdk-sqs = { version = "1.90.0", default-features = false, features = ["default-https-client", "behavior-version-latest", "rt-tokio"] }
 tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
-hiko-ext-aws = { path = ".", features = ["test-support"] }
 hiko-compile = { version = "0.8.0", path = "../../crates/hiko-compile", default-features = false }
 hiko-syntax = { version = "0.8.0", path = "../../crates/hiko-syntax" }
