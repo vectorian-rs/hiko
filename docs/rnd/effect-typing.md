@@ -291,12 +291,18 @@ escape the limit.
     using annotation's row variable there.
 - Nothing adds a label yet, so no program changes type: `hiko check` gives
   the same result as before on all 122 repository `.hml` files.
+- **Cost:** type-checking work (the `max_type_work` counter) over all 122
+  files went from 324,069 to 430,359 (+33%). The largest,
+  `tests/run/test_fiber_fuel.hml`, went from 28,122 to 32,248, which is
+  0.3% of the default limit of 10,000,000. Measured by printing
+  `InferCtx::type_work` after inference, on `main` and on this branch.
 
 ### Questions found in stage 1, for stage 2
 
 - **Function types inside datatypes.** In `datatype h = H of (string ->
   unit)`, the stored function's row is quantified with the datatype for
-  now, so each use of `H` gets a fresh one. That forgets the effects of a
+  now, so each use of `H` gets a fresh one. All constructors of one
+  datatype share that row variable. That forgets the effects of a
   stored function: `case h of H f => f "x"` would add nothing to the
   caller's row. Options:
   - make such rows closed `{}` unless annotated, so a datatype can only
@@ -307,6 +313,13 @@ escape the limit.
   datatype (`Next of 'a * (unit -> 'a stream)`), and that function is pure,
   so closed rows would break nothing today. It still needs a decision
   before the `perform` rule lands.
+- **Function types inside effect payloads.** `effect E of (unit -> int)`
+  resolves the payload once, so its arrow has one row variable that every
+  `perform E` and every handler of `E` shares, like the result type. A
+  callback passed through `E` at one site takes on the effects of a callback
+  at another. That follows from payload types being monomorphic. Stage 2
+  can keep it, which is sound but imprecise, or close such rows (`{}`), so
+  that only pure functions pass through effects.
 - **Signatures.** A signature's row variable is left flexible, not rigid, so
   `val f : int -> int` in a signature accepts an implementation that
   performs effects, and exports its own row. Stage 2 must decide whether an

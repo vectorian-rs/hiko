@@ -751,7 +751,7 @@ impl InferCtx {
                     &public,
                     &internal_scheme,
                     &export_ty,
-                    &ann.tyvars,
+                    &mut ann,
                     decl.span,
                 )?;
                 let scheme = Scheme {
@@ -1039,18 +1039,20 @@ impl InferCtx {
         name: &str,
         scheme: &Scheme,
         spec_ty: &Type,
-        spec_tyvars: &HashMap<String, u32>,
+        spec: &mut Annotation,
         span: Span,
     ) -> Result<(), TypeError> {
         // Type variable names keep their leading quote, so these constructor
         // names cannot clash with a declared type.
-        // The annotation's row variable is not among `spec_tyvars`, so it
-        // stays flexible.
-        let rigid: HashMap<u32, Type> = spec_tyvars
+        // The annotation's row variable is not a type variable, so it stays
+        // flexible.
+        let rigid: HashMap<u32, Type> = spec
+            .tyvars
             .iter()
             .map(|(tv, &v)| (v, Type::Con(tv.clone())))
             .collect();
-        let expected = self.substitute_vars(&self.reveal_abstract_types(spec_ty), &rigid);
+        let revealed = self.reveal_abstract_types(spec_ty, spec);
+        let expected = self.substitute_vars(&revealed, &rigid);
         let env_vars = self.free_vars_in_env(false);
         let actual = self.instantiate(scheme);
         self.unify(&actual, &expected, span).map_err(|e| {
@@ -1077,38 +1079,43 @@ impl InferCtx {
     }
 
     /// Replace abstract types introduced by signature ascription with their
-    /// implementation types.
-    fn reveal_abstract_types(&self, ty: &Type) -> Type {
+    /// implementation types. An implementation that is an alias takes the
+    /// row of the annotation `ann`, as a use of the alias would.
+    fn reveal_abstract_types(&mut self, ty: &Type, ann: &mut Annotation) -> Type {
         match ty {
-            Type::Con(name) => match self.abstract_impls.get(name) {
-                Some(impl_name) => self.named_type(impl_name, vec![]),
+            Type::Con(name) => match self.abstract_impls.get(name).cloned() {
+                Some(impl_name) => self.named_type(&impl_name, vec![], ann),
                 None => ty.clone(),
             },
             Type::App(name, args) => {
-                let args = args.iter().map(|a| self.reveal_abstract_types(a)).collect();
-                match self.abstract_impls.get(name) {
-                    Some(impl_name) => self.named_type(impl_name, args),
+                let args = args
+                    .iter()
+                    .map(|a| self.reveal_abstract_types(a, ann))
+                    .collect();
+                match self.abstract_impls.get(name).cloned() {
+                    Some(impl_name) => self.named_type(&impl_name, args, ann),
                     None => Type::App(name.clone(), args),
                 }
             }
-            Type::Arrow(a, b, row) => Type::arrow(
-                self.reveal_abstract_types(a),
-                self.reveal_abstract_types(b),
-                (**row).clone(),
-            ),
-            Type::Row(..) => ty.clone(),
-            Type::Tuple(ts) => {
-                Type::Tuple(ts.iter().map(|t| self.reveal_abstract_types(t)).collect())
+            Type::Arrow(a, b, row) => {
+                let a = self.reveal_abstract_types(a, ann);
+                let b = self.reveal_abstract_types(b, ann);
+                Type::arrow(a, b, (**row).clone())
             }
+            Type::Row(..) => ty.clone(),
+            Type::Tuple(ts) => Type::Tuple(
+                ts.iter()
+                    .map(|t| self.reveal_abstract_types(t, ann))
+                    .collect(),
+            ),
             Type::Var(_) => ty.clone(),
         }
     }
 
     /// The type named `name` applied to `args`, expanding type aliases.
-    fn named_type(&self, name: &str, args: Vec<Type>) -> Type {
-        if let Some((params, _, body)) = self.type_aliases.get(name) {
-            let mapping: HashMap<u32, Type> = params.iter().copied().zip(args).collect();
-            self.substitute_vars(body, &mapping)
+    fn named_type(&mut self, name: &str, args: Vec<Type>, ann: &mut Annotation) -> Type {
+        if let Some((params, row, body)) = self.type_aliases.get(name).cloned() {
+            self.instantiate_alias(&body, &params, row, &args, ann)
         } else if args.is_empty() {
             Type::Con(name.to_string())
         } else {
