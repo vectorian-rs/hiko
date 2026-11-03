@@ -83,7 +83,57 @@ fn run(config: &RunConfig, command: &str, args: &[&str]) -> Result<String, Strin
 
 fn assert_refused(result: Result<String, String>) {
     let err = result.expect_err("must be refused");
-    assert!(err.contains("not in the allowed list"), "{err}");
+    assert!(err.contains("matches no exec rule"), "{err}");
+}
+
+#[test]
+fn a_refusal_does_not_show_the_arguments() {
+    let dir = temp_dir("secret");
+    let tool = tool(&dir, "tool");
+    let config = config(&[&tool, "deploy"], None);
+
+    let err = run(&config, &tool, &["deploy", "--token", "s3cr3t-value"]).expect_err("refused");
+    assert!(!err.contains("s3cr3t-value"), "{err}");
+    assert!(
+        err.contains("with 3 argument(s) matches no exec rule"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_changed_file_is_reported_only_when_a_rule_allows_the_arguments() {
+    use std::io::Write as _;
+
+    let dir = temp_dir("changed-args");
+    let tool = tool(&dir, "tool");
+    let config = config(&[&tool, "ok"], None);
+    let program = compile(&format!(
+        "val (code, out, err) = exec ({tool:?}, {})\nval _ = print out",
+        quoted_list(&["no"])
+    ));
+    let mut vm = config.apply_to_builder(VMBuilder::new(program)).build();
+    // Written in place after the policy was applied: same inode, new size.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&tool)
+        .unwrap()
+        .write_all(b"# more\n")
+        .unwrap();
+    let err = vm.run().expect_err("refused").message;
+    // `no` matches no rule, so that is the reason, not the change.
+    assert!(err.contains("matches no exec rule"), "{err}");
+    assert!(!err.contains("changed after"), "{err}");
+}
+
+#[test]
+fn the_program_sees_the_path_it_was_allowed_by() {
+    // On Linux the pinned file runs through /proc/self/fd; argv[0] is still
+    // the allowed path.
+    let sh = std::fs::canonicalize("/bin/sh").unwrap();
+    let sh = sh.to_string_lossy().into_owned();
+    let config = config(&[&sh, "-c", "echo \"$0\""], None);
+    let out = run(&config, &sh, &["-c", "echo \"$0\""]).unwrap();
+    assert_eq!(out.trim_end(), sh, "{out}");
 }
 
 #[test]
@@ -237,7 +287,7 @@ fn a_spawned_child_has_the_same_rules() {
     assert_eq!(*sink.0.lock().unwrap(), "[ok]\n\n");
     let failure = format!("{:?}", runtime.failure(pid));
     assert!(
-        failure.contains("[\\\"no\\\"] is not in the allowed list"),
+        failure.contains("with 1 argument(s) matches no exec rule"),
         "{failure}"
     );
 }

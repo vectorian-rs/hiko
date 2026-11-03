@@ -138,8 +138,9 @@ fn file_identity(path: PathBuf) -> Result<FileIdentity, String> {
 }
 
 /// Open the executable at `path` and take its identity from the open file,
-/// which stays open. An executable the VM cannot open (mode `--x`, or no
-/// descriptors left) is allowed by identity only, as before #160.
+/// which stays open. Only an executable the VM may run but not read (mode
+/// `--x`) is allowed by identity alone, as before #160. Any other open
+/// error leaves the command out of the policy, with the error recorded.
 fn allowed_executable(path: PathBuf) -> Result<AllowedExecutable, String> {
     match std::fs::File::open(&path) {
         Ok(file) => {
@@ -151,10 +152,11 @@ fn allowed_executable(path: PathBuf) -> Result<AllowedExecutable, String> {
                 pin: Some(Arc::new(file)),
             })
         }
-        Err(_) => Ok(AllowedExecutable {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(AllowedExecutable {
             id: file_identity(path)?,
             pin: None,
         }),
+        Err(e) => Err(format!("cannot open executable '{}': {e}", path.display())),
     }
 }
 
@@ -181,6 +183,28 @@ fn identity_from(path: PathBuf, metadata: &std::fs::Metadata) -> Result<FileIden
         },
         len: metadata.len(),
     })
+}
+
+/// The path to run an allowed executable from. On Linux that is the pinned
+/// file itself, through `/proc/self/fd`, so a file swapped in at the path
+/// after the identity check cannot run. A script (`#!`) is the exception:
+/// its interpreter opens the path after exec, when the descriptor is closed.
+/// Elsewhere, and without `/proc`, it is the path, checked just before.
+fn exec_path(allowed: &AllowedExecutable) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(pin) = &allowed.pin {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::FileExt as _;
+        let mut magic = [0u8; 2];
+        let is_script = pin
+            .read_at(&mut magic, 0)
+            .is_ok_and(|n| n == 2 && &magic == b"#!");
+        let fd_path = PathBuf::from(format!("/proc/self/fd/{}", pin.as_raw_fd()));
+        if !is_script && fd_path.exists() {
+            return fd_path;
+        }
+    }
+    allowed.id.path.clone()
 }
 
 fn resolve_exec_command(command: &str) -> Result<FileIdentity, String> {
@@ -371,13 +395,15 @@ impl VM {
                 args,
             })
         } else if let Some((_, changed)) =
-            self.exec_policy.rules.iter().find(|(_, executable)| {
-                executable.id != resolved && executable.id.same_file(&resolved)
+            self.exec_policy.rules.iter().find(|(rule, executable)| {
+                rule.args_match(&args)
+                    && executable.id != resolved
+                    && executable.id.same_file(&resolved)
             })
         {
             Err(RuntimeError {
                 message: format!(
-                    "exec: '{}' changed after the exec policy was applied (its change time or size differs); it is refused until the VM is started again",
+                    "exec: '{}' changed after the exec policy was applied (it was written, replaced, or its permissions changed); it is refused until the VM is started again",
                     changed.id.path.display()
                 ),
             })
@@ -391,11 +417,13 @@ impl VM {
                     format!("{}{rest}", rule.argv.join(" "))
                 })
                 .collect();
+            // The arguments are not shown: they can hold secrets, such as a
+            // token, and refusals end up in logs.
             let mut message = format!(
-                "exec: command '{}' resolved to '{}' with arguments {:?} is not in the allowed list: {:?}",
+                "exec: command '{}' resolved to '{}' with {} argument(s) matches no exec rule; the rules are: {:?}",
                 command,
                 resolved.path.display(),
-                args,
+                args.len(),
                 rules
             );
             if !self.exec_policy.errors.is_empty() {
@@ -423,7 +451,7 @@ impl VM {
             ));
         }
 
-        let mut command = Command::new(&allowed.path);
+        let mut command = Command::new(exec_path(&exec.allowed));
         command
             .args(&exec.args)
             .stdout(Stdio::piped())
@@ -431,6 +459,8 @@ impl VM {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
+            // The program sees the path it was allowed by, not /proc/self/fd/N.
+            command.arg0(&allowed.path);
             // Lead a new process group so a timeout can kill grandchildren too.
             command.process_group(0);
         }
@@ -670,7 +700,7 @@ mod tests {
         write_executable(&script, "#!/bin/sh\necho secnd\n");
         let err = vm.run().expect_err("the replaced file must not run");
         assert!(
-            err.message.contains("not in the allowed list"),
+            err.message.contains("matches no exec rule"),
             "{}",
             err.message
         );

@@ -202,7 +202,10 @@ pub(super) struct AllowedExecutable {
     id: FileIdentity,
     /// `None` for an executable the VM could not open (mode `--x`, or no
     /// descriptors left).
-    #[allow(dead_code, reason = "held open, not read: it keeps the inode alive")]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "held open, not read: it keeps the inode alive")
+    )]
     pin: Option<Arc<std::fs::File>>,
 }
 
@@ -2564,7 +2567,7 @@ mod tests {
 
         let err = vm.run().unwrap_err();
         assert!(err.message.contains("resolved to"));
-        assert!(err.message.contains("not in the allowed list"));
+        assert!(err.message.contains("matches no exec rule"));
 
         let _ = fs::remove_dir_all(root);
     }
