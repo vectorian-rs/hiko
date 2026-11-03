@@ -94,13 +94,16 @@ pub fn generate(
             Some(extension) => {
                 (extension.configure)(table).map_err(|e| format!("[extensions.{name}]: {e}"))?;
             }
-            None => {
-                // Without the extension here its table cannot be checked, and
-                // a bad table would only fail when the artifact starts.
+            // A --script program is compiled now, with the extension's types
+            // and modules, so it must be linked here.
+            None if options.script.is_some() => {
                 return Err(format!(
-                    "[extensions.{name}] needs a hiko built with feature ext-{name}, so build-vm can check the table"
+                    "--script with [extensions.{name}] needs a hiko built with feature ext-{name}"
                 ));
             }
+            // Otherwise the generated binary checks the table when it starts
+            // and reports a bad one as an error.
+            None => {}
         }
         extensions.push(*known);
     }
@@ -165,9 +168,77 @@ pub fn generate(
 /// would leave them behind, and `build.rs` would then fail.
 const SEALED_FILES: &[&str] = &["build.rs", "src/embedded.rs", "sealed"];
 
+/// Names Cargo refuses for a package: Rust keywords and its own reserved
+/// names.
+const RESERVED_NAMES: &[&str] = &[
+    "as",
+    "async",
+    "await",
+    "break",
+    "const",
+    "continue",
+    "crate",
+    "dyn",
+    "else",
+    "enum",
+    "extern",
+    "false",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "mod",
+    "move",
+    "mut",
+    "pub",
+    "ref",
+    "return",
+    "self",
+    "Self",
+    "static",
+    "struct",
+    "super",
+    "trait",
+    "true",
+    "type",
+    "unsafe",
+    "use",
+    "where",
+    "while",
+    "abstract",
+    "become",
+    "box",
+    "do",
+    "final",
+    "macro",
+    "override",
+    "priv",
+    "typeof",
+    "unsized",
+    "virtual",
+    "yield",
+    "try",
+    "gen",
+    "build",
+    "deps",
+    "examples",
+    "incremental",
+    "test",
+    "doc",
+    "std",
+    "core",
+    "alloc",
+    "proc_macro",
+    "proc-macro",
+];
+
 /// A Cargo package name from the output directory: ASCII letters, digits,
 /// `-` and `_`, starting with a letter.
-pub(crate) fn package_name(out_dir: &Path) -> String {
+pub fn package_name(out_dir: &Path) -> String {
     let base = std::fs::canonicalize(out_dir)
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -177,7 +248,7 @@ pub(crate) fn package_name(out_dir: &Path) -> String {
                 .map(|n| n.to_string_lossy().into_owned())
         })
         .unwrap_or_default();
-    let mut name: String = base
+    let name: String = base
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {
@@ -187,23 +258,30 @@ pub(crate) fn package_name(out_dir: &Path) -> String {
             }
         })
         .collect();
-    if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
-        name.insert_str(0, "hiko-vm-");
+    let name = name.trim_end_matches('-').to_string();
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic())
+        || RESERVED_NAMES.contains(&name.as_str())
+    {
+        return format!("hiko-vm-{name}").trim_end_matches('-').to_string();
     }
-    name.trim_end_matches('-').to_string()
+    name
 }
 
 fn collect_sealed(
     options: &BuildVmOptions,
     extensions: &[&'static Extension],
 ) -> Result<Sealed, String> {
-    if let Some(lock) = &options.lock {
+    // Resolve --lock once; the check and the loader then see one project.
+    let lock = match &options.lock {
+        Some(lock) => Some(
+            fs::canonicalize(lock)
+                .map_err(|e| format!("cannot resolve --lock '{}': {e}", lock.display()))?,
+        ),
+        None => None,
+    };
+    if let Some(lock) = &lock {
         let used = Compiler::project_lockfile_path(lock).map_err(|e| format!("{e:?}"))?;
-        let same = match (fs::canonicalize(lock), fs::canonicalize(&used)) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
-        if !same {
+        if fs::canonicalize(&used).ok().as_ref() != Some(lock) {
             return Err(format!(
                 "--lock '{}' is not the lockfile its project uses ('{}'); named imports resolve through the project's hiko.toml",
                 lock.display(),
@@ -211,7 +289,7 @@ fn collect_sealed(
             ));
         }
     }
-    let modules = match &options.lock {
+    let modules = match &lock {
         Some(lock) => Compiler::locked_module_sources(
             lock,
             ModuleLoaderOptions {
@@ -237,28 +315,9 @@ fn collect_sealed(
         }
         None => None,
     };
-    for m in &modules {
-        lockfile_hex(&m.blake3).ok_or_else(|| {
-            format!(
-                "module '{}' has lockfile hash '{}', not blake3:<64 hex digits>",
-                m.import_name, m.blake3
-            )
-        })?;
-    }
     let sealed = Sealed { modules, script };
     check_sealed_program(&sealed, extensions)?;
     Ok(sealed)
-}
-
-/// The hex digest of a lockfile hash, normalized as the compiler does
-/// (one optional `blake3:` prefix, lower case), if it is 64 hex digits.
-fn lockfile_hex(hash: &str) -> Option<String> {
-    let hex = hash.trim();
-    let hex = hex
-        .strip_prefix("blake3:")
-        .unwrap_or(hex)
-        .to_ascii_lowercase();
-    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
 }
 
 /// Compile the embedded program once, now, against exactly the embedded
@@ -373,11 +432,10 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
     build.push_str("// Generated by `hiko build-vm`: refuse to build if a sealed module no\n");
     build.push_str("// longer matches its lockfile hash.\nfn main() {\n    let modules: &[(&str, &str)] = &[\n");
     for (i, m) in sealed.modules.iter().enumerate() {
-        let hash = lockfile_hex(&m.blake3).expect("checked in collect_sealed");
         writeln!(
             build,
-            "        (\"sealed/modules/{i}.hml\", {hash:?}), // {}",
-            m.import_name
+            "        (\"sealed/modules/{i}.hml\", {:?}), // {}",
+            m.digest, m.import_name
         )
         .unwrap();
     }
@@ -650,14 +708,19 @@ mod tests {
     }
 
     #[test]
-    fn configured_extensions_must_be_linked_to_be_checked() {
+    fn unlinked_extensions_are_checked_when_the_artifact_starts() {
         let options = BuildVmOptions {
             config_path: "run.toml".into(),
+            hiko_path: Some(repo()),
             out_dir: Some(temp_dir("unlinked-ext").join("out")),
             ..BuildVmOptions::default()
         };
-        let err = generate(&options, &github_config(), &[]).expect_err("github is not linked");
-        assert!(err.contains("feature ext-github"), "{err}");
+        let out = generate(&options, &github_config(), &[]).unwrap_or_else(|e| panic!("{e}"));
+        let main = read(out.join("src/main.rs"));
+        assert!(main.contains("[&hiko_ext_github::GITHUB]"), "{main}");
+        assert!(main.contains("error: [extensions.github]"), "{main}");
+        assert!(!main.contains(".expect(\"extension"), "{main}");
+        assert!(read(out.join("Cargo.toml")).contains("hiko-ext-github = { path = "));
     }
 
     #[test]
@@ -704,21 +767,8 @@ mod tests {
         assert_eq!(package_name(Path::new("my vm")), "my-vm");
         assert_eq!(package_name(Path::new("1st")), "hiko-vm-1st");
         assert!(!package_name(Path::new(".")).is_empty());
-    }
-
-    #[test]
-    fn lockfile_hashes_are_normalized_like_the_compiler() {
-        let hex = "ab".repeat(32);
-        assert_eq!(
-            lockfile_hex(&format!("blake3:{hex}")).as_deref(),
-            Some(hex.as_str())
-        );
-        assert_eq!(
-            lockfile_hex(&hex.to_uppercase()).as_deref(),
-            Some(hex.as_str())
-        );
-        assert_eq!(lockfile_hex(&format!("blake3:blake3:{hex}")), None);
-        assert_eq!(lockfile_hex("blake3:abc"), None);
+        assert_eq!(package_name(Path::new("build")), "hiko-vm-build");
+        assert_eq!(package_name(Path::new("self")), "hiko-vm-self");
     }
 
     #[test]

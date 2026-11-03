@@ -89,9 +89,10 @@ pub struct EmbeddedSources {
 /// `source` is the entry script's text, read once by the caller. A path that
 /// reaches its file through a symbolic link is an error. Sorted by key.
 pub fn local_use_files(entry: &Path, source: &str) -> Result<Vec<(String, String)>, CompileError> {
-    let root = entry.parent().unwrap_or(Path::new("."));
-    let canonical_root = std::fs::canonicalize(root)
-        .map_err(|e| CompileError::codegen(format!("cannot resolve '{}': {e}", root.display())))?;
+    // Resolve from the script's real directory, as `hiko run` does.
+    let entry = std::fs::canonicalize(entry)
+        .map_err(|e| CompileError::codegen(format!("cannot resolve '{}': {e}", entry.display())))?;
+    let root = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut found = std::collections::BTreeMap::new();
     let mut pending = vec![(PathBuf::new(), source.to_string())];
     while let Some((dir, source)) = pending.pop() {
@@ -110,21 +111,27 @@ pub fn local_use_files(entry: &Path, source: &str) -> Result<Vec<(String, String
             if found.contains_key(&key) {
                 continue;
             }
-            let file = root.join(&key);
             // The artifact resolves `..` lexically; `hiko run` follows
-            // symbolic links. Refuse paths where the two would differ.
-            let canonical = std::fs::canonicalize(&file).map_err(|e| {
-                CompileError::codegen(format!("cannot read local use '{}': {e}", file.display()))
+            // symbolic links. Resolve the path as written and refuse it if
+            // the two differ.
+            let written = root.join(&dir).join(path);
+            let canonical = std::fs::canonicalize(&written).map_err(|e| {
+                CompileError::codegen(format!(
+                    "cannot read local use '{}': {e}",
+                    written.display()
+                ))
             })?;
-            let lexical = canonical_root.join(embedded_file_path(Path::new(""), &key)?);
-            if canonical != lexical_normalize(&lexical) {
+            if canonical != lexical_normalize(&root.join(&key)) {
                 return Err(CompileError::codegen(format!(
-                    "local use '{key}' resolves through a symbolic link to '{}'; a sealed program needs plain paths",
+                    "local use '{path}' resolves through a symbolic link to '{}'; a sealed program needs plain paths",
                     canonical.display()
                 )));
             }
-            let text = std::fs::read_to_string(&file).map_err(|e| {
-                CompileError::codegen(format!("cannot read local use '{}': {e}", file.display()))
+            let text = std::fs::read_to_string(&canonical).map_err(|e| {
+                CompileError::codegen(format!(
+                    "cannot read local use '{}': {e}",
+                    canonical.display()
+                ))
             })?;
             let key_dir = Path::new(&key)
                 .parent()
@@ -159,6 +166,9 @@ pub struct LockedModuleSource {
     pub import_name: String,
     /// The lockfile hash, as written there.
     pub blake3: String,
+    /// The same hash normalized as the loader compares it: 64 lower-case hex
+    /// digits, which `source` has been verified against.
+    pub digest: String,
     pub source: String,
 }
 
@@ -1025,6 +1035,7 @@ impl Compiler {
             };
             sources.push(LockedModuleSource {
                 import_name,
+                digest: normalize_blake3(&blake3),
                 blake3,
                 source,
             });
@@ -3566,8 +3577,20 @@ mod tests {
         let dir = unique_temp_dir("local-use-symlink");
         write_file(&dir.join("real/b.hml"), "val b = 1");
         std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        write_file(&dir.join("main.hml"), "");
         let source = "use \"./link/b.hml\"\nval x = b";
         let err = local_use_files(&dir.join("main.hml"), source).expect_err("link/ is a symlink");
+        assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
+        // Into the link and back out: the key is "b.hml", but `hiko run`
+        // reads the file next to the link's target.
+        // hop -> real/sub, so hop/.. is real/, which holds a different c.hml.
+        write_file(&dir.join("real/sub/x.hml"), "");
+        write_file(&dir.join("real/c.hml"), "val c = 2");
+        std::os::unix::fs::symlink(dir.join("real/sub"), dir.join("hop")).unwrap();
+        write_file(&dir.join("c.hml"), "val c = 3");
+        let source = "use \"./hop/../c.hml\"\nval x = c";
+        let err =
+            local_use_files(&dir.join("main.hml"), source).expect_err("hop/.. leaves the link");
         assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
     }
 

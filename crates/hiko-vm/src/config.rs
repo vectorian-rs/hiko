@@ -1024,7 +1024,7 @@ impl RunConfig {
         s.push_str("            ;\n");
         for (i, (name, _)) in paths.iter().enumerate() {
             s.push_str(&format!(
-                "        let builder = builder.with_extension(extensions[{i}], &extension_tables[{name:?}]).expect(\"extension '{name}'\");\n"
+                "        let builder = builder.with_extension(extensions[{i}], &extension_tables[{name:?}]).unwrap_or_else(|e| {{ eprintln!(\"error: [extensions.{name}]: {{e}}\"); std::process::exit(1) }});\n"
             ));
         }
         s.push_str("        builder.build()\n");
