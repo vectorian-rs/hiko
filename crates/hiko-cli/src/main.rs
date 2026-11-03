@@ -665,6 +665,8 @@ fn advance_operands(code: &[u8], ip: &mut usize, op: Op) -> Result<(), String> {
     match op {
         Op::Const
         | Op::GetLocal
+        | Op::GetLocalField0
+        | Op::GetLocalField1
         | Op::SetLocal
         | Op::GetUpvalue
         | Op::GetGlobal

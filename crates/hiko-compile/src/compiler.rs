@@ -596,6 +596,12 @@ struct FuncCtx {
     /// This is the outermost function of a local recursive binding, so a
     /// call of its own name in its body is `CallSelf`.
     self_callable: bool,
+    /// Start and slot of the last `GetLocal*` emitted, for fusing it with a
+    /// following `GetField0`/`GetField1`.
+    last_get_local: Option<(usize, u16)>,
+    /// The last offset a jump was patched to point at. A fusion must not
+    /// remove an instruction boundary at or after it.
+    last_jump_target: usize,
 }
 
 impl FuncCtx {
@@ -613,6 +619,8 @@ impl FuncCtx {
             provider_cont_slot: None,
             reserved_proto: None,
             self_callable: false,
+            last_get_local: None,
+            last_jump_target: 0,
         }
     }
 }
@@ -1167,6 +1175,8 @@ impl Compiler {
         self.chunk().emit_jump(op)
     }
     fn patch_jump(&mut self, pos: usize) -> Result<(), CompileError> {
+        let target = self.chunk().code.len();
+        self.ctx_mut().last_jump_target = target;
         self.chunk().patch_jump(pos).map_err(CompileError::codegen)
     }
     /// Add a constant to the current chunk, reusing an existing equal entry.
@@ -1291,6 +1301,8 @@ impl Compiler {
     }
 
     fn emit_get_local(&mut self, slot: u16) {
+        let start = self.chunk().code.len();
+        self.ctx_mut().last_get_local = Some((start, slot));
         match slot {
             0 => self.emit(Op::GetLocal0),
             1 => self.emit(Op::GetLocal1),
@@ -1301,6 +1313,15 @@ impl Compiler {
                 self.emit_u16(slot);
             }
         }
+    }
+
+    /// The start of the last instruction, if it is a `GetLocal*` that is
+    /// still the last thing emitted and no jump lands after its start.
+    fn fusable_get_local(&self) -> Option<usize> {
+        let ctx = self.ctx();
+        let (start, slot) = ctx.last_get_local?;
+        let width = if slot <= 3 { 1 } else { 3 };
+        (ctx.chunk.code.len() == start + width && ctx.last_jump_target <= start).then_some(start)
     }
 
     fn emit_set_local(&mut self, slot: u16) {
@@ -1317,6 +1338,21 @@ impl Compiler {
     }
 
     fn emit_get_field(&mut self, idx: usize) -> Result<(), CompileError> {
+        if idx <= 1
+            && let Some(start) = self.fusable_get_local()
+        {
+            // `GetLocal slot; GetField0/1` becomes one instruction.
+            let slot = self.ctx().last_get_local.expect("checked").1;
+            self.chunk().truncate_to(start);
+            self.ctx_mut().last_get_local = None;
+            self.emit(if idx == 0 {
+                Op::GetLocalField0
+            } else {
+                Op::GetLocalField1
+            });
+            self.emit_u16(slot);
+            return Ok(());
+        }
         match idx {
             0 => self.emit(Op::GetField0),
             1 => self.emit(Op::GetField1),
@@ -3642,12 +3678,34 @@ mod tests {
     }
 
     #[test]
-    fn compile_emits_quick_local_and_field_opcodes() {
+    fn compile_fuses_local_and_field_reads() {
         let program = parse_program("val (a, b) = (1, 2)\n");
         let (compiled, _) = Compiler::compile(program).expect("compile");
-        assert!(compiled.main.ops().contains(&Op::GetLocal0));
-        assert!(compiled.main.ops().contains(&Op::GetField0));
-        assert!(compiled.main.ops().contains(&Op::GetField1));
+        let ops = compiled.main.ops();
+        assert!(ops.contains(&Op::GetLocalField0), "{ops:?}");
+        assert!(ops.contains(&Op::GetLocalField1), "{ops:?}");
+        assert!(!ops.contains(&Op::GetField0), "{ops:?}");
+    }
+
+    #[test]
+    fn local_field_fusion_keeps_a_jump_target_boundary() {
+        // Fusion runs after `if` has patched jumps to its branch starts and
+        // its join point; every jump must still land on an instruction start.
+        let program = parse_program("val (a, b) = if true then (1, 2) else (3, 4)\n");
+        let (compiled, _) = Compiler::compile(program).expect("compile");
+        let code = &compiled.main.code;
+        // Every jump lands on an instruction start, so no fusion removed a
+        // jump target.
+        let starts: std::collections::HashSet<usize> =
+            compiled.main.op_starts.iter().copied().collect();
+        let ops = compiled.main.ops();
+        for (start, op) in compiled.main.op_starts.iter().zip(&ops) {
+            if matches!(op, Op::Jump | Op::JumpIfFalse) {
+                let offset = i16::from_le_bytes([code[start + 1], code[start + 2]]);
+                let target = (start + 3) as i64 + offset as i64;
+                assert!(starts.contains(&(target as usize)) || target as usize == code.len());
+            }
+        }
     }
 
     #[test]

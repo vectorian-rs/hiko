@@ -388,6 +388,19 @@ fn decode_instruction(
                 delta: 0,
             }
         }
+        Op::GetLocalField0 | Op::GetLocalField1 => {
+            let slot = read_u16(chunk, ip, "GetLocalField")? as usize;
+            if slot >= n_locals {
+                return Err(format!(
+                    "{op:?} at offset {start} uses local slot {slot}, but chunk only has {n_locals} local(s)"
+                ));
+            }
+            successors.push(*ip);
+            StackRule::Exact {
+                min_depth: slot + 1,
+                delta: 1,
+            }
+        }
         Op::MakeTuple => {
             let arity = read_u8(chunk, ip, "MakeTuple")? as usize;
             successors.push(*ip);
@@ -1082,6 +1095,42 @@ mod tests {
                 "{}",
                 err.message()
             );
+        }
+    }
+
+    #[test]
+    fn local_field_reads_need_their_local_on_the_stack() {
+        for op in [Op::GetLocalField0, Op::GetLocalField1] {
+            let ok = program_with_effects(
+                vec![
+                    Op::Unit as u8,
+                    op as u8,
+                    0,
+                    0,
+                    Op::Pop as u8,
+                    Op::Halt as u8,
+                ],
+                1,
+                Vec::new(),
+            );
+            verify_program(&ok).unwrap_or_else(|e| panic!("{op:?}: {e}"));
+
+            let not_on_stack =
+                program_with_effects(vec![op as u8, 0, 0, Op::Halt as u8], 1, Vec::new());
+            let err = verify_program(&not_on_stack).expect_err("slot 0 is not on the stack");
+            assert!(
+                err.message().contains("requires stack depth"),
+                "{}",
+                err.message()
+            );
+
+            let out_of_range = program_with_effects(
+                vec![Op::Unit as u8, op as u8, 5, 0, Op::Halt as u8],
+                1,
+                Vec::new(),
+            );
+            let err = verify_program(&out_of_range).expect_err("slot 5 is out of range");
+            assert!(err.message().contains("local slot 5"), "{}", err.message());
         }
     }
 

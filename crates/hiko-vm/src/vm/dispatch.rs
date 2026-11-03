@@ -299,6 +299,13 @@ impl VM {
                 }
                 Op::GetField0 => self.push_field(0)?,
                 Op::GetField1 => self.push_field(1)?,
+                Op::GetLocalField0 | Op::GetLocalField1 => {
+                    let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
+                    let idx = self.local_stack_index(fi, slot, "GetLocal")?;
+                    let field = (op == Op::GetLocalField1) as usize;
+                    let val = self.field_of(self.stack[idx], field)?;
+                    self.push(val)?;
+                }
                 Op::MakeData => {
                     let tag = u16::from_le_bytes(operand!(fi, 2));
                     let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
@@ -816,28 +823,25 @@ impl VM {
 
     fn push_field(&mut self, idx: usize) -> Result<(), RuntimeError> {
         let val = self.pop()?;
-        match val {
+        let field = self.field_of(val, idx)?;
+        self.push(field)
+    }
+
+    /// Field `idx` of a tuple or data value.
+    #[inline(always)]
+    fn field_of(&self, val: Value, idx: usize) -> Result<Value, RuntimeError> {
+        let fields = match val {
             Value::Heap(r) => match self.heap_get(r)? {
-                HeapObject::Tuple(t) => {
-                    let field = t.get(idx).copied().ok_or_else(|| RuntimeError {
-                        message: format!("GetField: field index {idx} out of bounds"),
-                    })?;
-                    self.push(field)
-                }
-                HeapObject::Data { fields, .. } => {
-                    let field = fields.get(idx).copied().ok_or_else(|| RuntimeError {
-                        message: format!("GetField: field index {idx} out of bounds"),
-                    })?;
-                    self.push(field)
-                }
-                _ => Err(RuntimeError {
-                    message: "GetField: expected tuple or data".into(),
-                }),
+                HeapObject::Tuple(t) => t,
+                HeapObject::Data { fields, .. } => fields,
+                _ => return Err(error("GetField: expected tuple or data")),
             },
-            _ => Err(RuntimeError {
-                message: "GetField: expected tuple or data".into(),
-            }),
-        }
+            _ => return Err(error("GetField: expected tuple or data")),
+        };
+        fields
+            .get(idx)
+            .copied()
+            .ok_or_else(|| error_fmt(format_args!("GetField: field index {idx} out of bounds")))
     }
 
     fn pop_int(&mut self) -> Result<i64, RuntimeError> {

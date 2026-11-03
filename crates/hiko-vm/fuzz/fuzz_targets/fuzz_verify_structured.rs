@@ -9,8 +9,8 @@ use hiko_compile::chunk::{Chunk, CompiledProgram, Constant, EffectMeta, Function
 use hiko_vm::verify::verify_program;
 use libfuzzer_sys::fuzz_target;
 
-/// One past the highest opcode (`TailCallSelf` = 80).
-const OPCODE_COUNT: u8 = 81;
+/// One past the highest opcode (`GetLocalField1` = 82).
+const OPCODE_COUNT: u8 = 83;
 
 #[derive(Arbitrary, Debug)]
 struct Inst {

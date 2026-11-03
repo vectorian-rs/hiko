@@ -84,6 +84,15 @@ impl Chunk {
         self.spans.push((offset, span));
     }
 
+    /// Remove the code from `start` on (the last instruction), with any
+    /// spans recorded there, so a peephole can replace it.
+    pub(crate) fn truncate_to(&mut self, start: usize) {
+        self.code.truncate(start);
+        self.spans.retain(|(off, _)| *off < start);
+        #[cfg(test)]
+        self.op_starts.retain(|&off| off < start);
+    }
+
     /// Look up the source span for a bytecode offset.
     pub fn span_at(&self, offset: usize) -> Option<Span> {
         // Binary search for the largest offset <= target
