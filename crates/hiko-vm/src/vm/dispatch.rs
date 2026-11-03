@@ -66,11 +66,24 @@ impl VM {
         }
 
         loop {
+            if let Some(ref mut fuel) = self.fuel {
+                if *fuel == 0 {
+                    return Err(RuntimeError {
+                        message: "fuel exhausted (execution limit reached)".into(),
+                    });
+                }
+                *fuel -= 1;
+            }
+
             let fi = self.current_frame_index()?;
             let proto_idx = self.frames[fi].proto_idx;
             if code_proto != Some(proto_idx) {
                 #[cfg(feature = "register-vm")]
                 if self.register_code.get(proto_idx).is_some() {
+                    // The register VM charges for the instruction.
+                    if let Some(fuel) = self.fuel.as_mut() {
+                        *fuel += 1;
+                    }
                     return Ok(Flow::Switch);
                 }
                 chunk = if proto_idx == usize::MAX {
@@ -83,14 +96,6 @@ impl VM {
                 };
                 code = &chunk.code;
                 code_proto = Some(proto_idx);
-            }
-            if let Some(ref mut fuel) = self.fuel {
-                if *fuel == 0 {
-                    return Err(RuntimeError {
-                        message: "fuel exhausted (execution limit reached)".into(),
-                    });
-                }
-                *fuel -= 1;
             }
             let ip = self.frames[fi].ip;
             let Some(&op_byte) = code.get(ip) else {
@@ -552,8 +557,23 @@ impl VM {
                 }
 
                 Op::Return => {
+                    // The same steps as `return_from_frame`, written out:
+                    // calling it here made `fib` about 55% slower.
                     let result = self.pop()?;
-                    if self.return_from_frame(result)? {
+                    let frame = self.frames.pop().ok_or_else(|| RuntimeError {
+                        message: "Return: call frame underflow".into(),
+                    })?;
+                    self.stack.truncate(frame.base);
+                    self.push(result)?;
+                    if self
+                        .hidden_handlers
+                        .last()
+                        .is_some_and(|h| h.clause_frame_idx == self.frames.len())
+                        && let Some(hidden) = self.hidden_handlers.pop()
+                    {
+                        self.handlers.extend(hidden.handlers);
+                    }
+                    if self.frames.is_empty() {
                         return Ok(Flow::Done);
                     }
                 }
@@ -995,8 +1015,9 @@ impl VM {
         self.push(Value::Bool(f(a, b)))
     }
 
-    /// Pop the top frame and push its result for the caller. Returns whether
-    /// that was the last frame.
+    /// Pop the top frame and push its result for the caller, for the
+    /// register VM's `Return`. Returns whether that was the last frame.
+    #[cfg(feature = "register-vm")]
     #[inline(always)]
     pub(super) fn return_from_frame(&mut self, result: Value) -> Result<bool, RuntimeError> {
         let frame = self.frames.pop().ok_or_else(|| RuntimeError {
