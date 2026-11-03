@@ -1,5 +1,3 @@
-import Std.Option
-
 structure Result = struct
   datatype ('a, 'e) result =
       Ok of 'a
@@ -164,13 +162,16 @@ structure Result = struct
      runs every validation and returns every error, in argument order. Turn
      a single-error Result into one with `map_err (fn err => [err])`. *)
 
-  (* Apply a wrapped function to a wrapped value, keeping the errors of both. *)
+  (* Apply a wrapped function to a wrapped value, keeping the errors of both.
+     The append is tail-recursive, so long error lists do not grow the stack,
+     and local: importing Std.List would cost every Result user. *)
   fun apply result_f result_x =
     let
-      fun append (xs, ys) =
+      fun rev_onto (xs, acc) =
         case xs of
-            [] => ys
-          | x :: rest => x :: append (rest, ys)
+            [] => acc
+          | x :: rest => rev_onto (rest, x :: acc)
+      fun append (xs, ys) = rev_onto (rev_onto (xs, []), ys)
     in
       case (result_f, result_x) of
           (Ok f, Ok x) => Ok (f x)
@@ -189,12 +190,6 @@ structure Result = struct
   fun lift4 f first second third fourth = apply (lift3 f first second third) fourth
 
   (* 8. Convenience aliases / derived helpers *)
-
-  (* Ok for Some, `err` for None. *)
-  fun from_option err opt =
-    case opt of
-        Option.Some value => Ok value
-      | Option.None => Err err
 
   (* Alias for bind, named for pipeline readability. *)
   fun and_then f result = bind f result

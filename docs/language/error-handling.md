@@ -146,7 +146,6 @@ The most important helpers are:
 - `Result.validate2` / `Result.validate_both` / `Result.validate_fanout`
 - `Result.validate_all` / `Result.validate_traverse`
 - `Result.apply` / `Result.lift2` / `Result.lift3` / `Result.lift4`
-- `Result.from_option`
 - `Result.flatten`
 - `Result.fold`
 - `Result.or_else`
