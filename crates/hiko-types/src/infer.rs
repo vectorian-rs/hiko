@@ -92,6 +92,13 @@ struct Annotation {
     row: Option<u32>,
 }
 
+/// A declaration set aside while an imported module is inferred; see
+/// [`InferCtx::suspend_declaration`].
+pub struct SuspendedDeclaration {
+    depth: u32,
+    pending: Vec<PendingOverload>,
+}
+
 /// An overloaded operator checked while its operand type was still a
 /// variable. Later code in the same top-level declaration may decide the
 /// type; if nothing has by its end, that is an error.
@@ -116,11 +123,12 @@ enum Overload {
 
 impl Overload {
     /// The operand types a numeric operator accepts, by internal name.
+    /// Equality has its own check and no such list.
     fn allowed(self) -> &'static [&'static str] {
         match self {
             Overload::Numeric(_) => &["Int", "Float", "Word"],
             Overload::Neg(_) => &["Int", "Float"],
-            Overload::Equality => &[],
+            Overload::Equality => unreachable!("equality accepts any equality type"),
         }
     }
 
@@ -131,10 +139,13 @@ impl Overload {
             .iter()
             .map(|n| Type::primitive_surface_name(n).unwrap_or(n))
             .collect();
-        match names.split_last() {
-            Some((last, [])) => (*last).to_string(),
-            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-            None => String::new(),
+        let (last, rest) = names
+            .split_last()
+            .expect("a numeric operator accepts a type");
+        if rest.is_empty() {
+            (*last).to_string()
+        } else {
+            format!("{} or {last}", rest.join(", "))
         }
     }
 
@@ -807,17 +818,42 @@ impl InferCtx {
         self.decl_depth += 1;
     }
 
-    /// End what [`Self::begin_declaration`] began, passing the result of
-    /// inferring it. At the end of a top-level declaration, every
-    /// overloaded operator must have been decided.
-    pub fn end_declaration(&mut self, result: Result<(), TypeError>) -> Result<(), TypeError> {
-        self.decl_depth -= 1;
+    /// End what [`Self::begin_declaration`] began; `completed` says whether
+    /// its inference succeeded. At the end of a top-level declaration that
+    /// completed, every overloaded operator must have been decided.
+    pub fn end_declaration(&mut self, completed: bool) -> Result<(), TypeError> {
+        self.decl_depth = self
+            .decl_depth
+            .checked_sub(1)
+            .expect("end_declaration without begin_declaration");
         if self.decl_depth > 0 {
-            return result;
+            return Ok(());
         }
-        let result = result.and_then(|()| self.finish_overloads());
+        let result = if completed {
+            self.finish_overloads()
+        } else {
+            Ok(())
+        };
         self.pending.clear();
         result
+    }
+
+    /// Set aside the declaration in progress, to infer an imported module
+    /// (a `use` inside `local`) as top-level declarations of its own: the
+    /// importer's code must not decide the module's operators, or the
+    /// module's types would depend on where it is first imported.
+    pub fn suspend_declaration(&mut self) -> SuspendedDeclaration {
+        SuspendedDeclaration {
+            depth: std::mem::take(&mut self.decl_depth),
+            pending: std::mem::take(&mut self.pending),
+        }
+    }
+
+    /// Return to the declaration [`Self::suspend_declaration`] set aside.
+    pub fn resume_declaration(&mut self, suspended: SuspendedDeclaration) {
+        debug_assert!(self.decl_depth == 0 && self.pending.is_empty());
+        self.decl_depth = suspended.depth;
+        self.pending = suspended.pending;
     }
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
@@ -830,7 +866,8 @@ impl InferCtx {
             // level, which a later declaration must not see.
             self.scopes.truncate(scopes);
         }
-        let result = self.end_declaration(result);
+        let ended = self.end_declaration(result.is_ok());
+        let result = result.and(ended);
         if self.work_exhausted() {
             return Err(self.err(
                 &format!(
@@ -1607,12 +1644,9 @@ impl InferCtx {
                 return Ok(false);
             }
             return Err(self.err(
-                &format!(
-                    "cannot tell what type = or <> compares here: nothing in this \
-                     declaration decides {}, and equality needs a known type; add a \
-                     type annotation",
-                    self.display(&resolved)
-                ),
+                "cannot tell what type = or <> compares here: nothing in this \
+                 declaration decides the type of its operands, and equality needs a \
+                 known type; add a type annotation",
                 p.err_span(),
             ));
         }
@@ -2097,7 +2131,9 @@ impl InferCtx {
             vars.extend(self.apply_with(arg_ty, false).free_vars());
             vars.extend(self.apply_with(result_ty, false).free_vars());
         }
-        // Undecided operators' operands wait for their declaration's end.
+        // Undecided operators' operands are not generalized: `overload`
+        // lowers them to the top level. Counting them here keeps this walk
+        // in step with that; generalization itself never reads `pending`.
         for pending in &self.pending {
             vars.extend(self.apply_with(&pending.ty, false).free_vars());
         }
@@ -2343,6 +2379,34 @@ mod tests {
         let scopes = ctx.scopes.len();
         assert!(ctx.infer_program(&program).is_err());
         assert_eq!(ctx.scopes.len(), scopes);
+    }
+
+    #[test]
+    fn test_a_structure_is_one_declaration_for_operators() {
+        let ctx = infer(
+            "structure S = struct
+               fun sq x = x * x
+               val n = sq 3
+             end",
+        );
+        assert_eq!(type_of(&ctx, "S.sq"), "int -> int");
+        let ctx = infer(
+            "signature T = sig val f : float -> float end
+             structure S :> T = struct fun f x = x * x end",
+        );
+        assert_eq!(type_of(&ctx, "S.f"), "float -> float");
+        let msg = infer_err(
+            "signature T = sig val f : 'a -> 'a end
+             structure S :> T = struct fun f x = x * x end",
+        );
+        assert!(msg.contains("less polymorphic"), "{msg}");
+    }
+
+    #[test]
+    fn test_undecided_equality_names_no_internal_variable() {
+        let msg = infer_err("fun f (x, y) = if x = y then [x] else []");
+        assert!(msg.contains("decides the type of its operands"), "{msg}");
+        assert!(!msg.contains('\''), "{msg}");
     }
 
     #[test]

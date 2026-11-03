@@ -1974,7 +1974,7 @@ impl Compiler {
                     .iter()
                     .chain(body)
                     .try_for_each(|d| self.infer_decl_pass(d));
-                let ended = self.infer_ctx.end_declaration(Ok(()));
+                let ended = self.infer_ctx.end_declaration(result.is_ok());
                 result?;
                 Ok(ended?)
             }
@@ -2024,7 +2024,11 @@ impl Compiler {
         let old_in_remote = self.in_remote_import;
         self.in_remote_import |= is_remote;
 
+        // The module's declarations are top-level ones of their own, even
+        // when a `use` inside `local` brings it in.
+        let importer = self.infer_ctx.suspend_declaration();
         let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
+        self.infer_ctx.resume_declaration(importer);
 
         self.in_remote_import = old_in_remote;
         self.base_dir = old_base;
@@ -3491,6 +3495,28 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn a_used_module_decides_its_own_operators_even_inside_local() {
+        // `dbl`'s `+` is decided by nothing in m.hml, so the module is
+        // rejected wherever it is used; the importer's `dbl 21` must not
+        // decide it, or the cached module's type would depend on where it
+        // was first used.
+        let dir = unique_temp_dir("use-in-local");
+        write_file(&dir.join("m.hml"), "fun dbl x = x + x\n");
+        write_file(
+            &dir.join("main.hml"),
+            "local use \"./m.hml\" in val y = dbl 21 end\n",
+        );
+        let err = compile_path(&dir.join("main.hml")).expect_err("m.hml leaves + undecided");
+        assert!(
+            format!("{err:?}").contains("cannot tell whether"),
+            "{err:?}"
+        );
+        write_file(&dir.join("m.hml"), "fun dbl (x : int) = x + x\n");
+        compile_path(&dir.join("main.hml")).unwrap_or_else(|e| panic!("{e:?}"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

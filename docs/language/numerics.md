@@ -43,7 +43,11 @@ dispatch at run time.
 appears waits: code later in the same top-level declaration may decide the
 type, and until then the operand type is not generalized. If the type is still
 unknown at the end of the top-level declaration, that is an error asking for
-an annotation. Hiko never picks a default type, unlike Standard ML, which
+an annotation. A `local ... in ... end` block is one declaration, and so is a
+`structure` together with its signature, so a later member or the signature
+can decide an earlier member's operator. A module brought in by `use` or
+`import` is checked on its own, even inside `local`: the importer's code never
+decides the module's operators. Hiko never picks a default type, unlike Standard ML, which
 defaults to `int`. Literals are not overloaded: `1` is always `int`, `1.0`
 always `float`, `0w1` always `word`.
 

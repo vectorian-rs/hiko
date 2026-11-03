@@ -18,13 +18,16 @@ pub fn desugar_program(mut program: Program) -> Program {
             } => {
                 let module_name = interner.resolve(name).to_string();
                 let signature = signature.and_then(|sig| signatures.get(&sig));
-                decls.extend(desugar_structure(
-                    body,
-                    &[module_name],
-                    signature,
-                    opaque,
-                    &mut interner,
-                ));
+                let members =
+                    desugar_structure(body, &[module_name], signature, opaque, &mut interner);
+                // One declaration, as in Standard ML: a later member or the
+                // signature may decide an earlier member's overloaded
+                // operator. A `local` with no private part binds exactly
+                // its body.
+                decls.push(Decl {
+                    kind: DeclKind::Local(Vec::new(), members),
+                    span: decl.span,
+                });
             }
             _ => decls.push(desugar_decl(decl, &mut interner)),
         }
@@ -1106,9 +1109,31 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
+    /// Desugar `src`, with each structure's members back at top level (a
+    /// structure becomes a `local` with no private part).
     fn desugar(src: &str) -> Program {
         let tokens = Lexer::new(src, 0).tokenize().unwrap();
-        desugar_program(Parser::new(tokens).parse_program().unwrap())
+        let mut program = desugar_program(Parser::new(tokens).parse_program().unwrap());
+        program.decls = std::mem::take(&mut program.decls)
+            .into_iter()
+            .flat_map(|decl| match decl.kind {
+                DeclKind::Local(locals, body) if locals.is_empty() => body,
+                kind => vec![Decl { kind, ..decl }],
+            })
+            .collect();
+        program
+    }
+
+    #[test]
+    fn a_structure_is_one_declaration() {
+        let tokens = Lexer::new("structure S = struct val x = 1 val y = 2 end", 0)
+            .tokenize()
+            .unwrap();
+        let program = desugar_program(Parser::new(tokens).parse_program().unwrap());
+        assert_eq!(program.decls.len(), 1);
+        assert!(
+            matches!(&program.decls[0].kind, DeclKind::Local(l, b) if l.is_empty() && b.len() == 2)
+        );
     }
 
     fn val_expr<'a>(program: &'a Program, name: &str) -> &'a Expr {
