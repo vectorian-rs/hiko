@@ -119,6 +119,15 @@ impl Type {
         }
     }
 
+    /// Whether later unification could still make `self` an equality type.
+    pub fn may_be_equality(&self) -> bool {
+        match self {
+            Type::Var(_) => true,
+            Type::Tuple(elems) => elems.iter().all(|e| e.may_be_equality()),
+            _ => self.is_equality(),
+        }
+    }
+
     /// The type variables in `self`, in order of first occurrence.
     pub fn free_vars(&self) -> Vec<u32> {
         let mut vars = Vec::new();

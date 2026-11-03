@@ -58,6 +58,12 @@ pub struct InferCtx {
     effect_sigs: HashMap<String, (Type, Type)>,
     /// Resolved types for expressions (keyed by span, for typed codegen)
     pub expr_types: HashMap<hiko_syntax::span::Span, Type>,
+    /// Overloaded operators whose operand type is not known yet. See
+    /// [`InferCtx::finish_overloads`].
+    pending: Vec<PendingOverload>,
+    /// How many `infer_decl` calls are active; 0 between top-level
+    /// declarations.
+    decl_depth: u32,
     /// String interner for resolving symbols in the AST.
     pub interner: StringInterner,
     /// Type nodes visited so far. See [`DEFAULT_MAX_TYPE_WORK`].
@@ -84,6 +90,30 @@ const TOP_LEVEL: u32 = 1;
 struct Annotation {
     tyvars: HashMap<String, u32>,
     row: Option<u32>,
+}
+
+/// An overloaded operator checked while its operand type was still a
+/// variable. Later code in the same top-level declaration may decide the
+/// type; if nothing has by its end, that is an error.
+struct PendingOverload {
+    /// The operand type.
+    ty: Type,
+    op: Overload,
+    /// The operator expression: where the resolved type is recorded.
+    span: Span,
+    /// Where an error is reported.
+    err_span: Span,
+}
+
+#[derive(Clone, Copy)]
+enum Overload {
+    /// Arithmetic or comparison ("arithmetic" or "comparison"): int, float
+    /// or word.
+    Numeric(&'static str),
+    /// `~`: int or float.
+    Neg,
+    /// `=` and `<>`: an equality type.
+    Equality,
 }
 
 impl Annotation {
@@ -268,6 +298,8 @@ impl InferCtx {
             warnings: Vec::new(),
             effect_sigs: HashMap::new(),
             expr_types: HashMap::new(),
+            pending: Vec::new(),
+            decl_depth: 0,
             interner: StringInterner::new(),
             work: Cell::new(0),
             max_work: DEFAULT_MAX_TYPE_WORK,
@@ -729,12 +761,22 @@ impl InferCtx {
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
         let scopes = self.scopes.len();
-        let result = self.infer_decl_inner(decl);
+        self.decl_depth += 1;
+        let mut result = self.infer_decl_inner(decl);
+        self.decl_depth -= 1;
         if result.is_err() {
             // An error leaves inference mid-way. Drop the scopes it left
             // open: their monomorphic bindings hold variables above this
             // level, which a later declaration must not see.
             self.scopes.truncate(scopes);
+        }
+        // An overloaded operator must be decided by the end of its top-level
+        // declaration.
+        if self.decl_depth == 0 {
+            if result.is_ok() {
+                result = self.finish_overloads();
+            }
+            self.pending.clear();
         }
         if self.work_exhausted() {
             return Err(self.err(
@@ -1273,23 +1315,8 @@ impl InferCtx {
 
             ExprKind::UnaryNeg(e) => {
                 let ty = self.infer_expr(e)?;
-                let resolved = self.apply(&ty);
-                match &resolved {
-                    Type::Con(n) if n == "Int" || n == "Float" => {
-                        self.expr_types.insert(expr.span, resolved);
-                        Ok(ty)
-                    }
-                    Type::Con(n) if n == "Word" => {
-                        Err(self.err("cannot negate word value, words are unsigned", e.span))
-                    }
-                    Type::Var(_) => {
-                        Err(self.err("~ requires int or float, but type is unconstrained", e.span))
-                    }
-                    _ => Err(self.err(
-                        &format!("~ requires int or float, found {}", self.display(&resolved)),
-                        e.span,
-                    )),
-                }
+                self.overload(ty.clone(), Overload::Neg, expr.span, e.span)?;
+                Ok(ty)
             }
             ExprKind::Not(_) => {
                 unreachable!("desugared to if-then-else")
@@ -1437,12 +1464,15 @@ impl InferCtx {
 
             // Generic arithmetic: resolve via unification
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                return self.resolve_numeric_operands(&lhs_ty, &rhs_ty, "arithmetic", span);
+                self.unify(&lhs_ty, &rhs_ty, span)?;
+                self.overload(lhs_ty.clone(), Overload::Numeric("arithmetic"), span, span)?;
+                return Ok(lhs_ty);
             }
 
             // Generic comparison: resolve via unification, return bool
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                self.resolve_numeric_operands(&lhs_ty, &rhs_ty, "comparison", span)?;
+                self.unify(&lhs_ty, &rhs_ty, span)?;
+                self.overload(lhs_ty, Overload::Numeric("comparison"), span, span)?;
                 return Ok(Type::bool());
             }
 
@@ -1468,16 +1498,7 @@ impl InferCtx {
             }
             BinOp::Eq | BinOp::Ne => {
                 self.unify(&lhs_ty, &rhs_ty, span)?;
-                let resolved = self.apply(&lhs_ty);
-                if !resolved.is_equality() {
-                    return Err(self.err(
-                        &format!(
-                            "= and <> require equality types, found {}",
-                            self.display(&resolved)
-                        ),
-                        span,
-                    ));
-                }
+                self.overload(lhs_ty, Overload::Equality, span, span)?;
                 return Ok(Type::bool());
             }
         };
@@ -1487,35 +1508,110 @@ impl InferCtx {
         Ok(result)
     }
 
-    /// Unify the operands of a generic numeric operator and resolve their
-    /// type to int, float, or word. An unconstrained operand type defaults to
-    /// int. The resolved type is recorded for typed codegen and returned.
-    fn resolve_numeric_operands(
+    /// Check an overloaded operator on an operand of type `ty`. A concrete
+    /// type is checked now; a type still unknown waits in `pending` for
+    /// later code to decide it.
+    fn overload(
         &mut self,
-        lhs_ty: &Type,
-        rhs_ty: &Type,
-        kind: &str,
+        ty: Type,
+        op: Overload,
         span: Span,
-    ) -> Result<Type, TypeError> {
-        self.unify(lhs_ty, rhs_ty, span)?;
-        let resolved = match self.apply(lhs_ty) {
-            Type::Var(_) => {
-                self.unify(lhs_ty, &Type::int(), span)?;
-                Type::int()
-            }
-            Type::Con(n) if n == "Int" || n == "Float" || n == "Word" => Type::Con(n),
-            other => {
+        err_span: Span,
+    ) -> Result<(), TypeError> {
+        let pending = PendingOverload {
+            ty,
+            op,
+            span,
+            err_span,
+        };
+        if !self.check_overload(&pending, false)? {
+            // Not generalized before the end of the top-level declaration,
+            // so one later use decides it for every use.
+            let ty = self.apply(&pending.ty);
+            self.lower_levels(&ty, TOP_LEVEL);
+            self.pending.push(pending);
+        }
+        Ok(())
+    }
+
+    /// At the end of a top-level declaration: every pending operator must
+    /// have been decided by now.
+    fn finish_overloads(&mut self) -> Result<(), TypeError> {
+        for pending in std::mem::take(&mut self.pending) {
+            self.check_overload(&pending, true)?;
+        }
+        Ok(())
+    }
+
+    /// Check one overloaded operator. Returns false when its operand type
+    /// is still unknown, unless `last`: at the end of the declaration an
+    /// unknown operand type is an error. Hiko never picks a default.
+    fn check_overload(&mut self, p: &PendingOverload, last: bool) -> Result<bool, TypeError> {
+        let resolved = self.apply(&p.ty);
+        let (allowed, what): (&[&str], _) = match p.op {
+            Overload::Numeric(kind) => (&["Int", "Float", "Word"], kind),
+            Overload::Neg => (&["Int", "Float"], "~"),
+            Overload::Equality => {
+                if resolved.is_equality() {
+                    return Ok(true);
+                }
+                if !resolved.may_be_equality() {
+                    return Err(self.err(
+                        &format!(
+                            "= and <> require equality types, found {}",
+                            self.display(&resolved)
+                        ),
+                        p.err_span,
+                    ));
+                }
+                if !last {
+                    return Ok(false);
+                }
                 return Err(self.err(
                     &format!(
-                        "{kind} operators require int, float, or word, found {}",
-                        self.display(&other)
+                        "cannot tell what type = or <> compares here: nothing in this \
+                         declaration decides {}, and equality needs a known type; add a \
+                         type annotation",
+                        self.display(&resolved)
                     ),
-                    span,
+                    p.err_span,
                 ));
             }
         };
-        self.expr_types.insert(span, resolved.clone());
-        Ok(resolved)
+        let resolved = match resolved {
+            Type::Var(_) if !last => return Ok(false),
+            Type::Var(_) => {
+                let types = if allowed.len() == 3 {
+                    "int, float or word"
+                } else {
+                    "int or float"
+                };
+                return Err(self.err(
+                    &format!(
+                        "cannot tell whether this {what} operator is on {types}: nothing in \
+                         this declaration decides its operand type; add a type annotation, \
+                         such as (x : int)"
+                    ),
+                    p.err_span,
+                ));
+            }
+            Type::Con(n) if allowed.contains(&n.as_str()) => Type::Con(n),
+            Type::Con(n) if n == "Word" => {
+                return Err(self.err("cannot negate word value, words are unsigned", p.err_span));
+            }
+            other => {
+                let message = match p.op {
+                    Overload::Numeric(kind) => format!(
+                        "{kind} operators require int, float, or word, found {}",
+                        self.display(&other)
+                    ),
+                    _ => format!("~ requires int or float, found {}", self.display(&other)),
+                };
+                return Err(self.err(&message, p.err_span));
+            }
+        };
+        self.expr_types.insert(p.span, resolved);
+        Ok(true)
     }
 
     // ── Pattern inference ────────────────────────────────────────────
@@ -1968,6 +2064,10 @@ impl InferCtx {
             vars.extend(self.apply_with(arg_ty, false).free_vars());
             vars.extend(self.apply_with(result_ty, false).free_vars());
         }
+        // Undecided operators' operands wait for their declaration's end.
+        for pending in &self.pending {
+            vars.extend(self.apply_with(&pending.ty, false).free_vars());
+        }
         vars
     }
 }
@@ -2300,7 +2400,7 @@ mod tests {
 
     #[test]
     fn test_const_fn() {
-        let ctx = infer("fun f x y = x + y");
+        let ctx = infer("fun f (x : int) y = x + y");
         assert_eq!(type_of(&ctx, "f"), "int -> int -> int");
     }
 
@@ -2315,7 +2415,7 @@ mod tests {
     fn test_structure_qualified_call() {
         let ctx = infer(
             "structure Math = struct
-               fun add x y = x + y
+               fun add (x : int) y = x + y
              end
              val result = Math.add 1 2",
         );
@@ -3291,5 +3391,109 @@ mod tests {
             "distinct literals should not be redundant, got: {:?}",
             ctx.warnings
         );
+    }
+
+    // ── Overloaded operators decided later in the declaration ────────
+
+    #[test]
+    fn arithmetic_waits_for_a_later_float() {
+        let ctx = infer("fun f (a, b) = let val d = a - b in d * sqrt d end");
+        assert_eq!(type_of(&ctx, "f"), "float * float -> float");
+    }
+
+    #[test]
+    fn comparison_waits_for_a_later_float() {
+        let ctx = infer("fun f (a, b) = if a < b then a else b + 1.0");
+        assert_eq!(type_of(&ctx, "f"), "float * float -> float");
+    }
+
+    #[test]
+    fn negation_waits_for_a_later_float() {
+        let ctx = infer("fun f x = let val y = ~x in y * 2.0 end");
+        assert_eq!(type_of(&ctx, "f"), "float -> float");
+    }
+
+    #[test]
+    fn equality_waits_for_a_later_type() {
+        let ctx = infer("fun f (i, j) = if i = j then 0 else j + 1");
+        assert_eq!(type_of(&ctx, "f"), "int * int -> int");
+        let ctx = infer("fun f (x, y) = x = y andalso x ^ y = \"ab\"");
+        assert_eq!(type_of(&ctx, "f"), "string * string -> bool");
+    }
+
+    #[test]
+    fn an_inner_function_is_decided_by_a_later_use() {
+        let ctx = infer("fun g y = let fun f x = x + x in f 1.5 end");
+        assert!(type_of(&ctx, "g").ends_with(" -> float"));
+        let ctx = infer("fun f x = let fun g y = y + x in g 1.5 end");
+        assert_eq!(type_of(&ctx, "f"), "float -> float");
+    }
+
+    #[test]
+    fn an_undecided_operator_is_not_generalized() {
+        let msg = infer_err("fun g y = let fun f x = x + x in (f 1, f 1.5) end");
+        assert!(msg.contains("mismatch"), "{msg}");
+    }
+
+    #[test]
+    fn an_operator_left_undecided_is_an_error() {
+        let msg = infer_err("fun double x = x + x");
+        assert!(
+            msg.contains("cannot tell whether this arithmetic operator is on int, float or word"),
+            "{msg}"
+        );
+        let msg = infer_err("fun less (a, b) = a < b");
+        assert!(msg.contains("this comparison operator"), "{msg}");
+        let msg = infer_err("fun neg x = ~x");
+        assert!(
+            msg.contains("whether this ~ operator is on int or float"),
+            "{msg}"
+        );
+        let msg = infer_err("fun eq (x, y) = x = y");
+        assert!(
+            msg.contains("cannot tell what type = or <> compares"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn a_later_declaration_does_not_decide() {
+        let msg = infer_err("fun add (a, b) = a + b val n = add (1, 2)");
+        assert!(msg.contains("cannot tell whether"), "{msg}");
+        let ctx = infer("fun add (a : int, b) = a + b val n = add (1, 2)");
+        assert_eq!(type_of(&ctx, "add"), "int * int -> int");
+    }
+
+    #[test]
+    fn a_monomorphic_value_is_decided_within_its_declaration() {
+        let ctx = infer("val n = let val f = (fn x => x) (fn y => y + y) in f 2 end");
+        assert_eq!(type_of(&ctx, "n"), "int");
+        let msg = infer_err("val f = (fn x => x) (fn y => y + y)");
+        assert!(msg.contains("cannot tell whether"), "{msg}");
+    }
+
+    #[test]
+    fn a_concrete_wrong_type_still_fails_at_once() {
+        let msg = infer_err("val x = \"a\" + \"b\"");
+        assert!(
+            msg.contains("arithmetic operators require int, float, or word, found string"),
+            "{msg}"
+        );
+        let msg = infer_err("val x = ~ 0w1");
+        assert!(msg.contains("cannot negate word value"), "{msg}");
+        let msg = infer_err("fun f x = let val y = ~x in y ^ \"a\" end");
+        assert!(
+            msg.contains("~ requires int or float, found string"),
+            "{msg}"
+        );
+        let msg = infer_err("val b = (fn (x : int) => x) = (fn x => x)");
+        assert!(msg.contains("= and <> require equality types"), "{msg}");
+    }
+
+    #[test]
+    fn a_deferred_operator_records_its_resolved_type() {
+        let ctx = infer("fun f (a, b) = let val d = a - b in d * sqrt d end");
+        assert!(ctx.expr_types.values().all(|t| *t == Type::float()));
+        assert_eq!(ctx.expr_types.len(), 2);
     }
 }
