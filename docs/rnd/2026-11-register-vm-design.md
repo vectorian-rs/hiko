@@ -135,11 +135,12 @@ disable translation) for one release after switching over.
   parameter counts down, so every call tree is finite. The check is wider
   than planned: output, error and its location, the call depth where fuel
   runs out at two limits, and the number of scheduler slices. Error
-  locations are not compared for fuel stops: the stack VM's `error_span`
-  points at the instruction before the stop, the register VM's at the
-  instruction it stopped before. The bytecode fuzz targets now build with
-  `register-vm`, so the translator also sees every verified program they
-  generate, with only the no-panic property.
+  locations are not compared for fuel stops. Both VMs stop in the same
+  frame after the same work, but one register instruction stands for
+  several stack instructions and the stack VM can stop between them (after
+  pushing one argument of a call, say), so the CLI can point a few
+  instructions apart for the same fuel limit. The target builds with
+  `--features register-vm`; the other targets keep fuzzing the stack VM.
 - **The test suite** runs with translation on and off.
 
 ## Work limits

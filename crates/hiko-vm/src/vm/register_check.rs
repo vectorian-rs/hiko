@@ -209,8 +209,8 @@ fn program_from_bytes(bytes: &[u8]) -> String {
     g.out
 }
 
-/// Compile `src` without type checking, as the VM tests do. `None` when
-/// it does not compile.
+/// Compile `src` (desugaring, type inference, code generation). `None`
+/// when it does not compile.
 pub(super) fn compile(src: &str) -> Option<CompiledProgram> {
     let tokens = Lexer::new(src, 0).tokenize().ok()?;
     let program = Parser::new(tokens).parse_program().ok()?;
@@ -227,9 +227,10 @@ pub(super) fn vm(program: &CompiledProgram, code: &Arc<RegisterCode>) -> VM {
     vm
 }
 
-/// The register code for `program`, and none, in the order the checks
-/// compare them: stack VM first.
-fn both_codes(program: &CompiledProgram) -> Result<[Arc<RegisterCode>; 2], String> {
+/// No register code, and the register code for `program`, in the order
+/// the checks compare them: stack VM first. `Err` when `program` does not
+/// verify; only verified code is translated.
+pub(super) fn both_codes(program: &CompiledProgram) -> Result<[Arc<RegisterCode>; 2], String> {
     verify_program(program).map_err(|e| format!("does not verify: {e}"))?;
     Ok([Arc::default(), Arc::new(RegisterCode::translate(program))])
 }
@@ -253,10 +254,11 @@ fn same<T: PartialEq + std::fmt::Debug>(
 /// error points, and how deep the call stack was when it stopped.
 ///
 /// The span is compared only for errors other than fuel exhaustion. When
-/// fuel runs out, both VMs stop before the same instruction, but the stack
-/// VM's `ip` has not moved past it yet, so `error_span` points at the
-/// instruction before; the register VM points at the one it stopped
-/// before.
+/// fuel runs out, both VMs stop in the same frame after the same work, but
+/// not always at the same instruction: one register instruction stands for
+/// several stack instructions, and the stack VM can stop between them, for
+/// example after pushing one argument of a call. The register VM then
+/// points at the call, the stack VM at the push.
 #[derive(Debug, PartialEq)]
 struct Outcome {
     output: Vec<String>,
@@ -321,14 +323,16 @@ fn check(program: &CompiledProgram, seed: u8) -> Result<(), String> {
 /// Generate a program from `bytes` and check it on both VMs. The error
 /// shows the difference and the program.
 pub fn check_bytes(bytes: &[u8]) -> Result<(), String> {
+    // The seed for fuel limits and slice sizes is a byte the generator does
+    // not read, so it varies independently of the program.
+    let (seed, bytes) = bytes.split_last().unwrap_or((&0, &[]));
     let src = program_from_bytes(bytes);
     let program = compile(&src).ok_or_else(|| format!("does not compile:\n{src}"))?;
-    // The first byte already picks the number of functions.
-    check(&program, bytes.last().copied().unwrap_or(0))
-        .map_err(|diff| format!("{diff}\nprogram:\n{src}"))
+    check(&program, *seed).map_err(|diff| format!("{diff}\nprogram:\n{src}"))
 }
 
-#[cfg(test)]
+// Generated programs print with `println` and `int_to_string`.
+#[cfg(all(test, feature = "builtin-stdio", feature = "builtin-convert"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -348,8 +352,8 @@ mod tests {
     fn generated_functions_translate() {
         // The check is only worth something if generated functions reach
         // the register VM. Stage 1 does not translate `/`, `mod`, `=`, `<>`
-        // or `not`, so some fall back to the stack VM; about half
-        // translate. Raise the bound as the translator grows.
+        // or `not`, so some fall back to the stack VM; 47% translate. Raise
+        // the bound as the translator grows.
         let (mut total, mut translated) = (0, 0);
         for seed in 0u32..500 {
             let bytes: Vec<u8> = (0..256u32)
@@ -365,6 +369,6 @@ mod tests {
                 .count();
         }
         eprintln!("{translated} of {total} generated functions translate");
-        assert!(translated * 3 > total, "{translated} of {total}");
+        assert!(translated * 5 > total * 2, "{translated} of {total}");
     }
 }

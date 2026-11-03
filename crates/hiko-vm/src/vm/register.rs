@@ -848,14 +848,12 @@ mod tests {
         register_check::compile(src).expect("does not compile")
     }
 
-    /// A VM for `program`, on the stack VM alone or with register code.
-    fn vm(program: &CompiledProgram, register: bool) -> VM {
-        let code = if register {
-            Arc::new(RegisterCode::translate(program))
-        } else {
-            Arc::default()
-        };
-        register_check::vm(program, &code)
+    /// VMs for `program`: the stack VM alone, then with register code.
+    fn vms(program: &CompiledProgram) -> [VM; 2] {
+        register_check::both_codes(program)
+            .expect("does not verify")
+            .each_ref()
+            .map(|code| register_check::vm(program, code))
     }
 
     /// Whether the body of function `name` translated. A function over a
@@ -878,8 +876,7 @@ mod tests {
     /// both outputs (or errors).
     fn run_both(src: &str, fuel: Option<u64>) -> [Result<Vec<String>, String>; 2] {
         let program = compile(src);
-        [false, true].map(|register| {
-            let mut vm = vm(&program, register);
+        vms(&program).map(|mut vm| {
             vm.fuel = fuel;
             match vm.run() {
                 Ok(()) => Ok(vm.get_output().to_vec()),
@@ -932,8 +929,7 @@ mod tests {
         );
 
         let program = compile(src);
-        let spans = [false, true].map(|register| {
-            let mut vm = vm(&program, register);
+        let spans = vms(&program).map(|mut vm| {
             assert!(vm.run().is_err());
             vm.error_span()
         });
@@ -965,8 +961,7 @@ mod tests {
         // call is never made with no fuel left for it.
         let program = compile(FIB);
         for fuel in 0..400 {
-            let depths = [false, true].map(|register| {
-                let mut vm = vm(&program, register);
+            let depths = vms(&program).map(|mut vm| {
                 vm.fuel = Some(fuel);
                 let err = vm.run().expect_err("fib needs more fuel");
                 assert!(err.is_fuel_exhausted(), "{}", err.message);
@@ -1011,8 +1006,7 @@ mod tests {
         // instruction is worth; the program still finishes, in exactly as
         // many slices as on the stack VM.
         let program = compile(TAK);
-        let slices = [false, true].map(|register| {
-            let mut vm = vm(&program, register);
+        let slices = vms(&program).map(|mut vm| {
             let mut slices = 0u64;
             loop {
                 slices += 1;
