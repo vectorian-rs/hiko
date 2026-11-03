@@ -576,10 +576,10 @@ impl VM {
                             }
                             0 => {
                                 let offset = i16::from_le_bytes(operand!(fi, 2));
-                                let ip = self.checked_relative_ip(
-                                    self.frames[fi].proto_idx,
+                                let ip = jump_target(
                                     self.frames[fi].ip,
                                     offset,
+                                    code.len(),
                                     "InstallHandler clause",
                                 )?;
                                 ClauseAction::Abort { ip }
