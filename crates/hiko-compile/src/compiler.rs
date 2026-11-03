@@ -1975,7 +1975,8 @@ impl Compiler {
                     .chain(body)
                     .try_for_each(|d| self.infer_decl_pass(d));
                 let ended = self.infer_ctx.end_declaration(Ok(()));
-                result.and(ended.map_err(CompileError::from))
+                result?;
+                Ok(ended?)
             }
             _ => {
                 self.infer_ctx.infer_decl(decl)?;

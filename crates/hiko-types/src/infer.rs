@@ -99,21 +99,61 @@ struct PendingOverload {
     /// The operand type.
     ty: Type,
     op: Overload,
-    /// The operator expression: where the resolved type is recorded.
+    /// The operator expression: where the resolved type is recorded, and
+    /// where an error is reported (for `~`, at its operand).
     span: Span,
-    /// Where an error is reported.
-    err_span: Span,
 }
 
 #[derive(Clone, Copy)]
 enum Overload {
-    /// Arithmetic or comparison ("arithmetic" or "comparison"): int, float
-    /// or word.
+    /// Arithmetic or comparison ("arithmetic" or "comparison").
     Numeric(&'static str),
-    /// `~`: int or float.
-    Neg,
+    /// `~`, with its operand's span.
+    Neg(Span),
     /// `=` and `<>`: an equality type.
     Equality,
+}
+
+impl Overload {
+    /// The operand types a numeric operator accepts, by internal name.
+    fn allowed(self) -> &'static [&'static str] {
+        match self {
+            Overload::Numeric(_) => &["Int", "Float", "Word"],
+            Overload::Neg(_) => &["Int", "Float"],
+            Overload::Equality => &[],
+        }
+    }
+
+    /// `allowed` as text: "int, float or word".
+    fn allowed_text(self) -> String {
+        let names: Vec<&str> = self
+            .allowed()
+            .iter()
+            .map(|n| Type::primitive_surface_name(n).unwrap_or(n))
+            .collect();
+        match names.split_last() {
+            Some((last, [])) => (*last).to_string(),
+            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+            None => String::new(),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Overload::Numeric(kind) => kind,
+            Overload::Neg(_) => "~",
+            Overload::Equality => "= and <>",
+        }
+    }
+}
+
+impl PendingOverload {
+    fn err_span(&self) -> Span {
+        match self.op {
+            Overload::Neg(operand) => operand,
+            _ => self.span,
+        }
+    }
 }
 
 impl Annotation {
@@ -1328,7 +1368,7 @@ impl InferCtx {
 
             ExprKind::UnaryNeg(e) => {
                 let ty = self.infer_expr(e)?;
-                self.overload(ty.clone(), Overload::Neg, expr.span, e.span)?;
+                self.overload(ty.clone(), Overload::Neg(e.span), expr.span)?;
                 Ok(ty)
             }
             ExprKind::Not(_) => {
@@ -1478,14 +1518,14 @@ impl InferCtx {
             // Generic arithmetic: resolve via unification
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 self.unify(&lhs_ty, &rhs_ty, span)?;
-                self.overload(lhs_ty.clone(), Overload::Numeric("arithmetic"), span, span)?;
+                self.overload(lhs_ty.clone(), Overload::Numeric("arithmetic"), span)?;
                 return Ok(lhs_ty);
             }
 
             // Generic comparison: resolve via unification, return bool
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                 self.unify(&lhs_ty, &rhs_ty, span)?;
-                self.overload(lhs_ty, Overload::Numeric("comparison"), span, span)?;
+                self.overload(lhs_ty, Overload::Numeric("comparison"), span)?;
                 return Ok(Type::bool());
             }
 
@@ -1511,7 +1551,7 @@ impl InferCtx {
             }
             BinOp::Eq | BinOp::Ne => {
                 self.unify(&lhs_ty, &rhs_ty, span)?;
-                self.overload(lhs_ty, Overload::Equality, span, span)?;
+                self.overload(lhs_ty, Overload::Equality, span)?;
                 return Ok(Type::bool());
             }
         };
@@ -1524,19 +1564,8 @@ impl InferCtx {
     /// Check an overloaded operator on an operand of type `ty`. A concrete
     /// type is checked now; a type still unknown waits in `pending` for
     /// later code to decide it.
-    fn overload(
-        &mut self,
-        ty: Type,
-        op: Overload,
-        span: Span,
-        err_span: Span,
-    ) -> Result<(), TypeError> {
-        let pending = PendingOverload {
-            ty,
-            op,
-            span,
-            err_span,
-        };
+    fn overload(&mut self, ty: Type, op: Overload, span: Span) -> Result<(), TypeError> {
+        let pending = PendingOverload { ty, op, span };
         if !self.check_overload(&pending, false)? {
             // Not generalized before the end of the top-level declaration,
             // so one later use decides it for every use.
@@ -1561,70 +1590,61 @@ impl InferCtx {
     /// unknown operand type is an error. Hiko never picks a default.
     fn check_overload(&mut self, p: &PendingOverload, last: bool) -> Result<bool, TypeError> {
         let resolved = self.apply(&p.ty);
-        let (allowed, what): (&[&str], _) = match p.op {
-            Overload::Numeric(kind) => (&["Int", "Float", "Word"], kind),
-            Overload::Neg => (&["Int", "Float"], "~"),
-            Overload::Equality => {
-                if resolved.is_equality() {
-                    return Ok(true);
-                }
-                if !resolved.may_be_equality() {
-                    return Err(self.err(
-                        &format!(
-                            "= and <> require equality types, found {}",
-                            self.display(&resolved)
-                        ),
-                        p.err_span,
-                    ));
-                }
-                if !last {
-                    return Ok(false);
-                }
+        if let Overload::Equality = p.op {
+            if resolved.is_equality() {
+                return Ok(true);
+            }
+            if !resolved.may_be_equality() {
                 return Err(self.err(
                     &format!(
-                        "cannot tell what type = or <> compares here: nothing in this \
-                         declaration decides {}, and equality needs a known type; add a \
-                         type annotation",
+                        "= and <> require equality types, found {}",
                         self.display(&resolved)
                     ),
-                    p.err_span,
+                    p.err_span(),
                 ));
             }
-        };
-        let resolved = match resolved {
+            if !last {
+                return Ok(false);
+            }
+            return Err(self.err(
+                &format!(
+                    "cannot tell what type = or <> compares here: nothing in this \
+                     declaration decides {}, and equality needs a known type; add a \
+                     type annotation",
+                    self.display(&resolved)
+                ),
+                p.err_span(),
+            ));
+        }
+        let message = match &resolved {
             Type::Var(_) if !last => return Ok(false),
-            Type::Var(_) => {
-                let types = if allowed.len() == 3 {
-                    "int, float or word"
-                } else {
-                    "int or float"
-                };
-                return Err(self.err(
-                    &format!(
-                        "cannot tell whether this {what} operator is on {types}: nothing in \
-                         this declaration decides its operand type; add a type annotation, \
-                         such as (x : int)"
-                    ),
-                    p.err_span,
-                ));
+            Type::Var(_) => format!(
+                "cannot tell whether this {} operator is on {}: nothing in this \
+                 declaration decides its operand type; add a type annotation, such as \
+                 (x : int)",
+                p.op.name(),
+                p.op.allowed_text()
+            ),
+            Type::Con(n) if p.op.allowed().contains(&n.as_str()) => {
+                self.expr_types.insert(p.span, resolved);
+                return Ok(true);
             }
-            Type::Con(n) if allowed.contains(&n.as_str()) => Type::Con(n),
-            Type::Con(n) if n == "Word" => {
-                return Err(self.err("cannot negate word value, words are unsigned", p.err_span));
+            Type::Con(_) if resolved == Type::word() => {
+                "cannot negate word value, words are unsigned".to_string()
             }
             other => {
-                let message = match p.op {
-                    Overload::Numeric(kind) => format!(
-                        "{kind} operators require int, float, or word, found {}",
-                        self.display(&other)
-                    ),
-                    _ => format!("~ requires int or float, found {}", self.display(&other)),
+                let (name, verb) = match p.op {
+                    Overload::Neg(_) => ("~".to_string(), "requires"),
+                    _ => (format!("{} operators", p.op.name()), "require"),
                 };
-                return Err(self.err(&message, p.err_span));
+                format!(
+                    "{name} {verb} {}, found {}",
+                    p.op.allowed_text(),
+                    self.display(other)
+                )
             }
         };
-        self.expr_types.insert(p.span, resolved);
-        Ok(true)
+        Err(self.err(&message, p.err_span()))
     }
 
     // ── Pattern inference ────────────────────────────────────────────
@@ -3489,7 +3509,7 @@ mod tests {
     fn a_concrete_wrong_type_still_fails_at_once() {
         let msg = infer_err("val x = \"a\" + \"b\"");
         assert!(
-            msg.contains("arithmetic operators require int, float, or word, found string"),
+            msg.contains("arithmetic operators require int, float or word, found string"),
             "{msg}"
         );
         let msg = infer_err("val x = ~ 0w1");
