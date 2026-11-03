@@ -1,3 +1,5 @@
+import Std.Option
+
 structure Result = struct
   datatype ('a, 'e) result =
       Ok of 'a
@@ -154,7 +156,45 @@ structure Result = struct
           | (Err err, Ok _) => Err [err]
           | (Err err, Err errs) => Err (err :: errs)
 
+  (* Applicative combination over error lists. A Result whose errors are a
+     list feeds straight into another, so validations nest:
+
+       lift3 make_customer (customer_id id) (lift2 make_name first last) (email e)
+
+     runs every validation and returns every error, in argument order. Turn
+     a single-error Result into one with `map_err (fn err => [err])`. *)
+
+  (* Apply a wrapped function to a wrapped value, keeping the errors of both. *)
+  fun apply result_f result_x =
+    let
+      fun append (xs, ys) =
+        case xs of
+            [] => ys
+          | x :: rest => x :: append (rest, ys)
+    in
+      case (result_f, result_x) of
+          (Ok f, Ok x) => Ok (f x)
+        | (Err left_errs, Err right_errs) => Err (append (left_errs, right_errs))
+        | (Err errs, _) => Err errs
+        | (_, Err errs) => Err errs
+    end
+
+  (* Apply a curried two-argument function to two Results, keeping every error. *)
+  fun lift2 f first second = apply (map f first) second
+
+  (* Apply a curried three-argument function to three Results, keeping every error. *)
+  fun lift3 f first second third = apply (lift2 f first second) third
+
+  (* Apply a curried four-argument function to four Results, keeping every error. *)
+  fun lift4 f first second third fourth = apply (lift3 f first second third) fourth
+
   (* 8. Convenience aliases / derived helpers *)
+
+  (* Ok for Some, `err` for None. *)
+  fun from_option err opt =
+    case opt of
+        Option.Some value => Ok value
+      | Option.None => Err err
 
   (* Alias for bind, named for pipeline readability. *)
   fun and_then f result = bind f result

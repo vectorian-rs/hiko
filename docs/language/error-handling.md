@@ -145,6 +145,8 @@ The most important helpers are:
 - `Result.all` / `Result.sequence` / `Result.traverse`
 - `Result.validate2` / `Result.validate_both` / `Result.validate_fanout`
 - `Result.validate_all` / `Result.validate_traverse`
+- `Result.apply` / `Result.lift2` / `Result.lift3` / `Result.lift4`
+- `Result.from_option`
 - `Result.flatten`
 - `Result.fold`
 - `Result.or_else`
@@ -159,6 +161,25 @@ fun load path =
   |> Result.and_then Json.parse
   |> Result.map_err (fn err => ParseFile (path, err))
 ```
+
+## Keeping Every Error
+
+`bind` stops at the first error, which suits steps that depend on each other.
+Independent checks, such as the fields of a request, should report every
+error at once. `Result.lift2`, `lift3` and `lift4` apply a curried function to
+Results whose errors are lists, and keep the errors of every argument in
+argument order. Their output has the same shape, so they nest:
+
+```sml
+fun to_customer (id, first, last, email) =
+  Result.lift3 make_customer
+    (customer_id id)
+    (Result.lift2 make_name (first_name first) (last_name last))
+    (email_address email)
+```
+
+Each check returns `Result.Err [error]` on failure. A check that returns a
+single error joins in with `Result.map_err (fn err => [err])`.
 
 ## Top-Level Error Types
 
