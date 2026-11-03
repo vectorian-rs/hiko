@@ -299,16 +299,6 @@ impl VM {
                 }
                 Op::GetField0 => self.push_field(0)?,
                 Op::GetField1 => self.push_field(1)?,
-                Op::GetLocalPair => {
-                    let a = u16::from_le_bytes(operand!(fi, 2)) as usize;
-                    let b = u16::from_le_bytes(operand!(fi, 2)) as usize;
-                    // In order, as two GetLocals: pushing `a` can create
-                    // slot `b`.
-                    let a = self.local_stack_index(fi, a, "GetLocal")?;
-                    self.push(self.stack[a])?;
-                    let b = self.local_stack_index(fi, b, "GetLocal")?;
-                    self.push(self.stack[b])?;
-                }
                 Op::GetLocalField0 | Op::GetLocalField1 => {
                     let slot = u16::from_le_bytes(operand!(fi, 2)) as usize;
                     let idx = self.local_stack_index(fi, slot, "GetLocal")?;

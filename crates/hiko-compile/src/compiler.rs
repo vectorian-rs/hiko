@@ -1301,16 +1301,6 @@ impl Compiler {
     }
 
     fn emit_get_local(&mut self, slot: u16) {
-        if let Some(start) = self.fusable_get_local() {
-            // `GetLocal a; GetLocal b` becomes one instruction.
-            let first = self.ctx().last_get_local.expect("checked").1;
-            self.chunk().truncate_to(start);
-            self.ctx_mut().last_get_local = None;
-            self.emit(Op::GetLocalPair);
-            self.emit_u16(first);
-            self.emit_u16(slot);
-            return;
-        }
         let start = self.chunk().code.len();
         self.ctx_mut().last_get_local = Some((start, slot));
         match slot {
