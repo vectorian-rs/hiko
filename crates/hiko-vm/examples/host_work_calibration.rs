@@ -1,7 +1,7 @@
 //! Measure what each host-work-charging builtin costs, in opcode-equivalents,
 //! next to what it charges.
 //!
-//! Usage: cargo run --release -p hiko-vm --example host_work_calibration [filter]
+//! Usage: cargo run --release -p hiko-vm --features builtin-all --example host_work_calibration [filter]
 //!
 //! For every builtin and input size, the harness runs a generated program
 //! that calls the builtin K times, and the same program with K = 0. The

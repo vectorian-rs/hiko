@@ -27,8 +27,8 @@ use hiko_vm::threaded::ThreadedRuntime;
 use hiko_vm::vm::StdoutOutputSink;
 use serde::Deserialize;
 
-#[cfg(feature = "cli-lock")]
 mod build_vm;
+#[cfg(feature = "cli-lock")]
 mod lock_verify;
 
 fn main() {

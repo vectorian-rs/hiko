@@ -2,7 +2,6 @@ use crate::heap::Heap;
 use crate::value::{HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 #[cfg(any(
-    test,
     feature = "builtin-filesystem",
     feature = "builtin-http",
     feature = "builtin-json",
@@ -34,7 +33,6 @@ pub(crate) fn heap_alloc(heap: &mut Heap, obj: HeapObject) -> Result<Value, Stri
 }
 
 #[cfg(any(
-    test,
     feature = "builtin-filesystem",
     feature = "builtin-http",
     feature = "builtin-json",
@@ -112,7 +110,6 @@ pub(crate) fn extract_string_arg(
 
 /// The two string fields of a `(String, String)` argument.
 #[cfg(any(
-    test,
     feature = "builtin-date",
     feature = "builtin-regex",
     feature = "builtin-string"
@@ -141,7 +138,6 @@ pub(crate) fn string_pair(
 /// docs/builtins/accounting-matrix.md#calibration for how the rates are
 /// measured.
 #[cfg(any(
-    test,
     feature = "builtin-bytes",
     feature = "builtin-hash",
     feature = "builtin-json",
@@ -156,7 +152,6 @@ pub(crate) fn host_work(base: u64, per_kib: u64, bytes: usize) -> u64 {
 /// Charge `work` units of host work for a call of `builtin`, with the
 /// builtin's name in the error.
 #[cfg(any(
-    test,
     feature = "builtin-bytes",
     feature = "builtin-hash",
     feature = "builtin-json",

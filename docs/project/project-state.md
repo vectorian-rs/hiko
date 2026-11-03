@@ -257,9 +257,9 @@ been taken.
 
 | Crate               | Class        | Notes                                                                                                                    |
 | ------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `hiko-syntax`       | Core         | Declares a `tree-sitter` and `tree-sitter-hiko` dependency, but no source file references them. Probably removable.      |
+| `hiko-syntax`       | Core         | Lexer, parser, desugar and constant folding. No tree-sitter dependency (`7b7e930`).                                      |
 | `hiko-types`        | Core         |                                                                                                                          |
-| `hiko-compile`      | Core         | Also contains the HTTP module loader behind `loader-http`.                                                               |
+| `hiko-compile`      | Core         | Also contains the HTTP module loader behind `loader-integrity-blake3`.                                                   |
 | `hiko-vm`           | Core         | Also contains all builtin domains, the threaded runtime, and the async I/O backend. Largest cleanup target.              |
 | `hiko-cli`          | Core         | Default features leave out regex, JSON and dates; `builtin-all` enables every builtin (#141).                           |
 | `hiko-builtin-meta` | Core         | Embeds Hiko source for internal modules such as `Filesystem`.                                                              |
@@ -317,11 +317,10 @@ been taken.
 
 | Issue                                        | Class         | Status                                                                                       |
 | -------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------- |
-| #54 Module cache directory setting           | Security      | Cache implemented. Remaining: choose the directory from the CLI or `hiko.toml`.             |
-| #59 Bundle modules and policy into artifacts | Security      | Open. Needs a decision on whether generated artifacts stay.                                 |
 | #48 Effect typing for provider and aborts    | Research      | Open. Merges #74; scoped to the two clause forms from #121.                                  |
 
-Closed since the first snapshot: #12 (`Arc<str>` strings, #125), #25 (Loom
+Closed since the first snapshot: #54 (cache directory), #59 (sealed
+`build-vm` artifacts, #145), #12 (`Arc<str>` strings, #125), #25 (Loom
 tests, #103), #29 and #30 (effects, #121), #40, #47, #81 and #82 (#104), #55
 (manifest and lockfile), #75 (host-work calibration, #129), #80 (tree-wide
 host resource limits, #128), #10 (the isolated-process runtime it tracked is
@@ -332,9 +331,12 @@ maximums.
 
 ## Suggested cleanup order
 
-1. Fix the tests so they do not need a local HTTP server.
+1. Done: the tests do not need a local HTTP server. The VM tests read `Std`
+   from `libraries/` (`782e44b`), and the sealed `build-vm` tests do too
+   (#157). Checked by running the workspace tests with port 8000 blocked and
+   an empty `HOME`.
 2. Done: effects reduced to provider and abort clauses (#121).
-3. Close the finished issues (#80, #54, #55) and the out-of-focus ones.
+3. Done: #80, #54 and #55 are closed, as are the out-of-focus issues.
 4. Done: removed the harness and Hashline (#138, #139), and AWS and GitHub
    with their policies, examples and libraries (#140). GitHub and AWS came
    back as extension crates under `extensions/`, outside the default build
@@ -348,8 +350,9 @@ maximums.
    6,743,280 to 6,449,888 bytes (−4.4%), and 45 fewer crates, 133 to 88 by
    default and 138 to 93 with `builtin-all` (unique packages in
    `cargo tree -p hiko-cli -e normal,build`).
-7. Remove the unused tree-sitter dependency from `hiko-syntax`.
-8. Fix the README inconsistencies listed above.
+7. Done (`7b7e930`): `hiko-syntax` no longer depends on tree-sitter.
+8. Done: the README calls handlers deep and gives `http_get`'s real type.
+   #158 also corrected the opcode count (79) and the builtin table's types.
 9. Done: fuzz targets for the parser, type checker, verifier, and policy
    parser (#143).
 10. Continue the effects research track with question 3 (effect rows).

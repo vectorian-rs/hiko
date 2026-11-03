@@ -57,7 +57,7 @@ latency and non-preemptive sections, see
 
 ## Calibration
 
-`cargo run --release -p hiko-vm --example host_work_calibration [filter]`
+`cargo run --release -p hiko-vm --features builtin-all --example host_work_calibration [filter]`
 measures what each charged builtin costs and what it charges, at inputs of
 16 B, 1 KiB, 64 KiB and 1 MiB. For each builtin and size it runs a generated
 program that calls the builtin K times and the same program with K = 0, and

@@ -3,13 +3,13 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(feature = "loader-http")]
+#[cfg(feature = "loader-integrity-blake3")]
 use std::time::Duration;
 
 use hiko_builtin_meta::{internal_builtin_module, is_internal_builtin_package};
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_common::blake3_hex;
-#[cfg(feature = "loader-http")]
+#[cfg(feature = "loader-integrity-blake3")]
 use hiko_common::http_get_text_limited;
 use hiko_syntax::ast::*;
 use hiko_syntax::intern::{StringInterner, Symbol};
@@ -235,7 +235,7 @@ impl CompileError {
     }
 }
 
-#[cfg(feature = "loader-named-imports")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
     let mut dir = entry_file.parent();
     while let Some(current) = dir {
@@ -248,7 +248,7 @@ fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
     None
 }
 
-#[cfg(feature = "loader-named-imports")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn load_import_loader_config(entry_file: &Path) -> Result<ImportLoaderConfig, CompileError> {
     let manifest_path = find_project_manifest_path(entry_file).ok_or_else(|| {
         CompileError::codegen(format!(
@@ -289,7 +289,7 @@ fn load_import_loader_config(entry_file: &Path) -> Result<ImportLoaderConfig, Co
     })
 }
 
-#[cfg(feature = "loader-named-imports")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
     if let Ok(home) = std::env::var("HOME") {
         return Ok(PathBuf::from(home).join(".hiko").join("lib-cache"));
@@ -299,12 +299,12 @@ fn default_module_cache_dir() -> Result<PathBuf, CompileError> {
     ))
 }
 
-#[cfg(feature = "loader-http")]
+#[cfg(feature = "loader-integrity-blake3")]
 const REMOTE_MODULE_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(feature = "loader-http")]
+#[cfg(feature = "loader-integrity-blake3")]
 const REMOTE_MODULE_MAX_BYTES: u64 = 1024 * 1024;
 
-#[cfg(feature = "loader-http")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileError> {
     http_get_text_limited(url, REMOTE_MODULE_TIMEOUT, REMOTE_MODULE_MAX_BYTES).map_err(|e| {
         CompileError::codegen(format!(
@@ -325,11 +325,7 @@ fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), C
     }
 }
 
-#[cfg(all(
-    feature = "loader-named-imports",
-    feature = "loader-http",
-    feature = "loader-integrity-blake3"
-))]
+#[cfg(feature = "loader-integrity-blake3")]
 fn write_verified_cache_file(cache_path: &Path, bytes: &[u8]) -> Result<(), CompileError> {
     let file_name = cache_path
         .file_name()
@@ -359,7 +355,7 @@ fn write_verified_cache_file(cache_path: &Path, bytes: &[u8]) -> Result<(), Comp
     Ok(())
 }
 
-#[cfg(feature = "loader-named-imports")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), CompileError> {
     if lockfile.schema_version != 1 {
         return Err(CompileError::codegen(format!(
@@ -410,7 +406,7 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
     Ok(())
 }
 
-#[cfg(feature = "loader-named-imports")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn validate_lockfile_against_manifest(
     lockfile: &ImportLockfile,
     lockfile_path: &Path,
@@ -479,7 +475,7 @@ fn validate_lockfile_against_manifest(
     Ok(())
 }
 
-#[cfg(feature = "loader-named-imports")]
+#[cfg(feature = "loader-integrity-blake3")]
 fn validate_remote_base_url(
     package_name: &str,
     base_url: &str,
@@ -673,7 +669,7 @@ enum ScalarConstant {
     Char(char),
 }
 
-#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct ImportLoaderConfig {
     manifest_path: PathBuf,
@@ -681,7 +677,7 @@ struct ImportLoaderConfig {
     manifest: ImportProjectManifest,
 }
 
-#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportManifestDefaults {
@@ -693,14 +689,14 @@ struct ImportManifestDefaults {
     _policy: Option<String>,
 }
 
-#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportRegistry {
     url: String,
 }
 
-#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportDependency {
@@ -708,7 +704,7 @@ struct ImportDependency {
     registry: String,
 }
 
-#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportProjectManifest {
@@ -726,7 +722,7 @@ struct ImportProjectManifest {
     _policies: toml::Table,
 }
 
-#[cfg_attr(not(feature = "loader-named-imports"), allow(dead_code))]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportLockfile {
@@ -735,10 +731,7 @@ struct ImportLockfile {
     packages: HashMap<String, LockedPackage>,
 }
 
-#[cfg_attr(
-    not(all(feature = "loader-named-imports", feature = "loader-http")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockedPackage {
@@ -761,11 +754,7 @@ enum ResolvedImport {
         canonical: PathBuf,
         display_name: String,
     },
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     VerifiedFile {
         canonical: PathBuf,
         display_name: String,
@@ -792,11 +781,7 @@ impl ResolvedImport {
     fn key(&self) -> ImportKey {
         match self {
             Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile { canonical, .. } => ImportKey::File(canonical.clone()),
             Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
             Self::Embedded { key, .. } => key.clone(),
@@ -806,11 +791,7 @@ impl ResolvedImport {
     /// Whether the source was fetched from a remote package.
     fn is_remote(&self) -> bool {
         match self {
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile { .. } => true,
             Self::Embedded { module, .. } => *module,
             _ => false,
@@ -820,11 +801,7 @@ impl ResolvedImport {
     fn display_name(&self) -> &str {
         match self {
             Self::File { display_name, .. } => display_name,
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile { display_name, .. } => display_name,
             Self::Synthetic { display_name, .. } => display_name,
             Self::Embedded { display_name, .. } => display_name,
@@ -840,11 +817,7 @@ impl ResolvedImport {
                 let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
                 Ok((Cow::Owned(source), base_dir))
             }
-            #[cfg(all(
-                feature = "loader-named-imports",
-                feature = "loader-http",
-                feature = "loader-integrity-blake3"
-            ))]
+            #[cfg(feature = "loader-integrity-blake3")]
             Self::VerifiedFile {
                 canonical, source, ..
             } => {
@@ -878,14 +851,7 @@ pub struct Compiler {
     /// Base directory for resolving relative local file includes via `use`.
     base_dir: PathBuf,
     /// Entry file for file-based compilation. External named-import loader state is derived lazily from this.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     entry_file: Option<PathBuf>,
     /// Imports currently being loaded (for cycle detection).
     loading_imports: HashSet<ImportKey>,
@@ -900,34 +866,13 @@ pub struct Compiler {
     /// Cached desugared programs for imported modules (used between passes).
     imported_programs: HashMap<ImportKey, CachedImportedProgram>,
     /// Named module lockfile loaded lazily from the entry program's project root.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     import_lockfile: Option<ImportLockfile>,
     /// Cache directory for fetched remote modules.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     module_cache_dir: Option<PathBuf>,
     /// Caller-supplied overrides for named-import resolution.
-    #[cfg_attr(
-        not(all(
-            feature = "loader-named-imports",
-            feature = "loader-http",
-            feature = "loader-integrity-blake3"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     loader_options: ModuleLoaderOptions,
     /// Global name -> proto_idx of the capture-free function it is currently
     /// bound to, for `CallDirect`. Every global rebinding clears the entry.
@@ -998,11 +943,7 @@ impl Compiler {
     /// package root, cache, then network) and checked against its BLAKE3
     /// hash. `build-vm` embeds these in a sealed artifact. Sorted by import
     /// name.
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     pub fn locked_module_sources(
         entry_file: &Path,
         loader_options: ModuleLoaderOptions,
@@ -1819,7 +1760,9 @@ impl Compiler {
         self.resolve_external_named_import(module_name, package_name, leaf_module)
     }
 
-    #[cfg(not(feature = "loader-named-imports"))]
+    /// Remote imports need the verified loader; `loader-integrity-blake3`
+    /// enables `loader-http` and `loader-named-imports` too.
+    #[cfg(not(feature = "loader-integrity-blake3"))]
     fn resolve_external_named_import(
         &mut self,
         module_name: &str,
@@ -1827,43 +1770,11 @@ impl Compiler {
         _leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
         Err(CompileError::codegen(format!(
-            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-named-imports'"
+            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-integrity-blake3'"
         )))
     }
 
-    #[cfg(all(feature = "loader-named-imports", not(feature = "loader-http")))]
-    fn resolve_external_named_import(
-        &mut self,
-        module_name: &str,
-        _package_name: &str,
-        _leaf_module: &str,
-    ) -> Result<ResolvedImport, CompileError> {
-        Err(CompileError::codegen(format!(
-            "named remote import '{module_name}' is not available in this build; enable cargo feature 'loader-http'"
-        )))
-    }
-
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        not(feature = "loader-integrity-blake3")
-    ))]
-    fn resolve_external_named_import(
-        &mut self,
-        module_name: &str,
-        _package_name: &str,
-        _leaf_module: &str,
-    ) -> Result<ResolvedImport, CompileError> {
-        Err(CompileError::codegen(format!(
-            "named remote import '{module_name}' requires BLAKE3 verification support; enable cargo feature 'loader-integrity-blake3'"
-        )))
-    }
-
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     fn resolve_external_named_import(
         &mut self,
         module_name: &str,
@@ -1985,11 +1896,7 @@ impl Compiler {
         })
     }
 
-    #[cfg(all(
-        feature = "loader-named-imports",
-        feature = "loader-http",
-        feature = "loader-integrity-blake3"
-    ))]
+    #[cfg(feature = "loader-integrity-blake3")]
     fn ensure_import_loader(
         &mut self,
         module_name: &str,
@@ -3429,8 +3336,11 @@ fn binop_to_op(op: BinOp) -> Op {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "loader-integrity-blake3")]
     use std::io::{Read, Write};
+    #[cfg(feature = "loader-integrity-blake3")]
     use std::net::TcpListener;
+    #[cfg(feature = "loader-integrity-blake3")]
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3439,10 +3349,12 @@ mod tests {
         Parser::new(tokens).parse_program().expect("parse")
     }
 
+    #[cfg(feature = "loader-embedded")]
     fn leak(s: String) -> &'static str {
         Box::leak(s.into_boxed_str())
     }
 
+    #[cfg(feature = "loader-embedded")]
     /// Embedded sources with one module `Pkg.Greet` (its hash computed
     /// unless `hash` is given) and the given local files.
     fn embedded(
@@ -3475,8 +3387,10 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "loader-embedded")]
     const GREET: &str = "structure Greet = struct val hello = 42 end";
 
+    #[cfg(feature = "loader-embedded")]
     #[test]
     fn embedded_named_import_resolves_without_a_lockfile() {
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
@@ -3484,6 +3398,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
+    #[cfg(feature = "loader-embedded")]
     #[test]
     fn embedded_module_with_a_wrong_hash_is_refused() {
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
@@ -3496,6 +3411,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "loader-embedded")]
     #[test]
     fn named_import_not_embedded_is_refused() {
         let program = parse_program("import Pkg.Other\nval x = 1");
@@ -3507,6 +3423,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "loader-embedded")]
     #[test]
     fn embedded_local_use_resolves_relative_to_the_using_file() {
         let program = parse_program("use \"./lib/a.hml\"\nval y = a + b");
@@ -3518,6 +3435,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
+    #[cfg(feature = "loader-embedded")]
     #[test]
     fn embedded_local_use_never_reads_the_filesystem() {
         // Cargo.toml exists next to this crate, but it is not embedded.
@@ -3530,6 +3448,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "loader-embedded")]
     #[test]
     fn embedded_module_cannot_use_local_files() {
         let module = "use \"./x.hml\"\nstructure Greet = struct val hello = 1 end";
@@ -3543,6 +3462,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn locked_module_sources_reads_every_locked_module_verified() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -3641,6 +3561,7 @@ mod tests {
         std::fs::write(path, contents).expect("write file");
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn write_project_manifest(project_dir: &Path) {
         write_file(
             &project_dir.join("hiko.toml"),
@@ -3648,6 +3569,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn write_project_manifest_with_dependency(
         project_dir: &Path,
         package: &str,
@@ -3671,10 +3593,12 @@ mod tests {
             .join(".test-lib-cache")
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn cached_module_path(entry_path: &Path, url: &str, hash: &str) -> PathBuf {
         test_cache_dir(entry_path).join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn spawn_response_server(
         expected_path: &'static str,
         body: String,
@@ -3712,6 +3636,7 @@ mod tests {
         (format!("http://{addr}{expected_path}"), handle)
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn spawn_single_response_server(
         expected_path: &'static str,
         body: String,
@@ -3849,6 +3774,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(feature = "builtin-stdio")]
     #[test]
     fn list_literal_compiles_like_the_cons_chain_it_stands_for() {
         let code = |src: &str| {
@@ -4097,6 +4023,7 @@ val result = Box.get (Box.make 41)
         );
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_fetches_over_http_and_reuses_cache() {
         let project_dir = unique_temp_dir("named-import-ok");
@@ -4140,6 +4067,7 @@ val result = Box.get (Box.make 41)
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn manifest_lib_cache_holds_fetched_modules() {
         let project_dir = unique_temp_dir("manifest-lib-cache");
@@ -4194,6 +4122,7 @@ val result = Box.get (Box.make 41)
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn loader_cache_dir_overrides_manifest_lib_cache() {
         let project_dir = unique_temp_dir("lib-cache-override");
@@ -4238,6 +4167,7 @@ val result = Box.get (Box.make 41)
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn selective_named_import_exposes_values_and_constructors() {
         let project_dir = unique_temp_dir("selective-named-import");
@@ -4279,6 +4209,7 @@ val result = Box.get (Box.make 41)
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn selective_named_import_rejects_collisions() {
         let project_dir = unique_temp_dir("selective-named-import-collision");
@@ -4327,6 +4258,7 @@ val result = Box.get (Box.make 41)
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_uses_project_lockfile_above_entry_file() {
         let project_dir = unique_temp_dir("named-import-project-lockfile");
@@ -4359,6 +4291,7 @@ Prelude = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_manifest_lockfile_version_mismatch() {
         let project_dir = unique_temp_dir("named-import-manifest-version-mismatch");
@@ -4397,6 +4330,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_non_local_http_base_url() {
         let project_dir = unique_temp_dir("named-import-insecure-http");
@@ -4425,7 +4359,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
-    #[cfg(feature = "loader-named-imports")]
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn remote_base_url_allows_only_https_or_local_http() {
         let check = |base_url: &str| {
@@ -4444,6 +4378,7 @@ Answer = "blake3:deadbeef"
         assert!(!check("http://modules.example.com\\@127.0.0.1/Std-v0.1.0"));
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_oversized_remote_module() {
         let project_dir = unique_temp_dir("named-import-too-large");
@@ -4488,6 +4423,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_local_use_inside_remote_module() {
         let project_dir = unique_temp_dir("named-import-remote-use");
@@ -4533,6 +4469,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_bad_blake3() {
         let project_dir = unique_temp_dir("named-import-bad-hash");
@@ -4574,6 +4511,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn write_local_package_project(module_source: &str, locked_hash: &str) -> (PathBuf, PathBuf) {
         let project_dir = unique_temp_dir("named-import-local-root");
         write_project_manifest(&project_dir);
@@ -4596,6 +4534,7 @@ Answer = "blake3:deadbeef"
         (project_dir, entry_path)
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     fn compile_with_local_root(
         project_dir: &Path,
         entry_path: &Path,
@@ -4609,6 +4548,7 @@ Answer = "blake3:deadbeef"
         Compiler::compile_file_with_options(parse_program(&source), entry_path, options)
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_reads_verified_module_from_local_package_root() {
         let module_source = "structure Answer = struct\n  val value = 42\nend\n";
@@ -4628,6 +4568,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_local_package_module_with_bad_blake3() {
         let module_source = "structure Answer = struct\n  val value = 42\nend\n";
@@ -4646,6 +4587,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn verified_file_import_uses_verified_source_without_rereading_disk() {
         let project_dir = unique_temp_dir("verified-import-source");
@@ -4665,6 +4607,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(base_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_revalidates_cached_file_on_later_load() {
         let project_dir = unique_temp_dir("named-import-revalidate");
@@ -4716,6 +4659,7 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_missing_package_in_lockfile() {
         let project_dir = unique_temp_dir("named-import-missing-package");
@@ -4748,6 +4692,7 @@ List = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_missing_module_in_lockfile() {
         let project_dir = unique_temp_dir("named-import-missing-module");
@@ -4781,6 +4726,7 @@ Prelude = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "builtin-path")]
     #[test]
     fn named_import_accepts_internal_builtin_package_without_lockfile() {
         let project_dir = unique_temp_dir("internal-builtin-import");
@@ -4891,6 +4837,7 @@ Prelude = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
+    #[cfg(feature = "loader-integrity-blake3")]
     #[test]
     fn named_import_rejects_reserved_package_name_in_lockfile() {
         let project_dir = unique_temp_dir("named-import-reserved-package");

@@ -5,12 +5,13 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hiko_compile::compiler::LockedModuleSource;
+#[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
-    Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, LockedModuleSource,
-    ModuleLoaderOptions, local_use_files,
+    Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions, local_use_files,
 };
-use hiko_syntax::lexer::Lexer;
-use hiko_syntax::parser::Parser;
+#[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+use hiko_syntax::{lexer::Lexer, parser::Parser};
 use hiko_vm::config::{GeneratedProgram, RunConfig};
 use hiko_vm::extension::Extension;
 
@@ -267,6 +268,17 @@ pub fn package_name(out_dir: &Path) -> String {
     name
 }
 
+/// Sealing reads every locked module through the verified loader and
+/// compiles the program against embedded sources.
+#[cfg(not(all(feature = "loader-integrity-blake3", feature = "loader-embedded")))]
+fn collect_sealed(
+    _options: &BuildVmOptions,
+    _extensions: &[&'static Extension],
+) -> Result<Sealed, String> {
+    Err("--lock and --script need a hiko built with cargo features loader-integrity-blake3 and loader-embedded".into())
+}
+
+#[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn collect_sealed(
     options: &BuildVmOptions,
     extensions: &[&'static Extension],
@@ -323,6 +335,7 @@ fn collect_sealed(
 /// Compile the embedded program once, now, against exactly the embedded
 /// sources, so a missing module or file fails `build-vm` instead of the
 /// artifact.
+#[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> Result<(), String> {
     let Some((source, files)) = &sealed.script else {
         return Ok(());
@@ -537,6 +550,7 @@ mod tests {
         dir
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     /// A script that imports a locked module and uses a local file.
     fn script_project(dir: &Path) -> PathBuf {
         write(
@@ -558,6 +572,7 @@ mod tests {
 
     /// The file under `sealed/modules/` that holds `import_name`, from the
     /// generated `src/embedded.rs`.
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     fn module_file(out: &Path, import_name: &str) -> PathBuf {
         let embedded = read(out.join("src/embedded.rs"));
         let line = embedded
@@ -587,6 +602,7 @@ mod tests {
         assert!(parse_args(&["a".to_string(), "b".to_string()]).is_err());
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
     fn sealed_script_artifact_embeds_modules_files_and_hashes() {
         let dir = temp_dir("sealed");
@@ -638,6 +654,7 @@ mod tests {
         assert!(cargo.contains("path = "));
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
     fn sealed_script_must_compile_with_only_the_embedded_sources() {
         let dir = temp_dir("missing-module");
@@ -655,6 +672,7 @@ mod tests {
         assert!(!dir.join("out").exists(), "nothing is written on failure");
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
     fn lock_only_artifact_reads_scripts_but_embeds_modules() {
         let dir = temp_dir("lock-only");
@@ -723,6 +741,7 @@ mod tests {
         assert!(read(out.join("Cargo.toml")).contains("hiko-ext-github = { path = "));
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
     fn lock_must_be_the_projects_lockfile() {
         let dir = temp_dir("other-lock");
@@ -785,6 +804,7 @@ mod tests {
         assert!(err.contains("cannot link extension 'nope'"), "{err}");
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
     fn script_with_an_extension_needs_it_linked_here() {
         let dir = temp_dir("script-ext");
@@ -817,6 +837,7 @@ mod tests {
         assert!(err.contains("[extensions.github]"), "{err}");
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     /// Builds a sealed crate that links the GitHub extension (about a
     /// minute): `cargo test -p hiko-cli --features ext-github build_vm --
     /// --ignored`.
@@ -858,6 +879,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     /// Builds the generated crate with cargo (about a minute):
     /// `cargo test -p hiko-cli build_vm -- --ignored`.
     #[test]

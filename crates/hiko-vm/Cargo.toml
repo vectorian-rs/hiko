@@ -132,3 +132,25 @@ harness = false
 [[bench]]
 name = "sorted_collections_bench"
 harness = false
+
+# Targets that use builtins outside the core build only when their domains
+# are enabled, so the crate also checks with `--no-default-features`.
+[[example]]
+name = "fs_open_cost"
+required-features = ["builtin-filesystem", "builtin-stdio"]
+
+[[example]]
+name = "host_work_calibration"
+required-features = ["builtin-all"]
+
+[[example]]
+name = "process_creation_cost"
+required-features = ["builtin-filesystem", "builtin-process", "builtin-stdio"]
+
+[[test]]
+name = "extension"
+required-features = ["builtin-convert", "builtin-process", "builtin-stdio"]
+
+[[test]]
+name = "io_limits"
+required-features = ["builtin-exec", "builtin-filesystem", "builtin-http", "builtin-process"]
