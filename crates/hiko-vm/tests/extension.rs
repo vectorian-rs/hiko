@@ -109,6 +109,7 @@ static TEST: Extension = Extension {
         "Test.Greet",
         "structure Greet = struct\n  fun hello name = test_greet name\nend\n",
     )],
+    requires: &[],
     configure,
 };
 

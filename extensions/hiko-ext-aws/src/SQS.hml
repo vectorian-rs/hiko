@@ -7,8 +7,6 @@ import Std.Result
 structure SQS = struct
   type client = aws_sqs_client
 
-  type error = string
-
   (*! A reusable client. *)
   fun client config = aws_sqs_client config
 

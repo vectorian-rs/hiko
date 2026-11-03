@@ -7,8 +7,6 @@ import Std.Result
 structure S3 = struct
   type client = aws_s3_client
 
-  type error = string
-
   (*! Bucket name, creation date and ARN. *)
   type bucket = string * string * string
 

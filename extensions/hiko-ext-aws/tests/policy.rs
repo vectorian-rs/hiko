@@ -1,16 +1,19 @@
 //! The policy and the host-resource accounting, without AWS credentials or
 //! the network: nothing here reaches a listing.
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 use hiko_compile::chunk::CompiledProgram;
-use hiko_compile::compiler::{Compiler, ModuleLoaderOptions};
+use hiko_compile::compiler::{Compiler, EmbeddedSources, ModuleLoaderOptions};
 use hiko_ext_aws::AWS;
 use hiko_vm::config::RunConfig;
 use hiko_vm::extension::Extension;
 
 const LINKED: &[&Extension] = &[&AWS];
 
-fn repo() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn parse(source: &str) -> hiko_syntax::ast::Program {
@@ -20,6 +23,37 @@ fn parse(source: &str) -> hiko_syntax::ast::Program {
     hiko_syntax::parser::Parser::new(tokens)
         .parse_program()
         .expect("parse")
+}
+
+/// A new project directory whose lockfile pins `modules` of the
+/// repository's Std package, with the hashes its `package.toml` lists. The
+/// tests do not depend on the repository's own lockfile.
+fn project(name: &str, modules: &[&str]) -> PathBuf {
+    let package: toml::Table = toml::from_str(
+        &std::fs::read_to_string(repo().join("libraries/Std-v0.1.0/package.toml")).unwrap(),
+    )
+    .unwrap();
+    let dir = std::env::temp_dir().join(format!("hiko-ext-aws-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("hiko.toml"),
+        "[defaults]\nlockfile = \"hiko.lock.toml\"\n\n[registries.local]\nurl = \"http://127.0.0.1:8000\"\n\n[dependencies]\nStd = { version = \"0.1.0\", registry = \"local\" }\n",
+    )
+    .unwrap();
+    let mut lock = "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:8000/Std-v0.1.0\"\n\n[packages.Std.modules]\n".to_string();
+    for module in modules {
+        let hash = package["modules"][*module].as_str().unwrap();
+        lock.push_str(&format!("{module} = \"{hash}\"\n"));
+    }
+    std::fs::write(dir.join("hiko.lock.toml"), lock).unwrap();
+    dir
+}
+
+/// The project most tests compile in: it pins Std.Result, which the AWS
+/// modules import.
+fn with_result() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| project("with-result", &["Result"]))
 }
 
 /// The extension surface `config` turns on, and the repository's packages
@@ -35,26 +69,94 @@ fn loader_options(config: &RunConfig) -> ModuleLoaderOptions {
     }
 }
 
-/// Compiles `source` as a file at the repository root, so its imports
-/// resolve through the repository's project, as a script's would: the AWS
-/// modules import Std.Result.
-fn compile(source: &str, config: &RunConfig) -> CompiledProgram {
-    Compiler::compile_file_with_options(
-        parse(source),
-        &repo().join("script.hml"),
-        loader_options(config),
-    )
-    .expect("compile")
-    .0
+/// Compiles `source` as a script in `dir`, so its imports resolve through
+/// the project `dir` belongs to, if any.
+fn compile_in(
+    dir: &Path,
+    source: &str,
+    options: ModuleLoaderOptions,
+) -> Result<CompiledProgram, String> {
+    Compiler::compile_file_with_options(parse(source), &dir.join("script.hml"), options)
+        .map(|(program, _)| program)
+        .map_err(|e| format!("{e:?}"))
 }
 
 fn run(source: &str, policy: &str) -> Result<(), String> {
     let config = RunConfig::from_toml(policy).expect("config");
-    let program = compile(source, &config);
+    let program = compile_in(with_result(), source, loader_options(&config)).expect("compile");
     let mut vm = config
         .build_vm_with_extensions(program, LINKED)
         .expect("build");
     vm.run().map_err(|e| e.message)
+}
+
+const S3_POLICY: &str = "[extensions.aws]\nsso_profiles = [\"dev\"]\ns3 = true\n";
+
+#[test]
+fn aws_listings_are_std_results() {
+    // The point of returning Std.Result: its functions apply directly.
+    let config = RunConfig::from_toml(S3_POLICY).unwrap();
+    compile_in(
+        with_result(),
+        "import Aws.Config\nimport Aws.S3\nimport Std.Result\n\
+         fun count c = Result.either (fn buckets => 1) (fn message => 0) (S3.list_buckets c)\n\
+         val r : (S3.bucket list, string) Result.result = S3.list_buckets (S3.client (Config.sso_profile \"dev\"))",
+        loader_options(&config),
+    )
+    .expect("an S3 listing is a Std.Result");
+}
+
+#[test]
+fn a_lockfile_without_std_result_is_an_error_naming_the_extension() {
+    let config = RunConfig::from_toml(S3_POLICY).unwrap();
+    let dir = project("without-result", &["List"]);
+    let err = compile_in(&dir, "import Aws.S3", loader_options(&config)).unwrap_err();
+    assert!(
+        err.contains("extension 'aws' needs Std.Result, which hiko.lock.toml does not pin")
+            && err.contains("hiko install"),
+        "{err}"
+    );
+}
+
+#[test]
+fn outside_a_project_the_error_names_the_extension() {
+    let config = RunConfig::from_toml(S3_POLICY).unwrap();
+    let dir = std::env::temp_dir().join(format!("hiko-ext-aws-no-project-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let err = compile_in(&dir, "import Aws.S3", loader_options(&config)).unwrap_err();
+    assert!(
+        err.contains("extension 'aws' needs Std.Result") && err.contains("hiko.toml"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_sealed_artifact_without_std_result_is_an_error_naming_the_extension() {
+    // What `build-vm --ext aws` without `--lock` embeds: no modules.
+    static NOTHING: EmbeddedSources = EmbeddedSources {
+        modules: &[],
+        files: None,
+    };
+    let config = RunConfig::from_toml(S3_POLICY).unwrap();
+    let options = ModuleLoaderOptions {
+        embedded: Some(&NOTHING),
+        ..loader_options(&config)
+    };
+    let err = compile_in(with_result(), "import Aws.S3", options).unwrap_err();
+    assert!(
+        err.contains("extension 'aws' needs Std.Result, which this artifact does not embed"),
+        "{err}"
+    );
+}
+
+#[test]
+fn every_module_of_the_extension_needs_what_it_requires() {
+    // Aws.Config itself imports nothing, but `requires` is per extension:
+    // one rule for all of its modules.
+    let config = RunConfig::from_toml(S3_POLICY).unwrap();
+    let dir = project("config-only", &["List"]);
+    let err = compile_in(&dir, "import Aws.Config", loader_options(&config)).unwrap_err();
+    assert!(err.contains("extension 'aws' needs Std.Result"), "{err}");
 }
 
 #[test]

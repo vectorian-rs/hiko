@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use hiko_builtin_meta::BuiltinTypeSignature;
-use hiko_compile::compiler::ExtensionSurface;
+use hiko_compile::compiler::{ExtensionRequires, ExtensionSurface};
 
 use crate::heap::Heap;
 use crate::sendable::SendableValue;
@@ -60,12 +60,46 @@ pub struct Extension {
     pub builtins: &'static [ExtensionBuiltin],
     /// Hiko modules by import name, such as `("Github.Issue", source)`.
     pub modules: &'static [(&'static str, &'static str)],
+    /// Library modules those modules import, such as `"Std.Result"`. They
+    /// come from the project's lockfile like any named import; importing
+    /// one of the extension's modules fails with an error naming the
+    /// extension when one of these is not pinned.
+    pub requires: &'static [&'static str],
     /// Turn the run-config table into the extension's state. An error stops
     /// the VM from being built.
     pub configure: fn(&toml::Value) -> Result<ExtensionState, String>,
 }
 
 impl Extension {
+    /// The named imports in the extension's modules that are neither its
+    /// own modules nor listed in `requires`, as `"<module> imports <name>"`.
+    /// Each extension's tests assert this is empty, so `requires` cannot
+    /// fall behind the sources.
+    pub fn undeclared_imports(&self) -> Result<Vec<String>, String> {
+        use hiko_syntax::ast::DeclKind;
+        let mut undeclared = Vec::new();
+        for (module, source) in self.modules {
+            let tokens = hiko_syntax::lexer::Lexer::new(source, 0)
+                .tokenize()
+                .map_err(|e| format!("{module}: {}", e.message))?;
+            let program = hiko_syntax::parser::Parser::new(tokens)
+                .parse_program()
+                .map_err(|e| format!("{module}: {}", e.message))?;
+            for decl in &program.decls {
+                let (DeclKind::Import(name) | DeclKind::ImportWithNames(name, _)) = &decl.kind
+                else {
+                    continue;
+                };
+                let import = program.interner.resolve(*name);
+                let own = self.modules.iter().any(|(m, _)| *m == import);
+                if !own && !self.requires.contains(&import) {
+                    undeclared.push(format!("{module} imports {import}"));
+                }
+            }
+        }
+        Ok(undeclared)
+    }
+
     /// What `extensions` add to the compiler.
     pub fn compile_surface(extensions: &[&Extension]) -> ExtensionSurface {
         let mut surface = ExtensionSurface::default();
@@ -78,6 +112,13 @@ impl Extension {
                     .map(|builtin| (builtin.name, builtin.signature)),
             );
             surface.modules.extend_from_slice(extension.modules);
+            if !extension.requires.is_empty() {
+                surface.requires.push(ExtensionRequires {
+                    extension: extension.name,
+                    modules: extension.modules.iter().map(|(name, _)| *name).collect(),
+                    imports: extension.requires,
+                });
+            }
         }
         surface
     }

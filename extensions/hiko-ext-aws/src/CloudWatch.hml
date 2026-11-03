@@ -7,8 +7,6 @@ import Std.Result
 structure CloudWatch = struct
   type client = aws_cloudwatch_client
 
-  type error = string
-
   (*! Name, state (`OK`, `ALARM` or `INSUFFICIENT_DATA`), source
       (`Namespace/MetricName`, `metric math` or `composite`), when the alarm
       entered its state (RFC 3339, whole seconds; CloudWatch's

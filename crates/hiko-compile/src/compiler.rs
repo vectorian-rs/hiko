@@ -56,6 +56,21 @@ pub struct ExtensionSurface {
     pub builtins: Vec<(&'static str, hiko_builtin_meta::BuiltinTypeSignature)>,
     /// `(import name, source)`, such as `("Github.Issue", "structure ...")`.
     pub modules: Vec<(&'static str, &'static str)>,
+    /// Library modules that extension modules import, per extension.
+    pub requires: Vec<ExtensionRequires>,
+}
+
+/// The library modules, such as `Std.Result`, that one extension's modules
+/// import. They resolve like any named import, through the project's
+/// lockfile or a sealed artifact's embedded sources; listing them lets an
+/// import of the extension's modules fail with an explicit error naming the
+/// extension when they are not there.
+#[derive(Debug, Clone)]
+pub struct ExtensionRequires {
+    pub extension: &'static str,
+    /// The extension's own module import names.
+    pub modules: Vec<&'static str>,
+    pub imports: &'static [&'static str],
 }
 
 impl ExtensionSurface {
@@ -64,6 +79,10 @@ impl ExtensionSurface {
             .iter()
             .find(|(name, _)| *name == import_name)
             .copied()
+    }
+
+    fn requires_for(&self, module: &str) -> Option<&ExtensionRequires> {
+        self.requires.iter().find(|r| r.modules.contains(&module))
     }
 
     fn has_builtin(&self, name: &str) -> bool {
@@ -1804,6 +1823,7 @@ impl Compiler {
     fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
         if let Some((import_name, source)) = self.loader_options.extensions.module(module_name) {
+            self.check_extension_requires(module_name)?;
             return Ok(ResolvedImport::Synthetic {
                 import_name,
                 display_name: module_name.to_string(),
@@ -1818,6 +1838,73 @@ impl Compiler {
             return resolve_embedded_module(embedded, module_name);
         }
         self.resolve_external_named_import(module_name, package_name, leaf_module)
+    }
+
+    /// Every library module the extension providing `module_name` needs is
+    /// available: embedded in a sealed artifact, or pinned in the project's
+    /// lockfile. Checked when the extension's module is imported, so the
+    /// error names the extension rather than an import the user never
+    /// wrote.
+    fn check_extension_requires(&mut self, module_name: &str) -> Result<(), CompileError> {
+        let Some(requires) = self.loader_options.extensions.requires_for(module_name) else {
+            return Ok(());
+        };
+        let (extension, imports) = (requires.extension, requires.imports);
+        for import in imports {
+            if let Some(embedded) = self.loader_options.embedded {
+                if !embedded.modules.iter().any(|m| m.import_name == *import) {
+                    return Err(CompileError::codegen(format!(
+                        "extension '{extension}' needs {import}, which this artifact does not embed; build it with --lock and a lockfile that pins {import}"
+                    )));
+                }
+            } else {
+                self.check_locked_for_extension(extension, import)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn check_locked_for_extension(
+        &mut self,
+        extension: &str,
+        import: &str,
+    ) -> Result<(), CompileError> {
+        let (package, leaf) = split_import_name(import)?;
+        let fix = format!("add {package} to [dependencies] in hiko.toml and run 'hiko install'");
+        if self.entry_file.is_none() {
+            return Err(CompileError::codegen(format!(
+                "extension '{extension}' needs {import}, which comes from a project's lockfile, but this program is not compiled from a file in a project; {fix}"
+            )));
+        }
+        let (lockfile, _) = self.ensure_import_loader(import).map_err(|e| match e {
+            CompileError::Codegen(message) => CompileError::codegen(format!(
+                "extension '{extension}' needs {import}: {message}; {fix}"
+            )),
+            other => other,
+        })?;
+        if lockfile
+            .packages
+            .get(package)
+            .is_some_and(|p| p.modules.contains_key(leaf))
+        {
+            Ok(())
+        } else {
+            Err(CompileError::codegen(format!(
+                "extension '{extension}' needs {import}, which hiko.lock.toml does not pin; {fix}"
+            )))
+        }
+    }
+
+    #[cfg(not(feature = "loader-integrity-blake3"))]
+    fn check_locked_for_extension(
+        &mut self,
+        extension: &str,
+        import: &str,
+    ) -> Result<(), CompileError> {
+        Err(CompileError::codegen(format!(
+            "extension '{extension}' needs {import}, but this build cannot load library modules; enable cargo feature 'loader-integrity-blake3'"
+        )))
     }
 
     /// Remote imports need the verified loader; `loader-integrity-blake3`
