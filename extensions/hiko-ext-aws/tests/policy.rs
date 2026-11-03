@@ -87,3 +87,25 @@ fn configs_count_against_their_host_resource_limit() {
     .unwrap_err();
     assert!(err.contains("aws_config"), "{err}");
 }
+
+#[test]
+fn cloudwatch_is_off_by_default() {
+    let err = run(
+        "import Aws.Config\nimport Aws.CloudWatch\nval c = CloudWatch.client (Config.sso_profile \"dev\")",
+        "[extensions.aws]\nsso_profiles = [\"dev\"]\n",
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("aws_cloudwatch_client: the service is not enabled"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_enabled_cloudwatch_client_is_created_without_io() {
+    run(
+        "import Aws.Config\nimport Aws.CloudWatch\nval c = CloudWatch.client (Config.sso_profile \"dev\")",
+        "[extensions.aws]\nsso_profiles = [\"dev\"]\ncloudwatch = true\n",
+    )
+    .expect("no I/O happens before a listing");
+}
