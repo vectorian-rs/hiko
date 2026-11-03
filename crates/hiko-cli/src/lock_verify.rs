@@ -93,7 +93,7 @@ pub(crate) fn lock_command(args: &[String]) {
     }
 }
 
-pub(crate) fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
+fn parse_verify_args(args: &[String], usage: &str) -> Option<PathBuf> {
     let mut config_path = None;
     let mut i = 0;
     while i < args.len() {
@@ -118,13 +118,7 @@ pub(crate) fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<Path
 
 fn verify_lockfile(manifest_path: &Path) -> Result<(), String> {
     let manifest = load_project_manifest(manifest_path)?;
-    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let lockfile_name = manifest
-        .defaults
-        .lockfile
-        .as_deref()
-        .unwrap_or("hiko.lock.toml");
-    let lockfile_path = manifest_dir.join(lockfile_name);
+    let lockfile_path = project_lockfile_path(manifest_path, &manifest);
     let lockfile = load_module_lockfile(&lockfile_path)?;
 
     validate_module_lockfile(&lockfile, &lockfile_path)?;
@@ -155,6 +149,29 @@ fn verify_locked_modules(lockfile: &ModuleLockfile) -> Result<(), String> {
     } else {
         Err(format!("lock verification failed for {failures} module(s)"))
     }
+}
+
+/// The lockfile the project at `manifest_path` uses: `[defaults] lockfile`,
+/// relative to the manifest, else `hiko.lock.toml` next to it.
+pub(crate) fn project_lockfile_path(
+    manifest_path: &Path,
+    manifest: &LockProjectManifest,
+) -> PathBuf {
+    manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(
+            manifest
+                .defaults
+                .lockfile
+                .as_deref()
+                .unwrap_or("hiko.lock.toml"),
+        )
+}
+
+/// Where a registry serves version `version` of package `name`.
+pub(crate) fn dependency_base_url(registry_url: &str, name: &str, version: &str) -> String {
+    format!("{}/{name}-v{version}", registry_url.trim_end_matches('/'))
 }
 
 pub(crate) fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
@@ -200,7 +217,7 @@ pub(crate) fn validate_module_lockfile(
     Ok(())
 }
 
-fn validate_module_lockfile_against_manifest(
+pub(crate) fn validate_module_lockfile_against_manifest(
     lockfile: &ModuleLockfile,
     lockfile_path: &Path,
     manifest: &LockProjectManifest,
@@ -266,12 +283,7 @@ fn validate_dependency_source(
                 manifest_path.display()
             )
         })?;
-    let expected_base_url = format!(
-        "{}/{}-v{}",
-        registry.url.trim_end_matches('/'),
-        package_name,
-        dependency.version
-    );
+    let expected_base_url = dependency_base_url(&registry.url, package_name, &dependency.version);
     if package.base_url.trim_end_matches('/') != expected_base_url {
         return Err(format!(
             "dependency '{package_name}' source mismatch: project manifest '{}' expects '{}', but module lockfile '{}' resolves '{}'",

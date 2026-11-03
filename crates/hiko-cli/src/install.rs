@@ -5,8 +5,9 @@
 //! `<registry>/<Package>-v<version>`, downloads every module it lists,
 //! checks each against the manifest's BLAKE3 hash, stores it in the module
 //! cache, and writes all of them to `hiko.lock.toml`. Nothing is written
-//! unless every module verifies. `--check` writes nothing and fails when the
-//! lockfile differs from what install would write. Compiling never changes
+//! unless every module verifies. `--check` reads only the package
+//! manifests, writes nothing, and fails when the lockfile differs from what
+//! install would write; `lock verify` checks the modules themselves. Compiling never changes
 //! the lockfile; this command is the one place that does.
 
 use std::collections::BTreeMap;
@@ -20,11 +21,15 @@ use hiko_common::{blake3_hex, http_get_text_limited};
 use serde::Deserialize;
 
 use crate::lock_verify::{
-    LockProjectManifest, ModuleLockPackage, ModuleLockfile, load_module_lockfile,
-    load_project_manifest, normalize_blake3, resolve_manifest_path, validate_module_lockfile,
+    LockProjectManifest, ModuleLockPackage, ModuleLockfile, dependency_base_url,
+    load_module_lockfile, load_project_manifest, normalize_blake3, project_lockfile_path,
+    resolve_manifest_path, validate_module_lockfile, validate_module_lockfile_against_manifest,
     validate_remote_base_url,
 };
 use crate::parse_flag_value;
+use hiko_compile::compiler::{
+    CompileError, module_cache_path, project_module_cache_dir, store_cached_module,
+};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BYTES: u64 = 1024 * 1024;
@@ -38,11 +43,12 @@ struct PackageManifest {
     modules: BTreeMap<String, String>,
 }
 
-/// A package resolved from the registry: its lock entry, and each module's
-/// URL, hash and verified source, for the cache.
-struct Resolved {
-    package: ModuleLockPackage,
-    sources: Vec<(String, String, String)>,
+/// A downloaded module, verified, to store in the cache once every module
+/// has verified.
+struct Download {
+    url: String,
+    hash: String,
+    source: String,
 }
 
 pub(crate) fn install_command(args: &[String]) {
@@ -86,31 +92,22 @@ fn install(manifest_path: &Path, check: bool) -> Result<(), String> {
             manifest_path.display()
         ));
     }
-    let lockfile_path = manifest_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(
-            manifest
-                .defaults
-                .lockfile
-                .as_deref()
-                .unwrap_or("hiko.lock.toml"),
-        );
+    let lockfile_path = project_lockfile_path(manifest_path, &manifest);
 
-    let mut resolved = BTreeMap::new();
+    let mut packages = BTreeMap::new();
     for name in manifest.dependencies.keys() {
-        resolved.insert(
+        packages.insert(
             name.clone(),
             resolve_package(&manifest, manifest_path, name)?,
         );
     }
     let new = ModuleLockfile {
         schema_version: 1,
-        packages: resolved
-            .iter()
-            .map(|(name, r)| (name.clone(), r.package.clone()))
-            .collect(),
+        packages,
     };
+    // The rules `lock verify` reads a lockfile by.
+    validate_module_lockfile(&new, &lockfile_path)?;
+    validate_module_lockfile_against_manifest(&new, &lockfile_path, &manifest, manifest_path)?;
 
     let old = if lockfile_path.exists() {
         let old = load_module_lockfile(&lockfile_path)?;
@@ -124,45 +121,36 @@ fn install(manifest_path: &Path, check: bool) -> Result<(), String> {
         println!("{line}");
     }
 
-    if check {
-        return if changes.is_empty() {
-            println!("{} is up to date", lockfile_path.display());
-            Ok(())
-        } else {
-            Err(format!(
-                "{} is out of date; run 'hiko install'",
-                lockfile_path.display()
-            ))
-        };
-    }
-
-    let cache_dir = hiko_compile::compiler::project_module_cache_dir(
-        manifest_path,
-        manifest.defaults.lib_cache.as_deref(),
-    )
-    .map_err(compile_error)?;
-    for r in resolved.values() {
-        for (url, hash, source) in &r.sources {
-            hiko_compile::compiler::store_cached_module(&cache_dir, url, hash, source)
+    if !check {
+        let cache_dir =
+            project_module_cache_dir(manifest_path, manifest.defaults.lib_cache.as_deref())
                 .map_err(compile_error)?;
+        for d in download_modules(&new, &cache_dir)? {
+            store_cached_module(&cache_dir, &d.url, &d.hash, &d.source).map_err(compile_error)?;
         }
     }
     if changes.is_empty() {
         println!("{} is up to date", lockfile_path.display());
         return Ok(());
     }
+    if check {
+        return Err(format!(
+            "{} is out of date; run 'hiko install'",
+            lockfile_path.display()
+        ));
+    }
     write_atomically(&lockfile_path, &render_lockfile(&new))?;
     println!("wrote {}", lockfile_path.display());
     Ok(())
 }
 
-/// Fetch package `name`'s manifest from its registry and every module it
-/// lists, each checked against the manifest's hash.
+/// Package `name`'s lock entry, from the `package.toml` its registry
+/// serves. Hashes are stored as `blake3:<lowercase hex>`.
 fn resolve_package(
     manifest: &LockProjectManifest,
     manifest_path: &Path,
     name: &str,
-) -> Result<Resolved, String> {
+) -> Result<ModuleLockPackage, String> {
     let dependency = &manifest.dependencies[name];
     let registry = manifest
         .registries
@@ -174,11 +162,7 @@ fn resolve_package(
                 manifest_path.display()
             )
         })?;
-    let base_url = format!(
-        "{}/{name}-v{}",
-        registry.url.trim_end_matches('/'),
-        dependency.version
-    );
+    let base_url = dependency_base_url(&registry.url, name, &dependency.version);
     validate_remote_base_url(name, &base_url, manifest_path)?;
 
     let package_url = format!("{base_url}/package.toml");
@@ -194,35 +178,53 @@ fn resolve_package(
     if package.modules.is_empty() {
         return Err(format!("'{package_url}' lists no modules"));
     }
-
-    let mut sources = Vec::new();
-    for (module, hash) in &package.modules {
-        check_module_name(module, &package_url)?;
-        let expected = parse_blake3(hash)
+    let mut modules = BTreeMap::new();
+    for (module, hash) in package.modules {
+        check_module_name(&module, &package_url)?;
+        let hex = parse_blake3(&hash)
             .ok_or_else(|| format!("'{package_url}': module {module} has invalid hash '{hash}'"))?;
-        let url = format!("{base_url}/modules/{module}.hml");
-        let source = fetch(&url)?;
-        let actual = blake3_hex(source.as_bytes());
-        if actual != expected {
-            return Err(format!(
-                "{name}.{module}: '{url}' has BLAKE3 {actual}, but '{package_url}' lists {expected}"
-            ));
-        }
-        sources.push((url, expected, source));
+        modules.insert(module, format!("blake3:{hex}"));
     }
-    Ok(Resolved {
-        package: ModuleLockPackage {
-            version: dependency.version.clone(),
-            base_url,
-            modules: package.modules,
-        },
-        sources,
+    Ok(ModuleLockPackage {
+        version: dependency.version.clone(),
+        base_url,
+        modules,
     })
 }
 
-fn compile_error(e: hiko_compile::compiler::CompileError) -> String {
+/// Every module in `lockfile` that the cache does not already hold,
+/// downloaded and checked against its hash. A cached copy is used only
+/// when it still matches.
+fn download_modules(lockfile: &ModuleLockfile, cache_dir: &Path) -> Result<Vec<Download>, String> {
+    let mut downloads = Vec::new();
+    for (name, package) in &lockfile.packages {
+        for (module, hash) in &package.modules {
+            let hex = normalize_blake3(hash);
+            let url = format!("{}/modules/{module}.hml", package.base_url);
+            let cached = fs::read(module_cache_path(cache_dir, &url, &hex));
+            if cached.is_ok_and(|bytes| blake3_hex(&bytes) == hex) {
+                continue;
+            }
+            let source = fetch(&url)?;
+            let actual = blake3_hex(source.as_bytes());
+            if actual != hex {
+                return Err(format!(
+                    "{name}.{module}: '{url}' has BLAKE3 {actual}, but its package.toml lists {hex}"
+                ));
+            }
+            downloads.push(Download {
+                url,
+                hash: hex,
+                source,
+            });
+        }
+    }
+    Ok(downloads)
+}
+
+fn compile_error(e: CompileError) -> String {
     match e {
-        hiko_compile::compiler::CompileError::Codegen(message) => message,
+        CompileError::Codegen(message) => message,
         other => format!("{other:?}"),
     }
 }
@@ -247,7 +249,7 @@ fn check_module_name(module: &str, package_url: &str) -> Result<(), String> {
     }
 }
 
-/// The hex digest of a `blake3:<64 hex digits>` hash.
+/// The lowercase hex digest of a `blake3:<64 hex digits>` hash.
 fn parse_blake3(hash: &str) -> Option<String> {
     let hex = hash.strip_prefix("blake3:")?;
     (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -257,28 +259,27 @@ fn parse_blake3(hash: &str) -> Option<String> {
 /// One line per difference between the lockfile on disk and the new one:
 /// `+` added, `-` removed, `~` changed.
 fn describe_changes(old: Option<&ModuleLockfile>, new: &ModuleLockfile) -> Vec<String> {
-    let empty = BTreeMap::new();
-    let old_packages = old.map_or(&empty, |o| &o.packages);
+    let no_packages = BTreeMap::new();
+    let no_modules = BTreeMap::new();
+    let old_packages = old.map_or(&no_packages, |o| &o.packages);
     let mut lines = Vec::new();
     for (name, package) in &new.packages {
-        let Some(previous) = old_packages.get(name) else {
-            lines.push(format!(
+        let previous = old_packages.get(name);
+        match previous {
+            None => lines.push(format!(
                 "+ {name} {} ({})",
                 package.version, package.base_url
-            ));
-            for (module, hash) in &package.modules {
-                lines.push(format!("+ {name}.{module} {hash}"));
-            }
-            continue;
-        };
-        if previous.version != package.version || previous.base_url != package.base_url {
-            lines.push(format!(
-                "~ {name} {} ({}) -> {} ({})",
-                previous.version, previous.base_url, package.version, package.base_url
-            ));
+            )),
+            Some(p) if p.version != package.version || p.base_url != package.base_url => lines
+                .push(format!(
+                    "~ {name} {} ({}) -> {} ({})",
+                    p.version, p.base_url, package.version, package.base_url
+                )),
+            Some(_) => {}
         }
+        let old_modules = previous.map_or(&no_modules, |p| &p.modules);
         for (module, hash) in &package.modules {
-            match previous.modules.get(module) {
+            match old_modules.get(module) {
                 None => lines.push(format!("+ {name}.{module} {hash}")),
                 Some(old_hash) if normalize_blake3(old_hash) != normalize_blake3(hash) => {
                     lines.push(format!("~ {name}.{module} {old_hash} -> {hash}"))
@@ -286,7 +287,7 @@ fn describe_changes(old: Option<&ModuleLockfile>, new: &ModuleLockfile) -> Vec<S
                 Some(_) => {}
             }
         }
-        for module in previous.modules.keys() {
+        for module in old_modules.keys() {
             if !package.modules.contains_key(module) {
                 lines.push(format!("- {name}.{module}"));
             }
@@ -320,14 +321,12 @@ fn toml_string(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
 
-/// Replace `path` with `text` through a temporary file in the same
-/// directory, so a failed write leaves the old lockfile intact.
+/// Replace `path` with `text` through a temporary file next to it, so a
+/// failed write leaves the old lockfile intact.
 fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("hiko.lock.toml");
-    let tmp = path.with_file_name(format!(".{file_name}.tmp-{}", process::id()));
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp-{}", process::id()));
+    let tmp = PathBuf::from(tmp);
     fs::write(&tmp, text).map_err(|e| format!("cannot write '{}': {e}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
@@ -486,6 +485,30 @@ mod tests {
 
         install(&manifest, false).unwrap();
         install(&manifest, true).unwrap();
+    }
+
+    #[test]
+    fn cached_modules_are_not_downloaded_again_and_check_reads_only_manifests() {
+        let (project, package) = setup("cached", &[("A", "val a = 1\n")]);
+        let manifest = project.join("hiko.toml");
+        install(&manifest, false).unwrap();
+        // The registry no longer serves the module: the cached copy, which
+        // still matches its hash, is enough, and --check never fetches it.
+        fs::remove_file(package.join("modules/A.hml")).unwrap();
+        install(&manifest, false).unwrap();
+        install(&manifest, true).unwrap();
+        // A cached copy that no longer matches is fetched again, and now
+        // that fails.
+        let cache = project.join("cache");
+        let cached = fs::read_dir(&cache)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::write(cached, "tampered").unwrap();
+        let err = install(&manifest, false).unwrap_err();
+        assert!(err.contains("cannot fetch"), "{err}");
     }
 
     #[test]

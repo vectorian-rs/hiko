@@ -216,8 +216,13 @@ lockfile and not the cache. Packages are locked whole, as `package.toml` lists
 them; there is no per-module selection. A package removed from
 `[dependencies]` is removed from the lockfile.
 
-`--check` is for CI: it fetches and verifies the same way, compares the result
-with the lockfile on disk, and exits nonzero if they differ.
+A module already in the cache is not downloaded again if it still matches its
+hash; a cached copy that does not match is downloaded again, as the loader
+does.
+
+`--check` is for CI: it reads only the package manifests, compares the
+lockfile they give with the one on disk, writes nothing, and exits nonzero if
+they differ. `hiko lock verify` checks the modules themselves.
 
 ### Cache Model
 
