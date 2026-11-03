@@ -678,3 +678,15 @@ reads the local in place. Interleaved, 10 rounds, on AC, load average 2 to
 | `compare/tak`, `compare/fib`, `ack` | | | 0% |
 
 Medians; the minimums agree.
+
+### Superinstruction: two local reads (PR #165, not kept)
+
+`GetLocal a; GetLocal b` (6.3% of executed pairs, the most frequent) as one
+`GetLocalPair a b`. Interleaved, 10 rounds, on AC, load average 1.4 to 2.6:
+`compare/mandelbrot` -8%, `compare/nbody` -5%, `compare/queens` -3%,
+`list_length` -2%, `compare/list` -1%; but `compare/sieve` +17%,
+`compare/binary_trees` +11%, `compare/fib` +8%, `ack` +5%, `compare/tak`
++3%. `fib` and `ack` barely use the pair, so the loss is likely the dispatch
+loop's code layout or register allocation rather than the fusion. Reverted.
+A register VM (#155) removes these reads without adding opcodes to the
+stack VM's loop.
