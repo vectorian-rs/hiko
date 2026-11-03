@@ -1,14 +1,12 @@
 (* Benchmarks Game n-body, functional: five bodies as tuples, each step
  * builds new bodies. Float arithmetic; prints the final energy as an int
  * (energy * 1e9, floored), so every language prints the same line. *)
-(* x, y, z, vx, vy, vz, mass *)
-type body = float * float * float * float * float * float * float
-
 val pi = 3.141592653589793
 val solar_mass = 4.0 * pi * pi
 val days = 365.24
 
-fun body (x : float, y : float, z : float, vx : float, vy : float, vz : float, m : float) =
+(* A body is x, y, z, vx, vy, vz, mass. *)
+fun body (x, y, z, vx, vy, vz, m) =
   (x, y, z, vx * days, vy * days, vz * days, m * solar_mass)
 
 val initial = [
@@ -22,12 +20,12 @@ val initial = [
 fun reverse (xs, acc) = case xs of [] => acc | x :: rest => reverse (rest, x :: acc)
 
 (* Momentum of all bodies, to set the sun's velocity so the total is zero. *)
-fun momentum (bs : body list, px, py, pz) =
+fun momentum (bs, px : float, py, pz) =
   case bs of
       [] => (px, py, pz)
     | (_, _, _, vx, vy, vz, m) :: rest => momentum (rest, px + vx * m, py + vy * m, pz + vz * m)
 
-fun offset (bs : body list) =
+fun offset (bs) =
   case bs of
       (x, y, z, _, _, _, m) :: rest =>
         let val (px, py, pz) = momentum (bs, 0.0, 0.0, 0.0)
@@ -35,7 +33,7 @@ fun offset (bs : body list) =
     | [] => []
 
 (* The velocity of body i after being pulled by every other body. *)
-fun pull ((x, y, z, vx, vy, vz, m) : body, others : body list, i : int, j, dt : float) =
+fun pull ((x, y, z, vx, vy, vz, m), others, i, j, dt) =
   case others of
       [] => (x, y, z, vx, vy, vz, m)
     | (ox, oy, oz, _, _, _, om) :: rest =>
@@ -62,7 +60,7 @@ fun step (bs, all, i, dt, acc) =
 
 fun advance (bs, n) = if n = 0 then bs else advance (step (bs, bs, 0, 0.01, []), n - 1)
 
-fun potential ((x, y, z, _, _, _, m) : body, others : body list, e : float) =
+fun potential ((x, y, z, _, _, _, m), others, e) =
   case others of
       [] => e
     | (ox, oy, oz, _, _, _, om) :: rest =>
@@ -74,7 +72,7 @@ fun potential ((x, y, z, _, _, _, m) : body, others : body list, e : float) =
           potential ((x, y, z, 0.0, 0.0, 0.0, m), rest, e - m * om / sqrt (dx * dx + dy * dy + dz * dz))
         end
 
-fun energy (bs : body list, e : float) =
+fun energy (bs, e) =
   case bs of
       [] => e
     | (x, y, z, vx, vy, vz, m) :: rest =>

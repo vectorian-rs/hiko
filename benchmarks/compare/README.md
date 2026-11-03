@@ -38,6 +38,8 @@ Fast Yet) are not included.
 
 ## Annotations
 
-Hiko's type inference does not yet resolve `=` or arithmetic on a type
-variable that later code would make `int` or `float`, so some parameters are
-annotated (`(x : int, d, qs)`, `body list`).
+The programs need one annotation: `px : float` in `nbody`'s `momentum`. An
+operator whose operand type is still unknown waits for later code in the same
+declaration to decide it, but `momentum`'s sums meet a float only in a later
+declaration, so without the annotation they default to `int`, as in Standard
+ML.
