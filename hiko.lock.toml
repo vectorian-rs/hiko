@@ -14,6 +14,15 @@ base_url = "http://127.0.0.1:8000/Http-v0.1.0"
 [packages.Http.modules]
 Client = "blake3:7c3d4307fd328985a370cb54c5a210c09184e9e1d8a4fa86ec4296b2c519c118"
 
+[packages.Sre]
+version = "0.1.0"
+base_url = "http://127.0.0.1:8000/Sre-v0.1.0"
+
+[packages.Sre.modules]
+CloudWatchAlarms = "blake3:083a251da8c8683feb2cfe6c8643e2a6350b66234daef5a0e2689ec65276b166"
+Health = "blake3:bc4c41c0e87c8095313739425e66b1c51b417540f0ff5411f66cf3957e87a3cc"
+Report = "blake3:d829ec43a8920b8bd80335065d1a6150bf21f812469c007af36793d680bc52f1"
+
 [packages.Std]
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Std-v0.1.0"

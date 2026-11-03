@@ -1,0 +1,117 @@
+import Sre.Health
+
+(* Health checks, reported the same way to people and to agents.
+
+   `Report.print` prints one summary line of key=value pairs, then a
+   Markdown table of the checks that need attention, worst first:
+
+     status=CRIT source=cloudwatch total=4 crit=1 unknown=1 warn=0 ok=2
+     | STATUS  | NAME    | SINCE                | DETAIL            |
+     | ------- | ------- | -------------------- | ----------------- |
+     | CRIT    | api-5xx | 2026-11-03T10:00:00Z | Threshold Crossed |
+     | UNKNOWN | db-lag  |                      |                   |
+
+   A person scans the table. An agent reads the summary line's fields, and
+   the table's cells, which `|` separates (a `|` inside a cell is written
+   `\|`, and a line break as a space). The table renders as Markdown
+   wherever Markdown does. A script ends with
+   `exit (Health.exit_code (Report.print (source, checks)))`.
+
+   Code that reports needs the capabilities println, int_to_string,
+   string_length, string_join and string_replace. The module calls those
+   builtins directly: importing Std.Stdio or Std.String would need every
+   builtin those modules wrap. *)
+structure Report = struct
+  fun reverse xs = Health.fold (fn (acc, x) => x :: acc) [] xs
+
+  fun map f xs = reverse (Health.fold (fn (acc, x) => f x :: acc) [] xs)
+
+  fun filter keep xs =
+    reverse (Health.fold (fn (acc, x) => if keep x then x :: acc else acc) [] xs)
+
+  fun append (xs, ys) = Health.fold (fn (acc, x) => x :: acc) ys (reverse xs)
+
+  fun with_status status checks =
+    filter (fn check => Health.urgency (Health.status_of check) = Health.urgency status) checks
+
+  (* Worst first; checks with the same status keep their order. *)
+  fun ordered checks =
+    append (with_status Health.Critical checks,
+      append (with_status Health.Unknown checks,
+        append (with_status Health.Warning checks, with_status Health.Healthy checks)))
+
+  fun concat parts = string_join (parts, "")
+
+  fun pad_right width text =
+    if string_length text >= width then text else pad_right width (text ^ " ")
+
+  fun dashes width = string_replace (pad_right width "", " ", "-")
+
+  (* A table cell: `|` escaped, line breaks as spaces. *)
+  fun cell text =
+    string_replace (string_replace (string_replace (text, "|", "\\|"), "\r", ""), "\n", " ")
+
+  fun widest (header, cells) =
+    Health.fold
+      (fn (width, text) => if string_length text > width then string_length text else width)
+      (string_length header)
+      cells
+
+  (* `key=value` pairs; spaces in `source` become `-`, so every field is
+     one word. *)
+  fun summary (source, checks) =
+    string_join ([
+      "status=" ^ Health.status_name (Health.overall checks),
+      "source=" ^ string_replace (source, " ", "-"),
+      "total=" ^ int_to_string (Health.fold (fn (n, _) => n + 1) 0 checks),
+      "crit=" ^ int_to_string (Health.count Health.Critical checks),
+      "unknown=" ^ int_to_string (Health.count Health.Unknown checks),
+      "warn=" ^ int_to_string (Health.count Health.Warning checks),
+      "ok=" ^ int_to_string (Health.count Health.Healthy checks)
+    ], " ")
+
+  (* The table of `checks`, worst first, as lines: a header, a separator,
+     then one row per check. *)
+  fun table checks =
+    let
+      val rows =
+        map (fn (name, status, since, detail) =>
+          (Health.status_name status, cell name, cell since, cell detail)) (ordered checks)
+      val w1 = widest ("STATUS", map (fn (a, _, _, _) => a) rows)
+      val w2 = widest ("NAME", map (fn (_, b, _, _) => b) rows)
+      val w3 = widest ("SINCE", map (fn (_, _, c, _) => c) rows)
+      val w4 = widest ("DETAIL", map (fn (_, _, _, d) => d) rows)
+      fun line (a, b, c, d) =
+        concat ["| ", pad_right w1 a, " | ", pad_right w2 b, " | ", pad_right w3 c,
+          " | ", pad_right w4 d, " |"]
+    in
+      line ("STATUS", "NAME", "SINCE", "DETAIL")
+        :: line (dashes w1, dashes w2, dashes w3, dashes w4)
+        :: map line rows
+    end
+
+  fun print_lines lines = Health.fold (fn ((), text) => println text) () lines
+
+  (* Print the summary line, then the table of the checks that are not OK
+     (only the summary when every check is OK); OK checks are counted in
+     the summary. Returns the overall status. *)
+  fun print (source, checks) =
+    let
+      val _ = println (summary (source, checks))
+      val _ =
+        case filter Health.needs_attention checks of
+            [] => ()
+          | problems => print_lines (table problems)
+    in
+      Health.overall checks
+    end
+
+  (* Like `print`, with every check in the table. *)
+  fun print_all (source, checks) =
+    let
+      val _ = println (summary (source, checks))
+      val _ = print_lines (table checks)
+    in
+      Health.overall checks
+    end
+end

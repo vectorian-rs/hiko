@@ -1,0 +1,118 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sre.Report source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Sre modules</a></div><h1>Sre.Report</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Sre</span>.<span class="tok-module">Report</span></code></pre><p class="meta">Raw source: <a href="./Report.hml">Report.hml</a><br>BLAKE3: <code title="blake3:d829ec43a8920b8bd80335065d1a6150bf21f812469c007af36793d680bc52f1">blake3:d829ec43...80bc52f1</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>fun</code> <strong>reverse</strong></li><li><code>fun</code> <strong>map</strong></li><li><code>fun</code> <strong>filter</strong></li><li><code>fun</code> <strong>append</strong></li><li><code>fun</code> <strong>with_status</strong></li><li><code>fun</code> <strong>ordered</strong></li><li><code>fun</code> <strong>concat</strong></li><li><code>fun</code> <strong>pad_right</strong></li><li><code>fun</code> <strong>dashes</strong></li><li><code>fun</code> <strong>cell</strong></li><li><code>fun</code> <strong>widest</strong></li><li><code>fun</code> <strong>summary</strong></li><li><code>fun</code> <strong>table</strong></li><li><code>fun</code> <strong>print_lines</strong></li><li><code>fun</code> <strong>print</strong></li><li><code>fun</code> <strong>print_all</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Sre</span>.<span class="tok-module">Health</span>
+
+<span class="tok-comment">(* Health checks, reported the same way to people and to agents.
+
+   `Report.print` prints one summary line of key=value pairs, then a
+   Markdown table of the checks that need attention, worst first:
+
+     status=CRIT source=cloudwatch total=4 crit=1 unknown=1 warn=0 ok=2
+     | STATUS  | NAME    | SINCE                | DETAIL            |
+     | ------- | ------- | -------------------- | ----------------- |
+     | CRIT    | api-5xx | 2026-11-03T10:00:00Z | Threshold Crossed |
+     | UNKNOWN | db-lag  |                      |                   |
+
+   A person scans the table. An agent reads the summary line&#39;s fields, and
+   the table&#39;s cells, which `|` separates (a `|` inside a cell is written
+   `\|`, and a line break as a space). The table renders as Markdown
+   wherever Markdown does. A script ends with
+   `exit (Health.exit_code (Report.print (source, checks)))`.
+
+   Code that reports needs the capabilities println, int_to_string,
+   string_length, string_join and string_replace. The module calls those
+   builtins directly: importing Std.Stdio or Std.String would need every
+   builtin those modules wrap. *)</span>
+<span class="tok-keyword">structure</span> <span class="tok-module">Report</span> = <span class="tok-keyword">struct</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">reverse</span> <span class="tok-variable">xs</span> = <span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>) [] <span class="tok-variable">xs</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">map</span> <span class="tok-variable">f</span> <span class="tok-variable">xs</span> = <span class="tok-variable">reverse</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">f</span> <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>) [] <span class="tok-variable">xs</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">filter</span> <span class="tok-variable">keep</span> <span class="tok-variable">xs</span> =
+    <span class="tok-variable">reverse</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-keyword">if</span> <span class="tok-variable">keep</span> <span class="tok-variable">x</span> <span class="tok-keyword">then</span> <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span> <span class="tok-keyword">else</span> <span class="tok-variable">acc</span>) [] <span class="tok-variable">xs</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">append</span> (<span class="tok-variable">xs</span>, <span class="tok-variable">ys</span>) = <span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>) <span class="tok-variable">ys</span> (<span class="tok-variable">reverse</span> <span class="tok-variable">xs</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">with_status</span> <span class="tok-variable">status</span> <span class="tok-variable">checks</span> =
+    <span class="tok-variable">filter</span> (<span class="tok-keyword">fn</span> <span class="tok-variable">check</span> =&gt; <span class="tok-namespace">Health</span>.<span class="tok-variable-member">urgency</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">status_of</span> <span class="tok-variable">check</span>) = <span class="tok-namespace">Health</span>.<span class="tok-variable-member">urgency</span> <span class="tok-variable">status</span>) <span class="tok-variable">checks</span>
+
+  <span class="tok-comment">(* Worst first; checks with the same status keep their order. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">ordered</span> <span class="tok-variable">checks</span> =
+    <span class="tok-variable">append</span> (<span class="tok-variable">with_status</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Critical</span> <span class="tok-variable">checks</span>,
+      <span class="tok-variable">append</span> (<span class="tok-variable">with_status</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Unknown</span> <span class="tok-variable">checks</span>,
+        <span class="tok-variable">append</span> (<span class="tok-variable">with_status</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Warning</span> <span class="tok-variable">checks</span>, <span class="tok-variable">with_status</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Healthy</span> <span class="tok-variable">checks</span>)))
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">concat</span> <span class="tok-variable">parts</span> = <span class="tok-variable">string_join</span> (<span class="tok-variable">parts</span>, <span class="tok-string">&quot;&quot;</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">pad_right</span> <span class="tok-variable">width</span> <span class="tok-variable">text</span> =
+    <span class="tok-keyword">if</span> <span class="tok-variable">string_length</span> <span class="tok-variable">text</span> &gt;= <span class="tok-variable">width</span> <span class="tok-keyword">then</span> <span class="tok-variable">text</span> <span class="tok-keyword">else</span> <span class="tok-variable">pad_right</span> <span class="tok-variable">width</span> (<span class="tok-variable">text</span> ^ <span class="tok-string">&quot; &quot;</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">dashes</span> <span class="tok-variable">width</span> = <span class="tok-variable">string_replace</span> (<span class="tok-variable">pad_right</span> <span class="tok-variable">width</span> <span class="tok-string">&quot;&quot;</span>, <span class="tok-string">&quot; &quot;</span>, <span class="tok-string">&quot;-&quot;</span>)
+
+  <span class="tok-comment">(* A table cell: `|` escaped, line breaks as spaces. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">cell</span> <span class="tok-variable">text</span> =
+    <span class="tok-variable">string_replace</span> (<span class="tok-variable">string_replace</span> (<span class="tok-variable">string_replace</span> (<span class="tok-variable">text</span>, <span class="tok-string">&quot;|&quot;</span>, <span class="tok-string">&quot;\\|&quot;</span>), <span class="tok-string">&quot;\r&quot;</span>, <span class="tok-string">&quot;&quot;</span>), <span class="tok-string">&quot;\n&quot;</span>, <span class="tok-string">&quot; &quot;</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">widest</span> (<span class="tok-variable">header</span>, <span class="tok-variable">cells</span>) =
+    <span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span>
+      (<span class="tok-keyword">fn</span> (<span class="tok-variable">width</span>, <span class="tok-variable">text</span>) =&gt; <span class="tok-keyword">if</span> <span class="tok-variable">string_length</span> <span class="tok-variable">text</span> &gt; <span class="tok-variable">width</span> <span class="tok-keyword">then</span> <span class="tok-variable">string_length</span> <span class="tok-variable">text</span> <span class="tok-keyword">else</span> <span class="tok-variable">width</span>)
+      (<span class="tok-variable">string_length</span> <span class="tok-variable">header</span>)
+      <span class="tok-variable">cells</span>
+
+  <span class="tok-comment">(* `key=value` pairs; spaces in `source` become `-`, so every field is
+     one word. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">summary</span> (<span class="tok-variable">source</span>, <span class="tok-variable">checks</span>) =
+    <span class="tok-variable">string_join</span> ([
+      <span class="tok-string">&quot;status=&quot;</span> ^ <span class="tok-namespace">Health</span>.<span class="tok-variable-member">status_name</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">overall</span> <span class="tok-variable">checks</span>),
+      <span class="tok-string">&quot;source=&quot;</span> ^ <span class="tok-variable">string_replace</span> (<span class="tok-variable">source</span>, <span class="tok-string">&quot; &quot;</span>, <span class="tok-string">&quot;-&quot;</span>),
+      <span class="tok-string">&quot;total=&quot;</span> ^ <span class="tok-variable">int_to_string</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">n</span>, _) =&gt; <span class="tok-variable">n</span> + <span class="tok-number">1</span>) <span class="tok-number">0</span> <span class="tok-variable">checks</span>),
+      <span class="tok-string">&quot;crit=&quot;</span> ^ <span class="tok-variable">int_to_string</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">count</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Critical</span> <span class="tok-variable">checks</span>),
+      <span class="tok-string">&quot;unknown=&quot;</span> ^ <span class="tok-variable">int_to_string</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">count</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Unknown</span> <span class="tok-variable">checks</span>),
+      <span class="tok-string">&quot;warn=&quot;</span> ^ <span class="tok-variable">int_to_string</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">count</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Warning</span> <span class="tok-variable">checks</span>),
+      <span class="tok-string">&quot;ok=&quot;</span> ^ <span class="tok-variable">int_to_string</span> (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">count</span> <span class="tok-namespace">Health</span>.<span class="tok-module">Healthy</span> <span class="tok-variable">checks</span>)
+    ], <span class="tok-string">&quot; &quot;</span>)
+
+  <span class="tok-comment">(* The table of `checks`, worst first, as lines: a header, a separator,
+     then one row per check. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">table</span> <span class="tok-variable">checks</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">val</span> <span class="tok-variable">rows</span> =
+        <span class="tok-variable">map</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">name</span>, <span class="tok-variable">status</span>, <span class="tok-variable">since</span>, <span class="tok-variable">detail</span>) =&gt;
+          (<span class="tok-namespace">Health</span>.<span class="tok-variable-member">status_name</span> <span class="tok-variable">status</span>, <span class="tok-variable">cell</span> <span class="tok-variable">name</span>, <span class="tok-variable">cell</span> <span class="tok-variable">since</span>, <span class="tok-variable">cell</span> <span class="tok-variable">detail</span>)) (<span class="tok-variable">ordered</span> <span class="tok-variable">checks</span>)
+      <span class="tok-keyword">val</span> <span class="tok-variable">w1</span> = <span class="tok-variable">widest</span> (<span class="tok-string">&quot;STATUS&quot;</span>, <span class="tok-variable">map</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">a</span>, _, _, _) =&gt; <span class="tok-variable">a</span>) <span class="tok-variable">rows</span>)
+      <span class="tok-keyword">val</span> <span class="tok-variable">w2</span> = <span class="tok-variable">widest</span> (<span class="tok-string">&quot;NAME&quot;</span>, <span class="tok-variable">map</span> (<span class="tok-keyword">fn</span> (_, <span class="tok-variable">b</span>, _, _) =&gt; <span class="tok-variable">b</span>) <span class="tok-variable">rows</span>)
+      <span class="tok-keyword">val</span> <span class="tok-variable">w3</span> = <span class="tok-variable">widest</span> (<span class="tok-string">&quot;SINCE&quot;</span>, <span class="tok-variable">map</span> (<span class="tok-keyword">fn</span> (_, _, <span class="tok-variable">c</span>, _) =&gt; <span class="tok-variable">c</span>) <span class="tok-variable">rows</span>)
+      <span class="tok-keyword">val</span> <span class="tok-variable">w4</span> = <span class="tok-variable">widest</span> (<span class="tok-string">&quot;DETAIL&quot;</span>, <span class="tok-variable">map</span> (<span class="tok-keyword">fn</span> (_, _, _, <span class="tok-variable">d</span>) =&gt; <span class="tok-variable">d</span>) <span class="tok-variable">rows</span>)
+      <span class="tok-keyword">fun</span> <span class="tok-function">line</span> (<span class="tok-variable">a</span>, <span class="tok-variable">b</span>, <span class="tok-variable">c</span>, <span class="tok-variable">d</span>) =
+        <span class="tok-variable">concat</span> [<span class="tok-string">&quot;| &quot;</span>, <span class="tok-variable">pad_right</span> <span class="tok-variable">w1</span> <span class="tok-variable">a</span>, <span class="tok-string">&quot; | &quot;</span>, <span class="tok-variable">pad_right</span> <span class="tok-variable">w2</span> <span class="tok-variable">b</span>, <span class="tok-string">&quot; | &quot;</span>, <span class="tok-variable">pad_right</span> <span class="tok-variable">w3</span> <span class="tok-variable">c</span>,
+          <span class="tok-string">&quot; | &quot;</span>, <span class="tok-variable">pad_right</span> <span class="tok-variable">w4</span> <span class="tok-variable">d</span>, <span class="tok-string">&quot; |&quot;</span>]
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">line</span> (<span class="tok-string">&quot;STATUS&quot;</span>, <span class="tok-string">&quot;NAME&quot;</span>, <span class="tok-string">&quot;SINCE&quot;</span>, <span class="tok-string">&quot;DETAIL&quot;</span>)
+        :: <span class="tok-variable">line</span> (<span class="tok-variable">dashes</span> <span class="tok-variable">w1</span>, <span class="tok-variable">dashes</span> <span class="tok-variable">w2</span>, <span class="tok-variable">dashes</span> <span class="tok-variable">w3</span>, <span class="tok-variable">dashes</span> <span class="tok-variable">w4</span>)
+        :: <span class="tok-variable">map</span> <span class="tok-variable">line</span> <span class="tok-variable">rows</span>
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">print_lines</span> <span class="tok-variable">lines</span> = <span class="tok-namespace">Health</span>.<span class="tok-variable-member">fold</span> (<span class="tok-keyword">fn</span> ((), <span class="tok-variable">text</span>) =&gt; <span class="tok-variable">println</span> <span class="tok-variable">text</span>) () <span class="tok-variable">lines</span>
+
+  <span class="tok-comment">(* Print the summary line, then the table of the checks that are not OK
+     (only the summary when every check is OK); OK checks are counted in
+     the summary. Returns the overall status. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">print</span> (<span class="tok-variable">source</span>, <span class="tok-variable">checks</span>) =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">val</span> _ = <span class="tok-variable">println</span> (<span class="tok-variable">summary</span> (<span class="tok-variable">source</span>, <span class="tok-variable">checks</span>))
+      <span class="tok-keyword">val</span> _ =
+        <span class="tok-keyword">case</span> <span class="tok-variable">filter</span> <span class="tok-namespace">Health</span>.<span class="tok-variable-member">needs_attention</span> <span class="tok-variable">checks</span> <span class="tok-keyword">of</span>
+            [] =&gt; ()
+          | <span class="tok-variable">problems</span> =&gt; <span class="tok-variable">print_lines</span> (<span class="tok-variable">table</span> <span class="tok-variable">problems</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-namespace">Health</span>.<span class="tok-variable-member">overall</span> <span class="tok-variable">checks</span>
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-comment">(* Like `print`, with every check in the table. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">print_all</span> (<span class="tok-variable">source</span>, <span class="tok-variable">checks</span>) =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">val</span> _ = <span class="tok-variable">println</span> (<span class="tok-variable">summary</span> (<span class="tok-variable">source</span>, <span class="tok-variable">checks</span>))
+      <span class="tok-keyword">val</span> _ = <span class="tok-variable">print_lines</span> (<span class="tok-variable">table</span> <span class="tok-variable">checks</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-namespace">Health</span>.<span class="tok-variable-member">overall</span> <span class="tok-variable">checks</span>
+    <span class="tok-keyword">end</span>
+<span class="tok-keyword">end</span>
+</code></pre></section></main></body></html>

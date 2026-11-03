@@ -1,0 +1,16 @@
+(* The Sre report format, without AWS: one summary line, then a Markdown
+   table of the checks that need attention, then the exit code a script
+   would end with.
+
+     hiko run examples/sre/report_demo.hml *)
+import Sre.Health
+import Sre.Report
+
+val checks = [
+  ("db", Health.Healthy, "2026-11-03T09:00:00Z", "fine"),
+  ("api-5xx", Health.Critical, "2026-11-03T10:00:00Z", "5XX above 5")
+]
+
+val status = Report.print ("demo", checks)
+
+val _ = println (int_to_string (Health.exit_code status))

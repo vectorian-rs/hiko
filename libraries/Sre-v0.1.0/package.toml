@@ -1,0 +1,7 @@
+name = "Sre"
+version = "0.1.0"
+
+[modules]
+Health = "blake3:bc4c41c0e87c8095313739425e66b1c51b417540f0ff5411f66cf3957e87a3cc"
+Report = "blake3:d829ec43a8920b8bd80335065d1a6150bf21f812469c007af36793d680bc52f1"
+CloudWatchAlarms = "blake3:083a251da8c8683feb2cfe6c8643e2a6350b66234daef5a0e2689ec65276b166"

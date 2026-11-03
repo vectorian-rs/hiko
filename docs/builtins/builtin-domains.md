@@ -190,6 +190,7 @@ Recommended ownership:
 | `Std.Random` | mixed | Seeded PRNG APIs are pure core; host entropy APIs are host capability. |
 | `Hash` | pure core family | Top-level algorithm family with concrete modules such as `Hash.Blake3` and future `Hash.Sha256`. |
 | `Http` | external/provider family | Top-level protocol family; current client APIs belong under `Http.Client`. |
+| `Sre` | library family | Health checks and their report: `Sre.Health` (statuses, overall status, exit codes, pure), `Sre.Report` (summary line and Markdown table, prints), and one module per check source, such as `Sre.CloudWatchAlarms` (needs the AWS extension). |
 | `Dhall` | external/provider | Future config-language integration; feature and import/security policy depend on implementation. |
 
 ### Date and time

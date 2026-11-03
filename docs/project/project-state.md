@@ -292,7 +292,7 @@ been taken.
 | Library                | Class        |
 | ---------------------- | ------------ |
 | `Std`                  | Core         |
-| `Hash`, `Http`         | Library      |
+| `Hash`, `Http`, `Sre`  | Library      |
 
 ### Top-level files and folders
 
