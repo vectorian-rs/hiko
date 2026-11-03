@@ -1406,6 +1406,7 @@ dependencies = [
  "hiko-common",
  "hiko-compile",
  "hiko-syntax",
+ "hiko-types",
  "jiff",
  "loom",
  "proptest",

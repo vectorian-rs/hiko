@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use hiko_syntax::ast::*;
@@ -30,11 +30,18 @@ pub struct InferCtx {
     subst: HashMap<u32, Type>,
     next_var: u32,
     scopes: Vec<HashMap<String, Scheme>>,
-    /// Per scope, the bindings whose type may still have free variables
-    /// other than its own quantified ones. Once a binding's type has none,
-    /// substitution cannot change it, so `free_vars_in_env` drops it from
-    /// this set and never walks it again.
-    open: RefCell<Vec<HashSet<String>>>,
+    /// The level of each type variable, indexed by its id: the let-nesting
+    /// depth of the outermost binding whose type may mention it.
+    /// Generalization takes the variables above the current level (Rémy's
+    /// levels, as in OCaml), so it never walks the environment.
+    levels: Vec<u32>,
+    /// The current level: [`TOP_LEVEL`] between top-level declarations, one
+    /// more inside each let-bound right-hand side.
+    level: u32,
+    /// While a value is checked against its signature: the level at and
+    /// below which a variable belongs to the environment, and whether such a
+    /// variable was bound to a type mentioning a rigid signature variable.
+    rigid_watch: Option<(u32, bool)>,
     constructors: HashMap<String, Scheme>,
     type_arities: HashMap<String, usize>,
     /// Opaque types declared by extensions (see `add_opaque_type`).
@@ -67,6 +74,12 @@ pub struct InferCtx {
 /// (`val x1 = (x0, x0) val x2 = (x1, x1) ...`), so without a bound a small
 /// source file can stall the compiler.
 pub const DEFAULT_MAX_TYPE_WORK: u64 = 10_000_000;
+
+/// The level of type variables that are never generalized: an effect's
+/// result type, shared by every `perform` and handler of the effect.
+const NEVER_GENERALIZED: u32 = 0;
+/// The level between top-level declarations.
+const TOP_LEVEL: u32 = 1;
 
 /// What one type annotation has bound so far: its type variables by name,
 /// and the row variable its unmarked arrows share.
@@ -245,7 +258,9 @@ impl InferCtx {
             subst: HashMap::new(),
             next_var: 0,
             scopes: vec![HashMap::new()],
-            open: RefCell::new(vec![HashSet::new()]),
+            levels: Vec::new(),
+            level: TOP_LEVEL,
+            rigid_watch: None,
             constructors: HashMap::new(),
             type_arities: HashMap::new(),
             opaque_types: Vec::new(),
@@ -330,7 +345,43 @@ impl InferCtx {
     fn fresh_id(&mut self) -> u32 {
         let v = self.next_var;
         self.next_var += 1;
+        self.levels.push(self.level);
         v
+    }
+
+    /// Infer a let-bound right-hand side one level deeper, so that
+    /// `generalize` afterwards takes the variables it created and did not
+    /// share with the environment.
+    fn enter_level(&mut self) {
+        self.level += 1;
+    }
+
+    fn leave_level(&mut self) {
+        self.level -= 1;
+    }
+
+    /// Bind the unbound variable `v` to `ty`, whose variables are unbound
+    /// too. They now occur wherever `v` does, so none may stay above `v`'s
+    /// level.
+    fn bind_var(&mut self, v: u32, ty: Type) {
+        let level = self.levels[v as usize];
+        self.lower_levels(&ty, level);
+        if let Some((watch, escaped)) = &mut self.rigid_watch
+            && level <= *watch
+            && mentions_rigid_var(&ty)
+        {
+            *escaped = true;
+        }
+        self.subst.insert(v, ty);
+    }
+
+    /// Lower the level of every variable of `ty` (unbound variables only) to
+    /// at most `level`.
+    fn lower_levels(&mut self, ty: &Type, level: u32) {
+        for u in ty.free_vars() {
+            let l = &mut self.levels[u as usize];
+            *l = (*l).min(level);
+        }
     }
 
     fn fresh(&mut self) -> Type {
@@ -460,14 +511,14 @@ impl InferCtx {
                 if self.occurs(*v, &t2) {
                     return Err(self.err("infinite type (occurs check failed)", span));
                 }
-                self.subst.insert(*v, t2);
+                self.bind_var(*v, t2);
                 Ok(())
             }
             (_, Type::Var(v)) => {
                 if self.occurs(*v, &t1) {
                     return Err(self.err("infinite type (occurs check failed)", span));
                 }
-                self.subst.insert(*v, t1);
+                self.bind_var(*v, t1);
                 Ok(())
             }
             (Type::Con(a), Type::Con(b)) if a == b => Ok(()),
@@ -543,11 +594,11 @@ impl InferCtx {
             (Some(a), Some(b)) => {
                 if only1.is_empty() && only2.is_empty() {
                     // Same labels: the tails stand for the same effects.
-                    self.subst.insert(a, Type::Var(b));
+                    self.bind_var(a, Type::Var(b));
                 } else {
                     let tail = self.fresh();
-                    self.subst.insert(a, Type::row(only2, Some(tail.clone())));
-                    self.subst.insert(b, Type::row(only1, Some(tail)));
+                    self.bind_var(a, Type::row(only2, Some(tail.clone())));
+                    self.bind_var(b, Type::row(only1, Some(tail)));
                 }
                 Ok(())
             }
@@ -562,7 +613,7 @@ impl InferCtx {
                 if !open_only.is_empty() {
                     return Err(mismatch(self));
                 }
-                self.subst.insert(open, Type::row(closed_only, None));
+                self.bind_var(open, Type::row(closed_only, None));
                 Ok(())
             }
         }
@@ -589,51 +640,97 @@ impl InferCtx {
 
     // ── Generalization and instantiation ─────────────────────────────
 
-    fn generalize(&self, ty: &Type, exclude_scope: bool) -> Scheme {
+    /// Generalize `ty` over its variables above the current level: those
+    /// created in the right-hand side just inferred and not shared with the
+    /// environment. `self_scope` says whether the innermost scope holds the
+    /// monomorphic bindings of the functions being generalized; only the
+    /// debug check needs it.
+    #[cfg_attr(
+        not(any(test, feature = "check-generalization")),
+        allow(unused_variables)
+    )]
+    fn generalize(&self, ty: &Type, self_scope: bool) -> Scheme {
         let ty = self.apply(ty);
-        let env_vars = self.free_vars_in_env(exclude_scope);
-        let ty_vars = ty.free_vars();
-        let vars: Vec<u32> = ty_vars
+        let vars: Vec<u32> = ty
+            .free_vars()
+            .into_iter()
+            .filter(|&v| self.levels[v as usize] > self.level)
+            .collect();
+        #[cfg(any(test, feature = "check-generalization"))]
+        self.check_levels_agree(&ty, &vars, self_scope);
+        Scheme { vars, ty }
+    }
+
+    /// Test builds: generalization by levels must agree with the
+    /// definition, which generalizes the variables of `ty` that are free
+    /// nowhere in the environment. The innermost scope is left out when it
+    /// holds the monomorphic bindings of the functions being generalized.
+    #[cfg(any(test, feature = "check-generalization"))]
+    fn check_levels_agree(&self, ty: &Type, vars: &[u32], self_scope: bool) {
+        let env_vars = self.env_free_vars(self_scope);
+        let expected: Vec<u32> = ty
+            .free_vars()
             .into_iter()
             .filter(|v| !env_vars.contains(v))
             .collect();
-        Scheme { vars, ty }
+        assert_eq!(
+            vars, expected,
+            "generalization by levels disagrees for {ty}"
+        );
+    }
+
+    /// Test builds: the variables free in the environment, by walking it,
+    /// leaving out the innermost scope if `self_scope`.
+    #[cfg(any(test, feature = "check-generalization"))]
+    fn env_free_vars(&self, self_scope: bool) -> HashSet<u32> {
+        let mut vars = HashSet::new();
+        let scopes = self.scopes.len() - usize::from(self_scope);
+        for scope in &self.scopes[..scopes] {
+            for scheme in scope.values() {
+                for v in self.resolve_uncharged(&scheme.ty).free_vars() {
+                    if !scheme.vars.contains(&v) {
+                        vars.insert(v);
+                    }
+                }
+            }
+        }
+        for (_, result_ty) in self.effect_sigs.values() {
+            vars.extend(self.resolve_uncharged(result_ty).free_vars());
+        }
+        vars
+    }
+
+    /// Test builds: `apply` without charging the work counter, so the
+    /// checks above do not change what a program may cost.
+    #[cfg(any(test, feature = "check-generalization"))]
+    fn resolve_uncharged(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Var(v) => match self.subst.get(v) {
+                Some(t) => self.resolve_uncharged(t),
+                None => ty.clone(),
+            },
+            Type::Arrow(a, b, row) => Type::arrow(
+                self.resolve_uncharged(a),
+                self.resolve_uncharged(b),
+                self.resolve_uncharged(row),
+            ),
+            Type::Row(labels, tail) => match tail {
+                None => ty.clone(),
+                Some(tail) => extend_row(labels, self.resolve_uncharged(tail)),
+            },
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.resolve_uncharged(t)).collect()),
+            Type::App(n, args) => Type::App(
+                n.clone(),
+                args.iter().map(|t| self.resolve_uncharged(t)).collect(),
+            ),
+            Type::Con(_) => ty.clone(),
+        }
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
         let ty = self.apply(&scheme.ty);
         let mapping: HashMap<u32, Type> = scheme.vars.iter().map(|&v| (v, self.fresh())).collect();
         self.substitute_vars(&ty, &mapping)
-    }
-
-    fn free_vars_in_env(&self, exclude_top_scope: bool) -> HashSet<u32> {
-        let mut vars = HashSet::new();
-        let limit = if exclude_top_scope {
-            self.scopes.len() - 1
-        } else {
-            self.scopes.len()
-        };
-        let mut open = self.open.borrow_mut();
-        for (scope, open) in self.scopes[..limit].iter().zip(open.iter_mut()) {
-            open.retain(|name| {
-                let scheme = &scope[name];
-                let mut has_free = false;
-                for v in self.apply(&scheme.ty).free_vars() {
-                    if !scheme.vars.contains(&v) {
-                        vars.insert(v);
-                        has_free = true;
-                    }
-                }
-                has_free
-            });
-        }
-        // An effect's result type is one variable shared by every `perform`
-        // and handler of that effect, so it is part of the environment and
-        // must never be generalized.
-        for (_, result_ty) in self.effect_sigs.values() {
-            vars.extend(self.apply(result_ty).free_vars());
-        }
-        vars
     }
 
     // ── Environment ──────────────────────────────────────────────────
@@ -648,18 +745,15 @@ impl InferCtx {
     }
 
     fn bind(&mut self, name: String, scheme: Scheme) {
-        self.open.get_mut().last_mut().unwrap().insert(name.clone());
         self.scopes.last_mut().unwrap().insert(name, scheme);
     }
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
-        self.open.get_mut().push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
-        self.open.get_mut().pop();
     }
 
     // ── Program inference ────────────────────────────────────────────
@@ -674,7 +768,11 @@ impl InferCtx {
     // ── Declaration inference ────────────────────────────────────────
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
+        let level = self.level;
         let result = self.infer_decl_inner(decl);
+        // An error leaves inference mid-way; the next declaration starts at
+        // the level this one started at.
+        self.level = level;
         if self.work_exhausted() {
             return Err(self.err(
                 &format!(
@@ -691,9 +789,11 @@ impl InferCtx {
     fn infer_decl_inner(&mut self, decl: &Decl) -> Result<(), TypeError> {
         match &decl.kind {
             DeclKind::Val(pat, expr) => {
+                self.enter_level();
                 let expr_ty = self.infer_expr(expr)?;
                 let (pat_ty, bindings) = self.infer_pat(pat)?;
                 self.unify(&expr_ty, &pat_ty, decl.span)?;
+                self.leave_level();
                 let can_gen = is_syntactic_value(expr);
                 for (name, ty) in bindings {
                     if self.constructors.contains_key(&name) {
@@ -705,7 +805,11 @@ impl InferCtx {
                     let scheme = if can_gen {
                         self.generalize(&ty, false)
                     } else {
-                        Scheme::mono(self.apply(&ty))
+                        // Not generalized: the type now belongs to the
+                        // environment at this level.
+                        let ty = self.apply(&ty);
+                        self.lower_levels(&ty, self.level);
+                        Scheme::mono(ty)
                     };
                     self.bind(name, scheme);
                 }
@@ -715,10 +819,12 @@ impl InferCtx {
                 // Push scope for the monomorphic self-binding, generalize excluding it
                 let name = self.interner.resolve(*sym).to_string();
                 self.push_scope();
+                self.enter_level();
                 let func_var = self.fresh();
                 self.bind(name.clone(), Scheme::mono(func_var.clone()));
                 let expr_ty = self.infer_expr(expr)?;
                 self.unify(&func_var, &expr_ty, decl.span)?;
+                self.leave_level();
                 let scheme = self.generalize(&func_var, true);
                 self.pop_scope();
                 self.bind(name, scheme);
@@ -774,7 +880,6 @@ impl InferCtx {
                     self.infer_decl(d)?;
                 }
                 let exported = self.scopes.pop().unwrap();
-                self.open.get_mut().pop();
                 self.pop_scope(); // pop the locals scope
                 // re-bind exported names in the enclosing scope
                 for (name, scheme) in exported {
@@ -797,8 +902,10 @@ impl InferCtx {
                 } else {
                     Type::unit()
                 };
-                let result_type = self.fresh();
-                self.effect_sigs.insert(name, (arg_type, result_type));
+                let result_id = self.fresh_id();
+                self.levels[result_id as usize] = NEVER_GENERALIZED;
+                self.effect_sigs
+                    .insert(name, (arg_type, Type::Var(result_id)));
                 Ok(())
             }
         }
@@ -806,6 +913,7 @@ impl InferCtx {
 
     fn infer_fun_bindings(&mut self, bindings: &[FunBinding]) -> Result<(), TypeError> {
         self.push_scope();
+        self.enter_level();
 
         // Add monomorphic bindings for all functions (enables mutual recursion)
         let func_vars: Vec<Type> = bindings
@@ -823,6 +931,7 @@ impl InferCtx {
             let func_ty = self.infer_fun_binding(binding)?;
             self.unify(func_var, &func_ty, binding.span)?;
         }
+        self.leave_level();
 
         // Generalize (exclude the current scope with monomorphic bindings)
         let schemes: Vec<(String, Scheme)> = bindings
@@ -921,11 +1030,7 @@ impl InferCtx {
         let param_vars: Vec<(String, u32)> = dt
             .tyvars
             .iter()
-            .map(|tv| {
-                let v = self.next_var;
-                self.next_var += 1;
-                (self.interner.resolve(*tv).to_string(), v)
-            })
+            .map(|tv| (self.interner.resolve(*tv).to_string(), self.fresh_id()))
             .collect();
 
         // The result type: T 'a 'b ...
@@ -1051,22 +1156,36 @@ impl InferCtx {
             .iter()
             .map(|(tv, &v)| (v, Type::Con(tv.clone())))
             .collect();
+        #[cfg(any(test, feature = "check-generalization"))]
+        let env_vars = self.env_free_vars(false);
+        // Everything this check creates is one level deeper than the
+        // environment, so a variable at or below the current level that gets
+        // bound to a type mentioning a rigid variable belongs to the
+        // environment: the value is not polymorphic in that variable (for
+        // example, a weak type variable).
+        self.enter_level();
+        self.rigid_watch = Some((self.level - 1, false));
         let revealed = self.reveal_abstract_types(spec_ty, spec);
         let expected = self.substitute_vars(&revealed, &rigid);
-        let env_vars = self.free_vars_in_env(false);
         let actual = self.instantiate(scheme);
-        self.unify(&actual, &expected, span).map_err(|e| {
+        let unified = self.unify(&actual, &expected, span);
+        let escaped = self.rigid_watch.take().is_some_and(|(_, escaped)| escaped);
+        self.leave_level();
+        unified.map_err(|e| {
             self.err(
                 &format!("value {name} does not match its signature: {}", e.message),
                 span,
             )
         })?;
-        // A rigid variable that reached a type in the environment means the
-        // value is not polymorphic in it (for example, a weak type variable).
-        if env_vars
-            .iter()
-            .any(|&v| mentions_rigid_var(&self.apply(&Type::Var(v))))
-        {
+        #[cfg(any(test, feature = "check-generalization"))]
+        assert_eq!(
+            escaped,
+            env_vars
+                .iter()
+                .any(|&v| mentions_rigid_var(&self.resolve_uncharged(&Type::Var(v)))),
+            "rigid escape by levels disagrees for {name}"
+        );
+        if escaped {
             return Err(self.err(
                 &format!(
                     "value {name} is less polymorphic than its signature type {}",
@@ -1973,6 +2092,70 @@ mod tests {
             .collect();
         let ctx = infer(&src);
         assert!(ctx.type_work() < 2_000_000, "{}", ctx.type_work());
+    }
+
+    #[test]
+    fn test_weak_bindings_do_not_make_generalization_quadratic() {
+        // A value-restricted binding keeps a free type variable, so walking
+        // the environment at each generalization never got to skip it.
+        // 1,000 pairs cost 133,000 work by levels; walking the environment
+        // cost 8,130,700.
+        let src: String = (0..1000)
+            .map(|i| format!("val w{i} = (fn x => x) (fn y => y)\nfun f{i} x = (x, w{i})\n"))
+            .collect();
+        let ctx = infer(&src);
+        assert!(ctx.type_work() < 500_000, "{}", ctx.type_work());
+    }
+
+    #[test]
+    fn test_weak_type_variable_is_not_generalized_by_a_later_declaration() {
+        // `w`'s type variable belongs to the environment: `g` must not
+        // generalize it, so its first use fixes it for the second.
+        let msg = infer_err(
+            "val w = (fn x => x) (fn y => y)
+             fun g z = w z
+             val a = g 1
+             val b = g \"s\"",
+        );
+        assert!(msg.contains("mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_weak_type_variable_inside_a_let_is_not_generalized() {
+        let msg = infer_err(
+            "fun f u =
+               let
+                 val w = (fn x => x) (fn y => y)
+                 fun g z = w z
+               in
+                 (g 1, g \"s\")
+               end",
+        );
+        assert!(msg.contains("mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_effect_result_type_is_never_generalized() {
+        // One unknown type shared by every `perform` and handler.
+        let msg = infer_err(
+            "effect Ask of unit
+             fun ask () = perform Ask ()
+             val a = ask () + 1
+             val b = ask () ^ \"s\"",
+        );
+        assert!(msg.contains("mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_inner_function_generalizes_over_its_own_variables_only() {
+        let ctx = infer(
+            "fun pair x =
+               let fun with_x y = (x, y)
+               in (with_x 1, with_x \"s\") end",
+        );
+        let ty = type_of(&ctx, "pair");
+        let var = ty.split(' ').next().unwrap();
+        assert_eq!(ty.replace(var, "'a"), "'a -> ('a * int) * ('a * string)");
     }
 
     #[test]
