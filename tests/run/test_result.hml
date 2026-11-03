@@ -43,7 +43,7 @@ val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.tee_err (f
 
 val _ = assert_eq (Result.unwrap_or 0 (Result.map2 (fn x => fn y => x + y) (Result.Ok 20) (Result.Ok 22)), 42, "map2 Ok")
 
-val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.map2 (fn x => fn y => x + y) (Result.Err "left") (Result.Err "right")), "left", "map2 first Err")
+val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.map2 (fn (x : int) => fn y => x + y) (Result.Err "left") (Result.Err "right")), "left", "map2 first Err")
 
 val _ = assert_eq (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.both (Result.Ok 20) (Result.Ok 22)), 42, "both Ok")
 
@@ -55,7 +55,7 @@ val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.all [Resul
 
 val _ = assert_eq (Result.fold (fn xs => case xs of 2 :: 4 :: 6 :: [] => 12 | _ => 0) (fn _ => 0) (Result.traverse (fn x => Result.Ok (x * 2)) [1, 2, 3]), 12, "traverse Ok")
 
-val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of left :: right :: [] => string_length left + string_length right | _ => 0) (Result.validate2 (fn x => fn y => x + y) (Result.Err "a") (Result.Err "bb")), 3, "validate2 accumulates errors")
+val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of left :: right :: [] => string_length left + string_length right | _ => 0) (Result.validate2 (fn (x : int) => fn y => x + y) (Result.Err "a") (Result.Err "bb")), 3, "validate2 accumulates errors")
 
 val _ = assert_eq (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.validate_both (Result.Ok 20) (Result.Ok 22)), 42, "validate_both Ok")
 

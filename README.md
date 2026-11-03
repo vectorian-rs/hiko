@@ -60,7 +60,7 @@ val _ = println "hello"
 fun double x = x * 2
 
 (* Multi-argument (curried) *)
-fun add a b = a + b
+fun add (a : int) b = a + b
 
 (* Anonymous functions *)
 val inc = fn x => x + 1

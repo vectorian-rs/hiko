@@ -1315,10 +1315,28 @@ mod tests {
 
     #[test]
     fn test_closure() {
-        let vm = run("fun make_adder n = fn x => n + x
+        let vm = run("fun make_adder (n : int) = fn x => n + x
              val add5 = make_adder 5
              val result = add5 10");
         assert_eq!(global_int(&vm, "result"), 15);
+    }
+
+    #[test]
+    fn test_local_block_is_one_declaration_for_operators() {
+        // The body of a `local` decides the `+` in its private part.
+        let vm = run("local fun f x = x + x in val y = f 21 end");
+        assert_eq!(global_int(&vm, "y"), 42);
+        let tokens = Lexer::new("local fun f x = x + x in val y = 1 end", 0)
+            .tokenize()
+            .expect("lex error");
+        let program = Parser::new(tokens).parse_program().expect("parse error");
+        let Err(err) = Compiler::compile(program) else {
+            panic!("an operator nothing decides must not compile");
+        };
+        assert!(
+            format!("{err:?}").contains("cannot tell whether"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -1636,7 +1654,7 @@ mod tests {
     #[test]
     fn test_compare_and_branch_takes_both_branches() {
         let vm = run(
-            "fun c (a, b) = (if a < b then 1 else 0) + (if a > b then 2 else 0)
+            "fun c (a : int, b) = (if a < b then 1 else 0) + (if a > b then 2 else 0)
                 + (if a <= b then 4 else 0) + (if a >= b then 8 else 0)
                 + (if a = b then 16 else 0) + (if a <> b then 32 else 0)
              val lt = c (1, 2)
@@ -1794,7 +1812,7 @@ mod tests {
     /// several clauses, and when a later binding shadows it.
     #[test]
     fn test_flat_tuple_function_other_calls() {
-        let vm = run("fun add (a, b) = a + b
+        let vm = run("fun add (a : int, b) = a + b
              val pair = (1, 2)
              val from_value = add pair
              val f = add
@@ -1806,7 +1824,7 @@ mod tests {
              val first = pick (0, 7)
              val second = pick (3, 7)
              val before = add (1, 1)
-             val add = fn (a, b) => a * b
+             val add = fn (a : int, b) => a * b
              val after = add (2, 5)");
         for (name, expected) in [
             ("from_value", 3),
@@ -1856,7 +1874,7 @@ mod tests {
         let count = |requests: i64, step: &str| {
             let vm = run(&format!(
                 "effect Ask of int
-                 fun loop i acc = if i = 0 then acc else loop (i - 1) (acc + {step})
+                 fun loop i (acc : int) = if i = 0 then acc else loop (i - 1) (acc + {step})
                  val result = handle loop {requests} 0 with return x => x | Ask n k => resume k n"
             ));
             assert_eq!(global_int(&vm, "result"), requests);
@@ -2088,7 +2106,7 @@ mod tests {
         // #29: each request returns to the perform site, so a million
         // requests stay far below the call-frame limit.
         let vm = run("effect Ask of int\n\
-             fun loop n acc =\n\
+             fun loop n (acc : int) =\n\
                if n = 0 then acc\n\
                else let val x = perform Ask n\n\
                     in loop (n - 1) (acc + x) end\n\
@@ -2105,7 +2123,7 @@ mod tests {
         // A perform inside a larger expression must restore the pending
         // application state exactly; this used to corrupt the callee slot.
         let vm = run("effect Ask of int\n\
-             fun loop n acc =\n\
+             fun loop n (acc : int) =\n\
                if n = 0 then acc\n\
                else step n acc\n\
              and step n acc =\n\

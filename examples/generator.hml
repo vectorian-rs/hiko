@@ -11,7 +11,7 @@ datatype 'a stream =
 
 fun range lo hi () = if lo > hi then Done else Next (lo, range (lo + 1) hi)
 
-fun fib_from a b () = Next (a, fib_from b (a + b))
+fun fib_from (a : int) b () = Next (a, fib_from b (a + b))
 
 (* Take at most n items *)
 fun take n s = if n = 0 then [] else case s () of

@@ -3,7 +3,7 @@
 val n = 300
 val size = int_to_float n
 
-fun iter (cr : float, ci : float, zr : float, zi : float, i) =
+fun iter (cr, ci, zr, zi, i) =
   if i = 50 then 1
   else
     let

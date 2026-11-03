@@ -56,8 +56,10 @@ Size by crate (lines of Rust):
 - Types: `int` (i64), `word` (u64), `float` (f64, IEEE 754 double), `bool`,
   `char` (Unicode scalar value), `string` (UTF-8), `unit`, `bytes` (raw byte
   sequence), tuples, lists, `datatype` with type parameters.
-- Monomorphic operators: `+ - * / mod` for `int`, `+. -. *. /.` for `float`,
-  `^` for strings. No overloading or defaulting.
+- Arithmetic and comparison operators work on `int`, `float` and `word`; the
+  compiler decides the type from the program, and an operand type nothing
+  decides is an error, never a default (see `docs/language/numerics.md`). `^`
+  for strings.
 - `fun` with clauses, `and` for mutual recursion, `fn`, `let`, `case`, `if`.
 - Pattern matching with compile-time exhaustiveness and redundancy checks.
 - `|>` pipeline, desugared to application.

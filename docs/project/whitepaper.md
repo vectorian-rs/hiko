@@ -73,7 +73,9 @@ and aborts (early exit). Generators and state use closures instead.
 - Shared-memory async or a user-programmable scheduler.
 - Actor-style mailboxes as the main concurrency model.
 - Full SML compatibility, including functors and the full module language.
-- Implicit numeric overloading or defaulting.
+- Implicit numeric defaulting or conversions, and user-defined overloading
+  (type classes, traits). The built-in operators' overloading on `int`,
+  `float` and `word` is closed and decided from the program.
 
 ## Where the details are
 

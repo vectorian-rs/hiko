@@ -103,10 +103,9 @@ pub fn local_use_files(entry: &Path, source: &str) -> Result<Vec<(String, String
             .parse_program()
             .map_err(|e| CompileError::codegen(format!("parse error: {}", e.message)))?;
         let program = hiko_syntax::desugar::desugar_program(program);
-        for decl in &program.decls {
-            let DeclKind::Use(path) = &decl.kind else {
-                continue;
-            };
+        let mut uses = Vec::new();
+        collect_uses(&program.decls, &mut uses);
+        for path in uses {
             let key = embedded_file_path(&dir, path)?;
             if found.contains_key(&key) {
                 continue;
@@ -158,6 +157,21 @@ fn lexical_normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// The paths of the `use` declarations in `decls`, including those inside
+/// `local` blocks (a desugared structure is one).
+fn collect_uses<'a>(decls: &'a [Decl], uses: &mut Vec<&'a str>) {
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Use(path) => uses.push(path),
+            DeclKind::Local(locals, body) => {
+                collect_uses(locals, uses);
+                collect_uses(body, uses);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A locked module's verified source, from [`Compiler::locked_module_sources`].
@@ -1967,13 +1981,16 @@ impl Compiler {
                 Ok(())
             }
             DeclKind::Local(locals, body) => {
-                for d in locals {
-                    self.infer_decl_pass(d)?;
-                }
-                for d in body {
-                    self.infer_decl_pass(d)?;
-                }
-                Ok(())
+                // One declaration for overloaded operators, like `local` in
+                // the type checker.
+                self.infer_ctx.begin_declaration();
+                let result = locals
+                    .iter()
+                    .chain(body)
+                    .try_for_each(|d| self.infer_decl_pass(d));
+                let ended = self.infer_ctx.end_declaration(result.is_ok());
+                result?;
+                Ok(ended?)
             }
             _ => {
                 self.infer_ctx.infer_decl(decl)?;
@@ -2021,7 +2038,11 @@ impl Compiler {
         let old_in_remote = self.in_remote_import;
         self.in_remote_import |= is_remote;
 
+        // The module's declarations are top-level ones of their own, even
+        // when a `use` inside `local` brings it in.
+        let importer = self.infer_ctx.suspend_declaration();
         let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
+        self.infer_ctx.resume_declaration(importer);
 
         self.in_remote_import = old_in_remote;
         self.base_dir = old_base;
@@ -3488,6 +3509,43 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn a_used_module_decides_its_own_operators_even_inside_local() {
+        // `dbl`'s `+` is decided by nothing in m.hml, so the module is
+        // rejected wherever it is used; the importer's `dbl 21` must not
+        // decide it, or the cached module's type would depend on where it
+        // was first used.
+        let dir = unique_temp_dir("use-in-local");
+        write_file(&dir.join("m.hml"), "fun dbl x = x + x\n");
+        write_file(
+            &dir.join("main.hml"),
+            "local use \"./m.hml\" in val y = dbl 21 end\n",
+        );
+        let err = compile_path(&dir.join("main.hml")).expect_err("m.hml leaves + undecided");
+        assert!(
+            format!("{err:?}").contains("cannot tell whether"),
+            "{err:?}"
+        );
+        write_file(&dir.join("m.hml"), "fun dbl (x : int) = x + x\n");
+        compile_path(&dir.join("main.hml")).unwrap_or_else(|e| panic!("{e:?}"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_use_files_finds_uses_inside_local_and_structures() {
+        let dir = unique_temp_dir("local-use-nested");
+        let source = "local use \"./a.hml\" in val x = a end\n\
+                      structure S = struct use \"./b.hml\" val y = b end";
+        write_file(&dir.join("main.hml"), source);
+        write_file(&dir.join("a.hml"), "val a = 1");
+        write_file(&dir.join("b.hml"), "val b = 2");
+        let files =
+            local_use_files(&dir.join("main.hml"), source).unwrap_or_else(|e| panic!("{e:?}"));
+        let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["a.hml", "b.hml"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
