@@ -86,16 +86,14 @@ pub struct EmbeddedSources {
 /// The local files (`use "..."`) that the script at `entry` uses, directly
 /// or through other local files, keyed as [`embedded_file_path`] names them
 /// relative to the script's directory. `build-vm --script` embeds these.
-/// Sorted by key.
-pub fn local_use_files(entry: &Path) -> Result<Vec<(String, String)>, CompileError> {
+/// `source` is the entry script's text, read once by the caller. A path that
+/// reaches its file through a symbolic link is an error. Sorted by key.
+pub fn local_use_files(entry: &Path, source: &str) -> Result<Vec<(String, String)>, CompileError> {
     let root = entry.parent().unwrap_or(Path::new("."));
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| CompileError::codegen(format!("cannot resolve '{}': {e}", root.display())))?;
     let mut found = std::collections::BTreeMap::new();
-    let mut pending = vec![(
-        PathBuf::new(),
-        std::fs::read_to_string(entry).map_err(|e| {
-            CompileError::codegen(format!("cannot read '{}': {e}", entry.display()))
-        })?,
-    )];
+    let mut pending = vec![(PathBuf::new(), source.to_string())];
     while let Some((dir, source)) = pending.pop() {
         let tokens = Lexer::new(&source, 0)
             .tokenize()
@@ -113,6 +111,18 @@ pub fn local_use_files(entry: &Path) -> Result<Vec<(String, String)>, CompileErr
                 continue;
             }
             let file = root.join(&key);
+            // The artifact resolves `..` lexically; `hiko run` follows
+            // symbolic links. Refuse paths where the two would differ.
+            let canonical = std::fs::canonicalize(&file).map_err(|e| {
+                CompileError::codegen(format!("cannot read local use '{}': {e}", file.display()))
+            })?;
+            let lexical = canonical_root.join(embedded_file_path(Path::new(""), &key)?);
+            if canonical != lexical_normalize(&lexical) {
+                return Err(CompileError::codegen(format!(
+                    "local use '{key}' resolves through a symbolic link to '{}'; a sealed program needs plain paths",
+                    canonical.display()
+                )));
+            }
             let text = std::fs::read_to_string(&file).map_err(|e| {
                 CompileError::codegen(format!("cannot read local use '{}': {e}", file.display()))
             })?;
@@ -125,6 +135,22 @@ pub fn local_use_files(entry: &Path) -> Result<Vec<(String, String)>, CompileErr
         }
     }
     Ok(found.into_iter().collect())
+}
+
+/// `path` with `.` dropped and `..` applied, without touching the file system.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// A locked module's verified source, from [`Compiler::locked_module_sources`].
@@ -944,6 +970,17 @@ impl Compiler {
         let mut loading = HashSet::new();
         loading.insert(ImportKey::File(canonical.clone()));
         Self::compile_with_ctx(program, base_dir, Some(canonical), loading, loader_options)
+    }
+
+    /// The lockfile that named imports in the project of `entry_file` use:
+    /// the one its `hiko.toml` names.
+    #[cfg(all(
+        feature = "loader-named-imports",
+        feature = "loader-http",
+        feature = "loader-integrity-blake3"
+    ))]
+    pub fn project_lockfile_path(entry_file: &Path) -> Result<PathBuf, CompileError> {
+        Ok(load_import_loader_config(entry_file)?.lockfile_path)
     }
 
     /// The source of every module in the lockfile of the project that
@@ -3515,10 +3552,23 @@ mod tests {
         );
         write_file(&dir.join("lib/b.hml"), "val b = 1");
         write_file(&dir.join("c.hml"), "use \"./lib/b.hml\"\nval c = 2");
-        let files = local_use_files(&dir.join("main.hml")).unwrap_or_else(|e| panic!("{e:?}"));
+        let main = dir.join("main.hml");
+        let source = std::fs::read_to_string(&main).unwrap();
+        let files = local_use_files(&main, &source).unwrap_or_else(|e| panic!("{e:?}"));
         let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["c.hml", "lib/a.hml", "lib/b.hml"]);
         assert_eq!(files[2].1, "val b = 1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_use_files_refuses_a_path_through_a_symbolic_link() {
+        let dir = unique_temp_dir("local-use-symlink");
+        write_file(&dir.join("real/b.hml"), "val b = 1");
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        let source = "use \"./link/b.hml\"\nval x = b";
+        let err = local_use_files(&dir.join("main.hml"), source).expect_err("link/ is a symlink");
+        assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
     }
 
     #[test]

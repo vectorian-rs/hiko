@@ -25,7 +25,14 @@ fuzz_target!(|data: &[u8]| {
     let Ok(config) = RunConfig::from_toml(text) else {
         return;
     };
-    let source = config.to_rust_source();
+    // A config with [extensions] needs to_rust_source_for; the error is fine.
+    let Ok(source) = config.to_rust_source() else {
+        assert!(
+            !config.extensions.is_empty(),
+            "only extensions make generation fail"
+        );
+        return;
+    };
     let file = match syn::parse_file(&source) {
         Ok(file) => file,
         Err(e) => panic!("generated source does not parse: {e}\n{source}"),

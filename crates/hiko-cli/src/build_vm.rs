@@ -94,12 +94,13 @@ pub fn generate(
             Some(extension) => {
                 (extension.configure)(table).map_err(|e| format!("[extensions.{name}]: {e}"))?;
             }
-            None if options.script.is_some() => {
+            None => {
+                // Without the extension here its table cannot be checked, and
+                // a bad table would only fail when the artifact starts.
                 return Err(format!(
-                    "--script with [extensions.{name}] needs a hiko built with feature ext-{name}"
+                    "[extensions.{name}] needs a hiko built with feature ext-{name}, so build-vm can check the table"
                 ));
             }
-            None => {}
         }
         extensions.push(*known);
     }
@@ -126,11 +127,13 @@ pub fn generate(
             PathBuf::from(format!("hiko-vm-{stem}"))
         }
     };
-    let name = out_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("hiko-vm-custom")
-        .to_string();
+    let name = package_name(&out_dir);
+    if sealed.is_none() && SEALED_FILES.iter().any(|f| out_dir.join(f).exists()) {
+        return Err(format!(
+            "'{}' holds a sealed build (build.rs, src/embedded.rs, sealed/); generate an unsealed one into a new directory",
+            out_dir.display()
+        ));
+    }
 
     let program = match &sealed {
         None => GeneratedProgram::ScriptArgument,
@@ -158,10 +161,56 @@ pub fn generate(
     Ok(out_dir)
 }
 
+/// Files only a sealed build has. An unsealed build into the same directory
+/// would leave them behind, and `build.rs` would then fail.
+const SEALED_FILES: &[&str] = &["build.rs", "src/embedded.rs", "sealed"];
+
+/// A Cargo package name from the output directory: ASCII letters, digits,
+/// `-` and `_`, starting with a letter.
+pub(crate) fn package_name(out_dir: &Path) -> String {
+    let base = std::fs::canonicalize(out_dir)
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .or_else(|| {
+            out_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    let mut name: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        name.insert_str(0, "hiko-vm-");
+    }
+    name.trim_end_matches('-').to_string()
+}
+
 fn collect_sealed(
     options: &BuildVmOptions,
     extensions: &[&'static Extension],
 ) -> Result<Sealed, String> {
+    if let Some(lock) = &options.lock {
+        let used = Compiler::project_lockfile_path(lock).map_err(|e| format!("{e:?}"))?;
+        let same = match (fs::canonicalize(lock), fs::canonicalize(&used)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !same {
+            return Err(format!(
+                "--lock '{}' is not the lockfile its project uses ('{}'); named imports resolve through the project's hiko.toml",
+                lock.display(),
+                used.display()
+            ));
+        }
+    }
     let modules = match &options.lock {
         Some(lock) => Compiler::locked_module_sources(
             lock,
@@ -183,14 +232,33 @@ fn collect_sealed(
         Some(path) => {
             let source = fs::read_to_string(path)
                 .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
-            let files = local_use_files(path).map_err(|e| format!("{e:?}"))?;
+            let files = local_use_files(path, &source).map_err(|e| format!("{e:?}"))?;
             Some((source, files))
         }
         None => None,
     };
+    for m in &modules {
+        lockfile_hex(&m.blake3).ok_or_else(|| {
+            format!(
+                "module '{}' has lockfile hash '{}', not blake3:<64 hex digits>",
+                m.import_name, m.blake3
+            )
+        })?;
+    }
     let sealed = Sealed { modules, script };
     check_sealed_program(&sealed, extensions)?;
     Ok(sealed)
+}
+
+/// The hex digest of a lockfile hash, normalized as the compiler does
+/// (one optional `blake3:` prefix, lower case), if it is 64 hex digits.
+fn lockfile_hex(hash: &str) -> Option<String> {
+    let hex = hash.trim();
+    let hex = hex
+        .strip_prefix("blake3:")
+        .unwrap_or(hex)
+        .to_ascii_lowercase();
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
 }
 
 /// Compile the embedded program once, now, against exactly the embedded
@@ -268,8 +336,10 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
         rs.push_str("pub static SCRIPT: &str = include_str!(\"../sealed/main.hml\");\n\n");
     }
     rs.push_str("pub static SOURCES: EmbeddedSources = EmbeddedSources {\n    modules: &[\n");
-    for m in &sealed.modules {
-        let file = format!("sealed/modules/{}.hml", m.import_name);
+    // Modules are stored by index: import names that differ only in case
+    // would collide on a case-insensitive file system.
+    for (i, m) in sealed.modules.iter().enumerate() {
+        let file = format!("sealed/modules/{i}.hml");
         write(&out_dir.join(&file), &m.source)?;
         writeln!(
             rs,
@@ -302,15 +372,11 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
     let mut build = String::new();
     build.push_str("// Generated by `hiko build-vm`: refuse to build if a sealed module no\n");
     build.push_str("// longer matches its lockfile hash.\nfn main() {\n    let modules: &[(&str, &str)] = &[\n");
-    for m in &sealed.modules {
-        let hash = m
-            .blake3
-            .trim()
-            .trim_start_matches("blake3:")
-            .to_ascii_lowercase();
+    for (i, m) in sealed.modules.iter().enumerate() {
+        let hash = lockfile_hex(&m.blake3).expect("checked in collect_sealed");
         writeln!(
             build,
-            "        (\"sealed/modules/{}.hml\", {hash:?}),",
+            "        (\"sealed/modules/{i}.hml\", {hash:?}), // {}",
             m.import_name
         )
         .unwrap();
@@ -432,6 +498,19 @@ mod tests {
         RunConfig::from_toml("[capabilities.stdio.println]\nenabled = true\n").unwrap()
     }
 
+    /// The file under `sealed/modules/` that holds `import_name`, from the
+    /// generated `src/embedded.rs`.
+    fn module_file(out: &Path, import_name: &str) -> PathBuf {
+        let embedded = read(out.join("src/embedded.rs"));
+        let line = embedded
+            .lines()
+            .find(|l| l.contains(&format!("import_name: \"{import_name}\"")))
+            .unwrap_or_else(|| panic!("{import_name} is not embedded"));
+        let start = line.find("../sealed/modules/").unwrap() + 3;
+        let end = line[start..].find('"').unwrap() + start;
+        out.join(&line[start..end])
+    }
+
     fn read(path: PathBuf) -> String {
         fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
@@ -478,12 +557,21 @@ mod tests {
         assert!(embedded.contains(&format!("| `Std.Option` | `{option_hash}` |")));
         assert!(embedded.contains("path: \"lib/greet.hml\""));
         assert_eq!(
-            read(out.join("sealed/modules/Std.Option.hml")),
+            read(module_file(&out, "Std.Option")),
             read(repo().join("libraries/Std-v0.1.0/modules/Option.hml"))
         );
 
         let build = read(out.join("build.rs"));
-        assert!(build.contains("(\"sealed/modules/Std.Option.hml\", \"bfef3fd8"));
+        let file = module_file(&out, "Std.Option");
+        let file = file
+            .strip_prefix(&out)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            build.contains(&format!("(\"{file}\", \"bfef3fd8")),
+            "{build}"
+        );
 
         let cargo = read(out.join("Cargo.toml"));
         assert!(cargo.contains(
@@ -534,6 +622,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(feature = "ext-github")]
     #[test]
     fn extensions_are_linked_and_configured_in_the_generated_crate() {
         let dir = temp_dir("ext");
@@ -545,7 +634,8 @@ mod tests {
             cache_dir: Some(temp_dir("cache")),
             ..BuildVmOptions::default()
         };
-        let out = generate(&options, &github_config(), &[]).unwrap_or_else(|e| panic!("{e}"));
+        let out = generate(&options, &github_config(), &[&hiko_ext_github::GITHUB])
+            .unwrap_or_else(|e| panic!("{e}"));
         let main = read(out.join("src/main.rs"));
         assert!(main.contains("static EXTENSIONS: &str"));
         assert!(main.contains("vectorian-rs/hiko"));
@@ -557,6 +647,78 @@ mod tests {
         let cargo = read(out.join("Cargo.toml"));
         assert!(cargo.contains("hiko-ext-github = { path = "), "{cargo}");
         assert!(cargo.contains("toml = \"0.8\""));
+    }
+
+    #[test]
+    fn configured_extensions_must_be_linked_to_be_checked() {
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            out_dir: Some(temp_dir("unlinked-ext").join("out")),
+            ..BuildVmOptions::default()
+        };
+        let err = generate(&options, &github_config(), &[]).expect_err("github is not linked");
+        assert!(err.contains("feature ext-github"), "{err}");
+    }
+
+    #[test]
+    fn lock_must_be_the_projects_lockfile() {
+        let dir = temp_dir("other-lock");
+        let other = dir.join("release.lock.toml");
+        fs::copy(repo().join("hiko.lock.toml"), &other).unwrap();
+        fs::copy(repo().join("hiko.toml"), dir.join("hiko.toml")).unwrap();
+        // The project's own lockfile, which hiko.toml names.
+        fs::copy(repo().join("hiko.lock.toml"), dir.join("hiko.lock.toml")).unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            lock: Some(other),
+            out_dir: Some(dir.join("out")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
+            ..BuildVmOptions::default()
+        };
+        let err = generate(&options, &config(), &[]).expect_err("release.lock.toml is not used");
+        assert!(
+            err.contains("is not the lockfile its project uses"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unsealed_build_refuses_a_directory_with_a_sealed_one() {
+        let dir = temp_dir("stale");
+        let out = dir.join("out");
+        write(&out.join("build.rs"), "fn main() {}").unwrap();
+        let options = BuildVmOptions {
+            config_path: "run.toml".into(),
+            out_dir: Some(out),
+            ..BuildVmOptions::default()
+        };
+        let err = generate(&options, &config(), &[]).expect_err("stale build.rs");
+        assert!(err.contains("holds a sealed build"), "{err}");
+    }
+
+    #[test]
+    fn package_names_are_valid_cargo_names() {
+        assert_eq!(package_name(Path::new("hiko-vm-reader")), "hiko-vm-reader");
+        assert_eq!(package_name(Path::new("vm.sealed")), "vm-sealed");
+        assert_eq!(package_name(Path::new("my vm")), "my-vm");
+        assert_eq!(package_name(Path::new("1st")), "hiko-vm-1st");
+        assert!(!package_name(Path::new(".")).is_empty());
+    }
+
+    #[test]
+    fn lockfile_hashes_are_normalized_like_the_compiler() {
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            lockfile_hex(&format!("blake3:{hex}")).as_deref(),
+            Some(hex.as_str())
+        );
+        assert_eq!(
+            lockfile_hex(&hex.to_uppercase()).as_deref(),
+            Some(hex.as_str())
+        );
+        assert_eq!(lockfile_hex(&format!("blake3:blake3:{hex}")), None);
+        assert_eq!(lockfile_hex("blake3:abc"), None);
     }
 
     #[test]
@@ -684,7 +846,7 @@ mod tests {
             .unwrap();
         assert_eq!(refused.status.code(), Some(2));
 
-        let module = out.join("sealed/modules/Std.Option.hml");
+        let module = module_file(&out, "Std.Option");
         let mut text = read(module.clone());
         text.push_str("(* tampered *)\n");
         fs::write(&module, text).unwrap();
