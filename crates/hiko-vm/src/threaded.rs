@@ -1799,7 +1799,9 @@ mod tests {
         let pid = runtime.new_pid();
         let mut vm = VM::new(program);
         vm.enable_output_capture();
-        vm.set_max_heap(64);
+        // Room for the Std modules the parent imports, but not for the
+        // child's 200-cell list.
+        vm.set_max_heap(128);
         let process = Process::new(pid, vm, None);
         runtime.table.insert(process);
         runtime.scheduler.enqueue(pid);

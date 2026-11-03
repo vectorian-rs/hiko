@@ -63,4 +63,51 @@ val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of _ :: _ :: []
 
 val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of _ :: _ :: [] => 2 | _ => 0) (Result.validate_traverse (fn x => if x = 0 then Result.Err "zero" else Result.Ok x) [1, 0, 2, 0]), 2, "validate_traverse accumulates errors")
 
+
+(* apply, lift2, lift3 and lift4 *)
+
+fun errors result = Result.unwrap_or_else (fn errs => errs) (Result.map (fn _ => []) result)
+
+val _ = assert_eq (Result.unwrap_or 0 (Result.apply (Result.Ok (fn x => x + 1)) (Result.Ok 41)), 42, "apply Ok Ok")
+
+val _ = assert_eq (errors (Result.apply (Result.Err ["f"]) (Result.Err ["x"])), ["f", "x"], "apply keeps both errors in order")
+
+val _ = assert_eq (errors (Result.apply (Result.Ok (fn x => x)) (Result.Err ["x"])), ["x"], "apply Ok Err")
+
+val _ = assert_eq (Result.unwrap_or 0 (Result.lift2 (fn a => fn b => a * b) (Result.Ok 6) (Result.Ok 7)), 42, "lift2 Ok")
+
+val _ = assert_eq (Result.unwrap_or (0, "", 0) (Result.lift3 (fn a => fn b => fn c => (a, b, c)) (Result.Ok 1) (Result.Ok "b") (Result.Ok 3)), (1, "b", 3), "lift3 Ok")
+
+val _ =
+  assert_eq (errors (Result.lift3 (fn a => fn b => fn c => (a, b, c))
+    (Result.Err ["id"]) (Result.Ok "b") (Result.Err ["email"])), ["id", "email"], "lift3 keeps every error")
+
+val _ =
+  assert_eq (errors (Result.lift3 (fn id => fn (first, last) => fn email => (id, first, last, email))
+    (Result.Err ["id"])
+    (Result.lift2 (fn f => fn l => (f, l)) (Result.Err ["first"]) (Result.Err ["last"]))
+    (Result.Err ["email"])), ["id", "first", "last", "email"], "nested lifts keep every error in order")
+
+val _ = assert_eq (Result.unwrap_or 0 (Result.lift4 (fn a => fn b => fn c => fn d => a + b + c + d) (Result.Ok 1) (Result.Ok 2) (Result.Ok 3) (Result.Ok 4)), 10, "lift4 Ok")
+
+val _ = assert_eq (errors (Result.apply (Result.Err ["f"]) (Result.Ok 1)), ["f"], "apply Err Ok")
+
+val _ = assert_eq (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Err ["a"]) (Result.Ok 2)), ["a"], "lift2 first Err")
+
+val _ = assert_eq (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Ok 1) (Result.Err ["b"])), ["b"], "lift2 second Err")
+
+val _ = assert_eq (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Err ["a1", "a2"]) (Result.Err ["b"])), ["a1", "a2", "b"], "lift2 keeps multi-error lists in order")
+
+val _ =
+  assert_eq (errors (Result.lift4 (fn (a : int) => fn b => fn c => fn d => a + b + c + d)
+    (Result.Err ["a"]) (Result.Ok 2) (Result.Err ["c"]) (Result.Err ["d"])), ["a", "c", "d"], "lift4 keeps every error")
+
+fun count_up (n, acc) = if n = 0 then acc else count_up (n - 1, n :: acc)
+
+val many = count_up (100000, [])
+
+fun length_of (xs, n) = case xs of [] => n | _ :: rest => length_of (rest, n + 1)
+
+val _ = assert_eq (length_of (errors (Result.apply (Result.Err many) (Result.Err many)), 0), 200000, "apply appends long error lists")
+
 val _ = println "result tests passed"
