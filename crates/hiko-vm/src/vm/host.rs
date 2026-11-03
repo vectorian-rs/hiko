@@ -138,25 +138,75 @@ fn file_identity(path: PathBuf) -> Result<FileIdentity, String> {
 }
 
 /// Open the executable at `path` and take its identity from the open file,
-/// which stays open. Only an executable the VM may run but not read (mode
-/// `--x`) is allowed by identity alone, as before #160. Any other open
-/// error leaves the command out of the policy, with the error recorded.
+/// which stays open. Only an execute-only file (no read permission bits at
+/// all) is allowed by identity alone, as before #160. Any other open error,
+/// including a permission denied by an ACL or a security module, leaves the
+/// command out of the policy, with the error recorded.
 fn allowed_executable(path: PathBuf) -> Result<AllowedExecutable, String> {
     match std::fs::File::open(&path) {
         Ok(file) => {
             let metadata = file
                 .metadata()
                 .map_err(|e| format!("cannot stat executable '{}': {e}", path.display()))?;
+            let via = exec_via(&file);
             Ok(AllowedExecutable {
                 id: identity_from(path, &metadata)?,
                 pin: Some(Arc::new(file)),
+                via,
             })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(AllowedExecutable {
-            id: file_identity(path)?,
-            pin: None,
-        }),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && is_execute_only(&path) => {
+            Ok(AllowedExecutable {
+                id: file_identity(path)?,
+                pin: None,
+                via: ExecVia::Path("it is execute-only, so it is not held open"),
+            })
+        }
         Err(e) => Err(format!("cannot open executable '{}': {e}", path.display())),
+    }
+}
+
+/// Whether `path` has no read permission bits at all (mode `--x`).
+fn is_execute_only(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o444 == 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// How to run the pinned `file`. On Linux an ELF binary runs as
+/// `/proc/self/fd/N`, the file the VM holds open. Anything else runs by
+/// path: a `#!` script or a binfmt_misc binary is loaded by an interpreter
+/// that opens the path itself, after the descriptor is closed on exec.
+fn exec_via(file: &std::fs::File) -> ExecVia {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::FileExt as _;
+        let mut magic = [0u8; 4];
+        if !file
+            .read_at(&mut magic, 0)
+            .is_ok_and(|n| n == 4 && &magic == b"\x7fELF")
+        {
+            return ExecVia::Path("it is not an ELF binary (a #! script or a binfmt_misc format)");
+        }
+        let fd_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        if !fd_path.exists() {
+            return ExecVia::Path("/proc/self/fd is not available");
+        }
+        ExecVia::Descriptor(fd_path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        ExecVia::Path("only Linux can run a program through the descriptor it holds")
     }
 }
 
@@ -185,26 +235,12 @@ fn identity_from(path: PathBuf, metadata: &std::fs::Metadata) -> Result<FileIden
     })
 }
 
-/// The path to run an allowed executable from. On Linux that is the pinned
-/// file itself, through `/proc/self/fd`, so a file swapped in at the path
-/// after the identity check cannot run. A script (`#!`) is the exception:
-/// its interpreter opens the path after exec, when the descriptor is closed.
-/// Elsewhere, and without `/proc`, it is the path, checked just before.
-fn exec_path(allowed: &AllowedExecutable) -> PathBuf {
-    #[cfg(target_os = "linux")]
-    if let Some(pin) = &allowed.pin {
-        use std::os::fd::AsRawFd as _;
-        use std::os::unix::fs::FileExt as _;
-        let mut magic = [0u8; 2];
-        let is_script = pin
-            .read_at(&mut magic, 0)
-            .is_ok_and(|n| n == 2 && &magic == b"#!");
-        let fd_path = PathBuf::from(format!("/proc/self/fd/{}", pin.as_raw_fd()));
-        if !is_script && fd_path.exists() {
-            return fd_path;
-        }
+/// The path `exec` starts an allowed executable from.
+fn exec_path(allowed: &AllowedExecutable) -> &Path {
+    match &allowed.via {
+        ExecVia::Descriptor(fd_path) => fd_path,
+        ExecVia::Path(_) => &allowed.id.path,
     }
-    allowed.id.path.clone()
 }
 
 fn resolve_exec_command(command: &str) -> Result<FileIdentity, String> {
@@ -282,7 +318,29 @@ impl VM {
                 policy.rules.push((rule.clone(), executable.clone()));
             }
         }
+        for (command, executable) in &opened {
+            let Ok(executable) = executable else { continue };
+            // Not held open, anywhere; or run by path where Linux could
+            // have run the descriptor. Other systems always run by path, as
+            // documented, so that is not noted per command.
+            let ExecVia::Path(reason) = executable.via else {
+                continue;
+            };
+            if executable.pin.is_none() || cfg!(target_os = "linux") {
+                policy.notes.push(format!(
+                    "exec: {command} ('{}') runs by path, so a file swapped in at that path between the check and the spawn would run: {reason}",
+                    executable.id.path.display()
+                ));
+            }
+        }
+        policy.notes.sort();
         self.exec_policy = Arc::new(policy);
+    }
+
+    /// Allowed executables with weaker protection than this platform gives,
+    /// one sentence each. Embedders should show them when a run starts.
+    pub fn exec_policy_notes(&self) -> &[String] {
+        &self.exec_policy.notes
     }
 
     /// Format a value for display in `print` / `println`.
@@ -396,14 +454,12 @@ impl VM {
             })
         } else if let Some((_, changed)) =
             self.exec_policy.rules.iter().find(|(rule, executable)| {
-                rule.args_match(&args)
-                    && executable.id != resolved
-                    && executable.id.same_file(&resolved)
+                rule.args_match(&args) && executable.id.path == resolved.path
             })
         {
             Err(RuntimeError {
                 message: format!(
-                    "exec: '{}' changed after the exec policy was applied (it was written, replaced, or its permissions changed); it is refused until the VM is started again",
+                    "exec: '{}' changed or was replaced after the exec policy was applied (it was written, replaced, or its permissions changed); it is refused until the VM is started again",
                     changed.id.path.display()
                 ),
             })
@@ -459,8 +515,9 @@ impl VM {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
-            // The program sees the path it was allowed by, not /proc/self/fd/N.
-            command.arg0(&allowed.path);
+            // The program sees the command the script ran, as from a shell,
+            // not /proc/self/fd/N: busybox-style tools dispatch on it.
+            command.arg0(&exec.display_command);
             // Lead a new process group so a timeout can kill grandchildren too.
             command.process_group(0);
         }
@@ -668,7 +725,7 @@ mod tests {
         let err = vm.run().expect_err("a changed file must not run");
         assert!(
             err.message
-                .contains("changed after the exec policy was applied"),
+                .contains("changed or was replaced after the exec policy was applied"),
             "{}",
             err.message
         );
@@ -700,10 +757,80 @@ mod tests {
         write_executable(&script, "#!/bin/sh\necho secnd\n");
         let err = vm.run().expect_err("the replaced file must not run");
         assert!(
-            err.message.contains("matches no exec rule"),
+            err.message.contains("changed or was replaced"),
             "{}",
             err.message
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_runs_the_pinned_binary_not_a_file_swapped_in_at_its_path() {
+        let root = temp_dir("exec-descriptor");
+        let tool = root.join("tool");
+        std::fs::copy(std::fs::canonicalize("/bin/echo").unwrap(), &tool).unwrap();
+        let allowed = allowed_executable(tool.clone()).expect("pinned");
+        assert!(
+            matches!(allowed.via, ExecVia::Descriptor(_)),
+            "{:?}",
+            allowed.via
+        );
+
+        std::fs::remove_file(&tool).unwrap();
+        write_executable(&tool, "#!/bin/sh\necho swapped\n");
+        let out = std::process::Command::new(exec_path(&allowed))
+            .arg("pinned")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "pinned\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_runs_a_script_by_path_and_says_so() {
+        let root = temp_dir("exec-script-note");
+        let script = root.join("tool.sh");
+        write_executable(&script, "#!/bin/sh\necho hi\n");
+        let allowed = allowed_executable(script.clone()).expect("pinned");
+        assert!(matches!(allowed.via, ExecVia::Path(_)), "{:?}", allowed.via);
+
+        let program = crate::test_support::compile_source_hermetic("val _ = ()");
+        let mut vm = VM::new(program);
+        vm.set_exec_allowed(vec![script.to_string_lossy().into_owned()]);
+        let notes = vm.exec_policy_notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("runs by path"), "{notes:?}");
+        assert!(notes[0].contains("not an ELF binary"), "{notes:?}");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_an_execute_only_file_is_allowed_without_being_held_open() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = temp_dir("exec-only");
+        let script = root.join("tool.sh");
+        write_executable(&script, "#!/bin/sh\necho hi\n");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let allowed = allowed_executable(script.clone()).expect("allowed");
+        if allowed.pin.is_none() {
+            // Not root: the file cannot be opened, so it is checked by
+            // identity only, and that is reported.
+            assert!(
+                matches!(allowed.via, ExecVia::Path(reason) if reason.contains("execute-only"))
+            );
+        }
+        assert!(is_execute_only(&script));
+
+        // Readable by someone, so a permission error is not "execute-only".
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o411)).unwrap();
+        assert!(!is_execute_only(&script));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -180,18 +180,6 @@ pub(super) struct FileIdentity {
     len: u64,
 }
 
-impl FileIdentity {
-    /// The same file, though its change time or size may differ: a file
-    /// written in place, or whose permissions or links changed.
-    fn same_file(&self, other: &Self) -> bool {
-        #[cfg(unix)]
-        let same_inode = self.dev == other.dev && self.ino == other.ino;
-        #[cfg(not(unix))]
-        let same_inode = true;
-        self.path == other.path && same_inode
-    }
-}
-
 /// An executable the exec policy allows, as it was when the policy was
 /// applied, held open (`pin`) for as long as the VM and its children hold
 /// the policy. An open file's inode cannot be freed, so it cannot be
@@ -200,13 +188,24 @@ impl FileIdentity {
 #[derive(Clone, Debug)]
 pub(super) struct AllowedExecutable {
     id: FileIdentity,
-    /// `None` for an executable the VM could not open (mode `--x`, or no
-    /// descriptors left).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        allow(dead_code, reason = "held open, not read: it keeps the inode alive")
-    )]
+    /// `None` for an execute-only file (no read permission at all), which
+    /// the VM cannot open.
+    #[allow(dead_code, reason = "held open, not read: it keeps the inode alive")]
     pin: Option<Arc<std::fs::File>>,
+    /// How `exec` runs it, decided once when the policy is applied.
+    via: ExecVia,
+}
+
+/// How `exec` starts an allowed executable.
+#[derive(Clone, Debug)]
+pub(super) enum ExecVia {
+    /// The pinned file itself, as `/proc/self/fd/N` (Linux): a file swapped
+    /// in at the path after the check cannot run.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "Linux only"))]
+    Descriptor(std::path::PathBuf),
+    /// The path, checked just before the spawn. The reason is reported when
+    /// the policy is applied, where the descriptor would be expected.
+    Path(&'static str),
 }
 
 /// The exec policy with each command resolved, shared with child processes.
@@ -217,6 +216,9 @@ pub(super) struct ResolvedExecPolicy {
     rules: Vec<(crate::builder::ExecArgvRule, AllowedExecutable)>,
     /// Configured commands that did not resolve, for error messages.
     errors: Vec<String>,
+    /// Allowed executables with weaker protection than the platform gives
+    /// (not held open, or run by path on Linux), for the embedder to report.
+    notes: Vec<String>,
 }
 
 /// How the VM dispatches a builtin call. Most builtins are `Plain`: the VM

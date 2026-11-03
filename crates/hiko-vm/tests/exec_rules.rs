@@ -122,13 +122,13 @@ fn a_changed_file_is_reported_only_when_a_rule_allows_the_arguments() {
     let err = vm.run().expect_err("refused").message;
     // `no` matches no rule, so that is the reason, not the change.
     assert!(err.contains("matches no exec rule"), "{err}");
-    assert!(!err.contains("changed after"), "{err}");
+    assert!(!err.contains("changed or was replaced"), "{err}");
 }
 
 #[test]
-fn the_program_sees_the_path_it_was_allowed_by() {
+fn the_program_sees_the_command_it_was_run_as() {
     // On Linux the pinned file runs through /proc/self/fd; argv[0] is still
-    // the allowed path.
+    // the command the script ran.
     let sh = std::fs::canonicalize("/bin/sh").unwrap();
     let sh = sh.to_string_lossy().into_owned();
     let config = config(&[&sh, "-c", "echo \"$0\""], None);
