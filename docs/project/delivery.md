@@ -30,6 +30,8 @@ rule skip it.
 7. **Small, unstacked changes.** At most four sections per pull request. Every
    pull request targets `main`; work that builds on an open pull request waits
    for it to merge.
+8. **Brevity.** Brevity, simplicity, clarity and minimalism come first. Plans,
+   reviews, comments, docs and messages say only what the reader needs to act.
 
 ### Who approved
 
@@ -190,6 +192,22 @@ The receiver re-reads the record before acting. Claims keep the lead the only
 writer of the plan: the worker asks with a comment `claim <piece>`, and the lead
 grants one at a time by adding a holder suffix on the piece's line (`— <worker>`)
 and a `claim:<worker>` label. No claim, no work. Claims do not raise `rev`.
+
+## Limits
+
+Lines are counted wrapped at 100 columns.
+
+| Text | Lines |
+| --- | --- |
+| Reply to the maintainer | 10 |
+| Message | 4 |
+| Comment | 20 |
+| Pull request body | 30 |
+| Plan | 80 |
+| New doc page | 300 |
+
+A lens comment is one line per finding plus a signature, with no limit on
+findings. Over a limit, cut, or split the work.
 
 ## Lessons
 
