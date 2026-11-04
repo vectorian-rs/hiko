@@ -248,12 +248,12 @@ helper; it performs network I/O and needs runtime policy. The current client
 APIs should belong under `Http.Client`, leaving room for a future `Http.Server`
 domain rather than placing everything directly under `Http` or under `Std.Http`.
 
-Cloud providers follow the same pattern. Hiko had an AWS integration
-(`Aws.Config`, `Aws.S3`, `Aws.SQS`) until plan U (#140) removed it as out of
-focus. A future provider should be a top-level family, not nested under `Std`,
-behind optional Cargo features, with policy that is service-aware rather than
-only host-aware, and with credential sources chosen explicitly by policy rather
-than taken from an SDK's default chain.
+Cloud providers follow the same pattern. The AWS integration (`Aws.Config`,
+`Aws.S3`, `Aws.SQS`, `Aws.CloudWatch`) is an extension: a top-level family, not
+nested under `Std`, behind the optional `ext-aws` Cargo feature, with policy
+that is service-aware rather than only host-aware, and with credential sources
+chosen explicitly by policy rather than taken from an SDK's default chain.
+Another provider should take the same shape.
 
 ## Rust Path Convention
 
