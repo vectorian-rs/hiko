@@ -278,10 +278,15 @@ impl CompileError {
 const PACKAGE_ENTRY_AND_INSTALL: &str =
     "with its version and registry (see docs/language/imports.md), then run 'hiko install'";
 
-/// The fix for an error that `hiko install` repairs: one the lockfile causes
-/// and a module that does not load.
+/// The fix for an error that `hiko install` repairs. Never the fix for a hash
+/// failure: install would replace the pin that caught it.
+#[cfg(feature = "loader-integrity-blake3")]
 const INSTALL_REWRITES_LOCKFILE: &str =
     "run 'hiko install', which fetches the modules and rewrites the lockfile from hiko.toml";
+
+/// The fix for a module that fails its lockfile hash.
+#[cfg(feature = "loader-integrity-blake3")]
+const HASH_DIFFERS_FROM_PIN: &str = "the source differs from the lockfile's pin, so find out why at the registry before 'hiko install' replaces the pin";
 
 #[cfg(feature = "loader-integrity-blake3")]
 fn declare_package_fix(package: &str) -> String {
@@ -293,10 +298,30 @@ fn extension_module(requires: &ExtensionRequires, importer: &str) -> String {
     format!("module {importer} of extension '{}'", requires.extension)
 }
 
+#[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn codegen_message(error: CompileError) -> String {
     match error {
         CompileError::Codegen(message) => message,
         other => format!("{other:?}"),
+    }
+}
+
+/// `error` from loading `import`; when `extension`'s module imported it, the
+/// error names that module and ends in `fix`.
+#[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+fn in_extension_module(
+    extension: Option<(ExtensionRequires, &'static str)>,
+    import: &str,
+    fix: &str,
+    error: CompileError,
+) -> CompileError {
+    match extension {
+        Some((requires, importer)) => CompileError::codegen(format!(
+            "{} needs {import}: {}; {fix}",
+            extension_module(&requires, importer),
+            codegen_message(error)
+        )),
+        None => error,
     }
 }
 
@@ -691,6 +716,7 @@ fn normalize_blake3(hash: &str) -> String {
 fn resolve_embedded_module(
     embedded: &'static EmbeddedSources,
     module_name: &str,
+    extension: Option<(ExtensionRequires, &'static str)>,
 ) -> Result<ResolvedImport, CompileError> {
     let module = embedded
         .modules
@@ -705,7 +731,15 @@ fn resolve_embedded_module(
         module.source.as_bytes(),
         &normalize_blake3(module.blake3),
         &format!("embedded module '{module_name}'"),
-    )?;
+    )
+    .map_err(|e| {
+        in_extension_module(
+            extension,
+            module_name,
+            "the artifact's source differs from its pin, so rebuild it with build-vm --lock",
+            e,
+        )
+    })?;
     Ok(ResolvedImport::Embedded {
         key: ImportKey::Synthetic(module.import_name),
         display_name: module_name.to_string(),
@@ -719,6 +753,7 @@ fn resolve_embedded_module(
 fn resolve_embedded_module(
     _embedded: &'static EmbeddedSources,
     module_name: &str,
+    _extension: Option<(ExtensionRequires, &'static str)>,
 ) -> Result<ResolvedImport, CompileError> {
     Err(CompileError::codegen(format!(
         "named import '{module_name}' needs embedded sources; enable cargo feature 'loader-embedded'"
@@ -1915,19 +1950,9 @@ impl Compiler {
             return self.resolve_internal_builtin_import(module_name, leaf_module);
         }
         if let Some(embedded) = self.loader_options.embedded {
-            return resolve_embedded_module(embedded, module_name);
+            return resolve_embedded_module(embedded, module_name, self.importing_extension);
         }
-        let resolved = self.resolve_external_named_import(module_name, package_name, leaf_module);
-        match self.importing_extension {
-            Some((requires, importer)) => resolved.map_err(|e| {
-                CompileError::codegen(format!(
-                    "{} needs {module_name}: {}; {INSTALL_REWRITES_LOCKFILE}",
-                    extension_module(&requires, importer),
-                    codegen_message(e)
-                ))
-            }),
-            None => resolved,
-        }
+        self.resolve_external_named_import(module_name, package_name, leaf_module)
     }
 
     /// `import`, a library module that the extension module `importer`
@@ -2018,6 +2043,9 @@ impl Compiler {
         leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
         let local_package_root = self.loader_options.local_package_root.clone();
+        let extension = self.importing_extension;
+        let load_failed =
+            |fix: &'static str| move |e| in_extension_module(extension, module_name, fix, e);
         let (lockfile, lockfile_path, cache_dir) = self.ensure_import_loader(module_name, None)?;
         let package = lockfile.packages.get(package_name).ok_or_else(|| {
             CompileError::codegen(format!(
@@ -2041,12 +2069,14 @@ impl Compiler {
                 .join("modules")
                 .join(format!("{leaf_module}.hml"));
             if local_path.is_file() {
-                let source = std::fs::read_to_string(&local_path).map_err(|e| {
-                    CompileError::codegen(format!(
-                        "cannot read local module '{}': {e}",
-                        local_path.display()
-                    ))
-                })?;
+                let source = std::fs::read_to_string(&local_path)
+                    .map_err(|e| {
+                        CompileError::codegen(format!(
+                            "cannot read local module '{}': {e}",
+                            local_path.display()
+                        ))
+                    })
+                    .map_err(load_failed(INSTALL_REWRITES_LOCKFILE))?;
                 verify_blake3(
                     source.as_bytes(),
                     &expected_hash,
@@ -2054,7 +2084,8 @@ impl Compiler {
                         "local named import '{module_name}' ({})",
                         local_path.display()
                     ),
-                )?;
+                )
+                .map_err(load_failed(HASH_DIFFERS_FROM_PIN))?;
                 let canonical = std::fs::canonicalize(&local_path).unwrap_or(local_path);
                 return Ok(ResolvedImport::VerifiedFile {
                     canonical,
@@ -2071,12 +2102,14 @@ impl Compiler {
         let cache_path = module_cache_path(cache_dir, &module_url, &expected_hash);
 
         if cache_path.exists() {
-            let cached = std::fs::read_to_string(&cache_path).map_err(|e| {
-                CompileError::codegen(format!(
-                    "cannot read cached module '{}': {e}",
-                    cache_path.display()
-                ))
-            })?;
+            let cached = std::fs::read_to_string(&cache_path)
+                .map_err(|e| {
+                    CompileError::codegen(format!(
+                        "cannot read cached module '{}': {e}",
+                        cache_path.display()
+                    ))
+                })
+                .map_err(load_failed(INSTALL_REWRITES_LOCKFILE))?;
             if verify_blake3(
                 cached.as_bytes(),
                 &expected_hash,
@@ -2093,13 +2126,17 @@ impl Compiler {
             let _ = std::fs::remove_file(&cache_path);
         }
 
-        let source = fetch_remote_module(&module_url, module_name)?;
+        let source = fetch_remote_module(&module_url, module_name).map_err(load_failed(
+            "check that the registry in hiko.toml is reachable",
+        ))?;
         verify_blake3(
             source.as_bytes(),
             &expected_hash,
             &format!("named import '{module_name}'"),
-        )?;
-        let cache_path = store_cached_module(cache_dir, &module_url, &expected_hash, &source)?;
+        )
+        .map_err(load_failed(HASH_DIFFERS_FROM_PIN))?;
+        let cache_path = store_cached_module(cache_dir, &module_url, &expected_hash, &source)
+            .map_err(load_failed(INSTALL_REWRITES_LOCKFILE))?;
         Ok(ResolvedImport::VerifiedFile {
             canonical: cache_path,
             display_name: module_name.to_string(),

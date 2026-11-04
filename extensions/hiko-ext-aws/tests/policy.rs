@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use hiko_compile::chunk::CompiledProgram;
-use hiko_compile::compiler::{Compiler, EmbeddedSources, ModuleLoaderOptions};
+use hiko_compile::compiler::{Compiler, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions};
 use hiko_ext_aws::AWS;
 use hiko_vm::config::RunConfig;
 use hiko_vm::extension::Extension;
@@ -436,27 +436,89 @@ fn an_unknown_registry_ends_in_the_fix() {
     );
 }
 
+/// The hash `libraries/Std-v0.1.0/package.toml` lists for `Std.Result`.
+fn std_result_hash() -> String {
+    let package: toml::Table = toml::from_str(
+        &std::fs::read_to_string(repo().join("libraries/Std-v0.1.0/package.toml")).unwrap(),
+    )
+    .unwrap();
+    let hash = package["modules"]["Result"].as_str().unwrap();
+    hash.strip_prefix("blake3:").unwrap().to_string()
+}
+
 #[test]
-fn a_wrong_pinned_hash_names_the_extension_and_the_fix() {
+fn a_wrong_pinned_hash_says_to_check_before_repinning() {
     let dir = project("wrong-hash", &["Result"]);
     let wrong = "0".repeat(64);
     let lock = std::fs::read_to_string(dir.join("hiko.lock.toml")).unwrap();
-    let (head, _) = lock.split_once("Result = ").unwrap();
     std::fs::write(
         dir.join("hiko.lock.toml"),
-        format!("{head}Result = \"blake3:{wrong}\"\n"),
+        lock.replace(&std_result_hash(), &wrong),
     )
     .unwrap();
     let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
-    let prefix = "Codegen(\"module Aws.S3 of extension 'aws' needs Std.Result: local named import 'Std.Result' (";
-    assert!(err.starts_with(prefix), "{err}");
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: local named import 'Std.Result' ({}) failed BLAKE3 verification: expected {wrong}, got {}; the source differs from the lockfile's pin, so find out why at the registry before 'hiko install' replaces the pin",
+            repo()
+                .join("libraries/Std-v0.1.0/modules/Result.hml")
+                .display(),
+            std_result_hash()
+        ))
+    );
+}
+
+#[test]
+fn a_module_that_does_not_fetch_names_the_extension_and_the_fix() {
+    // Port 1 on loopback: refused, with no network and no real registry.
+    let dir = project_with_manifest("unreachable", "127.0.0.1:8000", "127.0.0.1:1");
+    let lock = std::fs::read_to_string(dir.join("hiko.lock.toml")).unwrap();
+    std::fs::write(
+        dir.join("hiko.lock.toml"),
+        lock.replace("127.0.0.1:8000", "127.0.0.1:1"),
+    )
+    .unwrap();
+    let options = ModuleLoaderOptions {
+        local_package_root: None,
+        ..s3_options()
+    };
+    let err = compile_in(&dir, "import Aws.S3", options).unwrap_err();
     assert!(
-        err.contains(&format!(
-            "failed BLAKE3 verification: expected {wrong}, got "
-        )),
+        err.starts_with(
+            "Codegen(\"module Aws.S3 of extension 'aws' needs Std.Result: cannot fetch named import 'Std.Result' from 'http://127.0.0.1:1/Std-v0.1.0/modules/Result.hml': "
+        ),
         "{err}"
     );
-    assert!(err.ends_with(&format!("; {REWRITE_LOCKFILE}\")")), "{err}");
+    assert!(
+        err.ends_with("; check that the registry in hiko.toml is reachable\")"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_embedded_module_failing_its_hash_names_the_extension_and_the_fix() {
+    static WRONG: EmbeddedSources = EmbeddedSources {
+        modules: &[EmbeddedModule {
+            import_name: "Std.Result",
+            blake3: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            source: include_str!("../../../libraries/Std-v0.1.0/modules/Result.hml"),
+        }],
+        files: None,
+    };
+    let options = ModuleLoaderOptions {
+        embedded: Some(&WRONG),
+        ..s3_options()
+    };
+    let err = compile_in(with_result(), "import Aws.S3", options).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: embedded module 'Std.Result' failed BLAKE3 verification: expected {}, got {}; the artifact's source differs from its pin, so rebuild it with build-vm --lock",
+            "0".repeat(64),
+            std_result_hash()
+        ))
+    );
 }
 
 #[test]

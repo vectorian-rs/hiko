@@ -107,9 +107,15 @@ lockfile. A library module's own imports are not checked against
 - a `[dependencies]` entry naming an undefined registry: the existing cause,
   then `; add [registries.<name>] to hiko.toml (see
   docs/language/imports.md), then run 'hiko install'`;
-- a pinned module that fails its hash or does not fetch: `module Aws.S3 of
-  extension 'aws' needs Std.Result: <cause>; run 'hiko install', which
-  fetches the modules and rewrites the lockfile from hiko.toml`;
+- a pinned module that fails its hash: `module Aws.S3 of extension 'aws'
+  needs Std.Result: <cause>; the source differs from the lockfile's pin, so
+  find out why at the registry before 'hiko install' replaces the pin`;
+- a pinned module that does not fetch: `module Aws.S3 of extension 'aws'
+  needs Std.Result: <cause>; check that the registry in hiko.toml is
+  reachable`;
+- an embedded module that fails its hash: `module Aws.S3 of extension 'aws'
+  needs Std.Result: <cause>; the artifact's source differs from its pin, so
+  rebuild it with build-vm --lock`;
 - a `build-vm` artifact that does not embed it: `module Aws.S3 of extension
   'aws' needs Std.Result, which this artifact does not embed; build it with
   --lock and a lockfile that pins Std.Result`. For `build-vm --script`, this
