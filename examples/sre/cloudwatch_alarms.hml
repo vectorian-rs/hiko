@@ -11,6 +11,7 @@
    list is a setup error: hiko stops with exit 1 and no report.
 
      hiko run --policy sre-cloudwatch examples/sre/cloudwatch_alarms.hml *)
+import Std.Result
 import Aws.Config
 import Aws.CloudWatch
 import Sre.Health
@@ -23,8 +24,8 @@ val client = CloudWatch.client (Config.sso_profile profile)
 
 val status =
   case CloudWatchAlarms.checks client of
-      CloudWatch.Ok checks => Report.print ("cloudwatch", checks)
-    | CloudWatch.Err message =>
+      Result.Ok checks => Report.print ("cloudwatch", checks)
+    | Result.Err message =>
         Report.print ("cloudwatch", [("cloudwatch", Health.Unknown, "", message)])
 
 val _ = exit (Health.exit_code status)

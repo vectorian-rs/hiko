@@ -1,3 +1,5 @@
+import Std.Result
+
 (*!
  * Amazon SQS, from the hiko-ext-aws extension. Needs `sqs = true` in
  * `[extensions.aws]`.
@@ -5,18 +7,12 @@
 structure SQS = struct
   type client = aws_sqs_client
 
-  type error = string
-
-  datatype ('a, 'e) result =
-      Ok of 'a
-    | Err of 'e
-
   (*! A reusable client. *)
   fun client config = aws_sqs_client config
 
   (*! The URL of every queue in the account. *)
   fun list_queues client =
     case aws_sqs_list_queues client of
-        (true, urls, _) => Ok urls
-      | (false, _, message) => Err message
+        (true, urls, _) => Result.Ok urls
+      | (false, _, message) => Result.Err message
 end

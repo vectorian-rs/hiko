@@ -109,6 +109,7 @@ static TEST: Extension = Extension {
         "Test.Greet",
         "structure Greet = struct\n  fun hello name = test_greet name\nend\n",
     )],
+    requires: &[],
     configure,
 };
 
@@ -237,4 +238,93 @@ val _ = println (await_process child)"#,
     runtime.run_to_completion().expect("run");
     assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
     assert_eq!(*sink.0.lock().unwrap(), "HI BOB\n");
+}
+
+#[test]
+fn an_import_missing_from_requires_is_an_error_naming_the_module() {
+    // A module that imports a library module its extension does not list.
+    static UNDECLARED: Extension = Extension {
+        name: "undeclared",
+        types: &[],
+        builtins: &[],
+        modules: &[(
+            "Undeclared.M",
+            "import Std.List\nstructure M = struct\n  val n = 1\nend\n",
+        )],
+        requires: &[],
+        configure,
+    };
+    assert_eq!(
+        UNDECLARED.undeclared_imports(),
+        Ok(vec!["Undeclared.M imports Std.List".to_string()])
+    );
+    let config = RunConfig::from_toml("[extensions.undeclared]\n").expect("config");
+    let configured = config
+        .configured_extensions(&[&UNDECLARED])
+        .expect("linked");
+    let options = ModuleLoaderOptions {
+        extensions: Extension::compile_surface(&configured),
+        ..Default::default()
+    };
+    let err = Compiler::compile_with_options(parse("import Undeclared.M"), options)
+        .map(|_| ())
+        .expect_err("undeclared import");
+    assert_eq!(
+        format!("{err:?}"),
+        format!(
+            "Codegen({:?})",
+            "module Undeclared.M of extension 'undeclared' imports Std.List, which the extension does not list in its requires; add it to requires in the extension's Extension"
+        )
+    );
+}
+
+#[test]
+fn undeclared_imports_finds_an_import_inside_a_let() {
+    static IN_LET: Extension = Extension {
+        name: "in_let",
+        types: &[],
+        builtins: &[],
+        modules: &[("InLet.M", "val n = let import Std.List in 1 end\n")],
+        requires: &[],
+        configure,
+    };
+    assert_eq!(
+        IN_LET.undeclared_imports(),
+        Ok(vec!["InLet.M imports Std.List".to_string()])
+    );
+}
+
+#[test]
+fn an_extension_module_cannot_use_a_file() {
+    static USES_FILE: Extension = Extension {
+        name: "uses_file",
+        types: &[],
+        builtins: &[],
+        modules: &[(
+            "UsesFile.M",
+            "use \"./helper.hml\"\nstructure M = struct\n  val n = 1\nend\n",
+        )],
+        requires: &[],
+        configure,
+    };
+    assert_eq!(
+        USES_FILE.undeclared_imports(),
+        Ok(vec![
+            "UsesFile.M uses ./helper.hml; an extension module cannot use a file".to_string()
+        ])
+    );
+    let options = ModuleLoaderOptions {
+        extensions: Extension::compile_surface(&[&USES_FILE]),
+        ..Default::default()
+    };
+    let err = Compiler::compile_with_options(parse("import UsesFile.M"), options)
+        .map(|_| ())
+        .expect_err("a use in an extension module");
+    assert_eq!(
+        format!("{err:?}"),
+        format!(
+            "Codegen({:?})",
+            "module UsesFile.M of extension 'uses_file' declares use './helper.hml'; an extension module cannot use a file"
+        )
+    );
 }

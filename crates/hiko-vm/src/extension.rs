@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use hiko_builtin_meta::BuiltinTypeSignature;
-use hiko_compile::compiler::ExtensionSurface;
+use hiko_compile::compiler::{ExtensionRequires, ExtensionSurface};
 
 use crate::heap::Heap;
 use crate::sendable::SendableValue;
@@ -60,12 +60,60 @@ pub struct Extension {
     pub builtins: &'static [ExtensionBuiltin],
     /// Hiko modules by import name, such as `("Github.Issue", source)`.
     pub modules: &'static [(&'static str, &'static str)],
+    /// Library modules those modules import directly, such as
+    /// `"Std.Result"`. They come from the project's lockfile like any named
+    /// import. When one of the extension's modules imports one that is not
+    /// pinned, or one not listed here, compiling fails with an error naming
+    /// the module and the extension.
+    pub requires: &'static [&'static str],
     /// Turn the run-config table into the extension's state. An error stops
     /// the VM from being built.
     pub configure: fn(&toml::Value) -> Result<ExtensionState, String>,
 }
 
 impl Extension {
+    /// What keeps `requires` in step with the sources: the imports in the
+    /// extension's modules, at any depth, that are neither its own modules
+    /// nor listed in `requires`, as `"<module> imports <name>"`, and every
+    /// `use`, as `"<module> uses <path>; an extension module cannot use a
+    /// file"`. The compiler refuses both; each extension's tests assert this
+    /// is empty, so those errors cannot reach a user. It reads tokens, so an
+    /// import in a `let` is seen like any other.
+    pub fn undeclared_imports(&self) -> Result<Vec<String>, String> {
+        use hiko_syntax::token::TokenKind;
+        let mut undeclared = Vec::new();
+        for (module, source) in self.modules {
+            let tokens = hiko_syntax::lexer::Lexer::new(source, 0)
+                .tokenize()
+                .map_err(|e| format!("{module}: {}", e.message))?;
+            let kinds: Vec<&TokenKind> = tokens.iter().map(|t| &t.kind).collect();
+            for (i, kind) in kinds.iter().enumerate() {
+                match (kind, &kinds[i + 1..]) {
+                    (
+                        TokenKind::Import,
+                        [
+                            TokenKind::Ident(package) | TokenKind::UpperIdent(package),
+                            TokenKind::Dot,
+                            TokenKind::UpperIdent(leaf),
+                            ..,
+                        ],
+                    ) => {
+                        let import = format!("{package}.{leaf}");
+                        let own = self.modules.iter().any(|(m, _)| *m == import);
+                        if !own && !self.requires.contains(&import.as_str()) {
+                            undeclared.push(format!("{module} imports {import}"));
+                        }
+                    }
+                    (TokenKind::Use, [TokenKind::StringLit(path), ..]) => undeclared.push(format!(
+                        "{module} uses {path}; an extension module cannot use a file"
+                    )),
+                    _ => {}
+                }
+            }
+        }
+        Ok(undeclared)
+    }
+
     /// What `extensions` add to the compiler.
     pub fn compile_surface(extensions: &[&Extension]) -> ExtensionSurface {
         let mut surface = ExtensionSurface::default();
@@ -78,6 +126,11 @@ impl Extension {
                     .map(|builtin| (builtin.name, builtin.signature)),
             );
             surface.modules.extend_from_slice(extension.modules);
+            surface.requires.push(ExtensionRequires {
+                extension: extension.name,
+                modules: extension.modules,
+                imports: extension.requires,
+            });
         }
         surface
     }

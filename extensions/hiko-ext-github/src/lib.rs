@@ -54,6 +54,7 @@ pub static GITHUB: Extension = Extension {
         ),
     ],
     modules: &[("Github.Issue", include_str!("Issue.hml"))],
+    requires: &[],
     configure,
 };
 
@@ -318,4 +319,14 @@ fn issue_update(args: &[Value], heap: &mut Heap) -> Result<Value, String> {
             VIEW_FIELDS,
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requires_lists_every_library_import() {
+        assert_eq!(GITHUB.undeclared_imports(), Ok(vec![]));
+    }
 }

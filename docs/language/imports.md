@@ -323,13 +323,17 @@ hiko build-vm run.toml --lock hiko.lock.toml --script main.hml  # exactly this p
 Sources are embedded, not compiled bytecode: the generated crate stays
 readable, and there is no serialized bytecode format to trust.
 
+## Extensions
+
+An extension's modules import library modules through the project's
+lockfile too. See "Library modules an extension needs" in
+[extensions](../architecture/extensions.md).
+
 ## What Is Next
 
 The remaining library/import work is operational hardening rather than deeper
 module theory:
 
-- let extensions declare the library modules their Hiko sources import,
-  so `hiko install` locks them and a missing one is an explicit error (#175)
 - make `local_package_root` (used by `build-vm` and tests) exclusive: today a
   module missing from it falls through to the cache and the network
 - embed only the modules a `--script` program imports, not the whole lockfile

@@ -1,11 +1,11 @@
+import Std.Result
+
 (*!
  * Amazon CloudWatch alarms, from the hiko-ext-aws extension. Needs
  * `cloudwatch = true` in `[extensions.aws]`.
  *)
 structure CloudWatch = struct
   type client = aws_cloudwatch_client
-
-  type error = string
 
   (*! Name, state (`OK`, `ALARM` or `INSUFFICIENT_DATA`), source
       (`Namespace/MetricName`, `metric math` or `composite`), when the alarm
@@ -20,16 +20,12 @@ structure CloudWatch = struct
   fun updated (_, _, _, updated, _) = updated
   fun reason (_, _, _, _, reason) = reason
 
-  datatype ('a, 'e) result =
-      Ok of 'a
-    | Err of 'e
-
   (*! A reusable client. *)
   fun client config = aws_cloudwatch_client config
 
   (*! Every metric and composite alarm in the config's region. *)
   fun alarms client =
     case aws_cloudwatch_describe_alarms client of
-        (true, alarms, _) => Ok alarms
-      | (false, _, message) => Err message
+        (true, alarms, _) => Result.Ok alarms
+      | (false, _, message) => Result.Err message
 end

@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use hiko_compile::compiler::LockedModuleSource;
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
-    Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions, local_use_files,
+    CompileError, Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions,
+    local_use_files,
 };
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_syntax::{lexer::Lexer, parser::Parser};
@@ -374,7 +375,13 @@ fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> R
     };
     Compiler::compile_embedded(program, options)
         .map(|_| ())
-        .map_err(|e| format!("the script does not compile with only the embedded sources: {e:?}"))
+        .map_err(|e| {
+            let message = match e {
+                CompileError::Codegen(message) => message,
+                CompileError::Type(error) => error.message,
+            };
+            format!("the script does not compile with only the embedded sources: {message}")
+        })
 }
 
 /// `src/embedded.rs`, the sources under `sealed/`, and `build.rs`, which
@@ -835,6 +842,37 @@ mod tests {
         let err =
             generate(&options, &config, &[&hiko_ext_github::GITHUB]).expect_err("unknown key");
         assert!(err.contains("[extensions.github]"), "{err}");
+    }
+
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+    #[cfg(feature = "ext-aws")]
+    #[test]
+    fn a_sealed_script_must_embed_what_its_extension_modules_import() {
+        // Aws.S3 imports Std.Result; without --lock nothing is sealed, so
+        // build-vm refuses the script instead of building an artifact that
+        // fails on its import. A script that imports no AWS module needs
+        // nothing.
+        let config = RunConfig::from_toml("[extensions.aws]\n").unwrap();
+        let build = |name: &str, source: &str| {
+            let dir = temp_dir(name);
+            write(&dir.join("main.hml"), source).unwrap();
+            let options = BuildVmOptions {
+                config_path: "run.toml".into(),
+                script: Some(dir.join("main.hml")),
+                out_dir: Some(dir.join("out")),
+                local_package_root: Some(repo().join("libraries")),
+                cache_dir: Some(temp_dir("cache")),
+                ..BuildVmOptions::default()
+            };
+            generate(&options, &config, &[&hiko_ext_aws::AWS])
+        };
+        let err =
+            build("ext-s3", "import Aws.S3\nval _ = println \"hi\"\n").expect_err("not embedded");
+        assert_eq!(
+            err,
+            "the script does not compile with only the embedded sources: module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed; build it with --lock and a lockfile that pins Std.Result"
+        );
+        build("ext-none", "val _ = println \"hi\"\n").expect("needs nothing");
     }
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
