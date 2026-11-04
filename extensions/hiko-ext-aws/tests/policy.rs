@@ -95,6 +95,20 @@ fn run(source: &str, policy: &str) -> Result<(), String> {
     vm.run().map_err(|e| e.message)
 }
 
+/// The end of an error whose fix is to declare and install Std.
+const DECLARE_STD: &str = "if hiko.toml does not declare Std, add it with its version and registry (see docs/language/imports.md), then run 'hiko install'";
+
+/// How `compile_in` reports a loader error with this exact message.
+fn codegen(message: &str) -> String {
+    format!("Codegen({message:?})")
+}
+
+fn outside_a_project(script: &str) -> String {
+    format!(
+        "module Aws.S3 of extension 'aws' needs Std.Result, which comes from a project's lockfile, but {script} has no hiko.toml in or above its directory; create one that declares Std with its version and registry (see docs/language/imports.md), then run 'hiko install'"
+    )
+}
+
 const S3_POLICY: &str = "[extensions.aws]\nsso_profiles = [\"dev\"]\ns3 = true\n";
 
 fn s3_options() -> ModuleLoaderOptions {
@@ -118,25 +132,167 @@ fn aws_listings_are_std_results() {
 fn a_lockfile_without_std_result_is_an_error_naming_the_module() {
     let dir = project("without-result", &["List"]);
     let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
-    assert!(
-        err.contains(
-            "module Aws.S3 of extension 'aws' needs Std.Result, which hiko.lock.toml does not pin"
-        ) && err.contains("hiko install"),
-        "{err}"
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result, which {} does not pin; {DECLARE_STD}",
+            dir.join("hiko.lock.toml").display()
+        ))
     );
     // Aws.Config imports nothing, so it needs nothing.
     compile_in(&dir, "import Aws.Config", s3_options()).expect("Aws.Config alone");
 }
 
 #[test]
+fn the_error_names_the_lockfile_the_project_uses() {
+    let dir = project("renamed-lockfile", &["List"]);
+    let manifest = std::fs::read_to_string(dir.join("hiko.toml")).unwrap();
+    std::fs::write(
+        dir.join("hiko.toml"),
+        manifest.replace("hiko.lock.toml", "release.lock.toml"),
+    )
+    .unwrap();
+    std::fs::rename(dir.join("hiko.lock.toml"), dir.join("release.lock.toml")).unwrap();
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result, which {} does not pin; {DECLARE_STD}",
+            dir.join("release.lock.toml").display()
+        ))
+    );
+}
+
+#[test]
 fn outside_a_project_the_error_names_the_extension() {
     let dir = temp_dir("no-project");
     let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
-    assert!(
-        err.contains("module Aws.S3 of extension 'aws' needs Std.Result")
-            && err.contains("not in a project")
-            && err.contains("hiko install"),
-        "{err}"
+    assert_eq!(
+        err,
+        codegen(&outside_a_project(
+            &dir.join("script.hml").display().to_string()
+        ))
+    );
+}
+
+#[test]
+fn with_no_entry_file_the_error_says_this_program() {
+    let err = Compiler::compile_with_options(parse("import Aws.S3"), s3_options())
+        .map(|_| ())
+        .map_err(|e| format!("{e:?}"))
+        .unwrap_err();
+    assert_eq!(err, codegen(&outside_a_project("this program")));
+}
+
+#[test]
+fn outside_a_project_aws_config_compiles() {
+    let dir = temp_dir("config-no-project");
+    compile_in(&dir, "import Aws.Config", s3_options()).expect("Aws.Config imports nothing");
+}
+
+#[test]
+fn a_project_with_no_lockfile_ends_in_the_fix() {
+    let dir = project("no-lockfile", &["Result"]);
+    std::fs::remove_file(dir.join("hiko.lock.toml")).unwrap();
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: project manifest '{}' references missing module lockfile '{}'; {DECLARE_STD}",
+            dir.join("hiko.toml").display(),
+            dir.join("hiko.lock.toml").display()
+        ))
+    );
+}
+
+#[test]
+fn a_lockfile_that_lacks_a_declared_std_ends_in_the_fix() {
+    let dir = project("lacks-std", &["Result"]);
+    std::fs::write(dir.join("hiko.lock.toml"), "schema_version = 1\n").unwrap();
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: dependency 'Std' declared in project manifest '{}' is missing from module lockfile '{}'; {DECLARE_STD}",
+            dir.join("hiko.toml").display(),
+            dir.join("hiko.lock.toml").display()
+        ))
+    );
+}
+
+#[test]
+fn a_lockfile_pinning_an_undeclared_std_ends_in_the_fix() {
+    let dir = project("undeclared-std", &["Result"]);
+    let manifest = std::fs::read_to_string(dir.join("hiko.toml")).unwrap();
+    std::fs::write(dir.join("hiko.toml"), manifest.replace("Std =", "Other =")).unwrap();
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: package 'Std' in '{}' is not declared in project manifest '{}'; {DECLARE_STD}",
+            dir.join("hiko.lock.toml").display(),
+            dir.join("hiko.toml").display()
+        ))
+    );
+}
+
+#[test]
+fn a_loader_error_about_another_package_keeps_its_own_message() {
+    let dir = project("other-package", &["Result"]);
+    let lock = std::fs::read_to_string(dir.join("hiko.lock.toml")).unwrap();
+    std::fs::write(
+        dir.join("hiko.lock.toml"),
+        format!("{lock}\n[packages.Other]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:8000/Other-v0.1.0\"\n\n[packages.Other.modules]\n"),
+    )
+    .unwrap();
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: package 'Other' in '{}' is not declared in project manifest '{}'",
+            dir.join("hiko.lock.toml").display(),
+            dir.join("hiko.toml").display()
+        ))
+    );
+}
+
+/// An extension module whose one requirement has an import of its own.
+static LOGGING: Extension = Extension {
+    name: "logging",
+    types: &[],
+    builtins: &[],
+    modules: &[(
+        "Logging.M",
+        "import Std.Log\nstructure M = struct\n  val n = 1\nend\n",
+    )],
+    requires: &["Std.Log"],
+    configure: |_| Ok(std::sync::Arc::new(())),
+};
+
+fn logging_options() -> ModuleLoaderOptions {
+    ModuleLoaderOptions {
+        extensions: Extension::compile_surface(&[&LOGGING]),
+        ..s3_options()
+    }
+}
+
+#[test]
+fn a_librarys_own_imports_are_not_checked_against_requires() {
+    assert_eq!(LOGGING.undeclared_imports(), Ok(vec![]));
+    let dir = project("logging", &["Log", "Option"]);
+    compile_in(&dir, "import Logging.M", logging_options()).expect("Std.Log imports Std.Option");
+}
+
+#[test]
+fn a_librarys_own_unpinned_import_names_the_lockfile_and_the_fix() {
+    let dir = project("logging-unpinned", &["Log"]);
+    let err = compile_in(&dir, "import Logging.M", logging_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module 'Option' in package 'Std' for named import 'Std.Option' not found in {}; {DECLARE_STD}",
+            dir.join("hiko.lock.toml").display()
+        ))
     );
 }
 
@@ -152,11 +308,11 @@ fn a_sealed_artifact_without_std_result_is_an_error_naming_the_extension() {
         ..s3_options()
     };
     let err = compile_in(with_result(), "import Aws.S3", options).unwrap_err();
-    assert!(
-        err.contains(
-            "module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed"
-        ),
-        "{err}"
+    assert_eq!(
+        err,
+        codegen(
+            "module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed; build it with --lock and a lockfile that pins Std.Result"
+        )
     );
 }
 

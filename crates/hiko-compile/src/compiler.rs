@@ -63,9 +63,9 @@ pub struct ExtensionSurface {
 /// The library modules, such as `Std.Result`, that one extension's modules
 /// may import. They resolve like any named import, through the project's
 /// lockfile or a sealed artifact's embedded sources. While an extension
-/// module is compiled, each of its library imports must be listed here, and
-/// one that is not available fails with an error naming the module and the
-/// extension.
+/// module is compiled, each library module it imports directly must be listed
+/// here, and one that is not available fails with an error naming the module
+/// and the extension. A library module's own imports are not checked.
 #[derive(Debug, Clone, Copy)]
 pub struct ExtensionRequires {
     pub extension: &'static str,
@@ -272,6 +272,25 @@ impl CompileError {
     }
 }
 
+/// How a project gets a package: the end of every error whose fix is to
+/// declare and install it.
+#[cfg(feature = "loader-integrity-blake3")]
+const PACKAGE_ENTRY_AND_INSTALL: &str =
+    "with its version and registry (see docs/language/imports.md), then run 'hiko install'";
+
+#[cfg(feature = "loader-integrity-blake3")]
+fn declare_package_fix(package: &str) -> String {
+    format!("if hiko.toml does not declare {package}, add it {PACKAGE_ENTRY_AND_INSTALL}")
+}
+
+/// The fix for a loader error, when the module being loaded needs `package`.
+#[cfg(feature = "loader-integrity-blake3")]
+fn loader_error_fix(package: Option<&str>) -> String {
+    package
+        .map(|package| format!("; {}", declare_package_fix(package)))
+        .unwrap_or_default()
+}
+
 #[cfg(feature = "loader-integrity-blake3")]
 fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
     let mut dir = entry_file.parent();
@@ -286,7 +305,10 @@ fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(feature = "loader-integrity-blake3")]
-fn load_import_loader_config(entry_file: &Path) -> Result<ImportLoaderConfig, CompileError> {
+fn load_import_loader_config(
+    entry_file: &Path,
+    needed_package: Option<&str>,
+) -> Result<ImportLoaderConfig, CompileError> {
     let manifest_path = find_project_manifest_path(entry_file).ok_or_else(|| {
         CompileError::codegen(format!(
             "named imports require a project hiko.toml above '{}'",
@@ -314,9 +336,10 @@ fn load_import_loader_config(entry_file: &Path) -> Result<ImportLoaderConfig, Co
     let lockfile_path = manifest_dir.join(lockfile);
     if !lockfile_path.is_file() {
         return Err(CompileError::codegen(format!(
-            "project manifest '{}' references missing module lockfile '{}'",
+            "project manifest '{}' references missing module lockfile '{}'{}",
             manifest_path.display(),
-            lockfile_path.display()
+            lockfile_path.display(),
+            loader_error_fix(needed_package)
         )));
     }
     Ok(ImportLoaderConfig {
@@ -494,7 +517,9 @@ fn validate_lockfile_against_manifest(
     lockfile: &ImportLockfile,
     lockfile_path: &Path,
     config: &ImportLoaderConfig,
+    needed_package: Option<&str>,
 ) -> Result<(), CompileError> {
+    let fix = |package: &str| loader_error_fix(needed_package.filter(|p| *p == package));
     let dependencies = &config.manifest.dependencies;
     if dependencies.is_empty() {
         return Ok(());
@@ -503,9 +528,10 @@ fn validate_lockfile_against_manifest(
     for package_name in lockfile.packages.keys() {
         if !dependencies.contains_key(package_name) {
             return Err(CompileError::codegen(format!(
-                "package '{package_name}' in '{}' is not declared in project manifest '{}'",
+                "package '{package_name}' in '{}' is not declared in project manifest '{}'{}",
                 lockfile_path.display(),
-                config.manifest_path.display()
+                config.manifest_path.display(),
+                fix(package_name)
             )));
         }
     }
@@ -513,9 +539,10 @@ fn validate_lockfile_against_manifest(
     for (package_name, dependency) in dependencies {
         let package = lockfile.packages.get(package_name).ok_or_else(|| {
             CompileError::codegen(format!(
-                "dependency '{package_name}' declared in project manifest '{}' is missing from module lockfile '{}'",
+                "dependency '{package_name}' declared in project manifest '{}' is missing from module lockfile '{}'{}",
                 config.manifest_path.display(),
-                lockfile_path.display()
+                lockfile_path.display(),
+                fix(package_name)
             ))
         })?;
         if package.version != dependency.version {
@@ -954,6 +981,9 @@ pub struct Compiler {
     /// Named module lockfile loaded lazily from the entry program's project root.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     import_lockfile: Option<ImportLockfile>,
+    /// Where `import_lockfile` was read from.
+    #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
+    import_lockfile_path: Option<PathBuf>,
     /// Cache directory for fetched remote modules.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     module_cache_dir: Option<PathBuf>,
@@ -1021,7 +1051,7 @@ impl Compiler {
         feature = "loader-integrity-blake3"
     ))]
     pub fn project_lockfile_path(entry_file: &Path) -> Result<PathBuf, CompileError> {
-        Ok(load_import_loader_config(entry_file)?.lockfile_path)
+        Ok(load_import_loader_config(entry_file, None)?.lockfile_path)
     }
 
     /// The source of every module in the lockfile of the project that
@@ -1044,7 +1074,7 @@ impl Compiler {
             loader_options,
             StringInterner::default(),
         );
-        let (lockfile, _) = c.ensure_import_loader("the lockfile")?;
+        let (lockfile, _, _) = c.ensure_import_loader("the lockfile", None)?;
         let mut names = Vec::new();
         for (package_name, package) in &lockfile.packages {
             for (module, hash) in &package.modules {
@@ -1130,6 +1160,7 @@ impl Compiler {
             compiled_imports: HashSet::new(),
             imported_programs: HashMap::new(),
             import_lockfile: None,
+            import_lockfile_path: None,
             module_cache_dir: None,
             loader_options,
             global_protos: HashMap::new(),
@@ -1792,6 +1823,12 @@ impl Compiler {
     // ── Local and named import handling ─────────────────────────────
 
     fn resolve_local_use(&self, path: &str) -> Result<ResolvedImport, CompileError> {
+        if let Some((requires, importer)) = self.importing_extension {
+            return Err(CompileError::codegen(format!(
+                "module {importer} of extension '{}' declares use '{path}'; an extension module cannot use a file",
+                requires.extension
+            )));
+        }
         if self.in_remote_import {
             return Err(CompileError::codegen(format!(
                 "local use '{path}' is not allowed in a remote module; use a named import instead"
@@ -1852,11 +1889,10 @@ impl Compiler {
         self.resolve_external_named_import(module_name, package_name, leaf_module)
     }
 
-    /// Every library module the extension providing `module_name` needs is
-    /// available: embedded in a sealed artifact, or pinned in the project's
-    /// lockfile. Checked when the extension's module is imported, so the
-    /// error names the extension rather than an import the user never
-    /// wrote.
+    /// `import`, a library module that the extension module `importer`
+    /// imports, is listed in `requires` and available: embedded in a sealed
+    /// artifact, or pinned in the project's lockfile. The error names the
+    /// extension rather than an import the user never wrote.
     fn check_extension_import(
         &mut self,
         requires: &ExtensionRequires,
@@ -1866,7 +1902,7 @@ impl Compiler {
         let who = format!("module {importer} of extension '{}'", requires.extension);
         if !requires.imports.contains(&import) {
             return Err(CompileError::codegen(format!(
-                "{who} imports {import}, which the extension does not list in its requires"
+                "{who} imports {import}, which the extension does not list in its requires; add it to requires in the extension's Extension"
             )));
         }
         match self.loader_options.embedded {
@@ -1881,24 +1917,22 @@ impl Compiler {
     #[cfg(feature = "loader-integrity-blake3")]
     fn check_locked_for_extension(&mut self, who: &str, import: &str) -> Result<(), CompileError> {
         let (package, leaf) = split_import_name(import)?;
-        let fix = || format!("add {package} to [dependencies] in hiko.toml and run 'hiko install'");
-        let in_project = self
-            .entry_file
-            .as_deref()
-            .is_some_and(|entry| find_project_manifest_path(entry).is_some());
-        if !in_project {
+        let entry = self.entry_file.as_deref();
+        if !entry.is_some_and(|entry| find_project_manifest_path(entry).is_some()) {
+            let script = entry.map_or("this program".to_string(), |e| e.display().to_string());
             return Err(CompileError::codegen(format!(
-                "{who} needs {import}, which comes from a project's lockfile, but this program is not in a project; {}",
-                fix()
+                "{who} needs {import}, which comes from a project's lockfile, but {script} has no hiko.toml in or above its directory; create one that declares {package} {PACKAGE_ENTRY_AND_INSTALL}"
             )));
         }
-        let (lockfile, _) = self.ensure_import_loader(import).map_err(|e| {
-            let message = match e {
-                CompileError::Codegen(message) => message,
-                other => format!("{other:?}"),
-            };
-            CompileError::codegen(format!("{who} needs {import}: {message}"))
-        })?;
+        let (lockfile, lockfile_path, _) = self
+            .ensure_import_loader(import, Some(package))
+            .map_err(|e| {
+                let message = match e {
+                    CompileError::Codegen(message) => message,
+                    other => format!("{other:?}"),
+                };
+                CompileError::codegen(format!("{who} needs {import}: {message}"))
+            })?;
         if lockfile
             .packages
             .get(package)
@@ -1907,8 +1941,9 @@ impl Compiler {
             Ok(())
         } else {
             Err(CompileError::codegen(format!(
-                "{who} needs {import}, which hiko.lock.toml does not pin; {}",
-                fix()
+                "{who} needs {import}, which {} does not pin; {}",
+                lockfile_path.display(),
+                declare_package_fix(package)
             )))
         }
     }
@@ -1942,15 +1977,19 @@ impl Compiler {
         leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
         let local_package_root = self.loader_options.local_package_root.clone();
-        let (lockfile, cache_dir) = self.ensure_import_loader(module_name)?;
+        let (lockfile, lockfile_path, cache_dir) = self.ensure_import_loader(module_name, None)?;
         let package = lockfile.packages.get(package_name).ok_or_else(|| {
             CompileError::codegen(format!(
-                "package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
+                "package '{package_name}' for named import '{module_name}' not found in {}; {}",
+                lockfile_path.display(),
+                declare_package_fix(package_name)
             ))
         })?;
         let expected_hash = package.modules.get(leaf_module).ok_or_else(|| {
             CompileError::codegen(format!(
-                "module '{leaf_module}' in package '{package_name}' for named import '{module_name}' not found in hiko.lock.toml"
+                "module '{leaf_module}' in package '{package_name}' for named import '{module_name}' not found in {}; {}",
+                lockfile_path.display(),
+                declare_package_fix(package_name)
             ))
         })?;
         let expected_hash = normalize_blake3(expected_hash);
@@ -2053,14 +2092,15 @@ impl Compiler {
     fn ensure_import_loader(
         &mut self,
         module_name: &str,
-    ) -> Result<(&ImportLockfile, &PathBuf), CompileError> {
+        needed_package: Option<&str>,
+    ) -> Result<(&ImportLockfile, &PathBuf, &PathBuf), CompileError> {
         if self.import_lockfile.is_none() || self.module_cache_dir.is_none() {
             let entry_file = self.entry_file.as_ref().ok_or_else(|| {
                 CompileError::codegen(format!(
                     "named import '{module_name}' requires file-based compilation context"
                 ))
             })?;
-            let loader_config = load_import_loader_config(entry_file)?;
+            let loader_config = load_import_loader_config(entry_file, needed_package)?;
             let lockfile_path = &loader_config.lockfile_path;
             let lockfile_text = std::fs::read_to_string(lockfile_path).map_err(|e| {
                 CompileError::codegen(format!(
@@ -2075,8 +2115,14 @@ impl Compiler {
                 ))
             })?;
             validate_lockfile(&lockfile, lockfile_path)?;
-            validate_lockfile_against_manifest(&lockfile, lockfile_path, &loader_config)?;
+            validate_lockfile_against_manifest(
+                &lockfile,
+                lockfile_path,
+                &loader_config,
+                needed_package,
+            )?;
             self.import_lockfile = Some(lockfile);
+            self.import_lockfile_path = Some(loader_config.lockfile_path.clone());
             // The embedder's choice, then the manifest's, then the default.
             self.module_cache_dir = Some(match &self.loader_options.cache_dir {
                 Some(dir) => dir.clone(),
@@ -2087,8 +2133,9 @@ impl Compiler {
             });
         }
         let lockfile = self.import_lockfile.as_ref().unwrap();
+        let lockfile_path = self.import_lockfile_path.as_ref().unwrap();
         let cache_dir = self.module_cache_dir.as_ref().unwrap();
-        Ok((lockfile, cache_dir))
+        Ok((lockfile, lockfile_path, cache_dir))
     }
 
     /// Pass 1: type-check a single declaration (handles `use` recursively)
@@ -2167,11 +2214,16 @@ impl Compiler {
         let old_in_remote = self.in_remote_import;
         self.in_remote_import |= is_remote;
         let old_extension = self.importing_extension;
-        if let ImportKey::Synthetic(name) = key
-            && let Some(requires) = self.loader_options.extensions.requires_for(name)
-        {
-            self.importing_extension = Some((requires, name));
-        }
+        // None inside a library module: its own imports are not the
+        // extension's.
+        self.importing_extension = match key {
+            ImportKey::Synthetic(name) => self
+                .loader_options
+                .extensions
+                .requires_for(name)
+                .map(|requires| (requires, name)),
+            _ => None,
+        };
 
         // The module's declarations are top-level ones of their own, even
         // when a `use` inside `local` brings it in.

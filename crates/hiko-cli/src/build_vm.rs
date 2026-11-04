@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use hiko_compile::compiler::LockedModuleSource;
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
-    Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions, local_use_files,
+    CompileError, Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions,
+    local_use_files,
 };
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_syntax::{lexer::Lexer, parser::Parser};
@@ -374,7 +375,13 @@ fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> R
     };
     Compiler::compile_embedded(program, options)
         .map(|_| ())
-        .map_err(|e| format!("the script does not compile with only the embedded sources: {e:?}"))
+        .map_err(|e| {
+            let message = match e {
+                CompileError::Codegen(message) => message,
+                CompileError::Type(error) => error.message,
+            };
+            format!("the script does not compile with only the embedded sources: {message}")
+        })
 }
 
 /// `src/embedded.rs`, the sources under `sealed/`, and `build.rs`, which
@@ -861,9 +868,9 @@ mod tests {
         };
         let err =
             build("ext-s3", "import Aws.S3\nval _ = println \"hi\"\n").expect_err("not embedded");
-        assert!(
-            err.contains("module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed"),
-            "{err}"
+        assert_eq!(
+            err,
+            "the script does not compile with only the embedded sources: module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed; build it with --lock and a lockfile that pins Std.Result"
         );
         build("ext-none", "val _ = println \"hi\"\n").expect("needs nothing");
     }

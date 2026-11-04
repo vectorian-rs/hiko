@@ -1,6 +1,7 @@
 # Run config for examples/sre/cloudwatch_alarms.hml: read CloudWatch alarms with one SSO
-# profile, print the report, exit with its status. It cannot read the
-# environment, files or the network beyond CloudWatch.
+# profile, print the report, exit with its status. The policy covers the running program,
+# which cannot read the environment, files or the network beyond CloudWatch. Modules load
+# before it applies, until #187.
 
 [capabilities.stdio.println]
 enabled = true
