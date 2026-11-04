@@ -278,9 +278,26 @@ impl CompileError {
 const PACKAGE_ENTRY_AND_INSTALL: &str =
     "with its version and registry (see docs/language/imports.md), then run 'hiko install'";
 
+/// The fix for an error that `hiko install` repairs: one the lockfile causes
+/// and a module that does not load.
+const INSTALL_REWRITES_LOCKFILE: &str =
+    "run 'hiko install', which fetches the modules and rewrites the lockfile from hiko.toml";
+
 #[cfg(feature = "loader-integrity-blake3")]
 fn declare_package_fix(package: &str) -> String {
     format!("if hiko.toml does not declare {package}, add it {PACKAGE_ENTRY_AND_INSTALL}")
+}
+
+/// `importer`, as an error about an extension module names it.
+fn extension_module(requires: &ExtensionRequires, importer: &str) -> String {
+    format!("module {importer} of extension '{}'", requires.extension)
+}
+
+fn codegen_message(error: CompileError) -> String {
+    match error {
+        CompileError::Codegen(message) => message,
+        other => format!("{other:?}"),
+    }
 }
 
 /// The fix for a loader error, when the module being loaded needs `package`.
@@ -519,7 +536,13 @@ fn validate_lockfile_against_manifest(
     config: &ImportLoaderConfig,
     needed_package: Option<&str>,
 ) -> Result<(), CompileError> {
-    let fix = |package: &str| loader_error_fix(needed_package.filter(|p| *p == package));
+    let needed = |package: &str| needed_package.filter(|p| *p == package);
+    let fix = |package: &str| loader_error_fix(needed(package));
+    let rewrite_fix = |package: &str| {
+        needed(package)
+            .map(|_| format!("; {INSTALL_REWRITES_LOCKFILE}"))
+            .unwrap_or_default()
+    };
     let dependencies = &config.manifest.dependencies;
     if dependencies.is_empty() {
         return Ok(());
@@ -547,11 +570,12 @@ fn validate_lockfile_against_manifest(
         })?;
         if package.version != dependency.version {
             return Err(CompileError::codegen(format!(
-                "dependency '{package_name}' version mismatch: project manifest '{}' requires {}, but module lockfile '{}' resolves {}",
+                "dependency '{package_name}' version mismatch: project manifest '{}' requires {}, but module lockfile '{}' resolves {}{}",
                 config.manifest_path.display(),
                 dependency.version,
                 lockfile_path.display(),
-                package.version
+                package.version,
+                rewrite_fix(package_name)
             )));
         }
         let registry = config
@@ -560,9 +584,15 @@ fn validate_lockfile_against_manifest(
             .get(&dependency.registry)
             .ok_or_else(|| {
                 CompileError::codegen(format!(
-                    "dependency '{package_name}' references unknown registry '{}' in project manifest '{}'",
+                    "dependency '{package_name}' references unknown registry '{}' in project manifest '{}'{}",
                     dependency.registry,
-                    config.manifest_path.display()
+                    config.manifest_path.display(),
+                    needed(package_name)
+                        .map(|_| format!(
+                            "; add [registries.{}] to hiko.toml (see docs/language/imports.md), then run 'hiko install'",
+                            dependency.registry
+                        ))
+                        .unwrap_or_default()
                 ))
             })?;
         let expected_base_url = format!(
@@ -573,11 +603,12 @@ fn validate_lockfile_against_manifest(
         );
         if package.base_url.trim_end_matches('/') != expected_base_url {
             return Err(CompileError::codegen(format!(
-                "dependency '{package_name}' source mismatch: project manifest '{}' expects '{}', but module lockfile '{}' resolves '{}'",
+                "dependency '{package_name}' source mismatch: project manifest '{}' expects '{}', but module lockfile '{}' resolves '{}'{}",
                 config.manifest_path.display(),
                 expected_base_url,
                 lockfile_path.display(),
-                package.base_url
+                package.base_url,
+                rewrite_fix(package_name)
             )));
         }
     }
@@ -1886,7 +1917,17 @@ impl Compiler {
         if let Some(embedded) = self.loader_options.embedded {
             return resolve_embedded_module(embedded, module_name);
         }
-        self.resolve_external_named_import(module_name, package_name, leaf_module)
+        let resolved = self.resolve_external_named_import(module_name, package_name, leaf_module);
+        match self.importing_extension {
+            Some((requires, importer)) => resolved.map_err(|e| {
+                CompileError::codegen(format!(
+                    "{} needs {module_name}: {}; {INSTALL_REWRITES_LOCKFILE}",
+                    extension_module(&requires, importer),
+                    codegen_message(e)
+                ))
+            }),
+            None => resolved,
+        }
     }
 
     /// `import`, a library module that the extension module `importer`
@@ -1899,11 +1940,15 @@ impl Compiler {
         importer: &str,
         import: &str,
     ) -> Result<(), CompileError> {
-        let who = format!("module {importer} of extension '{}'", requires.extension);
+        let who = extension_module(requires, importer);
         if !requires.imports.contains(&import) {
             return Err(CompileError::codegen(format!(
                 "{who} imports {import}, which the extension does not list in its requires; add it to requires in the extension's Extension"
             )));
+        }
+        // Part of the compiler: not in a lockfile and not embedded.
+        if is_internal_builtin_package(split_import_name(import)?.0) {
+            return Ok(());
         }
         match self.loader_options.embedded {
             Some(embedded) if embedded.modules.iter().any(|m| m.import_name == import) => Ok(()),
@@ -1927,11 +1972,7 @@ impl Compiler {
         let (lockfile, lockfile_path, _) = self
             .ensure_import_loader(import, Some(package))
             .map_err(|e| {
-                let message = match e {
-                    CompileError::Codegen(message) => message,
-                    other => format!("{other:?}"),
-                };
-                CompileError::codegen(format!("{who} needs {import}: {message}"))
+                CompileError::codegen(format!("{who} needs {import}: {}", codegen_message(e)))
             })?;
         if lockfile
             .packages
@@ -2175,6 +2216,18 @@ impl Compiler {
         }
     }
 
+    /// The extension whose module `key` is, with that module's name.
+    fn extension_of(&self, key: &ImportKey) -> Option<(ExtensionRequires, &'static str)> {
+        match key {
+            ImportKey::Synthetic(name) => self
+                .loader_options
+                .extensions
+                .requires_for(name)
+                .map(|requires| (requires, *name)),
+            _ => None,
+        }
+    }
+
     /// Pass 1 for imported source: load, parse, desugar, infer, and cache.
     fn infer_import_source(&mut self, import: ResolvedImport) -> Result<(), CompileError> {
         let key = import.key();
@@ -2216,14 +2269,7 @@ impl Compiler {
         let old_extension = self.importing_extension;
         // None inside a library module: its own imports are not the
         // extension's.
-        self.importing_extension = match key {
-            ImportKey::Synthetic(name) => self
-                .loader_options
-                .extensions
-                .requires_for(name)
-                .map(|requires| (requires, name)),
-            _ => None,
-        };
+        self.importing_extension = self.extension_of(&key);
 
         // The module's declarations are top-level ones of their own, even
         // when a `use` inside `local` brings it in.
@@ -2336,9 +2382,13 @@ impl Compiler {
 
         let old_base = self.base_dir.clone();
         self.base_dir = base_dir;
+        // Set here too: pass 1 does not reach an import or `use` in a `let`.
+        let old_extension = self.importing_extension;
+        self.importing_extension = self.extension_of(&key);
         for decl in &decls {
             self.compile_decl(decl)?;
         }
+        self.importing_extension = old_extension;
         self.base_dir = old_base;
         self.compiled_imports.insert(key);
         Ok(())

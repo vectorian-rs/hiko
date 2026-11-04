@@ -296,6 +296,169 @@ fn a_librarys_own_unpinned_import_names_the_lockfile_and_the_fix() {
     );
 }
 
+/// `s3_options` with `extension` as the only extension.
+fn nested_options(extension: &'static Extension) -> ModuleLoaderOptions {
+    ModuleLoaderOptions {
+        extensions: Extension::compile_surface(&[extension]),
+        ..s3_options()
+    }
+}
+
+#[test]
+fn an_import_in_a_let_is_checked_when_the_script_loaded_it_first() {
+    static NESTED: Extension = Extension {
+        name: "nested",
+        types: &[],
+        builtins: &[],
+        modules: &[("Nested.M", "val n = let import Std.Result in 1 end\n")],
+        requires: &[],
+        configure: |_| Ok(std::sync::Arc::new(())),
+    };
+    let err = compile_in(
+        with_result(),
+        "import Std.Result\nimport Nested.M",
+        nested_options(&NESTED),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        codegen(
+            "module Nested.M of extension 'nested' imports Std.Result, which the extension does not list in its requires; add it to requires in the extension's Extension"
+        )
+    );
+}
+
+#[test]
+fn a_use_in_a_let_is_refused_when_the_script_used_the_file_first() {
+    static NESTED: Extension = Extension {
+        name: "nested",
+        types: &[],
+        builtins: &[],
+        modules: &[("Nested.M", "val n = let use \"./helper.hml\" in 1 end\n")],
+        requires: &[],
+        configure: |_| Ok(std::sync::Arc::new(())),
+    };
+    let dir = temp_dir("nested-use");
+    std::fs::write(dir.join("helper.hml"), "val helper = 1\n").unwrap();
+    let err = compile_in(
+        &dir,
+        "use \"./helper.hml\"\nimport Nested.M",
+        nested_options(&NESTED),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        codegen(
+            "module Nested.M of extension 'nested' declares use './helper.hml'; an extension module cannot use a file"
+        )
+    );
+}
+
+static PATHS: Extension = Extension {
+    name: "paths",
+    types: &[],
+    builtins: &[],
+    modules: &[("Paths.M", "import __Builtin.Path\nval n = 1\n")],
+    requires: &["__Builtin.Path"],
+    configure: |_| Ok(std::sync::Arc::new(())),
+};
+
+#[test]
+fn a_required_internal_builtin_needs_no_project() {
+    let dir = temp_dir("builtin-no-project");
+    compile_in(&dir, "import Paths.M", nested_options(&PATHS)).expect("no lockfile applies");
+}
+
+#[test]
+fn a_required_internal_builtin_needs_no_embedded_copy() {
+    static NOTHING: EmbeddedSources = EmbeddedSources {
+        modules: &[],
+        files: None,
+    };
+    let options = ModuleLoaderOptions {
+        embedded: Some(&NOTHING),
+        ..nested_options(&PATHS)
+    };
+    compile_in(with_result(), "import Paths.M", options).expect("nothing to embed");
+}
+
+/// The end of an error that `hiko install` repairs.
+const REWRITE_LOCKFILE: &str =
+    "run 'hiko install', which fetches the modules and rewrites the lockfile from hiko.toml";
+
+/// `project`, with `from` in its manifest replaced by `to`.
+fn project_with_manifest(name: &str, from: &str, to: &str) -> PathBuf {
+    let dir = project(name, &["Result"]);
+    let manifest = std::fs::read_to_string(dir.join("hiko.toml")).unwrap();
+    assert!(manifest.contains(from));
+    std::fs::write(dir.join("hiko.toml"), manifest.replace(from, to)).unwrap();
+    dir
+}
+
+#[test]
+fn a_version_mismatch_ends_in_the_fix() {
+    let dir = project_with_manifest("version", "version = \"0.1.0\"", "version = \"0.2.0\"");
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: dependency 'Std' version mismatch: project manifest '{}' requires 0.2.0, but module lockfile '{}' resolves 0.1.0; {REWRITE_LOCKFILE}",
+            dir.join("hiko.toml").display(),
+            dir.join("hiko.lock.toml").display()
+        ))
+    );
+}
+
+#[test]
+fn a_source_mismatch_ends_in_the_fix() {
+    let dir = project_with_manifest("source", "127.0.0.1:8000", "127.0.0.1:9000");
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: dependency 'Std' source mismatch: project manifest '{}' expects 'http://127.0.0.1:9000/Std-v0.1.0', but module lockfile '{}' resolves 'http://127.0.0.1:8000/Std-v0.1.0'; {REWRITE_LOCKFILE}",
+            dir.join("hiko.toml").display(),
+            dir.join("hiko.lock.toml").display()
+        ))
+    );
+}
+
+#[test]
+fn an_unknown_registry_ends_in_the_fix() {
+    let dir = project_with_manifest("registry", "registry = \"local\"", "registry = \"gone\"");
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: dependency 'Std' references unknown registry 'gone' in project manifest '{}'; add [registries.gone] to hiko.toml (see docs/language/imports.md), then run 'hiko install'",
+            dir.join("hiko.toml").display()
+        ))
+    );
+}
+
+#[test]
+fn a_wrong_pinned_hash_names_the_extension_and_the_fix() {
+    let dir = project("wrong-hash", &["Result"]);
+    let wrong = "0".repeat(64);
+    let lock = std::fs::read_to_string(dir.join("hiko.lock.toml")).unwrap();
+    let (head, _) = lock.split_once("Result = ").unwrap();
+    std::fs::write(
+        dir.join("hiko.lock.toml"),
+        format!("{head}Result = \"blake3:{wrong}\"\n"),
+    )
+    .unwrap();
+    let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
+    let prefix = "Codegen(\"module Aws.S3 of extension 'aws' needs Std.Result: local named import 'Std.Result' (";
+    assert!(err.starts_with(prefix), "{err}");
+    assert!(
+        err.contains(&format!(
+            "failed BLAKE3 verification: expected {wrong}, got "
+        )),
+        "{err}"
+    );
+    assert!(err.ends_with(&format!("; {REWRITE_LOCKFILE}\")")), "{err}");
+}
+
 #[test]
 fn a_sealed_artifact_without_std_result_is_an_error_naming_the_extension() {
     // What `build-vm --ext aws` without `--lock` embeds: no modules.

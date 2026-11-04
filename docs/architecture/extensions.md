@@ -74,8 +74,10 @@ in `requires`. For a command that takes a script, the project is the
 only.
 
 While an extension module is compiled, each library module it imports
-directly is checked first. A library module's own imports are not checked
-against `requires`. The errors are:
+directly is checked first, including one in a `let`. An internal builtin
+is checked against `requires` only: it comes from the compiler, not a
+lockfile. A library module's own imports are not checked against
+`requires`. The errors are:
 
 - not in `requires`: `module Aws.S3 of extension 'aws' imports Std.List,
   which the extension does not list in its requires; add it to requires in
@@ -99,6 +101,15 @@ against `requires`. The errors are:
   package 'Std' for named import 'Std.Option' not found in <lockfile>; if
   hiko.toml does not declare Std, add it with its version and registry (see
   docs/language/imports.md), then run 'hiko install'`;
+- a lockfile that disagrees with `hiko.toml` on the version or the source:
+  the mismatch, then `; run 'hiko install', which fetches the modules and
+  rewrites the lockfile from hiko.toml`;
+- a `[dependencies]` entry naming an undefined registry: the existing cause,
+  then `; add [registries.<name>] to hiko.toml (see
+  docs/language/imports.md), then run 'hiko install'`;
+- a pinned module that fails its hash or does not fetch: `module Aws.S3 of
+  extension 'aws' needs Std.Result: <cause>; run 'hiko install', which
+  fetches the modules and rewrites the lockfile from hiko.toml`;
 - a `build-vm` artifact that does not embed it: `module Aws.S3 of extension
   'aws' needs Std.Result, which this artifact does not embed; build it with
   --lock and a lockfile that pins Std.Result`. For `build-vm --script`, this
