@@ -1869,6 +1869,10 @@
         "required": false,
         "types": [
           {
+            "type": "type_application",
+            "named": true
+          },
+          {
             "type": "type_argument",
             "named": true
           }

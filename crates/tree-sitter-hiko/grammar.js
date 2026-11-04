@@ -535,7 +535,7 @@ module.exports = grammar({
 
     type_application: $ => choice(
       prec.left(PREC.type_application, seq(
-        field("argument", $.type_argument),
+        field("argument", choice($.type_argument, $.type_application)),
         field("constructor", $._type_name),
       )),
       $.type_argument,

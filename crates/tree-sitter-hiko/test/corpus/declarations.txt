@@ -212,3 +212,107 @@ type pair = int * int
           (type_argument
             (name
               (identifier))))))))
+
+==================
+Nested type applications
+==================
+
+type a = int list list
+type b = 'a pid list
+type c = int box list
+type d = (int * int) list list
+type e = (int, string) result list
+
+---
+
+(source_file
+  (type_alias_declaration
+    name: (name
+      (identifier))
+    value: (arrow_type
+      (tuple_type
+        (type_application
+          argument: (type_application
+            argument: (type_argument
+              (name
+                (identifier)))
+            constructor: (name
+              (identifier)))
+          constructor: (name
+            (identifier))))))
+  (type_alias_declaration
+    name: (name
+      (identifier))
+    value: (arrow_type
+      (tuple_type
+        (type_application
+          argument: (type_application
+            argument: (type_argument
+              (type_variable))
+            constructor: (name
+              (identifier)))
+          constructor: (name
+            (identifier))))))
+  (type_alias_declaration
+    name: (name
+      (identifier))
+    value: (arrow_type
+      (tuple_type
+        (type_application
+          argument: (type_application
+            argument: (type_argument
+              (name
+                (identifier)))
+            constructor: (name
+              (identifier)))
+          constructor: (name
+            (identifier))))))
+  (type_alias_declaration
+    name: (name
+      (identifier))
+    value: (arrow_type
+      (tuple_type
+        (type_application
+          argument: (type_application
+            argument: (type_argument
+              (parenthesized_type
+                (arrow_type
+                  (tuple_type
+                    left: (tuple_type
+                      (type_application
+                        (type_argument
+                          (name
+                            (identifier)))))
+                    right: (type_application
+                      (type_argument
+                        (name
+                          (identifier))))))))
+            constructor: (name
+              (identifier)))
+          constructor: (name
+            (identifier))))))
+  (type_alias_declaration
+    name: (name
+      (identifier))
+    value: (arrow_type
+      (tuple_type
+        (type_application
+          argument: (type_application
+            argument: (type_argument
+              (type_tuple_arguments
+                first: (arrow_type
+                  (tuple_type
+                    (type_application
+                      (type_argument
+                        (name
+                          (identifier))))))
+                second: (arrow_type
+                  (tuple_type
+                    (type_application
+                      (type_argument
+                        (name
+                          (identifier))))))))
+            constructor: (name
+              (identifier)))
+          constructor: (name
+            (identifier)))))))
