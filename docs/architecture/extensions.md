@@ -113,6 +113,11 @@ lockfile. A library module's own imports are not checked against
 - a pinned module that does not fetch: `module Aws.S3 of extension 'aws'
   needs Std.Result: <cause>; check that the registry in hiko.toml is
   reachable`;
+- a module file that does not read: `module Aws.S3 of extension 'aws' needs
+  Std.Result: <cause>; repair or remove that file`;
+- a module cache that cannot be written: `module Aws.S3 of extension 'aws'
+  needs Std.Result: <cause>; repair that path: the module cache must be a
+  directory this user can write`;
 - an embedded module that fails its hash: `module Aws.S3 of extension 'aws'
   needs Std.Result: <cause>; the artifact's source differs from its pin, so
   rebuild it with build-vm --lock`;

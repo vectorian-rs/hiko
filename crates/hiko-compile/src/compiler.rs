@@ -278,11 +278,21 @@ impl CompileError {
 const PACKAGE_ENTRY_AND_INSTALL: &str =
     "with its version and registry (see docs/language/imports.md), then run 'hiko install'";
 
-/// The fix for an error that `hiko install` repairs. Never the fix for a hash
-/// failure: install would replace the pin that caught it.
+/// The fix for a lockfile that disagrees with hiko.toml. Never the fix for a
+/// hash failure: install would replace the pin that caught it.
 #[cfg(feature = "loader-integrity-blake3")]
 const INSTALL_REWRITES_LOCKFILE: &str =
     "run 'hiko install', which fetches the modules and rewrites the lockfile from hiko.toml";
+
+/// The fix for a module file that does not read.
+#[cfg(feature = "loader-integrity-blake3")]
+const REPAIR_MODULE_FILE: &str = "repair or remove that file";
+
+/// The fix for a module cache that cannot be written. `hiko install` writes
+/// to the same path, so it does not repair this.
+#[cfg(feature = "loader-integrity-blake3")]
+const REPAIR_MODULE_CACHE: &str =
+    "repair that path: the module cache must be a directory this user can write";
 
 /// The fix for a module that fails its lockfile hash.
 #[cfg(feature = "loader-integrity-blake3")]
@@ -2076,7 +2086,7 @@ impl Compiler {
                             local_path.display()
                         ))
                     })
-                    .map_err(load_failed(INSTALL_REWRITES_LOCKFILE))?;
+                    .map_err(load_failed(REPAIR_MODULE_FILE))?;
                 verify_blake3(
                     source.as_bytes(),
                     &expected_hash,
@@ -2109,7 +2119,7 @@ impl Compiler {
                         cache_path.display()
                     ))
                 })
-                .map_err(load_failed(INSTALL_REWRITES_LOCKFILE))?;
+                .map_err(load_failed(REPAIR_MODULE_FILE))?;
             if verify_blake3(
                 cached.as_bytes(),
                 &expected_hash,
@@ -2136,7 +2146,7 @@ impl Compiler {
         )
         .map_err(load_failed(HASH_DIFFERS_FROM_PIN))?;
         let cache_path = store_cached_module(cache_dir, &module_url, &expected_hash, &source)
-            .map_err(load_failed(INSTALL_REWRITES_LOCKFILE))?;
+            .map_err(load_failed(REPAIR_MODULE_CACHE))?;
         Ok(ResolvedImport::VerifiedFile {
             canonical: cache_path,
             display_name: module_name.to_string(),

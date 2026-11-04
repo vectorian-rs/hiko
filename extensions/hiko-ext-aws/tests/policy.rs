@@ -1,11 +1,14 @@
 //! The policy and the host-resource accounting, without AWS credentials or
 //! the network: nothing here reaches a listing.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use hiko_compile::chunk::CompiledProgram;
-use hiko_compile::compiler::{Compiler, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions};
+use hiko_compile::compiler::{
+    Compiler, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions, module_cache_path,
+};
 use hiko_ext_aws::AWS;
 use hiko_vm::config::RunConfig;
 use hiko_vm::extension::Extension;
@@ -469,16 +472,113 @@ fn a_wrong_pinned_hash_says_to_check_before_repinning() {
     );
 }
 
-#[test]
-fn a_module_that_does_not_fetch_names_the_extension_and_the_fix() {
-    // Port 1 on loopback: refused, with no network and no real registry.
-    let dir = project_with_manifest("unreachable", "127.0.0.1:8000", "127.0.0.1:1");
+/// `project`, with Std at the registry on `authority`.
+fn project_at(name: &str, authority: &str) -> PathBuf {
+    let dir = project_with_manifest(name, "127.0.0.1:8000", authority);
     let lock = std::fs::read_to_string(dir.join("hiko.lock.toml")).unwrap();
     std::fs::write(
         dir.join("hiko.lock.toml"),
-        lock.replace("127.0.0.1:8000", "127.0.0.1:1"),
+        lock.replace("127.0.0.1:8000", authority),
     )
     .unwrap();
+    dir
+}
+
+/// A loopback registry that answers one request with `Std.Result`, and its
+/// authority.
+fn serve_std_result() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let authority = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).unwrap();
+        let body = std::fs::read(repo().join("libraries/Std-v0.1.0/modules/Result.hml")).unwrap();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    authority
+}
+
+#[test]
+fn a_cache_that_cannot_be_written_says_to_repair_it() {
+    let dir = project_at("blocked-cache", &serve_std_result());
+    let manifest = std::fs::read_to_string(dir.join("hiko.toml")).unwrap();
+    std::fs::write(
+        dir.join("hiko.toml"),
+        manifest.replace("[defaults]\n", "[defaults]\nlib_cache = \"blocked\"\n"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("blocked"), "an ordinary file\n").unwrap();
+    let options = ModuleLoaderOptions {
+        local_package_root: None,
+        cache_dir: None,
+        ..s3_options()
+    };
+    let err = compile_in(&dir, "import Aws.S3", options).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: cannot create module cache '{}': File exists (os error 17); repair that path: the module cache must be a directory this user can write",
+            dir.join("blocked").display()
+        ))
+    );
+}
+
+#[test]
+fn a_cached_module_that_cannot_be_read_says_to_repair_it() {
+    let dir = project("unreadable-cache", &["Result"]);
+    let cache = dir.join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let cached = module_cache_path(
+        &cache,
+        "http://127.0.0.1:8000/Std-v0.1.0/modules/Result.hml",
+        &std_result_hash(),
+    );
+    std::fs::write(&cached, [0xff]).unwrap();
+    let options = ModuleLoaderOptions {
+        local_package_root: None,
+        cache_dir: Some(cache),
+        ..s3_options()
+    };
+    let err = compile_in(&dir, "import Aws.S3", options).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: cannot read cached module '{}': stream did not contain valid UTF-8; repair or remove that file",
+            cached.display()
+        ))
+    );
+}
+
+#[test]
+fn a_local_module_that_cannot_be_read_says_to_repair_it() {
+    let dir = project("unreadable-local", &["Result"]);
+    let modules = dir.join("libraries/Std-v0.1.0/modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(modules.join("Result.hml"), [0xff]).unwrap();
+    let options = ModuleLoaderOptions {
+        local_package_root: Some(dir.join("libraries")),
+        ..s3_options()
+    };
+    let err = compile_in(&dir, "import Aws.S3", options).unwrap_err();
+    assert_eq!(
+        err,
+        codegen(&format!(
+            "module Aws.S3 of extension 'aws' needs Std.Result: cannot read local module '{}': stream did not contain valid UTF-8; repair or remove that file",
+            modules.join("Result.hml").display()
+        ))
+    );
+}
+
+#[test]
+fn a_module_that_does_not_fetch_names_the_extension_and_the_fix() {
+    // Port 1 on loopback: refused, with no network and no real registry.
+    let dir = project_at("unreachable", "127.0.0.1:1");
     let options = ModuleLoaderOptions {
         local_package_root: None,
         ..s3_options()
