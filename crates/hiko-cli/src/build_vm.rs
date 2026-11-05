@@ -287,6 +287,9 @@ fn collect_sealed(
     // Resolve --lock once; the check and the loader then see one project.
     let lock = match &options.lock {
         Some(lock) => {
+            if lock.file_name().is_none() {
+                return Err("--lock must name a lockfile, not a directory".to_string());
+            }
             let unresolved = |e| format!("cannot resolve --lock '{}': {e}", lock.display());
             let entry = resolve_directory_of(lock).map_err(unresolved)?;
             let real = fs::canonicalize(&entry).map_err(unresolved)?;

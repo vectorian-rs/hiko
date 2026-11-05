@@ -373,3 +373,18 @@ fn build_vm_reports_a_missing_script_before_its_project() {
     let message = stderr(&output);
     assert!(message.contains("cannot read 'nope.hml'"), "got: {message}");
 }
+
+#[test]
+fn build_vm_lock_must_name_a_file() {
+    let dir = empty_dir("build-vm-lock-directory");
+    let project = project_in(&dir, "");
+    for lock in [".", ".."] {
+        let output = hiko(&project, &["build-vm", "p.toml", "--lock", lock]);
+        assert!(!output.status.success());
+        let message = stderr(&output);
+        assert!(
+            message.contains("--lock must name a lockfile, not a directory"),
+            "{lock}: {message}"
+        );
+    }
+}
