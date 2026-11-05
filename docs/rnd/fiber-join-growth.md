@@ -19,9 +19,9 @@ the `wait_any` loop of `join_all`, without `in_order`.
 | 8,000 | fuel exhausted | 1,183 ms | 44 ms |
 
 Doubling n multiplies `Fiber.all` by 3 to 4, and fuel runs out by 4,000 fibers.
-All three scripts hit `stack overflow` at 16,000 or fail earlier; the script's
-own `range` and `spawn_all` are not tail recursive, so that limit is not yet
-assigned to `Std.Fiber`.
+`Fiber.all` and `join` both hit `stack overflow` at 16,000, and `wait` was not
+run there. The test script's `range` is not tail recursive, so this limit is not
+yet assigned to `Std.Fiber`.
 
 ## Causes
 
