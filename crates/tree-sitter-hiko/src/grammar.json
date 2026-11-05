@@ -2382,8 +2382,17 @@
                 "type": "FIELD",
                 "name": "argument",
                 "content": {
-                  "type": "SYMBOL",
-                  "name": "type_argument"
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "SYMBOL",
+                      "name": "type_argument"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "type_application"
+                    }
+                  ]
                 }
               },
               {
