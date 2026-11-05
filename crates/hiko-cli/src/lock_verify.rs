@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
-use hiko_compile::compiler::bounded_lockfile_path;
+use hiko_compile::compiler::{bounded_lockfile_path, toml_error_text};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -161,13 +161,25 @@ pub(crate) fn dependency_base_url(registry_url: &str, name: &str, version: &str)
 pub(crate) fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read project manifest '{}': {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
+    toml::from_str(&text).map_err(|e| {
+        format!(
+            "Invalid project manifest '{}': {}",
+            path.display(),
+            toml_error_text(&e, &text)
+        )
+    })
 }
 
 pub(crate) fn load_module_lockfile(path: &Path) -> Result<ModuleLockfile, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read module lockfile '{}': {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| format!("Invalid module lockfile '{}': {e}", path.display()))
+    toml::from_str(&text).map_err(|e| {
+        format!(
+            "Invalid module lockfile '{}': {}",
+            path.display(),
+            toml_error_text(&e, &text)
+        )
+    })
 }
 
 pub(crate) fn validate_module_lockfile(

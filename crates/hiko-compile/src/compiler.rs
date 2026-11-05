@@ -344,6 +344,26 @@ fn loader_error_fix(package: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+/// Why a `hiko.toml` or a lockfile did not parse: line, column and reason. A
+/// path can reach any file, so this leaves out the source line that
+/// `toml::de::Error` prints.
+pub fn toml_error_text(error: &toml::de::Error, source: &str) -> String {
+    let Some(span) = error.span() else {
+        return error.message().to_string();
+    };
+    let before = &source.as_bytes()[..span.start.min(source.len())];
+    let line_start = before
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |i| i + 1);
+    let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+    let column = String::from_utf8_lossy(&before[line_start..])
+        .chars()
+        .count()
+        + 1;
+    format!("line {line}, column {column}: {}", error.message())
+}
+
 /// The lockfile of the project whose manifest is `manifest_path`: `lockfile`,
 /// relative to the manifest, else `hiko.lock.toml` next to it. A path that
 /// leaves the manifest's directory is an error, whether or not it exists yet.
@@ -422,8 +442,9 @@ fn load_import_loader_config(
     })?;
     let manifest: ImportProjectManifest = toml::from_str(&manifest_text).map_err(|e| {
         CompileError::codegen(format!(
-            "invalid project manifest '{}': {e}",
-            manifest_path.display()
+            "invalid project manifest '{}': {}",
+            manifest_path.display(),
+            toml_error_text(&e, &manifest_text)
         ))
     })?;
     let lockfile_path =
@@ -2241,8 +2262,9 @@ impl Compiler {
             })?;
             let lockfile: ImportLockfile = toml::from_str(&lockfile_text).map_err(|e| {
                 CompileError::codegen(format!(
-                    "invalid module lockfile '{}': {e}",
-                    lockfile_path.display()
+                    "invalid module lockfile '{}': {}",
+                    lockfile_path.display(),
+                    toml_error_text(&e, &lockfile_text)
                 ))
             })?;
             validate_lockfile(&lockfile, lockfile_path)?;
@@ -3925,6 +3947,22 @@ mod tests {
         assert_eq!(path("lib", "b.hml").as_deref(), Some("lib/b.hml"));
         assert_eq!(path("lib", "../../up.hml").as_deref(), Some("../up.hml"));
         assert_eq!(path("", "/etc/passwd.hml"), None);
+    }
+
+    #[test]
+    fn toml_error_text_gives_the_position_and_no_source_line() {
+        let source = "a = 1\né = 2\nexport TOKEN=value\n";
+        let error = toml::from_str::<toml::Table>(source).unwrap_err();
+        assert_eq!(
+            toml_error_text(&error, source),
+            "line 2, column 1: invalid key"
+        );
+        let source = "a = 1\nexport TOKEN=value\n";
+        let error = toml::from_str::<toml::Table>(source).unwrap_err();
+        assert_eq!(
+            toml_error_text(&error, source),
+            "line 2, column 8: expected `.`, `=`"
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram};
 use hiko_compile::compiler::{
     CompileError, Compiler, ExtensionSurface, ModuleLoaderOptions, bounded_lockfile_path,
+    toml_error_text,
 };
 use hiko_compile::op::{HANDLER_CLAUSE_BYTES, Op};
 use hiko_syntax::format::{FormatError, format_source};
@@ -433,7 +434,13 @@ fn hash_files(paths: &[String]) {
 fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
     let toml = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read project manifest '{}': {e}", path.display()))?;
-    toml::from_str(&toml).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
+    toml::from_str(&toml).map_err(|e| {
+        format!(
+            "Invalid project manifest '{}': {}",
+            path.display(),
+            toml_error_text(&e, &toml)
+        )
+    })
 }
 
 fn resolve_policy_from_manifest(

@@ -225,3 +225,59 @@ fn a_project_in_a_symlinked_directory_passes_the_bound() {
     let output = hiko(&dir, &["lock", "verify", "--config", "link/hiko.toml"]);
     assert!(output.status.success(), "{}", stderr(&output));
 }
+
+const NOT_TOML: &str = "schema_version = 1\nexport API_TOKEN=FAKEVALUE3\n";
+
+/// `output` names `path` and the position, and prints no source line.
+fn assert_position_and_no_source_line(output: &Output, path: &Path, label: &str) {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        stderr(output)
+    );
+    let position = format!("'{}': line 2, column 8: expected", path.display());
+    assert!(text.contains(&position), "{label}: {text}");
+    assert!(!text.contains("API_TOKEN"), "{label}: {text}");
+    assert!(!text.contains("FAKEVALUE3"), "{label}: {text}");
+}
+
+#[test]
+fn a_lockfile_that_does_not_parse_prints_no_source_line() {
+    let dir = empty_dir("lockfile-parse");
+    let project = project_in(&dir, "");
+    let lockfile = project.join("hiko.lock.toml");
+    fs::write(project.join("b.hml"), "import Std.List\n").unwrap();
+    let commands: [&[&str]; 5] = [
+        &["check", "b.hml"],
+        &["lock", "verify"],
+        &["build-vm", "p.toml", "--lock", "hiko.lock.toml"],
+        &["install", "--check"],
+        &["install"],
+    ];
+    for args in commands {
+        fs::write(&lockfile, NOT_TOML).unwrap();
+        let output = hiko(&project, args);
+        assert_position_and_no_source_line(&output, &lockfile, &format!("{args:?}"));
+    }
+}
+
+#[test]
+fn a_manifest_that_does_not_parse_prints_no_source_line() {
+    let dir = empty_dir("manifest-parse");
+    let project = project_in(&dir, "");
+    fs::write(project.join("hiko.lock.toml"), "schema_version = 1\n").unwrap();
+    let manifest = project.join("hiko.toml");
+    fs::write(&manifest, NOT_TOML).unwrap();
+    let commands: [&[&str]; 4] = [
+        &["check", "a.hml"],
+        &["lock", "verify"],
+        &["install"],
+        // The compiler's own reader: nothing in `main.rs` reads this manifest.
+        &["build-vm", "p.toml", "--lock", "hiko.lock.toml"],
+    ];
+    for args in commands {
+        let output = hiko(&project, args);
+        assert!(!output.status.success(), "{args:?} passed");
+        assert_position_and_no_source_line(&output, &manifest, &format!("{args:?}"));
+    }
+}
