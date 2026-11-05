@@ -238,6 +238,10 @@ impl<'a> BuiltinTypeParser<'a> {
             self.skip_ws();
             if self.consume_word("list") {
                 ty = Type::list(ty);
+            } else if self.consume_word("pid") {
+                ty = Type::pid(ty);
+            } else if self.consume_word("BuiltinProcess.await_result") {
+                ty = Type::App("BuiltinProcess.await_result".into(), vec![ty]);
             } else if self.consume_word("Option.option") {
                 ty = Type::App("Option.option".into(), vec![ty]);
             } else {
@@ -356,6 +360,7 @@ impl InferCtx {
             max_work: DEFAULT_MAX_TYPE_WORK,
         };
         ctx.type_arities.insert("list".into(), 1);
+        ctx.type_arities.insert("pid".into(), 1);
         ctx.bind_builtin_type_signatures();
         ctx
     }
@@ -3143,7 +3148,42 @@ mod tests {
     #[test]
     fn test_spawn_returns_pid() {
         let ctx = infer("val child = spawn (fn () => 42)");
-        assert_eq!(type_of(&ctx, "child"), "pid");
+        assert_eq!(type_of(&ctx, "child"), "int pid");
+    }
+
+    #[test]
+    fn test_await_process_returns_the_spawned_type() {
+        let ctx = infer("val n = await_process (spawn (fn () => 42))");
+        assert_eq!(type_of(&ctx, "n"), "int");
+    }
+
+    #[test]
+    fn test_await_process_rejects_another_result_type() {
+        let msg = infer_err("val s : string = await_process (spawn (fn () => 42))");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_wait_any_needs_children_of_one_type() {
+        let msg = infer_err("val p = wait_any [spawn (fn () => 1), spawn (fn () => true)]");
+        assert!(msg.contains("type mismatch"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_pids_of_one_type_compare() {
+        let ctx = infer(
+            "val a = spawn (fn () => 1)
+             val same = a = a",
+        );
+        assert_eq!(type_of(&ctx, "same"), "bool");
+    }
+
+    #[test]
+    fn test_a_pid_annotation_needs_its_result_type() {
+        let msg = infer_err("fun f (p : pid) = cancel p");
+        assert!(msg.contains("type pid expects 1 argument(s)"), "got: {msg}");
+        let ctx = infer("fun f (p : int pid) = cancel p");
+        assert_eq!(type_of(&ctx, "f"), "int pid -> unit");
     }
 
     #[test]
@@ -3179,8 +3219,8 @@ mod tests {
             "fun wait_int p = await_process p + 1
              fun wait_bool p = if await_process p then 1 else 0",
         );
-        assert_eq!(type_of(&ctx, "wait_int"), "pid -> int");
-        assert_eq!(type_of(&ctx, "wait_bool"), "pid -> int");
+        assert_eq!(type_of(&ctx, "wait_int"), "int pid -> int");
+        assert_eq!(type_of(&ctx, "wait_bool"), "bool pid -> int");
     }
 
     #[test]

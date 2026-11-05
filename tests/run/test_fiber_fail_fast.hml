@@ -1,0 +1,41 @@
+(* Tests for Std-v0.1.0/modules/Fiber.hml: both and all fail fast. *)
+use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+
+fun is_error_message expected result =
+  case result of
+      Ok _ => 0
+    | Err err => if Fiber.render_error err = expected then 1 else 0
+
+(* both and all return the first failure without waiting for the others,
+   which are cancelled. Run with real timers: each slow fiber would sleep
+   for a minute, and the test checks that the file finishes well before. *)
+fun slow () =
+  let
+    val _ = sleep 60000
+  in
+    1
+  end
+
+val both_left_fails =
+  is_error_message "left" (Fiber.both ((fn () => panic "left"), slow))
+
+val _ = assert_eq (both_left_fails, 1, "both: a failing left fiber cancels the right")
+
+val both_right_fails =
+  is_error_message "right" (Fiber.both (slow, (fn () => panic "right")))
+
+val _ = assert_eq (both_right_fails, 1, "both: a failing right fiber cancels the left")
+
+val all_fails =
+  is_error_message "third" (Fiber.all [slow, slow, (fn () => panic "third"), slow])
+
+val _ = assert_eq (all_fails, 1, "all: the first failure cancels the rest")
+
+val all_in_order =
+  case Fiber.all [(fn () => let val _ = sleep 30 in 1 end), (fn () => 2), (fn () => let val _ = sleep 10 in 3 end)] of
+      Ok values => values
+    | Err err => panic ("all failed: " ^ Fiber.render_error err)
+
+val _ = assert_eq (all_in_order, [1, 2, 3], "all: values in input order, not finishing order")
+
+val _ = println "fiber fail-fast tests passed"

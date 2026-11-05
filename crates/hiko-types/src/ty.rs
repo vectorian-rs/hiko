@@ -31,7 +31,6 @@ pub const PRIMITIVE_TYPES: &[(&str, &str)] = &[
     ("unit", "Unit"),
     ("bytes", "Bytes"),
     ("rng", "Rng"),
-    ("pid", "Pid"),
 ];
 
 #[derive(Debug, Clone)]
@@ -68,8 +67,10 @@ impl Type {
     pub fn unit() -> Type {
         Type::Con("Unit".into())
     }
-    pub fn pid() -> Type {
-        Type::Con("Pid".into())
+    /// A child process that returns an `elem`: `'a pid`. The parameter is
+    /// what makes awaiting a child return the type it was spawned with.
+    pub fn pid(elem: Type) -> Type {
+        Type::App("pid".into(), vec![elem])
     }
     pub fn list(elem: Type) -> Type {
         Type::App("list".into(), vec![elem])
@@ -111,8 +112,10 @@ impl Type {
         match self {
             Type::Con(n) => matches!(
                 n.as_str(),
-                "Int" | "Float" | "Word" | "Bool" | "String" | "Char" | "Unit" | "Bytes" | "Pid"
+                "Int" | "Float" | "Word" | "Bool" | "String" | "Char" | "Unit" | "Bytes"
             ),
+            // Process identity: any two pids compare, whatever they return.
+            Type::App(n, _) => n == "pid",
             Type::Var(_) => false, // conservative: block until resolved to a concrete equality type
             Type::Tuple(elems) => elems.iter().all(|e| e.is_equality()),
             _ => false,

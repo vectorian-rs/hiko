@@ -114,7 +114,7 @@ row.
 Builtin signatures (`hiko-builtin-meta/src/signatures.rs`) need no change.
 When a builtin's signature is instantiated, each of its arrows gets the same
 fresh open row, because no builtin performs an effect. The exception is
-`spawn`, whose argument arrow is closed: `(unit -{}-> 'a) -> pid`.
+`spawn`, whose argument arrow is closed: `(unit -{}-> 'a) -> 'a pid`.
 
 ## Examples
 
