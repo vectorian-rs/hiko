@@ -9,7 +9,7 @@ use hiko_compile::compiler::LockedModuleSource;
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
     CompileError, Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions,
-    local_use_files,
+    codegen_message, local_use_files,
 };
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_syntax::{lexer::Lexer, parser::Parser};
@@ -293,7 +293,7 @@ fn collect_sealed(
         None => None,
     };
     if let Some(lock) = &lock {
-        let used = Compiler::project_lockfile_path(lock).map_err(|e| format!("{e:?}"))?;
+        let used = Compiler::project_lockfile_path(lock).map_err(codegen_message)?;
         if fs::canonicalize(&used).ok().as_ref() != Some(lock) {
             return Err(format!(
                 "--lock '{}' is not the lockfile its project uses ('{}'); named imports resolve through the project's hiko.toml",
@@ -313,8 +313,9 @@ fn collect_sealed(
         )
         .map_err(|e| {
             format!(
-                "cannot read the locked modules of '{}': {e:?}",
-                lock.display()
+                "cannot read the locked modules of '{}': {}",
+                lock.display(),
+                codegen_message(e)
             )
         })?,
         None => Vec::new(),

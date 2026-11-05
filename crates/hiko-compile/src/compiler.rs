@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "loader-integrity-blake3")]
 use std::time::Duration;
@@ -308,8 +308,9 @@ fn extension_module(requires: &ExtensionRequires, importer: &str) -> String {
     format!("module {importer} of extension '{}'", requires.extension)
 }
 
+/// `error` as text for a user: the message of a loader error.
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
-fn codegen_message(error: CompileError) -> String {
+pub fn codegen_message(error: CompileError) -> String {
     match error {
         CompileError::Codegen(message) => message,
         other => format!("{other:?}"),
@@ -343,6 +344,52 @@ fn loader_error_fix(package: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+/// The lockfile of the project whose manifest is `manifest_path`: `lockfile`,
+/// relative to the manifest, else `hiko.lock.toml` next to it. A path that
+/// leaves the manifest's directory is an error, whether or not it exists yet.
+pub fn bounded_lockfile_path(
+    manifest_path: &Path,
+    lockfile: Option<&str>,
+) -> Result<PathBuf, String> {
+    let dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let lockfile = lockfile.unwrap_or("hiko.lock.toml");
+    // `--config hiko.toml` has an empty parent.
+    let root = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        format!(
+            "cannot resolve the directory of project manifest '{}': {e}",
+            manifest_path.display()
+        )
+    })?;
+    let outside = || {
+        format!(
+            "project manifest '{}' sets lockfile to '{lockfile}', which is outside its directory; use a path inside it",
+            manifest_path.display()
+        )
+    };
+
+    // A `..` above the deepest path that exists could climb anywhere. A
+    // dangling symlink exists, and fails to canonicalize below.
+    let target = root.join(lockfile);
+    let mut existing = target.as_path();
+    while existing.symlink_metadata().is_err() {
+        match existing.parent() {
+            Some(parent) if existing.components().next_back() != Some(Component::ParentDir) => {
+                existing = parent;
+            }
+            _ => return Err(outside()),
+        }
+    }
+    match std::fs::canonicalize(existing) {
+        Ok(real) if real.starts_with(&root) => Ok(dir.join(lockfile)),
+        _ => Err(outside()),
+    }
+}
+
 #[cfg(feature = "loader-integrity-blake3")]
 fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
     let mut dir = entry_file.parent();
@@ -367,7 +414,6 @@ fn load_import_loader_config(
             entry_file.display()
         ))
     })?;
-    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         CompileError::codegen(format!(
             "cannot read project manifest '{}': {e}",
@@ -380,12 +426,9 @@ fn load_import_loader_config(
             manifest_path.display()
         ))
     })?;
-    let lockfile = manifest
-        .defaults
-        .lockfile
-        .as_deref()
-        .unwrap_or("hiko.lock.toml");
-    let lockfile_path = manifest_dir.join(lockfile);
+    let lockfile_path =
+        bounded_lockfile_path(&manifest_path, manifest.defaults.lockfile.as_deref())
+            .map_err(CompileError::codegen)?;
     if !lockfile_path.is_file() {
         return Err(CompileError::codegen(format!(
             "project manifest '{}' references missing module lockfile '{}'{}",
@@ -3882,6 +3925,72 @@ mod tests {
         assert_eq!(path("lib", "b.hml").as_deref(), Some("lib/b.hml"));
         assert_eq!(path("lib", "../../up.hml").as_deref(), Some("../up.hml"));
         assert_eq!(path("", "/etc/passwd.hml"), None);
+    }
+
+    #[test]
+    fn a_lockfile_that_leaves_the_manifest_directory_is_rejected() {
+        let dir = unique_temp_dir("lockfile-bound");
+        let project = dir.join("project");
+        write_file(&project.join("hiko.toml"), "");
+        let manifest = project.join("hiko.toml");
+        let outside = dir.join("outside.toml");
+        write_file(&outside, "");
+        let inputs = [
+            "../x",
+            "new/../../planted",
+            "new/../inside.toml",
+            outside.to_str().unwrap(),
+        ];
+        for lockfile in inputs {
+            assert_eq!(
+                bounded_lockfile_path(&manifest, Some(lockfile)).unwrap_err(),
+                format!(
+                    "project manifest '{}' sets lockfile to '{lockfile}', which is outside its directory; use a path inside it",
+                    manifest.display()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_lockfile_inside_the_manifest_directory_passes_the_bound() {
+        let dir = unique_temp_dir("lockfile-inside");
+        write_file(&dir.join("hiko.toml"), "");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let manifest = dir.join("hiko.toml");
+        let absolute = dir.join("new.toml");
+        let inputs = [
+            (None, dir.join("hiko.lock.toml")),
+            (Some("new/deeper/x.toml"), dir.join("new/deeper/x.toml")),
+            (Some("sub/../x.toml"), dir.join("sub/../x.toml")),
+            (Some(absolute.to_str().unwrap()), absolute.clone()),
+        ];
+        for (lockfile, expected) in inputs {
+            assert_eq!(
+                bounded_lockfile_path(&manifest, lockfile).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_final_symlink_is_bounded_by_where_it_leads() {
+        use std::os::unix::fs::symlink;
+
+        let dir = unique_temp_dir("lockfile-symlink");
+        let project = dir.join("project");
+        write_file(&project.join("hiko.toml"), "");
+        write_file(&project.join("real.toml"), "");
+        write_file(&dir.join("outside.toml"), "");
+        let manifest = project.join("hiko.toml");
+        symlink("../outside.toml", project.join("hiko.lock.toml")).unwrap();
+        symlink("../missing.toml", project.join("dangling.toml")).unwrap();
+        symlink("real.toml", project.join("inside.toml")).unwrap();
+
+        assert!(bounded_lockfile_path(&manifest, None).is_err());
+        assert!(bounded_lockfile_path(&manifest, Some("dangling.toml")).is_err());
+        assert!(bounded_lockfile_path(&manifest, Some("inside.toml")).is_ok());
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

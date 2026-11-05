@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
+use hiko_compile::compiler::bounded_lockfile_path;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -118,7 +119,8 @@ pub(crate) fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<Path
 
 fn verify_lockfile(manifest_path: &Path) -> Result<(), String> {
     let manifest = load_project_manifest(manifest_path)?;
-    let lockfile_path = project_lockfile_path(manifest_path, &manifest);
+    let lockfile_path =
+        bounded_lockfile_path(manifest_path, manifest.defaults.lockfile.as_deref())?;
     let lockfile = load_module_lockfile(&lockfile_path)?;
 
     validate_module_lockfile(&lockfile, &lockfile_path)?;
@@ -149,24 +151,6 @@ fn verify_locked_modules(lockfile: &ModuleLockfile) -> Result<(), String> {
     } else {
         Err(format!("lock verification failed for {failures} module(s)"))
     }
-}
-
-/// The lockfile the project at `manifest_path` uses: `[defaults] lockfile`,
-/// relative to the manifest, else `hiko.lock.toml` next to it.
-pub(crate) fn project_lockfile_path(
-    manifest_path: &Path,
-    manifest: &LockProjectManifest,
-) -> PathBuf {
-    manifest_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(
-            manifest
-                .defaults
-                .lockfile
-                .as_deref()
-                .unwrap_or("hiko.lock.toml"),
-        )
 }
 
 /// Where a registry serves version `version` of package `name`.

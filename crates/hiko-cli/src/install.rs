@@ -21,12 +21,13 @@ use serde::Deserialize;
 use crate::lock_verify::{
     LOCK_VERIFY_MAX_BYTES, LOCK_VERIFY_TIMEOUT, LockProjectManifest, ModuleLockPackage,
     ModuleLockfile, dependency_base_url, load_module_lockfile, load_project_manifest,
-    normalize_blake3, project_lockfile_path, resolve_manifest_path, validate_module_lockfile,
+    normalize_blake3, resolve_manifest_path, validate_module_lockfile,
     validate_module_lockfile_against_manifest, validate_remote_base_url,
 };
 use crate::parse_flag_value;
 use hiko_compile::compiler::{
-    CompileError, module_cache_path, project_module_cache_dir, store_cached_module,
+    CompileError, bounded_lockfile_path, module_cache_path, project_module_cache_dir,
+    store_cached_module,
 };
 
 /// A published package's `package.toml`.
@@ -81,7 +82,8 @@ fn parse_install_args(args: &[String], usage: &str) -> (Option<PathBuf>, bool) {
 
 fn install(manifest_path: &Path, check: bool) -> Result<(), String> {
     let manifest = load_project_manifest(manifest_path)?;
-    let lockfile_path = project_lockfile_path(manifest_path, &manifest);
+    let lockfile_path =
+        bounded_lockfile_path(manifest_path, manifest.defaults.lockfile.as_deref())?;
     // An existing lockfile that does not read is replaced, and said so:
     // install is the command that repairs it.
     let old = if lockfile_path.exists() {
