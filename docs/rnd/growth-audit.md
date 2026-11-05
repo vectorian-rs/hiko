@@ -3,13 +3,38 @@
 Accidental quadratic or worse code, measured on `main` at `e299c91`. Times are
 from a release build on macOS, and each row was timed at several sizes.
 Automated reviewers ran these; the lead reproduced only the shadowing bug below.
-`Fiber.all` is in `docs/rnd/fiber-join-growth.md` (#195). The VM audit is not
-finished, so this page does not cover `crates/hiko-vm`.
+`Fiber.all` is in `docs/rnd/fiber-join-growth.md` (#195).
 
-## A wrong answer
+## Two correctness bugs
 
-`declare_global` (`compiler.rs:1572`) can reuse a `x$n` name, so a later shadow
-overwrites a value that earlier code reads. See #199.
+- `declare_global` (`compiler.rs:1572`) can reuse a `x$n` name, so a later
+  shadow overwrites a value that earlier code reads. See #199.
+- The heap loses free slots across sweeps (`heap.rs:1130`), so a program within
+  `max_heap` can be refused. See #201.
+
+## Runtime
+
+Timed with a raised fuel and heap limit, on one worker.
+
+| Where | Grows with | Timings | Fix |
+|---|---|---|---|
+| `builtins/json.rs:96,135,176` | document size × calls; each `json_get` reparses | 1,000, 8,000 lookups: 152 ms, 17.9 s | cache the parsed value, like `RegexCache` |
+| `builtins/string.rs:86,56` | string length × calls; `substring` and `string_length` scan UTF-8 | `substring` loop 20,000, 160,000: 198 ms, 11.2 s | one-entry cursor in `Heap` |
+| `vm/gc.rs:17`, `heap.rs:817` | live objects / room left; a full GC each `room` allocations | `max_heap` 1M, room 100,000, 1,000: 879 ms, 26 s; room 100 passes 120 s | fail when a GC frees under 1% of the limit |
+| `threaded.rs:457` | parked fibers × I/O events; the monitor scans the process table | 1,000, 8,000: 33 ms, 949 ms | test `io_waiters.is_empty()` first; tested |
+| `vm/child_globals.rs:57-61` | top-level `val x = spawn ...` lines | 2,000, 8,000: 172 ms, 2.2 s | delta on the last snapshot |
+| `vm/dispatch.rs:640,676,571` | inner handlers × `perform`s; capped at 65,536 | 1,000, 8,000: 35 ms, 600 ms | track a visible-top index |
+| `scheduler.rs:84` | run queue × terminations | 40,000, 80,000: 293 ms, 1.1 s; 100 ms at the default cap | delete the call: by reading, it never matches |
+
+The GC path charges no fuel or host work (read, not run), so a sandboxed script
+can burn CPU near the heap limit.
+
+Suspected, read or not clearly quadratic: `remove_queued` in `io_backend.rs:355`,
+the memory-bytes branch at `heap.rs:817`, register VM `materialize`.
+
+Linear: `split`, `string_join`, `string_replace`, `bytes_get`, `bytes_slice`,
+cached `regex_match`, spawn then join, sending a list. Not a bug: `s ^ x` in a
+loop is quadratic because it copies; `string_join` is the linear route.
 
 ## Compiler
 
@@ -45,9 +70,6 @@ constant pool, verifier on compiled programs, generalization, nesting to the
 | `Std Format.hml:37` | n | 6,000, 24,000: 71 ms, 986 ms | as `pad_right` |
 | `Issue.hml:59-63` | actions | 4,000, 8,000: 52 ms, 175 ms | map, then `string_join` |
 
-`string_length` is O(n) and `substring` is O(start), so any loop that indexes a
-string by position is quadratic.
-
 `Report` is the likely first hit: an all-OK fleet of 2,000 checks. Nothing on
 `main` calls `Format.format`, `pad_right` or `column`.
 
@@ -65,7 +87,7 @@ allocation for `map`-like functions. `List.length` needs only the accumulator.
 ## Concerns
 
 - Compile time is a denial of service for untrusted source until the first two
-  compiler rows are fixed.
+  compiler rows are fixed. The GC row is the same risk at run time.
 - `growth.rs` counts only type work, so it missed the constructor clone.
 - `Issue.action_json` does not appear to escape strings in its JSON. Read, not
   run.
