@@ -351,3 +351,25 @@ fn build_vm_lock_does_not_follow_a_link_to_another_project() {
         "got: {message}"
     );
 }
+
+#[test]
+fn build_vm_reports_a_missing_script_before_its_project() {
+    let dir = empty_dir("build-vm-missing-script");
+    let project = project_in(&dir, "");
+    fs::write(project.join("hiko.toml"), "[defaults\n").unwrap();
+    let out = dir.join("out");
+    let output = hiko(
+        &project,
+        &[
+            "build-vm",
+            "p.toml",
+            "--script",
+            "nope.hml",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(message.contains("cannot read 'nope.hml'"), "got: {message}");
+}

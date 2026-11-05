@@ -393,7 +393,7 @@ pub fn bounded_lockfile_path(
     };
 
     // A `..` above the deepest path that exists could climb anywhere. A
-    // dangling symlink exists, and cannot be shown to stay inside.
+    // symlink that does not resolve cannot be shown to stay inside.
     let target = root.join(lockfile);
     let mut existing = target.as_path();
     while existing.symlink_metadata().is_err() {
@@ -408,11 +408,25 @@ pub fn bounded_lockfile_path(
         Ok(real) if real.starts_with(&root) => Ok(dir.join(lockfile)),
         Ok(_) => Err(outside()),
         Err(e) => Err(format!(
-            "project manifest '{}' uses lockfile '{lockfile}', but '{}' is a dangling symlink ({e}); fix or remove it",
+            "project manifest '{}' uses lockfile '{lockfile}', but '{}' cannot be resolved ({e}); fix or remove it",
             manifest_path.display(),
             existing.display()
         )),
     }
+}
+
+/// `path` with its directory resolved and its file name kept: a link at the
+/// file name must not select the project it leads to.
+#[cfg(feature = "loader-integrity-blake3")]
+pub fn resolve_directory_of(path: &Path) -> std::io::Result<PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    Ok(std::fs::canonicalize(dir)?.join(name))
 }
 
 #[cfg(feature = "loader-integrity-blake3")]
@@ -1209,8 +1223,7 @@ impl Compiler {
         entry_file: &Path,
         loader_options: ModuleLoaderOptions,
     ) -> Result<Vec<LockedModuleSource>, CompileError> {
-        let canonical =
-            std::fs::canonicalize(entry_file).unwrap_or_else(|_| entry_file.to_path_buf());
+        let canonical = resolve_directory_of(entry_file).unwrap_or_else(|_| entry_file.into());
         let base_dir = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
         let mut c = Compiler::new(
             base_dir,
@@ -4033,10 +4046,7 @@ mod tests {
 
         assert!(bounded_lockfile_path(&manifest, None).is_err());
         let dangling = bounded_lockfile_path(&manifest, Some("dangling.toml")).unwrap_err();
-        assert!(
-            dangling.contains("is a dangling symlink"),
-            "got: {dangling}"
-        );
+        assert!(dangling.contains("cannot be resolved"), "got: {dangling}");
         assert!(dangling.contains("fix or remove it"), "got: {dangling}");
         assert!(!dangling.contains("outside"), "got: {dangling}");
         assert!(bounded_lockfile_path(&manifest, Some("inside.toml")).is_ok());
