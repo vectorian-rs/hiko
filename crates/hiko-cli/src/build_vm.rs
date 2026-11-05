@@ -292,8 +292,12 @@ fn collect_sealed(
         ),
         None => None,
     };
-    if let Some(lock) = &lock {
-        let used = Compiler::project_lockfile_path(lock).map_err(codegen_message)?;
+    if let (Some(lock), Some(given)) = (&lock, &options.lock) {
+        // Find the project from the path as given: canonical, a link to
+        // another project's lockfile would select that project.
+        let given = std::path::absolute(given)
+            .map_err(|e| format!("cannot resolve --lock '{}': {e}", given.display()))?;
+        let used = Compiler::project_lockfile_path(&given).map_err(codegen_message)?;
         if fs::canonicalize(&used).ok().as_ref() != Some(lock) {
             return Err(format!(
                 "--lock '{}' is not the lockfile its project uses ('{}'); named imports resolve through the project's hiko.toml",
@@ -322,6 +326,7 @@ fn collect_sealed(
     };
     let script = match &options.script {
         Some(path) => {
+            crate::check_script_project(path)?;
             let source = fs::read_to_string(path)
                 .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
             let files = local_use_files(path, &source).map_err(|e| format!("{e:?}"))?;

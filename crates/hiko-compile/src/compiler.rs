@@ -393,7 +393,7 @@ pub fn bounded_lockfile_path(
     };
 
     // A `..` above the deepest path that exists could climb anywhere. A
-    // dangling symlink exists, and fails to canonicalize below.
+    // dangling symlink exists, and cannot be shown to stay inside.
     let target = root.join(lockfile);
     let mut existing = target.as_path();
     while existing.symlink_metadata().is_err() {
@@ -406,7 +406,12 @@ pub fn bounded_lockfile_path(
     }
     match std::fs::canonicalize(existing) {
         Ok(real) if real.starts_with(&root) => Ok(dir.join(lockfile)),
-        _ => Err(outside()),
+        Ok(_) => Err(outside()),
+        Err(e) => Err(format!(
+            "project manifest '{}' uses lockfile '{lockfile}', but '{}' is a dangling symlink ({e}); fix or remove it",
+            manifest_path.display(),
+            existing.display()
+        )),
     }
 }
 
@@ -4027,7 +4032,13 @@ mod tests {
         symlink("real.toml", project.join("inside.toml")).unwrap();
 
         assert!(bounded_lockfile_path(&manifest, None).is_err());
-        assert!(bounded_lockfile_path(&manifest, Some("dangling.toml")).is_err());
+        let dangling = bounded_lockfile_path(&manifest, Some("dangling.toml")).unwrap_err();
+        assert!(
+            dangling.contains("is a dangling symlink"),
+            "got: {dangling}"
+        );
+        assert!(dangling.contains("fix or remove it"), "got: {dangling}");
+        assert!(!dangling.contains("outside"), "got: {dangling}");
         assert!(bounded_lockfile_path(&manifest, Some("inside.toml")).is_ok());
     }
 

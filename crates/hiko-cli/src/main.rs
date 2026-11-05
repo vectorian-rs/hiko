@@ -312,7 +312,7 @@ pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
 
 /// Applies the lockfile bound to the project of the script at `path`, so a
 /// script with no import meets it too. Reads no lockfile.
-fn check_script_project(path: &str) -> Result<(), String> {
+pub(crate) fn check_script_project(path: &Path) -> Result<(), String> {
     let script = fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
     let Some(manifest_path) = script.parent().and_then(find_project_manifest_from) else {
         return Ok(());
@@ -362,7 +362,7 @@ fn build_vm_or_exit(config: &RunConfig, program: CompiledProgram) -> hiko_vm::vm
 fn compile_or_exit(path: &str, extensions: ExtensionSurface) -> Compiled {
     let source = read_source_or_exit(path);
     let ctx = DiagCtx::new(path, source.clone());
-    check_script_project(path).unwrap_or_else(|message| {
+    check_script_project(Path::new(path)).unwrap_or_else(|message| {
         ctx.error(&message, None);
         process::exit(1);
     });

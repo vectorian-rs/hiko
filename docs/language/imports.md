@@ -174,10 +174,12 @@ project manifest '<manifest>' sets lockfile to '<value>', which is outside its d
 
 This covers a relative or absolute path outside the directory, a `..` below the
 deepest directory that exists, such as `new/../../planted`, and a final symlink
-that leaves the directory, also at the default name `hiko.lock.toml`. A missing
-path inside the directory passes this check; a program that needs that lockfile
-fails with the missing-lockfile error. A script's `hiko.toml` that cannot be
-read or parsed fails the command, even for a script with no import.
+that leaves the directory, also at the default name `hiko.lock.toml`. A
+dangling symlink cannot be shown to stay inside, so it is rejected too, with its
+own error. A missing path inside the directory passes this check; a program that
+needs that lockfile fails with the missing-lockfile error. A script's `hiko.toml`
+that cannot be read or parsed fails the command, even for a script with no
+import. `hiko build-vm --script` checks the script's project as well.
 
 A `hiko.toml` or lockfile that does not parse gives its path, line, column and
 reason, and no source line, so an error cannot print a line of a file the path

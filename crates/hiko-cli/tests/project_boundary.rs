@@ -281,3 +281,73 @@ fn a_manifest_that_does_not_parse_prints_no_source_line() {
         assert_position_and_no_source_line(&output, &manifest, &format!("{args:?}"));
     }
 }
+
+#[test]
+fn build_vm_checks_the_project_of_its_script() {
+    let dir = empty_dir("build-vm-script");
+    let good = project_in(&dir.join("good"), "");
+    fs::write(good.join("hiko.lock.toml"), "schema_version = 1\n").unwrap();
+    let lock = good.join("hiko.lock.toml");
+    let out = dir.join("out");
+    let build = |script: &Path| {
+        hiko(
+            &good,
+            &[
+                "build-vm",
+                "p.toml",
+                "--lock",
+                lock.to_str().unwrap(),
+                "--script",
+                script.to_str().unwrap(),
+                "--out",
+                out.to_str().unwrap(),
+            ],
+        )
+    };
+
+    let other = project_in(&dir.join("other"), "lockfile = \"../x\"");
+    let output = build(&other.join("a.hml"));
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.contains(&outside_message(&other, "../x")),
+        "got: {message}"
+    );
+
+    fs::write(other.join("hiko.toml"), "[defaults\n").unwrap();
+    let output = build(&other.join("a.hml"));
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.contains("Invalid project manifest"),
+        "got: {message}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn build_vm_lock_does_not_follow_a_link_to_another_project() {
+    let dir = empty_dir("build-vm-link");
+    let parent = project_in(&dir, "");
+    fs::write(parent.join("hiko.lock.toml"), "schema_version = 1\n").unwrap();
+    let sub = project_in(&parent.join("nested"), "");
+    std::os::unix::fs::symlink("../../hiko.lock.toml", sub.join("hiko.lock.toml")).unwrap();
+    let out = dir.join("out");
+    let output = hiko(
+        &sub,
+        &[
+            "build-vm",
+            "p.toml",
+            "--lock",
+            "hiko.lock.toml",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.contains(&outside_message(&sub, "hiko.lock.toml")),
+        "got: {message}"
+    );
+}
