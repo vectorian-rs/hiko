@@ -436,6 +436,13 @@ mise run check analyze.hml      # Type-check only
 mise run build-all              # Build all config VMs
 ```
 
+## Coding Agents
+
+Codex and Claude Code share the repository instructions in [AGENTS.md](AGENTS.md)
+and the roles in [docs/prompts/index.md](docs/prompts/index.md). See
+[Coding Agent Workflow](docs/project/agent-workflow.md) for role selection and
+conditional tool guidance.
+
 ## Testing
 
 ```bash
