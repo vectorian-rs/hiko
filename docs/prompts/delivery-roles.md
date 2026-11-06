@@ -3,6 +3,12 @@
 Prompts for the agent roles in [the delivery lifecycle](../project/delivery.md).
 Start a session with one of them, then the issue number.
 
+The same roles apply in Codex, Claude Code, and other agents. Read the shared
+instructions in [AGENTS.md](../../AGENTS.md); apply only the conditional guidance
+for the active tool. A role does not require a provider, model, slash command,
+or native subagent API. With no review helper available, perform the lens from
+its stated concern and return the same finding format.
+
 ## Lead
 
 > You are the lead for Hiko changes. Read `docs/project/delivery.md`, then the

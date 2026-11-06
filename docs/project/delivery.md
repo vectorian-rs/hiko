@@ -61,6 +61,11 @@ touch the same files never run at once; a plan's sections go to one worker in
 order; parallelism comes from lenses and independent plans. Useful team size is
 bounded by independent lanes and by the maintainer's review time.
 
+Roles and lens results are shared across coding tools. Start from
+[AGENTS.md](../../AGENTS.md) and the [role prompts](../prompts/delivery-roles.md).
+Use review helpers only when available in the active tool, as described in the
+conditional guidance; the role's authority and finding format still apply.
+
 Routine details (naming, structure, which existing pattern to copy) are settled
 from [dev-standard.md](dev-standard.md) and the code. Scope extensions inside an
 approved design are the lead's call. Language, security, cost, dependency and
@@ -115,8 +120,8 @@ code.
 | `concurrency` | Scheduler, cancellation, wakeups, races, deadlock. |
 | `performance` | Hot paths, allocations, growth with input size. |
 | `compat` | `.hml` files in the repository, lockfile hashes, docs that describe old behavior. |
-| `simplicity` | Reuse, needless complexity, wasted work, fixes at the wrong layer (`/simplify`). |
-| `correctness` | Bugs in the diff (`/code-review`). |
+| `simplicity` | Reuse, needless complexity, wasted work, fixes at the wrong layer. |
+| `correctness` | Bugs in the diff. |
 
 Each lens posts one comment, one finding per line:
 
