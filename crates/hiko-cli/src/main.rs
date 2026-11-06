@@ -14,7 +14,10 @@ use hiko_builtin_meta::{BuiltinSurface, builtin_meta, core_builtin_names};
 #[cfg(feature = "cli-hash")]
 use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram};
-use hiko_compile::compiler::{CompileError, Compiler, ExtensionSurface, ModuleLoaderOptions};
+use hiko_compile::compiler::{
+    CompileError, Compiler, ExtensionSurface, ModuleLoaderOptions, bounded_lockfile_path,
+    toml_error_text,
+};
 use hiko_compile::op::{HANDLER_CLAUSE_BYTES, Op};
 use hiko_syntax::format::{FormatError, format_source};
 use hiko_syntax::lexer::Lexer;
@@ -195,8 +198,7 @@ struct FmtOptions {
 #[serde(deny_unknown_fields)]
 struct ManifestDefaults {
     policy: Option<String>,
-    #[serde(rename = "lockfile")]
-    _lockfile: Option<String>,
+    lockfile: Option<String>,
     /// Read by the compiler's module loader.
     #[serde(rename = "lib_cache")]
     _lib_cache: Option<String>,
@@ -308,6 +310,17 @@ pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Applies the lockfile bound to the project of the script at `path`, so a
+/// script with no import meets it too. Reads no lockfile.
+pub(crate) fn check_script_project(path: &Path) -> Result<(), String> {
+    let script = fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+    let Some(manifest_path) = script.parent().and_then(find_project_manifest_from) else {
+        return Ok(());
+    };
+    let manifest = load_project_manifest(&manifest_path)?;
+    bounded_lockfile_path(&manifest_path, manifest.defaults.lockfile.as_deref()).map(|_| ())
+}
+
 /// Compiles `path`, printing any diagnostics. Warnings are printed and
 /// compilation continues; errors are printed and the process exits with 1.
 /// Extensions linked into this binary, by the `ext-*` cargo features. A run
@@ -349,6 +362,10 @@ fn build_vm_or_exit(config: &RunConfig, program: CompiledProgram) -> hiko_vm::vm
 fn compile_or_exit(path: &str, extensions: ExtensionSurface) -> Compiled {
     let source = read_source_or_exit(path);
     let ctx = DiagCtx::new(path, source.clone());
+    check_script_project(Path::new(path)).unwrap_or_else(|message| {
+        ctx.error(&message, None);
+        process::exit(1);
+    });
 
     let tokens = Lexer::new(&source, 0).tokenize().unwrap_or_else(|e| {
         ctx.error(&e.message, Some(e.span));
@@ -417,7 +434,13 @@ fn hash_files(paths: &[String]) {
 fn load_project_manifest(path: &Path) -> Result<ProjectManifest, String> {
     let toml = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read project manifest '{}': {e}", path.display()))?;
-    toml::from_str(&toml).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
+    toml::from_str(&toml).map_err(|e| {
+        format!(
+            "Invalid project manifest '{}': {}",
+            path.display(),
+            toml_error_text(&e, &toml)
+        )
+    })
 }
 
 fn resolve_policy_from_manifest(

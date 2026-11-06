@@ -156,6 +156,35 @@ Hash = { version = "0.1.0", registry = "local" }
 then use that one configured project lockfile. Entry-file-relative lockfiles are
 not part of the model.
 
+A project is the `hiko.toml` in or above the script's directory. `--config`
+selects policy for `hiko run` and `hiko check`, and the lockfile still comes
+from the script's project. `hiko install` and `hiko lock verify` take no script,
+so `--config` names their project.
+
+The lockfile must stay inside the directory that holds `hiko.toml`, so
+subprojects cannot share `../hiko.lock.toml`. Each command checks this when it
+reads the manifest, even for a script with no import: `hiko run`, `hiko check`,
+`hiko inspect-work`, `hiko install` (also with `--check`), `hiko lock verify`
+and `hiko build-vm --lock`. `hiko install` then writes nothing. A path that
+leaves the directory is rejected:
+
+```text
+project manifest '<manifest>' sets lockfile to '<value>', which is outside its directory; use a path inside it
+```
+
+This covers a relative or absolute path outside the directory, a `..` below the
+deepest directory that exists, such as `new/../../planted`, and a final symlink
+that leaves the directory, also at the default name `hiko.lock.toml`. A
+dangling symlink cannot be shown to stay inside, so it is rejected too, with its
+own error. A missing path inside the directory passes this check; a program that
+needs that lockfile fails with the missing-lockfile error. A script's `hiko.toml`
+that cannot be read or parsed fails the command, even for a script with no
+import. `hiko build-vm --script` checks the script's project as well.
+
+A `hiko.toml` or lockfile that does not parse gives its path, line, column and
+reason, and no source line, so an error cannot print a line of a file the path
+reaches. The reason can still quote a value, as in `invalid type: string "x"`.
+
 The lockfile (`hiko.lock.toml`) records exact resolved package roots and module
 hashes:
 
@@ -242,7 +271,9 @@ Default cache location:
 ```
 
 A project can choose its own directory in `hiko.toml`. A relative path is
-resolved against the directory that holds `hiko.toml`:
+resolved against the directory that holds `hiko.toml`. Unlike the lockfile, the
+directory can sit outside the project and be shared: every cached module is
+checked against its lockfile hash on load.
 
 ```toml
 [defaults]

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::{find_project_manifest_from, parse_flag_value};
 use hiko_common::{blake3_hex, http_get_text_limited};
+use hiko_compile::compiler::{bounded_lockfile_path, toml_error_text};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -118,7 +119,8 @@ pub(crate) fn resolve_manifest_path(config_path: Option<PathBuf>) -> Result<Path
 
 fn verify_lockfile(manifest_path: &Path) -> Result<(), String> {
     let manifest = load_project_manifest(manifest_path)?;
-    let lockfile_path = project_lockfile_path(manifest_path, &manifest);
+    let lockfile_path =
+        bounded_lockfile_path(manifest_path, manifest.defaults.lockfile.as_deref())?;
     let lockfile = load_module_lockfile(&lockfile_path)?;
 
     validate_module_lockfile(&lockfile, &lockfile_path)?;
@@ -151,24 +153,6 @@ fn verify_locked_modules(lockfile: &ModuleLockfile) -> Result<(), String> {
     }
 }
 
-/// The lockfile the project at `manifest_path` uses: `[defaults] lockfile`,
-/// relative to the manifest, else `hiko.lock.toml` next to it.
-pub(crate) fn project_lockfile_path(
-    manifest_path: &Path,
-    manifest: &LockProjectManifest,
-) -> PathBuf {
-    manifest_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(
-            manifest
-                .defaults
-                .lockfile
-                .as_deref()
-                .unwrap_or("hiko.lock.toml"),
-        )
-}
-
 /// Where a registry serves version `version` of package `name`.
 pub(crate) fn dependency_base_url(registry_url: &str, name: &str, version: &str) -> String {
     format!("{}/{name}-v{version}", registry_url.trim_end_matches('/'))
@@ -177,13 +161,25 @@ pub(crate) fn dependency_base_url(registry_url: &str, name: &str, version: &str)
 pub(crate) fn load_project_manifest(path: &Path) -> Result<LockProjectManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read project manifest '{}': {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| format!("Invalid project manifest '{}': {e}", path.display()))
+    toml::from_str(&text).map_err(|e| {
+        format!(
+            "Invalid project manifest '{}': {}",
+            path.display(),
+            toml_error_text(&e, &text)
+        )
+    })
 }
 
 pub(crate) fn load_module_lockfile(path: &Path) -> Result<ModuleLockfile, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read module lockfile '{}': {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| format!("Invalid module lockfile '{}': {e}", path.display()))
+    toml::from_str(&text).map_err(|e| {
+        format!(
+            "Invalid module lockfile '{}': {}",
+            path.display(),
+            toml_error_text(&e, &text)
+        )
+    })
 }
 
 pub(crate) fn validate_module_lockfile(

@@ -9,7 +9,7 @@ use hiko_compile::compiler::LockedModuleSource;
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
     CompileError, Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions,
-    local_use_files,
+    codegen_message, local_use_files, resolve_directory_of,
 };
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_syntax::{lexer::Lexer, parser::Parser};
@@ -286,22 +286,25 @@ fn collect_sealed(
 ) -> Result<Sealed, String> {
     // Resolve --lock once; the check and the loader then see one project.
     let lock = match &options.lock {
-        Some(lock) => Some(
-            fs::canonicalize(lock)
-                .map_err(|e| format!("cannot resolve --lock '{}': {e}", lock.display()))?,
-        ),
+        Some(lock) => {
+            if lock.file_name().is_none() {
+                return Err("--lock must name a lockfile, not a directory".to_string());
+            }
+            let unresolved = |e| format!("cannot resolve --lock '{}': {e}", lock.display());
+            let entry = resolve_directory_of(lock).map_err(unresolved)?;
+            let real = fs::canonicalize(&entry).map_err(unresolved)?;
+            let used = Compiler::project_lockfile_path(&entry).map_err(codegen_message)?;
+            if fs::canonicalize(&used).ok().as_ref() != Some(&real) {
+                return Err(format!(
+                    "--lock '{}' is not the lockfile its project uses ('{}'); named imports resolve through the project's hiko.toml",
+                    real.display(),
+                    used.display()
+                ));
+            }
+            Some(entry)
+        }
         None => None,
     };
-    if let Some(lock) = &lock {
-        let used = Compiler::project_lockfile_path(lock).map_err(|e| format!("{e:?}"))?;
-        if fs::canonicalize(&used).ok().as_ref() != Some(lock) {
-            return Err(format!(
-                "--lock '{}' is not the lockfile its project uses ('{}'); named imports resolve through the project's hiko.toml",
-                lock.display(),
-                used.display()
-            ));
-        }
-    }
     let modules = match &lock {
         Some(lock) => Compiler::locked_module_sources(
             lock,
@@ -313,8 +316,9 @@ fn collect_sealed(
         )
         .map_err(|e| {
             format!(
-                "cannot read the locked modules of '{}': {e:?}",
-                lock.display()
+                "cannot read the locked modules of '{}': {}",
+                lock.display(),
+                codegen_message(e)
             )
         })?,
         None => Vec::new(),
@@ -323,6 +327,7 @@ fn collect_sealed(
         Some(path) => {
             let source = fs::read_to_string(path)
                 .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+            crate::check_script_project(path)?;
             let files = local_use_files(path, &source).map_err(|e| format!("{e:?}"))?;
             Some((source, files))
         }
@@ -607,6 +612,61 @@ mod tests {
         assert_eq!(options.lock, Some(PathBuf::from("hiko.lock.toml")));
         assert!(parse_args(&["--lock".to_string()]).is_err());
         assert!(parse_args(&["a".to_string(), "b".to_string()]).is_err());
+    }
+
+    /// Options that seal the modules of `lock`, read from the repository.
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+    fn sealing(lock: PathBuf, out_dir: PathBuf) -> BuildVmOptions {
+        BuildVmOptions {
+            config_path: "run.toml".into(),
+            lock: Some(lock),
+            script: None,
+            hiko_path: Some(repo()),
+            out_dir: Some(out_dir),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("cache")),
+        }
+    }
+
+    #[cfg(all(unix, feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+    #[test]
+    fn a_lock_linked_into_a_nested_project_seals_its_own_project() {
+        let dir = temp_dir("lock-link");
+        write(&dir.join("hiko.toml"), "").unwrap();
+        write(
+            &dir.join("nested/hiko.toml"),
+            "[defaults]\nlockfile = \"other.lock\"\n",
+        )
+        .unwrap();
+        write(&dir.join("nested/other.lock"), "schema_version = 1\n").unwrap();
+        fs::copy(repo().join("hiko.lock.toml"), dir.join("nested/real.lock")).unwrap();
+        std::os::unix::fs::symlink("nested/real.lock", dir.join("hiko.lock.toml")).unwrap();
+
+        let options = sealing(dir.join("hiko.lock.toml"), dir.join("out"));
+        let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            read(module_file(&out, "Std.Option")),
+            read(repo().join("libraries/Std-v0.1.0/modules/Option.hml"))
+        );
+    }
+
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+    #[test]
+    fn a_lock_reached_through_dot_dot_belongs_to_the_directory_it_is_in() {
+        let dir = temp_dir("lock-parent");
+        write(
+            &dir.join("hiko.toml"),
+            "[defaults]\nlockfile = \"sub/l.toml\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("sub/deep")).unwrap();
+        fs::copy(repo().join("hiko.lock.toml"), dir.join("sub/l.toml")).unwrap();
+        write(&dir.join("sub/deep/hiko.toml"), "").unwrap();
+        write(&dir.join("sub/deep/hiko.lock.toml"), "schema_version = 1\n").unwrap();
+
+        let options = sealing(dir.join("sub/deep/../l.toml"), dir.join("out"));
+        let out = generate(&options, &config(), &[]).unwrap_or_else(|e| panic!("{e}"));
+        assert!(module_file(&out, "Std.Option").is_file());
     }
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
