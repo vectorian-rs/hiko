@@ -199,11 +199,11 @@ fn collect_uses<'a>(decls: &'a [Decl], uses: &mut Vec<&'a str>) {
 }
 
 /// The path of the first `use` in `tokens`, wherever it sits.
-fn first_use_path(tokens: &[Token]) -> Option<String> {
+fn first_use_path(tokens: &[Token]) -> Option<&str> {
     tokens
         .windows(2)
         .find_map(|pair| match (&pair[0].kind, &pair[1].kind) {
-            (TokenKind::Use, TokenKind::StringLit(path)) => Some(path.clone()),
+            (TokenKind::Use, TokenKind::StringLit(path)) => Some(path.as_str()),
             _ => None,
         })
 }
@@ -1030,6 +1030,8 @@ struct LockedPackage {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ImportKey {
     File(PathBuf),
+    #[cfg(feature = "loader-integrity-blake3")]
+    VerifiedFile(PathBuf),
     Synthetic(&'static str),
     EmbeddedFile(&'static str),
 }
@@ -1068,13 +1070,13 @@ impl ResolvedImport {
         match self {
             Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
             #[cfg(feature = "loader-integrity-blake3")]
-            Self::VerifiedFile { canonical, .. } => ImportKey::File(canonical.clone()),
+            Self::VerifiedFile { canonical, .. } => ImportKey::VerifiedFile(canonical.clone()),
             Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
             Self::Embedded { key, .. } => key.clone(),
         }
     }
 
-    /// Whether the source was fetched from a remote package.
+    /// Whether the source is checked against a module pin, including embedded sources.
     fn is_remote(&self) -> bool {
         match self {
             #[cfg(feature = "loader-integrity-blake3")]
@@ -1124,7 +1126,6 @@ impl ResolvedImport {
 struct CachedImportedProgram {
     base_dir: PathBuf,
     decls: Vec<Decl>,
-    is_remote: bool,
 }
 
 pub struct Compiler {
@@ -1142,10 +1143,6 @@ pub struct Compiler {
     entry_file: Option<PathBuf>,
     /// Imports currently being loaded (for cycle detection).
     loading_imports: HashSet<ImportKey>,
-    /// True while inferring a remote module or anything it imports. Local
-    /// `use` is rejected there: a hash-pinned module must not pull in
-    /// unverified files relative to the shared module cache.
-    in_remote_import: bool,
     /// The extension module being inferred, if any: its library imports are
     /// checked against its extension's `requires`.
     importing_extension: Option<(ExtensionRequires, &'static str)>,
@@ -1330,7 +1327,6 @@ impl Compiler {
             base_dir,
             entry_file,
             loading_imports,
-            in_remote_import: false,
             importing_extension: None,
             inferred_imports: HashSet::new(),
             compiled_imports: HashSet::new(),
@@ -2005,9 +2001,6 @@ impl Compiler {
                 requires.extension
             )));
         }
-        if self.in_remote_import {
-            return Err(remote_use_refused(path));
-        }
         if let Some(files) = self.loader_options.embedded.and_then(|e| e.files) {
             let key = embedded_file_path(&self.base_dir, path)?;
             let file = files.iter().find(|f| f.path == key).ok_or_else(|| {
@@ -2385,7 +2378,8 @@ impl Compiler {
             )));
         }
 
-        if self.inferred_imports.contains(&key) {
+        let already_inferred = self.inferred_imports.contains(&key);
+        if already_inferred && !is_remote {
             return Ok(());
         }
 
@@ -2393,11 +2387,14 @@ impl Compiler {
         let tokens = Lexer::new(&source, 0).tokenize().map_err(|e| {
             CompileError::codegen(format!("lex error in '{display_name}': {}", e.message))
         })?;
-        let remote_use = if is_remote || self.in_remote_import {
-            first_use_path(&tokens)
-        } else {
-            None
-        };
+        // Check every pinned source before parsing or reusing inference. A
+        // token scan reaches nested declarations even when inference does not.
+        if is_remote && let Some(path) = first_use_path(&tokens) {
+            return Err(remote_use_refused(path));
+        }
+        if already_inferred {
+            return Ok(());
+        }
 
         // Use the same interner for import parsing so symbols are shared
         let import_interner = std::mem::take(&mut self.interner);
@@ -2416,8 +2413,6 @@ impl Compiler {
         self.loading_imports.insert(key.clone());
         let old_base = self.base_dir.clone();
         self.base_dir = imported_base_dir.clone();
-        let old_in_remote = self.in_remote_import;
-        self.in_remote_import |= is_remote;
         let old_extension = self.importing_extension;
         // None inside a library module: its own imports are not the
         // extension's.
@@ -2429,16 +2424,10 @@ impl Compiler {
         let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
         self.infer_ctx.resume_declaration(importer);
 
-        self.in_remote_import = old_in_remote;
         self.importing_extension = old_extension;
         self.base_dir = old_base;
         self.loading_imports.remove(&key);
 
-        // Inference does not load a `use` in a `let`, so its names are
-        // unbound there. Pass 2 refuses the `use` when they are bound.
-        if let (Err(_), Some(path)) = (&result, &remote_use) {
-            return Err(remote_use_refused(path));
-        }
         result?;
         self.inferred_imports.insert(key.clone());
         self.imported_programs.insert(
@@ -2446,7 +2435,6 @@ impl Compiler {
             CachedImportedProgram {
                 base_dir: imported_base_dir,
                 decls: desugared,
-                is_remote,
             },
         );
         Ok(())
@@ -2533,25 +2521,18 @@ impl Compiler {
             return Ok(());
         }
 
-        let CachedImportedProgram {
-            base_dir,
-            decls,
-            is_remote,
-        } = self.imported_programs.remove(&key).ok_or_else(|| {
-            CompileError::codegen(format!("import not found during compilation: {key:?}"))
-        })?;
+        let CachedImportedProgram { base_dir, decls } =
+            self.imported_programs.remove(&key).ok_or_else(|| {
+                CompileError::codegen(format!("import not found during compilation: {key:?}"))
+            })?;
 
         let old_base = self.base_dir.clone();
         self.base_dir = base_dir;
-        // Set here too: pass 1 does not reach an import or `use` in a `let`.
-        let old_in_remote = self.in_remote_import;
-        self.in_remote_import |= is_remote;
         let old_extension = self.importing_extension;
         self.importing_extension = self.extension_of(&key);
         for decl in &decls {
             self.compile_decl(decl)?;
         }
-        self.in_remote_import = old_in_remote;
         self.importing_extension = old_extension;
         self.base_dir = old_base;
         self.compiled_imports.insert(key);
@@ -5014,14 +4995,8 @@ Answer = "blake3:deadbeef"
         std::fs::remove_dir_all(&project_dir).ok();
     }
 
-    /// Compiles `script` against a cached, pinned module `module_source`,
-    /// with a `helper.hml` in the project, `../helper.hml` from the cache.
     #[cfg(feature = "loader-integrity-blake3")]
-    fn compile_with_pinned_module(
-        name: &str,
-        module_source: &str,
-        script: &str,
-    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+    fn write_pinned_module_project(name: &str, module_source: &str) -> (PathBuf, PathBuf, PathBuf) {
         let project_dir = unique_temp_dir(name);
         write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
@@ -5040,6 +5015,18 @@ Answer = "blake3:deadbeef"
                 "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
+        (project_dir, entry_path, cache_path)
+    }
+
+    /// Compiles `script` against a cached, pinned module `module_source`,
+    /// with a `helper.hml` in the project, `../helper.hml` from the cache.
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn compile_with_pinned_module(
+        name: &str,
+        module_source: &str,
+        script: &str,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        let (project_dir, entry_path, _) = write_pinned_module_project(name, module_source);
         write_file(&entry_path, script);
         let result = compile_path(&entry_path);
         std::fs::remove_dir_all(&project_dir).ok();
@@ -5104,11 +5091,116 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
+    fn pinned_module_use_in_local_or_structure_refused() {
+        for module in [
+            "local use \"../helper.hml\" in val n = helper end",
+            "structure Answer = struct use \"../helper.hml\" val n = helper end",
+        ] {
+            assert_nested_use_refused(compile_with_pinned_module(
+                "pinned-nested-use",
+                module,
+                "use \"./helper.hml\"\nimport Test.Answer",
+            ));
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_use_refusal_precedes_parse_and_type_errors() {
+        for module in [
+            "val n = let use \"../helper.hml\" in helper end\nval broken =",
+            "val broken = )\nuse \"../helper.hml\"",
+            "val broken = unknown_name\nuse \"../helper.hml\"",
+        ] {
+            for script in [
+                "import Test.Answer",
+                "use \"./helper.hml\"\nimport Test.Answer",
+            ] {
+                assert_nested_use_refused(compile_with_pinned_module(
+                    "pinned-use-error-precedence",
+                    module,
+                    script,
+                ));
+            }
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_cannot_reuse_locally_loaded_cache_file() {
+        let (project_dir, entry_path, cache_path) = write_pinned_module_project(
+            "pinned-local-cache-use",
+            "val n = let use \"../helper.hml\" in helper end",
+        );
+        // macOS temp paths can contain a symlink (/var -> /private/var).
+        // Use the canonical path so a path mismatch cannot mask the bypass.
+        let canonical = std::fs::canonicalize(cache_path).unwrap();
+        let canonical_project = std::fs::canonicalize(&project_dir).unwrap();
+        let entry_path = canonical_project.join(entry_path.file_name().unwrap());
+        let relative_cache = canonical.strip_prefix(&canonical_project).unwrap();
+        write_file(
+            &entry_path,
+            &format!(
+                "use \"./helper.hml\"\nuse \"./{}\"\nimport Test.Answer\nval m = n",
+                relative_cache.display()
+            ),
+        );
+        for helper in [41, 999] {
+            write_file(
+                &project_dir.join("helper.hml"),
+                &format!("val helper = {helper}"),
+            );
+            assert_nested_use_refused(compile_path(&entry_path));
+        }
+        std::fs::remove_dir_all(project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_transitive_use_refused() {
+        let (project_dir, entry_path, _) = write_pinned_module_project(
+            "pinned-transitive-use",
+            "import Test.Other\nval answer = n",
+        );
+        let source = "val n = let use \"../helper.hml\" in helper end";
+        let hash = blake3_hex(source.as_bytes());
+        let lock_path = project_dir.join("hiko.lock.toml");
+        let lock = std::fs::read_to_string(&lock_path).unwrap();
+        write_file(&lock_path, &format!("{lock}Other = \"blake3:{hash}\"\n"));
+        write_file(
+            &cached_module_path(
+                &entry_path,
+                "http://127.0.0.1:9/Test-v0.1.0/modules/Other.hml",
+                &hash,
+            ),
+            source,
+        );
+        write_file(&entry_path, "use \"./helper.hml\"\nimport Test.Answer");
+        assert_nested_use_refused(compile_path(&entry_path));
+        std::fs::remove_dir_all(project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-embedded")]
+    #[test]
+    fn pinned_module_embedded_nested_use_precedes_parse_error() {
+        let module = "val n = let use \"../helper.hml\" in helper end\nval broken =";
+        let script = parse_program("use \"./helper.hml\"\nimport Pkg.Greet");
+        let options = embedded(module, None, Some(vec![("helper.hml", "val helper = 41")]));
+        let err = Compiler::compile_embedded(script, options).unwrap_err();
+        assert!(
+            format!("{err:?}")
+                .contains("local use '../helper.hml' is not allowed in a remote module"),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
     fn pinned_module_without_use_compiles_and_type_errors_stand() {
         assert!(
             compile_with_pinned_module(
                 "pinned-plain",
-                "val n = let val x = 1 in x end\n",
+                "(* use \"../helper.hml\" *)\nval text = \"use \\\"../helper.hml\\\"\"\nval n = let val x = 1 in x end\n",
                 "import Test.Answer\nval m = n\n",
             )
             .is_ok()
@@ -5121,6 +5213,12 @@ Answer = "blake3:deadbeef"
         assert!(
             matches!(&result, Err(e) if format!("{e:?}").contains("unbound variable")),
             "an unrelated error stands"
+        );
+        let result =
+            compile_with_pinned_module("pinned-parse-error", "val n =", "import Test.Answer");
+        assert!(
+            matches!(&result, Err(e) if format!("{e:?}").contains("parse error")),
+            "an unrelated parse error stands"
         );
     }
 
@@ -5205,6 +5303,17 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
+    fn pinned_module_from_local_package_root_cannot_use_files() {
+        let source = "val n = let use \"../helper.hml\" in helper end";
+        let (project_dir, entry_path) =
+            write_local_package_project(source, &blake3_hex(source.as_bytes()));
+        write_file(&entry_path, "import Test.Answer");
+        assert_nested_use_refused(compile_with_local_root(&project_dir, &entry_path));
+        std::fs::remove_dir_all(project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
     fn named_import_reads_verified_module_from_local_package_root() {
         let module_source = "structure Answer = struct\n  val value = 42\nend\n";
         let (project_dir, entry_path) =
@@ -5240,6 +5349,43 @@ Answer = "blake3:deadbeef"
         }
 
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_does_not_reuse_unverified_inference_or_codegen() {
+        let project_dir = unique_temp_dir("pinned-local-inference");
+        let path = project_dir.join("module.hml");
+        write_file(&path, "val unchecked = 13");
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        let local = ResolvedImport::File {
+            canonical: canonical.clone(),
+            display_name: "module.hml".into(),
+        };
+        let local_key = local.key();
+        let mut compiler = Compiler::new(
+            project_dir.clone(),
+            None,
+            HashSet::new(),
+            ModuleLoaderOptions::default(),
+            StringInterner::default(),
+        );
+        compiler.infer_import_source(local).unwrap();
+        compiler.compile_import_source(local_key).unwrap();
+
+        // A verified snapshot at the same canonical path must contribute its
+        // own declarations, regardless of previously inferred/compiled bytes.
+        let verified = ResolvedImport::VerifiedFile {
+            canonical,
+            display_name: "Test.Answer".into(),
+            source: "val answer = 42".into(),
+        };
+        let verified_key = verified.key();
+        compiler.infer_import_source(verified).unwrap();
+        assert!(compiler.infer_ctx.has_value("answer"));
+        compiler.compile_import_source(verified_key).unwrap();
+        assert!(compiler.global_slots.contains_key("answer"));
+        std::fs::remove_dir_all(project_dir).ok();
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
