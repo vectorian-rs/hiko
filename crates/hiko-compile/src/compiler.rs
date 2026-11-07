@@ -1689,6 +1689,15 @@ impl Compiler {
     /// Start a new top-level binding of `name`: later references resolve to
     /// it, earlier code keeps the binding it was compiled against.
     fn declare_global(&mut self, name: &str) {
+        // An export shadows a private main-frame value of the same name.
+        // Keep its slot intact for closures already capturing it.
+        if self.func_stack.len() == 1 {
+            for local in &mut self.ctx_mut().locals {
+                if local.name == name {
+                    local.name.clear();
+                }
+            }
+        }
         let extensions = &self.loader_options.extensions;
         let next = self
             .global_versions
@@ -1941,15 +1950,39 @@ impl Compiler {
             DeclKind::Fun(bindings) => {
                 // `fun` is recursive: inside the bodies, these names refer to
                 // the new bindings, never to an earlier global function.
-                // Top-level functions capture nothing, so their protos are
-                // reserved first and calls within the group are direct.
-                let mut members = Vec::with_capacity(bindings.len());
+                // Only capture-free members can be direct-call targets. A
+                // captured export uses the same environment as any closure.
+                let mut private: HashSet<_> = self
+                    .ctx()
+                    .locals
+                    .iter()
+                    .map(|local| local.name.as_str())
+                    .filter(|name| !name.is_empty() && !self.is_private_builtin(name))
+                    .collect();
                 for binding in bindings {
+                    private.remove(self.interner.resolve(binding.name));
+                }
+                let captures = if private.is_empty() {
+                    vec![false; bindings.len()]
+                } else {
+                    let mut analysis =
+                        crate::captures::PrivateCaptures::new(private, &self.interner);
+                    bindings
+                        .iter()
+                        .map(|binding| analysis.function(binding))
+                        .collect()
+                };
+                let mut members = Vec::with_capacity(bindings.len());
+                for (binding, &captures) in bindings.iter().zip(&captures) {
                     let name = self.interner.resolve(binding.name).to_string();
                     self.declare_global(&name);
                     let proto_idx = self.reserve_proto()?;
-                    self.global_protos.insert(name.clone(), proto_idx);
-                    let flat = match flat_tuple_width(binding) {
+                    self.global_protos.remove(&name);
+                    self.global_flat_protos.remove(&name);
+                    if !captures {
+                        self.global_protos.insert(name.clone(), proto_idx);
+                    }
+                    let flat = match flat_tuple_width(binding).filter(|_| !captures) {
                         Some(width) => {
                             let flat = self.reserve_proto()?;
                             let entry = FlatEntry {
@@ -1962,9 +1995,9 @@ impl Compiler {
                         }
                         None => None,
                     };
-                    members.push((name, proto_idx, flat));
+                    members.push((name, proto_idx, flat, captures));
                 }
-                for (binding, (name, proto_idx, flat)) in bindings.iter().zip(&members) {
+                for (binding, (name, proto_idx, flat, captures)) in bindings.iter().zip(&members) {
                     let closure = match flat {
                         Some(entry) => {
                             self.pending_reserved_proto = Some(entry.flat);
@@ -1978,12 +2011,16 @@ impl Compiler {
                             self.compile_fun_binding(binding)?
                         }
                     };
-                    check_top_level_closure(name, &closure, *proto_idx)?;
+                    if !captures {
+                        check_top_level_closure(name, &closure, *proto_idx)?;
+                    }
                     self.emit_make_closure(&closure);
                     self.emit_set_declared_global(name)?;
                     // Setting the global forgets the direct-call target; the
                     // global now holds exactly this function.
-                    self.global_protos.insert(name.clone(), *proto_idx);
+                    if closure.n_captures == 0 {
+                        self.global_protos.insert(name.clone(), *proto_idx);
+                    }
                 }
                 Ok(())
             }
@@ -2029,24 +2066,32 @@ impl Compiler {
                 unreachable!("structures must be flattened before codegen")
             }
             DeclKind::Local(locals, body) => {
+                let private_start = self.ctx().locals.len();
                 self.begin_scope();
                 for d in locals {
                     self.compile_decl(d)?;
                 }
-                let private_depth = self.ctx().scope_depth;
+                let private_end = self.ctx().locals.len();
                 for d in body {
                     self.ctx_mut().scope_depth -= 1;
                     self.compile_decl(d)?;
                     self.ctx_mut().scope_depth += 1;
                 }
-                while self
-                    .ctx()
-                    .locals
-                    .last()
-                    .is_some_and(|l| l.depth == private_depth)
-                {
-                    self.ctx_mut().locals.pop();
-                    self.emit(Op::Pop);
+                if self.ctx().locals.len() == private_end {
+                    // Depths overlap in nested `local` bodies. Only remove
+                    // the slots owned by this block.
+                    for _ in private_start..private_end {
+                        self.ctx_mut().locals.pop();
+                        self.emit(Op::Pop);
+                    }
+                } else {
+                    // Local exports sit above these slots. Hide the private
+                    // names now; the enclosing scope reclaims their storage.
+                    let enclosing_depth = self.ctx().scope_depth - 1;
+                    for local in &mut self.ctx_mut().locals[private_start..private_end] {
+                        local.name.clear();
+                        local.depth = enclosing_depth;
+                    }
                 }
                 self.ctx_mut().scope_depth -= 1;
                 Ok(())
@@ -2404,10 +2449,12 @@ impl Compiler {
                 // One declaration for overloaded operators, like `local` in
                 // the type checker.
                 self.infer_ctx.begin_declaration();
-                let result = locals
-                    .iter()
-                    .chain(body)
-                    .try_for_each(|d| self.infer_decl_pass(d));
+                self.infer_ctx.begin_local_scope();
+                let result = locals.iter().try_for_each(|d| self.infer_decl_pass(d));
+                self.infer_ctx.begin_local_exports();
+                let result =
+                    result.and_then(|()| body.iter().try_for_each(|d| self.infer_decl_pass(d)));
+                self.infer_ctx.end_local_scope(result.is_ok());
                 let ended = self.infer_ctx.end_declaration(result.is_ok());
                 result?;
                 Ok(ended?)
@@ -4364,6 +4411,79 @@ mod tests {
         // No member refers to its own group: plain closures, as before.
         assert_eq!(first_op_of(&compiled, "plain"), Op::MakeClosure);
         assert_eq!(first_op_of(&compiled, "later"), Op::MakeClosure);
+    }
+
+    #[test]
+    fn exported_functions_capture_private_values() {
+        let (compiled, _) = Compiler::compile(parse_program(
+            "local val y = 9 in fun h () = y end val result = h ()",
+        ))
+        .expect("valid exported closure");
+        let h = compiled
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some("h"))
+            .unwrap();
+        assert_eq!(h.n_captures, 1);
+        assert!(!compiled.main.ops().contains(&Op::CallDirect));
+    }
+
+    #[test]
+    fn exported_capture_analysis_respects_lexical_binders() {
+        let (compiled, _) = Compiler::compile(parse_program(
+            "local val y = 9 in
+                 fun parameter (y : int) = y + 1
+                 fun tuple (y : int, z : int) = y + z
+                 fun binding () = let val y = 12 in y end
+                 fun pattern n = case n of y => y + 1
+                 fun recursive () = let fun y (n : int) = if n = 0 then 0 else y (n - 1) in y 3 end
+                 fun inner_local () = let local val y = 12 in val y = 13 end in y end
+                 fun capture () = fn () => y
+                 fun capture_before_shadow () = let val old = y val y = 12 in old + y end
+             end",
+        ))
+        .unwrap();
+        for name in [
+            "parameter",
+            "tuple",
+            "binding",
+            "pattern",
+            "recursive",
+            "inner_local",
+        ] {
+            let proto = compiled
+                .functions
+                .iter()
+                .find(|f| f.name.as_deref() == Some(name))
+                .unwrap();
+            assert_eq!(proto.n_captures, 0, "{name}");
+        }
+        for name in ["capture", "capture_before_shadow"] {
+            let proto = compiled
+                .functions
+                .iter()
+                .find(|f| f.name.as_deref() == Some(name))
+                .unwrap();
+            assert_eq!(proto.n_captures, 1, "{name}");
+        }
+        assert!(
+            compiled
+                .functions
+                .iter()
+                .any(|f| f.name.as_deref() == Some("tuple") && f.arity == 2),
+            "shadowed private tuple parameter still gets a flat entry"
+        );
+    }
+
+    #[test]
+    fn exported_private_names_do_not_escape_type_inference() {
+        for source in [
+            "local val secret = 9 in fun read () = secret end val leaked = secret",
+            "fun read () = let local val secret = 9 in val public = secret end in secret end",
+        ] {
+            let error = Compiler::compile(parse_program(source)).unwrap_err();
+            assert!(format!("{error:?}").contains("secret"), "{error:?}");
+        }
     }
 
     /// Long chains and deep nesting must end in a parse error or a compiled

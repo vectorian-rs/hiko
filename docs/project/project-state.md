@@ -20,8 +20,9 @@ head passed 1,154 default and 1,232 all-features tests, lint, CLI/mutation check
 and CI. JSON converters now use the protected runtime-owned datatype.
 
 Next is [#209 rev 2](https://github.com/vectorian-rs/hiko/issues/209): exported
-functions with private captures, approved and in implementation. Package/import contract and preparatory
-internals belong to [#210](https://github.com/vectorian-rs/hiko/issues/210);
+functions with private captures, approved and in implementation. Package/import
+contract and preparatory internals belong to
+[#210](https://github.com/vectorian-rs/hiko/issues/210);
 [#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
