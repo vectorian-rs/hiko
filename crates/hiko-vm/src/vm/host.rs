@@ -1,6 +1,5 @@
 //! Host-facing helpers for output, stdin, and `exec`.
 
-use smallvec::smallvec;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -46,6 +45,240 @@ pub(super) struct ResolvedExec {
     display_command: String,
     allowed: AllowedExecutable,
     args: Vec<String>,
+}
+
+/// An authorized, pinned command shared with an I/O backend. Clones share
+/// one execution and cancellation state; only the VM can prepare a new job.
+#[derive(Clone)]
+pub struct ExecJob {
+    inner: Arc<ExecJobInner>,
+}
+
+struct ExecJobInner {
+    exec: ResolvedExec,
+    timeout: std::time::Duration,
+    output_limit: ReadLimit,
+    state: Mutex<ExecState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct ExecState {
+    started: bool,
+    running: bool,
+    cancelled: bool,
+    #[cfg(all(test, unix, feature = "builtin-exec"))]
+    child_pid: Option<u32>,
+}
+
+impl std::fmt::Debug for ExecJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecJob")
+            .field("command", &self.inner.exec.display_command)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecJob {
+    pub fn timeout(&self) -> std::time::Duration {
+        self.inner.timeout
+    }
+
+    /// Prevent a queued command from starting, or wait until a running command
+    /// has killed/reaped its child and joined both readers. Do not hold backend
+    /// queue locks while calling this method.
+    pub fn cancel(&self) {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.cancelled = true;
+        while state.running {
+            state = self
+                .inner
+                .changed
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancelled
+    }
+
+    pub(crate) fn timeout_error(&self) -> String {
+        format!(
+            "exec: '{}' timed out after {}ms",
+            self.inner.exec.display_command,
+            self.inner.timeout.as_millis()
+        )
+    }
+
+    /// Run once on a blocking host/I/O thread. The returned bytes count only
+    /// stdout/stderr, matching the synchronous exec accounting.
+    pub fn run(&self) -> Result<(crate::sendable::SendableValue, u64), String> {
+        let now = std::time::Instant::now();
+        let deadline = now
+            .checked_add(self.timeout())
+            .unwrap_or(now + std::time::Duration::from_secs(100 * 365 * 24 * 3600));
+        self.run_until(deadline)
+    }
+
+    pub(crate) fn run_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> Result<(crate::sendable::SendableValue, u64), String> {
+        {
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.started {
+                return Err("exec: job already ran".into());
+            }
+            state.started = true;
+            if state.cancelled {
+                return Err("exec: cancelled".into());
+            }
+            state.running = true;
+        }
+        struct Running<'a>(&'a ExecJobInner);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.running = false;
+                self.0.changed.notify_all();
+            }
+        }
+        let _running = Running(&self.inner);
+        self.execute(deadline)
+    }
+
+    fn execute(
+        &self,
+        deadline: std::time::Instant,
+    ) -> Result<(crate::sendable::SendableValue, u64), String> {
+        use crate::sendable::SendableValue;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let exec = &self.inner.exec;
+        let allowed = &exec.allowed.id;
+        if file_identity(allowed.path.clone())? != *allowed {
+            return Err(format!(
+                "exec: '{}' changed since it was allowed",
+                allowed.path.display()
+            ));
+        }
+        if self.cancelled() {
+            return Err("exec: cancelled".into());
+        }
+        if Instant::now() >= deadline {
+            return Err(self.timeout_error());
+        }
+        let mut command = Command::new(exec_path(&exec.allowed));
+        command
+            .args(&exec.args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.arg0(&exec.display_command);
+            command.process_group(0);
+        }
+
+        // The guard lives inside the scope closure: on error/panic it kills
+        // the group before the scope waits for its output reader threads.
+        struct ChildGuard {
+            child: std::process::Child,
+            reaped: bool,
+        }
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                if !self.reaped {
+                    kill_exec_child(&mut self.child);
+                }
+            }
+        }
+        std::thread::scope(|scope| {
+            let mut guard = ChildGuard {
+                child: command.spawn().map_err(|e| format!("exec: {e}"))?,
+                reaped: false,
+            };
+            #[cfg(all(test, unix, feature = "builtin-exec"))]
+            {
+                self.inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .child_pid = Some(guard.child.id());
+            }
+            let (tx, rx) = mpsc::channel();
+            for (stream, is_stdout) in [("stdout", true), ("stderr", false)] {
+                let tx = tx.clone();
+                let pipe: Box<dyn std::io::Read + Send> = if is_stdout {
+                    Box::new(guard.child.stdout.take().expect("stdout is piped"))
+                } else {
+                    Box::new(guard.child.stderr.take().expect("stderr is piped"))
+                };
+                scope.spawn(move || {
+                    let _ = tx.send((
+                        is_stdout,
+                        read_exec_pipe(pipe, self.inner.output_limit, stream),
+                    ));
+                });
+            }
+            drop(tx);
+            let mut stdout = None;
+            let mut stderr = None;
+            while stdout.is_none() || stderr.is_none() {
+                if self.cancelled() {
+                    return Err("exec: cancelled".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err(self.timeout_error());
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                match rx.recv_timeout(left.min(Duration::from_millis(10))) {
+                    Ok((is_stdout, Ok(text))) => {
+                        if is_stdout {
+                            stdout = Some(text);
+                        } else {
+                            stderr = Some(text);
+                        }
+                    }
+                    Ok((_, Err(err))) => return Err(err),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("exec: output reader thread panicked".into());
+                    }
+                }
+            }
+            let status = loop {
+                if self.cancelled() {
+                    return Err("exec: cancelled".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err(self.timeout_error());
+                }
+                match guard.child.try_wait().map_err(|e| format!("exec: {e}"))? {
+                    Some(status) => {
+                        guard.reaped = true;
+                        break status;
+                    }
+                    None => std::thread::sleep(Duration::from_millis(10)),
+                }
+            };
+            let (stdout, stderr) = (stdout.unwrap_or_default(), stderr.unwrap_or_default());
+            let bytes = (stdout.len() + stderr.len()) as u64;
+            Ok((
+                SendableValue::Tuple(vec![
+                    SendableValue::Int(status.code().unwrap_or(-1) as i64),
+                    SendableValue::String(stdout.into()),
+                    SendableValue::String(stderr.into()),
+                ]),
+                bytes,
+            ))
+        })
+    }
 }
 
 fn extract_exec_command_and_args(heap: &Heap, arg: Value) -> Result<(String, Vec<String>), String> {
@@ -492,121 +725,16 @@ impl VM {
         }
     }
 
-    /// Execute a previously authorized command with a wall-clock timeout and
-    /// per-stream output limit. On timeout or overflow the child's whole
-    /// process group is killed.
-    pub(super) fn run_exec(&mut self, exec: ResolvedExec) -> Result<Value, String> {
-        use std::process::{Command, Stdio};
-        use std::time::{Duration, Instant};
-
-        let allowed = &exec.allowed.id;
-        if file_identity(allowed.path.clone())? != *allowed {
-            return Err(format!(
-                "exec: '{}' changed since it was allowed",
-                allowed.path.display()
-            ));
-        }
-
-        let mut command = Command::new(exec_path(&exec.allowed));
-        command
-            .args(&exec.args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt as _;
-            // The program sees the command the script ran, as from a shell,
-            // not /proc/self/fd/N: busybox-style tools dispatch on it.
-            command.arg0(&exec.display_command);
-            // Lead a new process group so a timeout can kill grandchildren too.
-            command.process_group(0);
-        }
-        let mut child = command.spawn().map_err(|e| format!("exec: {e}"))?;
-
-        let timeout = self.heap.io_limits().exec_timeout;
-        let output_limit = self.heap.exec_output_limit();
-        let (tx, rx) = mpsc::channel();
-        for (stream, is_stdout) in [("stdout", true), ("stderr", false)] {
-            let tx = tx.clone();
-            let pipe: Box<dyn std::io::Read + Send> = if is_stdout {
-                Box::new(child.stdout.take().expect("stdout is piped"))
-            } else {
-                Box::new(child.stderr.take().expect("stderr is piped"))
-            };
-            std::thread::spawn(move || {
-                let _ = tx.send((is_stdout, read_exec_pipe(pipe, output_limit, stream)));
-            });
-        }
-        drop(tx);
-
-        let deadline = Instant::now() + timeout;
-        let timed_out = |child: &mut std::process::Child| {
-            kill_exec_child(child);
-            format!(
-                "exec: '{}' timed out after {}ms",
-                exec.display_command,
-                timeout.as_millis()
-            )
-        };
-
-        // Read both streams to EOF first. The child is not reaped during this
-        // phase, so `kill_exec_child` can still safely signal its group.
-        let mut stdout_str = None;
-        let mut stderr_str = None;
-        while stdout_str.is_none() || stderr_str.is_none() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(remaining) {
-                Ok((is_stdout, Ok(text))) => {
-                    if is_stdout {
-                        stdout_str = Some(text);
-                    } else {
-                        stderr_str = Some(text);
-                    }
-                }
-                Ok((_, Err(err))) => {
-                    kill_exec_child(&mut child);
-                    return Err(err);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => return Err(timed_out(&mut child)),
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    kill_exec_child(&mut child);
-                    return Err("exec: output reader thread panicked".into());
-                }
-            }
-        }
-        let (stdout_str, stderr_str) = (
-            stdout_str.unwrap_or_default(),
-            stderr_str.unwrap_or_default(),
-        );
-
-        let status = loop {
-            match child.try_wait().map_err(|e| format!("exec: {e}"))? {
-                Some(status) => break status,
-                None if Instant::now() >= deadline => return Err(timed_out(&mut child)),
-                None => std::thread::sleep(Duration::from_millis(10)),
-            }
-        };
-
-        self.heap
-            .charge_io_bytes((stdout_str.len() + stderr_str.len()) as u64)
-            .map_err(|e| format!("exec: {e}"))?;
-
-        let exit_code = Value::Int(status.code().unwrap_or(-1) as i64);
-        let stdout = Value::Heap(
-            self.heap
-                .alloc(HeapObject::String(stdout_str.into()))
-                .map_err(|e| e.to_string())?,
-        );
-        let stderr = Value::Heap(
-            self.heap
-                .alloc(HeapObject::String(stderr_str.into()))
-                .map_err(|e| e.to_string())?,
-        );
-
-        self.heap
-            .alloc(HeapObject::Tuple(smallvec![exit_code, stdout, stderr]))
-            .map(Value::Heap)
-            .map_err(|e| e.to_string())
+    pub(super) fn prepare_exec_job(&self, arg: Value) -> Result<ExecJob, RuntimeError> {
+        Ok(ExecJob {
+            inner: Arc::new(ExecJobInner {
+                exec: self.prepare_exec(arg)?,
+                timeout: self.heap.io_limits().exec_timeout,
+                output_limit: self.heap.exec_output_limit(),
+                state: Mutex::new(ExecState::default()),
+                changed: std::sync::Condvar::new(),
+            }),
+        })
     }
 }
 
@@ -844,5 +972,174 @@ mod tests {
         assert!(!is_execute_only(&script));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[cfg(feature = "builtin-exec")]
+    mod cancellation {
+        use super::*;
+        use crate::io_backend::{IoBackend, IoRequest, IoResult, IoToken, ThreadPoolIoBackend};
+        use std::time::{Duration, Instant};
+
+        fn job(timeout_ms: u64) -> ExecJob {
+            let program = crate::test_support::compile_source_hermetic(
+                "val result = exec (\"/bin/sleep\", [\"60\"])",
+            );
+            let mut vm = crate::builder::VMBuilder::new(program)
+                .with_all()
+                .with_exec(crate::builder::ExecPolicy {
+                    allowed: vec!["/bin/sleep".into()],
+                    rules: vec![],
+                })
+                .exec_timeout_ms(timeout_ms)
+                .build();
+            vm.set_async_io(true);
+            match vm.run_slice(10_000) {
+                crate::vm::RunResult::Io(IoRequest::Exec(job)) => job,
+                result => panic!("expected owned exec request, got {result:?}"),
+            }
+        }
+
+        fn started(job: &ExecJob) -> rustix::process::Pid {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(pid) = job.inner.state.lock().unwrap().child_pid {
+                    return rustix::process::Pid::from_raw(pid as i32).unwrap();
+                }
+                assert!(Instant::now() < deadline, "exec did not spawn");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn reaped(pid: rustix::process::Pid) {
+            assert_eq!(
+                rustix::process::test_kill_process(pid),
+                Err(rustix::io::Errno::SRCH),
+                "exec child still exists"
+            );
+        }
+
+        #[test]
+        fn exec_cancel_before_start_prevents_spawning() {
+            let exec = job(5_000);
+            exec.cancel();
+            assert_eq!(exec.run().unwrap_err(), "exec: cancelled");
+            assert!(exec.inner.state.lock().unwrap().child_pid.is_none());
+        }
+
+        #[test]
+        fn exec_cancel_running_reaps_before_return() {
+            let backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+            let exec = job(5_000);
+            backend
+                .register(IoToken(1), IoRequest::Exec(exec.clone()))
+                .unwrap();
+            let pid = started(&exec);
+            let start = Instant::now();
+            backend.cancel(IoToken(1));
+            assert!(start.elapsed() < Duration::from_secs(1));
+            reaped(pid);
+            backend.cancel(IoToken(1));
+        }
+
+        #[test]
+        fn exec_cancel_racing_start_is_idempotent() {
+            let mut backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+            for token in 0..16 {
+                let exec = job(5_000);
+                backend
+                    .register(IoToken(token), IoRequest::Exec(exec.clone()))
+                    .unwrap();
+                backend.cancel(IoToken(token));
+                backend.cancel(IoToken(token));
+                let state = exec.inner.state.lock().unwrap();
+                assert!(state.cancelled && !state.running);
+                if let Some(pid) = state.child_pid {
+                    reaped(rustix::process::Pid::from_raw(pid as i32).unwrap());
+                }
+            }
+            backend.shutdown().unwrap();
+        }
+
+        #[test]
+        fn exec_queued_cancel_and_deadline_never_spawn() {
+            let mut backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+            let running = job(5_000);
+            backend
+                .register(IoToken(1), IoRequest::Exec(running.clone()))
+                .unwrap();
+            let pid = started(&running);
+            let cancelled = job(5_000);
+            backend
+                .register(IoToken(2), IoRequest::Exec(cancelled.clone()))
+                .unwrap();
+            backend.cancel(IoToken(2));
+            let expired = job(30);
+            backend
+                .register(IoToken(3), IoRequest::Exec(expired.clone()))
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some((_, result)) = backend
+                    .poll()
+                    .into_iter()
+                    .find(|(token, _)| *token == IoToken(3))
+                {
+                    assert!(
+                        matches!(result, IoResult::Err(ref message) if message.contains("timed out"))
+                    );
+                    break;
+                }
+                assert!(Instant::now() < deadline, "queued deadline did not fire");
+                backend.wait_for_completions(Duration::from_millis(10));
+            }
+            backend.cancel(IoToken(1));
+            backend.shutdown().unwrap();
+            reaped(pid);
+            for exec in [cancelled, expired] {
+                assert!(exec.inner.state.lock().unwrap().child_pid.is_none());
+                assert_eq!(exec.run().unwrap_err(), "exec: cancelled");
+            }
+        }
+
+        #[test]
+        fn exec_running_timeout_reaps_child() {
+            let mut backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+            let exec = job(300);
+            backend
+                .register(IoToken(1), IoRequest::Exec(exec.clone()))
+                .unwrap();
+            let pid = started(&exec);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some((_, result)) = backend.poll().into_iter().next() {
+                    assert!(
+                        matches!(result, IoResult::Err(ref message) if message.contains("timed out"))
+                    );
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                backend.wait_for_completions(Duration::from_millis(10));
+            }
+            backend.shutdown().unwrap();
+            reaped(pid);
+        }
+
+        #[test]
+        fn exec_shutdown_and_drop_reap_running_children() {
+            for shutdown in [false, true] {
+                let mut backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+                let exec = job(5_000);
+                backend
+                    .register(IoToken(1), IoRequest::Exec(exec.clone()))
+                    .unwrap();
+                let pid = started(&exec);
+                let start = Instant::now();
+                if shutdown {
+                    backend.shutdown().unwrap();
+                }
+                drop(backend);
+                assert!(start.elapsed() < Duration::from_secs(1));
+                reaped(pid);
+            }
+        }
     }
 }

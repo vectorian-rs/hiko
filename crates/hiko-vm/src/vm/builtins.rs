@@ -315,10 +315,21 @@ impl VM {
 
         if kind == BuiltinKind::Exec {
             let exec_arg = self.stack[callee_pos + 1];
-            let prepared = self.prepare_exec(exec_arg)?;
-            let result = self
-                .run_exec(prepared)
-                .map_err(|msg| RuntimeError { message: msg })?;
+            let prepared = self.prepare_exec_job(exec_arg)?;
+            if self.async_io {
+                return self.suspend_for_runtime_request(
+                    RuntimeRequest::Io(crate::io_backend::IoRequest::Exec(prepared)),
+                    callee_pos,
+                );
+            }
+            let (value, bytes) = prepared.run().map_err(|message| RuntimeError { message })?;
+            self.heap.charge_io_bytes(bytes).map_err(|e| RuntimeError {
+                message: format!("exec: {e}"),
+            })?;
+            let result =
+                crate::sendable::deserialize(&value, &mut self.heap).map_err(|e| RuntimeError {
+                    message: e.to_string(),
+                })?;
             self.stack.truncate(callee_pos);
             self.push(result)?;
             return Ok(());

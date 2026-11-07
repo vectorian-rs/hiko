@@ -43,6 +43,8 @@ impl HttpResponseFormat {
 pub enum IoRequest {
     /// Delay for a duration (async sleep).
     Sleep(Duration),
+    /// An owned command, authorized and pinned by the VM before suspension.
+    Exec(crate::vm::ExecJob),
     /// HTTP GET request. Returns (status, headers, body).
     HttpGet {
         url: String,
@@ -137,6 +139,8 @@ pub trait IoBackend: Send + Sync {
     /// (for example a pending timer) and may drop its result. A completion
     /// that is still reported for a cancelled token is ignored by the runtime.
     /// Cancelling an unknown or already completed token is a no-op.
+    /// A backend executing `Exec` must additionally prevent queued start or
+    /// call `ExecJob::cancel` and wait for child/reader cleanup before returning.
     fn cancel(&self, _token: IoToken) {}
 }
 
@@ -198,6 +202,14 @@ impl IoBackend for MockIoBackend {
                 IoResult::Ok { value, io_bytes }
             }
             IoRequest::Extension(job) => extension_result(&job),
+            IoRequest::Exec(_) => IoResult::Ok {
+                value: SendableValue::Tuple(vec![
+                    SendableValue::Int(0),
+                    SendableValue::String("".into()),
+                    SendableValue::String("".into()),
+                ]),
+                io_bytes: 0,
+            },
         };
         self.completed.lock().unwrap().push((token, result));
         Ok(())
@@ -225,14 +237,15 @@ const IDLE_WORKER_EXIT: Duration = Duration::from_secs(5);
 /// count exit after idling. A slow request therefore occupies only its own
 /// worker and never delays unrelated requests.
 ///
-/// An HTTP request's deadline runs from registration, not from when a worker
+/// An HTTP or exec deadline runs from registration, not from when a worker
 /// starts it: the timer thread fails a request that is still queued when its
 /// deadline passes, and a worker starting a request shortens its timeouts to
 /// the time left. `Sleep` requests never occupy a worker: the timer thread
 /// completes them at their deadline.
 ///
 /// Dropping the backend cancels every pending timer and queued request, and
-/// returns without waiting for a worker that is inside a blocking call (an
+/// waits for running exec jobs to kill/reap their child and join readers.
+/// It does not wait for other workers inside a blocking call (an
 /// HTTP request, for example). Such a worker exits once its call returns, and
 /// its result is discarded. [`ThreadPoolIoBackend::shutdown`] instead joins
 /// every worker.
@@ -293,6 +306,8 @@ struct WorkQueue {
 
 #[derive(Default)]
 struct WorkState {
+    /// Queued and running exec jobs, for cancellation without a queue lock.
+    execs: std::collections::HashMap<IoToken, crate::vm::ExecJob>,
     /// Queued jobs per owner. An owner is present only while it has jobs.
     queues: std::collections::HashMap<u64, std::collections::VecDeque<Job>>,
     /// Owners with queued jobs, in round-robin order.
@@ -365,6 +380,7 @@ impl WorkState {
             self.queues.remove(&owner);
             self.order.retain(|queued| *queued != owner);
         }
+        self.execs.remove(&token);
         job
     }
 }
@@ -389,6 +405,9 @@ impl WorkQueue {
         if state.shutdown {
             return Err("io backend is shut down".into());
         }
+        if let IoRequest::Exec(exec) = &job.request {
+            state.execs.insert(job.token, exec.clone());
+        }
         let owner = job.context.owner;
         let queue = state.queues.entry(owner).or_default();
         queue.push_back(job);
@@ -410,13 +429,25 @@ impl WorkQueue {
         self.lock().remove_queued(token)
     }
 
+    fn cancel(&self, token: IoToken) -> Option<crate::vm::ExecJob> {
+        let mut state = self.lock();
+        let exec = state.execs.remove(&token);
+        state.remove_queued(token);
+        exec
+    }
+
     /// Drop every queued job and tell workers to exit.
     fn shutdown(&self) {
         let mut state = self.lock();
         state.shutdown = true;
+        let execs: Vec<_> = state.execs.drain().map(|(_, exec)| exec).collect();
         state.queues.clear();
         state.order.clear();
         self.available.notify_all();
+        drop(state);
+        for exec in execs {
+            exec.cancel();
+        }
     }
 
     /// Worker thread body.
@@ -435,6 +466,7 @@ impl WorkQueue {
                 let result = run_job(job);
                 completed.push(token, result);
                 state = self.lock();
+                state.execs.remove(&token);
                 state.finish(owner);
                 continue;
             }
@@ -453,17 +485,23 @@ impl WorkQueue {
     }
 }
 
-/// When an HTTP request must have completed, counted from `issued`.
+/// When an HTTP or exec request must have completed, counted from `issued`.
 fn request_deadline(request: &IoRequest, issued: Instant) -> Option<Instant> {
     match request {
         IoRequest::HttpGet { timeouts, .. } | IoRequest::Http { timeouts, .. } => {
             issued.checked_add(timeouts.global)
         }
+        IoRequest::Exec(exec) => issued.checked_add(exec.timeout()),
         _ => None,
     }
 }
 
 fn queued_timeout_error(request: &IoRequest) -> IoResult {
+    if let IoRequest::Exec(exec) = request {
+        // Queue expiry owns the removed job, so no execution has started.
+        exec.cancel();
+        return IoResult::Err(exec.timeout_error());
+    }
     let builtin = match request {
         IoRequest::Http { format, .. } => format.builtin_name(),
         _ => "http_get",
@@ -483,7 +521,7 @@ const MIN_START_BUDGET: Duration = Duration::from_millis(10);
 fn run_job(mut job: Job) -> IoResult {
     if let Some(deadline) = job.deadline {
         let left = deadline.saturating_duration_since(Instant::now());
-        if left < MIN_START_BUDGET {
+        if left < MIN_START_BUDGET && !matches!(job.request, IoRequest::Exec(_)) {
             return queued_timeout_error(&job.request);
         }
         if let IoRequest::HttpGet { timeouts, .. } | IoRequest::Http { timeouts, .. } =
@@ -493,14 +531,15 @@ fn run_job(mut job: Job) -> IoResult {
             timeouts.connect = timeouts.connect.min(left);
         }
     }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        execute_io_request(job.request)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job.request {
+        IoRequest::Exec(exec) => exec_result(&exec, job.deadline),
+        request => execute_io_request(request),
     }))
     .unwrap_or_else(|_| IoResult::Err("io backend worker panicked".into()))
 }
 
 /// Pending timers, shared by the backend and its timer thread: `Sleep`
-/// requests, and deadlines of queued HTTP requests.
+/// requests, and deadlines of queued HTTP/exec requests.
 struct Timers {
     state: Mutex<TimerState>,
     changed: std::sync::Condvar,
@@ -617,7 +656,7 @@ impl Timers {
     }
 
     /// Timer thread body: complete each pending sleep at its deadline, and
-    /// fail each HTTP request still queued at its deadline.
+    /// fail each HTTP/exec request still queued at its deadline.
     ///
     /// Lock order is timers, then work queue; nothing takes them the other way.
     fn run(&self, completed: &Completions, work: &WorkQueue) {
@@ -785,12 +824,17 @@ impl IoBackend for ThreadPoolIoBackend {
     }
 
     fn cancel(&self, token: IoToken) {
-        // A queued request is dropped. A blocking request cannot be
-        // interrupted once a worker has started it; the runtime ignores its
-        // late result.
+        // Queued requests are dropped. Running exec jobs are interrupted and
+        // cleaned up; other blocking calls finish normally and the runtime
+        // ignores their late results.
+        let mut exec = None;
         self.timers.cancel_queued(token, || {
-            self.work.remove_queued(token);
+            exec = self.work.cancel(token);
         });
+        // Waiting for exec cleanup must not hold the timer or queue locks.
+        if let Some(exec) = exec {
+            exec.cancel();
+        }
     }
 }
 
@@ -819,8 +863,20 @@ fn extension_result(job: &crate::extension::ExtensionJob) -> IoResult {
     }
 }
 
+fn exec_result(job: &crate::vm::ExecJob, deadline: Option<Instant>) -> IoResult {
+    let result = match deadline {
+        Some(deadline) => job.run_until(deadline),
+        None => job.run(),
+    };
+    match result {
+        Ok((value, io_bytes)) => IoResult::Ok { value, io_bytes },
+        Err(message) => IoResult::Err(message),
+    }
+}
+
 fn execute_io_request(request: IoRequest) -> IoResult {
     match request {
+        IoRequest::Exec(job) => exec_result(&job, None),
         IoRequest::Extension(job) => extension_result(&job),
         IoRequest::Sleep(duration) => {
             std::thread::sleep(duration);

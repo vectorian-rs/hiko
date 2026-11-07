@@ -378,7 +378,8 @@ it is a safety net against bookkeeping bugs.
 
 `run_to_completion` returns once every process is terminal; workers are joined
 before it returns. Dropping a `ThreadPoolIoBackend` cancels every pending
-timer and does not wait for a request that is inside a blocking call (an HTTP
+timer and kills/reaps running exec jobs, joining their output readers. It does
+not wait for other requests inside a blocking call (an HTTP
 request or a file read): such a worker thread is detached and its result
 discarded. `ThreadPoolIoBackend::shutdown` joins every thread instead.
 
