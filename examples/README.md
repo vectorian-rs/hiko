@@ -93,4 +93,4 @@ python3 -m http.server 8000 -d libraries --bind 127.0.0.1
 
 | File | Shows |
 | --- | --- |
-| `benchmark.hml`, `benchmark.py` | Walk `.git` and hash every file, in Hiko and in Python. `scripts/bench.sh` runs both. |
+| `benchmark.hml`, `benchmark.py` | Walk `.git` and hash every file, in Hiko and in Python. `bun scripts/bench.ts` runs both. |

@@ -1,7 +1,7 @@
 # Cross-language benchmarks
 
 The same programs in Hiko, Lua and Python, to compare Hiko's interpreter with
-other implementations. Run them with `scripts/compare.sh`; results are in
+other implementations. Run them with `bun scripts/compare.ts`; results are in
 [`docs/architecture/performance.md`](../../docs/architecture/performance.md).
 
 | Program | From | What it exercises |
@@ -22,7 +22,7 @@ compare implementations, not programs.
 
 - **Same algorithm** in every language, with the same operation order, so
   float results are bit-identical. Every implementation prints the same
-  checksum line, and `scripts/compare.sh` fails if they differ.
+  checksum line, and `bun scripts/compare.ts` fails if they differ.
 - **Same data structures.** Hiko has no mutable references or arrays, so the
   other languages do not use them either. A list is a chain of cons cells:
   `{head, tail}` tables in Lua, `(head, tail)` tuples in Python. A record is

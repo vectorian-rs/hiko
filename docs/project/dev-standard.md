@@ -11,9 +11,21 @@ This document captures the working standards for changes in the Hiko repository.
 - Avoid introducing new dependencies unless they remove meaningful complexity or are already part of the project architecture.
 - Keep generated files in sync with their sources.
 
+## Automation
+
+Write repository tooling and ad hoc automation in TypeScript and execute it
+with Bun. Install it with `mise install bun`; `mise.toml` pins the version used
+by CI. The scripts use Bun and
+Node standard-library APIs, with argument arrays passed to `Bun.spawn` for
+subprocesses. Run their checks with `bun test scripts`.
+
+The maintained entry points are `bun scripts/lint.ts`,
+`bun scripts/bench.ts [output.md]`, and
+`bun scripts/compare.ts [output.md] [benchmark ...]`.
+
 ## Rust style
 
-- Run `cargo fmt` before committing. `scripts/lint.sh` runs the formatting and clippy checks that CI runs.
+- Run `cargo fmt` before committing. `bun scripts/lint.ts` runs the formatting and clippy checks that CI runs.
 - Prefer small functions with descriptive names over large functions with hidden phases.
 - Prefer explicit error propagation with `Result` over panics in production code.
 - `unwrap`/`expect` are acceptable in tests and for truly infallible formatting into `String`; otherwise prefer contextual errors.
@@ -50,18 +62,18 @@ For cross-crate or public behavior changes, prefer:
 ```sh
 cargo check --workspace
 cargo test --workspace
-scripts/lint.sh
+bun scripts/lint.ts
 ```
 
-`scripts/lint.sh` runs `cargo fmt --all -- --check` and `cargo clippy
---workspace --all-targets -- -D warnings`, with default features and with
-`--all-features`. CI (`.github/workflows/lint.yml`) runs it on every pull
+`bun scripts/lint.ts` runs `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings`, with default features,
+`--all-features`, and `--no-default-features`. CI (`.github/workflows/lint.yml`) runs it on every pull
 request and on pushes to `main`. It uses Rust 1.99.1; set `RUST_TOOLCHAIN` to
 check with another toolchain.
 
 If `cargo` resolves to a mise shim, plain `cargo fmt` fails with "shim
 fallback recursion detected for cargo-fmt". Pass the toolchain explicitly
-(`cargo +1.99.1 fmt`, as `scripts/lint.sh` does) or put `~/.cargo/bin` first
+(`cargo +1.99.1 fmt`, as `bun scripts/lint.ts` does) or put `~/.cargo/bin` first
 on `PATH`.
 
 Add or update tests for:

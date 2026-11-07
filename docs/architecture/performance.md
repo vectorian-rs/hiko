@@ -7,10 +7,11 @@ comparing.
 ## How to measure
 
 ```bash
-scripts/bench.sh target/bench.md      # RUNS=n for more runs, HIKO_BIN=path to skip the build
+bun scripts/bench.ts target/bench.md      # RUNS=n for more runs, HIKO_BIN=path to skip the build
 ```
 
-The script needs [hyperfine](https://github.com/sharkdp/hyperfine). It runs:
+The runner uses Bun (pinned in `mise.toml`) and
+[hyperfine](https://github.com/sharkdp/hyperfine). It runs:
 
 | Benchmark | What it measures |
 |---|---|
@@ -137,12 +138,12 @@ escapes. (On Linux, cap-std already uses `openat2`.)
 | Hiko after | 217 ms |
 | Python | 196 ms |
 
-Hiko is within 1.11x of Python; in the full `bench.sh` run below, 216 ms
+Hiko is within 1.11x of Python; in the full benchmark run below, 216 ms
 against 199 ms (1.08x).
 
 ### File-hash fan-out (after)
 
-`fanout_hash.hml`, from the full `bench.sh` run at commit `9fd66a4`. The
+`fanout_hash.hml`, from the full benchmark run at commit `9fd66a4`. The
 machine was loaded by other work during that run (load average about 10 on 10
 cores), so compare rows with each other, not with the tables above.
 
@@ -372,7 +373,7 @@ medians moved the same way. "Before" is `main` at `d375a47`.
 
 The programs in `benchmarks/compare/` do the same work, in the same order,
 in Hiko, Lua and Python (rules in `benchmarks/compare/README.md`). Every
-implementation prints the same checksum. `scripts/compare.sh` checks the
+implementation prints the same checksum. `bun scripts/compare.ts` checks the
 checksums, runs hyperfine, and writes this table.
 
 Apple M1 Max on AC power, load average about 5 to 7 (a browser tab used one
@@ -538,7 +539,7 @@ helpers on the hot path.
 
 ### Against Lua and Python, after #149 steps 2 and 3
 
-`scripts/compare.sh`, 10 runs each, on AC, load average about 3.5, at
+The cross-language runner, 10 runs each, on AC, load average about 3.5, at
 `026f91b`. "#146" is the Hiko time in the first comparison above.
 
 | Program | Hiko (#146) | Hiko | Lua | Python | LuaJIT | Hiko / Lua | Hiko / Python |
@@ -693,7 +694,7 @@ stack VM's loop.
 
 ### Against Lua and Python, after #159, #164 and #165
 
-`scripts/compare.sh`, 10 runs each, on AC, load average about 2.5, with
+The cross-language runner, 10 runs each, on AC, load average about 2.5, with
 #159 (code slice in `dispatch`), #164 (string fixes) and #165's kept
 superinstructions (field of a local, tag test on a local). "#146" is the
 first comparison above.

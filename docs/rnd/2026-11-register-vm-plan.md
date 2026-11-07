@@ -94,6 +94,6 @@ register instruction, or document the change; decide in the plan PR.
 
 - Every program in the repository runs on the register VM with the same
   results, under the equivalence fuzzer for 30 minutes per target.
-- `scripts/compare.sh` and the existing suite show the gain, recorded in
+- `bun scripts/compare.ts` and the existing suite show the gain, recorded in
   `docs/architecture/performance.md`.
 - The verifier, fuzzing and security docs describe the translator's role.

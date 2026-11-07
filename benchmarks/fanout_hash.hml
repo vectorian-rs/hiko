@@ -1,5 +1,5 @@
 (* Fan-out of file I/O: walk .git once, then 32 children each read and
- * BLAKE3-hash a 32nd of the files. scripts/bench.sh points it at a copy of
+ * BLAKE3-hash a 32nd of the files. bun scripts/bench.ts points it at a copy of
  * the git directory when .git is a file. Needs a policy that allows
  * walk_dir and read_file_bytes there. *)
 val target_dir = ".git"

@@ -10,9 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
       - name: Install Rust 1.99.1 with rustfmt and clippy
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Bun tooling tests
+        run: bun test scripts
       - name: cargo fmt and clippy
-        run: scripts/lint.sh
+        run: bun scripts/lint.ts
         env:
           RUST_TOOLCHAIN: 1.99.1
