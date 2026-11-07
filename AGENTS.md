@@ -40,6 +40,17 @@ For simplification and specialist reviews, use the additional roles listed in
 expected result; it does not select a provider, model, permission mode, or tool
 API. Roles can run in the current session without native subagent support.
 
+## Issue cycle
+
+For tracked implementation work, use
+[the issue-cycle prompt](docs/prompts/issue-cycle.md) and the
+[delivery loop](docs/project/delivery.md#default-issue-cycle):
+Plan → Implement → Verify → Present → Advance. Keep one issue/PR active per
+implementation session. Fix failed checks within the approved scope and repeat
+verification; return to planning for material changes. Record progress and
+evidence in the issue so another session can resume. The maintainer approves
+plan revisions and merges ready PRs.
+
 ## Working rules
 
 - Keep changes within the requested scope and preserve unrelated local work.

@@ -12,6 +12,8 @@ instructions in [AGENTS.md](../../AGENTS.md), the
 - Place new docs in the nearest topic folder and update its index. Link to
   existing sources rather than copying explanations into multiple files.
 - Keep examples valid and commands consistent with the current repository.
+- When changing delivery guidance, check the lifecycle, role/cycle prompts,
+  shared agent instructions, and issue template together for conflicting rules.
 - Edit source documentation rather than generated output unless regeneration is
   part of the task. Check local links and references after editing.
 - Report the changed docs, factual gaps found, and validation performed.

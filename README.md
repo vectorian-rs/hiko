@@ -443,6 +443,11 @@ and the roles in [docs/prompts/index.md](docs/prompts/index.md). See
 [Coding Agent Workflow](docs/project/agent-workflow.md) for role selection and
 conditional tool guidance.
 
+Use [the issue-cycle prompt](docs/prompts/issue-cycle.md) to run or resume one
+issue through Plan → Implement → Verify → Present → Advance. In-scope fixes
+repeat implementation and verification; the maintainer approves plan revisions
+and merges ready PRs. Progress and evidence stay in the issue checkpoint.
+
 ## Testing
 
 ```bash

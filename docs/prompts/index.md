@@ -4,6 +4,13 @@ Shared roles and reusable prompts for coding agents working on Hiko. Start with
 the repository instructions in [AGENTS.md](../../AGENTS.md). The same role names
 and prompts apply in Codex, Claude Code, and other tools.
 
+## Issue cycle
+
+Use [issue-cycle.md](issue-cycle.md) for Plan → Implement → Verify → Present →
+Advance, one issue at a time. It resumes the issue checkpoint, repeats fixes
+and verification within approved scope, and retains plan approval and PR merge
+as human checkpoints. Example: "Use docs/prompts/issue-cycle.md for issue #191."
+
 ## Delivery roles
 
 For work covered by the [delivery lifecycle](../project/delivery.md), use the
@@ -44,6 +51,7 @@ existing prompt; the prompt remains the single source for that role's behavior.
 | ---------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | [`code-simplifier.md`](code-simplifier.md)                       | Current operational prompt | Project-specific code simplification skill for Hiko/Rust changes, focused on preserving behavior while improving clarity. |
 | [`delivery-roles.md`](delivery-roles.md) | Current operational prompt | Lead, worker, lens reviewer and external reviewer prompts for the delivery lifecycle. |
+| [`issue-cycle.md`](issue-cycle.md) | Current workflow prompt | Run or resume one issue through planning, implementation, verification, presentation, and advancement after merge. |
 | [`docs-quality-score.md`](docs-quality-score.md)                 | Review prompt              | Prompt for scoring the `docs/` folder on concision, correctness, completeness, understandability, terseness, and agent usefulness. |
 | [`docs-simplifier.md`](docs-simplifier.md)                       | Operational prompt         | Prompt for compressing and clarifying docs while preserving technical meaning and source-of-truth boundaries. |
 | [`language-evaluation-prompt.md`](language-evaluation-prompt.md) | Review prompt              | Prompt for skeptical grading of Hiko correctness, performance, and safety. |
