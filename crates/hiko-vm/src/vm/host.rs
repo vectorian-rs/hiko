@@ -1041,6 +1041,39 @@ mod tests {
         }
 
         #[test]
+        fn exec_concurrent_cancel_calls_both_wait_for_cleanup() {
+            let backend = ThreadPoolIoBackend::with_max_threads(1, 1);
+            let exec = job(5_000);
+            backend
+                .register(IoToken(1), IoRequest::Exec(exec.clone()))
+                .unwrap();
+            let pid = started(&exec);
+            // Hold cleanup at its state lock while both public cancel calls
+            // begin. Neither may return while this running child still exists.
+            let state = exec.inner.state.lock().unwrap();
+            let start = std::sync::Barrier::new(3);
+            let (tx, rx) = mpsc::channel();
+            let early_return = std::thread::scope(|scope| {
+                for _ in 0..2 {
+                    let tx = tx.clone();
+                    let backend = &backend;
+                    let start = &start;
+                    scope.spawn(move || {
+                        start.wait();
+                        backend.cancel(IoToken(1));
+                        tx.send(()).unwrap();
+                    });
+                }
+                start.wait();
+                let early = rx.recv_timeout(Duration::from_millis(50)).is_ok();
+                drop(state);
+                early
+            });
+            assert!(!early_return, "a concurrent cancel returned before cleanup");
+            reaped(pid);
+        }
+
+        #[test]
         fn exec_cancel_racing_start_is_idempotent() {
             let mut backend = ThreadPoolIoBackend::with_max_threads(1, 1);
             for token in 0..16 {

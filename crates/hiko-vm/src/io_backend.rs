@@ -431,7 +431,9 @@ impl WorkQueue {
 
     fn cancel(&self, token: IoToken) -> Option<crate::vm::ExecJob> {
         let mut state = self.lock();
-        let exec = state.execs.remove(&token);
+        // Running jobs stay discoverable until the worker finishes cleanup,
+        // so concurrent cancellers share the same completion barrier.
+        let exec = state.execs.get(&token).cloned();
         state.remove_queued(token);
         exec
     }
