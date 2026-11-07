@@ -56,12 +56,14 @@ plan revisions and merges ready PRs.
 - Keep changes within the requested scope and preserve unrelated local work.
 - Use the tools available in the active session. Do not assume a particular
   editing, planning, shell, or delegation tool exists.
+- Write repository tooling and ad hoc automation in TypeScript and run it with
+  Bun. Pass subprocess arguments as arrays to `Bun.spawn`.
 - Preserve diagnostics, source spans, public behavior, and ABI-sensitive runtime
   encodings unless the task explicitly changes them.
 - Keep generated artifacts and relevant documentation in sync with their sources.
 - Validate according to the development standard. For Rust changes, start with
   the affected crate; cross-crate changes need workspace checks. The CI lint
-  entry point is `scripts/lint.sh`; CI tests default and all features.
+  entry point is `bun scripts/lint.ts`; CI tests default and all features.
 - For documentation-only changes, check local links and instruction references.
 - Report the result, validation actually run, and any remaining limitations.
 

@@ -159,7 +159,7 @@ Source: `crates/hiko-vm/src/vm/`, `value.rs`, `heap.rs`, `verify.rs`.
 - Spawning trivial children in sequence gets slower with more workers (22 ms
   at 1 worker, 87 ms at 8 for 6,000 children): the scheduler wakes a worker
   per enqueue. CPU fan-out scales 4.9x at 8 workers.
-- `scripts/bench.sh` runs a reproducible benchmark set, and
+- `bun scripts/bench.ts` runs a reproducible benchmark set, and
   [`performance.md`](../architecture/performance.md) records a baseline.
   Results are not yet tracked automatically over time.
 
@@ -328,7 +328,7 @@ tests, #103), #29 and #30 (effects, #121), #40, #47, #81 and #82 (#104), #55
 host resource limits, #128), #10 (the isolated-process runtime it tracked is
 built), #74 (merged into #48). Closed as out of focus: #53, #56, #57 (harness)
 and #85 (Pi agent runtime, not in this repo). Not covered by #75's closing: tail-latency
-percentiles are not measured; `scripts/bench.sh` reports means, minimums and
+percentiles are not measured; `bun scripts/bench.ts` reports means, minimums and
 maximums.
 
 ## Suggested cleanup order

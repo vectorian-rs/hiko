@@ -160,7 +160,7 @@ points and `inspect-work` then mean what they mean today.
    default.
 3. **The remaining opcodes:** closures, upvalues, globals, builtins, effects
    and handlers, processes.
-4. **Switch on by default,** measured with `scripts/compare.sh` and the
+4. **Switch on by default,** measured with `bun scripts/compare.ts` and the
    existing suite; the stack VM stays behind a feature for one release.
 5. **Remove the stack dispatch** later, if nothing needs it.
 
