@@ -147,6 +147,7 @@ required-features = ["builtin-filesystem", "builtin-stdio"]
 [[example]]
 name = "host_work_calibration"
 required-features = ["builtin-all"]
+test = true
 
 [[example]]
 name = "process_creation_cost"

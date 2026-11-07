@@ -35,6 +35,18 @@ fn public_json_surface_rejects_unrelated_types() {
 }
 
 #[test]
+#[cfg(feature = "builtin-regex")]
+fn typed_json_examples_compile_hermetically() {
+    for path in [
+        "../../examples/json_typed.hml",
+        "../../examples/io_builtins.hml",
+        "../../examples/testing.hml",
+    ] {
+        common::compile_file_hermetic(path);
+    }
+}
+
+#[test]
 fn json_constructor_aliases_round_trip_on_both_runtimes() {
     let program = compile(
         r#"
