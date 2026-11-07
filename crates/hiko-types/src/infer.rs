@@ -832,6 +832,27 @@ impl InferCtx {
         self.scopes.pop();
     }
 
+    /// Begin the private declarations of `local`, including loader-driven inference.
+    pub fn begin_local_scope(&mut self) {
+        self.push_scope();
+    }
+
+    /// Begin the public declarations while retaining access to private bindings.
+    pub fn begin_local_exports(&mut self) {
+        self.push_scope();
+    }
+
+    /// Close both scopes and publish only a successfully inferred public body.
+    pub fn end_local_scope(&mut self, success: bool) {
+        let exported = self.scopes.pop().unwrap();
+        self.pop_scope();
+        if success {
+            for (name, scheme) in exported {
+                self.bind(name, scheme);
+            }
+        }
+    }
+
     // ── Program inference ────────────────────────────────────────────
 
     pub fn infer_program(&mut self, program: &Program) -> Result<(), TypeError> {
@@ -1047,24 +1068,12 @@ impl InferCtx {
                 Ok(())
             }
             DeclKind::Local(locals, body) => {
-                // locals are in a private scope
-                self.push_scope();
-                for d in locals {
-                    self.infer_decl(d)?;
-                }
-                // body bindings are exported to the enclosing scope
-                // so we collect them, pop the private scope, then re-bind
-                self.push_scope();
-                for d in body {
-                    self.infer_decl(d)?;
-                }
-                let exported = self.scopes.pop().unwrap();
-                self.pop_scope(); // pop the locals scope
-                // re-bind exported names in the enclosing scope
-                for (name, scheme) in exported {
-                    self.bind(name, scheme);
-                }
-                Ok(())
+                self.begin_local_scope();
+                let result = locals.iter().try_for_each(|d| self.infer_decl(d));
+                self.begin_local_exports();
+                let result = result.and_then(|()| body.iter().try_for_each(|d| self.infer_decl(d)));
+                self.end_local_scope(result.is_ok());
+                result
             }
             DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) | DeclKind::Use(_) => Ok(()),
             DeclKind::Signature(_) => unreachable!("signatures must be removed before inference"),
