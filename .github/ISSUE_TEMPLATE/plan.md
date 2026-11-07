@@ -1,82 +1,78 @@
 ---
 name: Plan
-about: One unit of work, from plan to release (docs/project/delivery.md)
+about: One issue through plan, implement, verify, present, and advance
 labels: stage:draft
 ---
 
-<!-- Only the lead edits this issue. Everything else is a comment.
-     Every change raises rev, except Next action, claims, Context, Gate 1 and Ready. -->
+<!-- Follow docs/project/delivery.md. Only the lead edits the plan.
+     Material plan changes raise rev; progress/evidence and in-scope fixes do not.
+     A changed revision needs approval; a changed head needs current evidence. -->
 
 **rev 1** · stage: draft · unit: language | runtime | builtin | stdlib | tooling | performance
 
 ## Goal
 
-<one or two sentences: what changes, and why>
+<what changes and why>
 
-- Source commit: `<sha on main>`
-- Depends on: #<n> | none
-- Next action: <who does what>
+- Source commit: `<sha on main>`; roadmap: #<n> | none
+- Depends on: <hard dependencies that must merge; file overlap is scheduling>
+- Next action: <phase, owner, next step>
 
 ## Acceptance
 
-- **A1** <observable through a program: `hiko check p.hml` rejects it with "…"; `hiko run p.hml` prints "…">
+- **A1** <input, observable output/error, and exact check>
 - **A2** …
 - Not included: …
 
 ## Decisions
 
-<!-- Only choices the maintainer owns. Each with a recommendation. -->
-
-- **Q1** <question> Recommendation: <option>, because …
+- **Q1** <maintainer choice; recommendation and reason, or none open>
 
 ## Design
 
-- **D1** <one decision or invariant>. Reuses `<path>`; deletes `<path>`.
-- **D2** …
+- **D1** <invariant or decision; paths reused and removed>
 
 ## Evidence map
 
-| A | Code path | Evidence |
-|---|---|---|
-| A1 | `<path>` | `<test or method>` |
+- A1 → `<code path>` → `<test or method>`
 
 ## Reviews
 
-- Plan lenses: [ ] soundness · [ ] grammar · [ ] semantics · [ ] explicit · [ ] diagnostics · [ ] security · [ ] concurrency · [ ] performance · [ ] compat
-- Implementation lenses: [x] simplicity · [x] correctness · [ ] soundness · [ ] grammar · [ ] semantics · [ ] explicit · [ ] diagnostics · [ ] security · [ ] concurrency · [ ] performance · [ ] compat
-- Not run, and why: …
+- Required plan lenses: <concerns, or none with reason>
+- Required implementation lenses: simplicity, correctness, <other concerns>
+- Omitted lenses and why: …
 
 ## Sections
 
-1. **<name>**: `<paths>`; covers A1; checks: `<exact commands>`
-2. …
-
-<!-- At most four. Docs change in the first section when a decision is new. -->
+1. **<piece>**: `<paths>`; covers A1; checks: `<exact commands>`
+<!-- At most four sections; new decisions change docs in the first commit. -->
 
 ## Methods
 
-| A/D | Method | Command | Limit |
-|---|---|---|---|
-| A1 | conformance | `cargo test -p hiko-vm --test stdlib` | |
+- A1/D1: <method, exact command, input size/duration, and limits>
+- Required final checks: <workspace/CI commands; docs-only validation if applicable>
 
 ## Resolution
 
-| Finding | Outcome |
-|---|---|
-| `<lens>-1` | fixed in D2 / rejected: <evidence> |
+- `<finding>` → <fix/evidence at head, rejection with evidence, or still open>
 
 ## Gate 1
 
-Approved: rev `<n>` by the maintainer, `<date>`, in `<session or comment link>`.
+Approved: not yet.
+<!-- Record the exact issue/rev, maintainer, date, and confirmation after approval. -->
 
 ## Ready
 
-PR #`<n>` at head `<sha>`: final verification `<link>`.
+Not ready. PR #<n> at `<head sha>`; acceptance table: <link>; reviews/CI: <links>.
+<!-- One row per A item: head, check, result, evidence/limits. Missing checks are unmet. -->
 
 ## Rollout
 
-`main` on merge | behind cargo feature `<name>` | behind capability `<key>`, off by default. Disable by: …
+<main or feature/capability; breaking changes and how to disable>
 
 ## Context
 
-- **Section 1** — files: `…`; pattern to copy: `<path>`; checks: `…`; next step: …
+- Phase/role/claim: <current phase and owner>; sequence with: <shared-file work>
+- Branch/PR/head: …; latest results/open findings: …; next action: …
+<!-- Resume here. In-scope failures return to Implement then Verify, without new approval.
+     After confirmed maintainer merge: record merge SHA, close/update records, refresh main. -->

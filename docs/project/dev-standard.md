@@ -31,6 +31,11 @@ This document captures the working standards for changes in the Hiko repository.
 
 ## Testing and verification
 
+For tracked work, use the [issue cycle](delivery.md#default-issue-cycle).
+Reproduce a bug with a failing regression check where practical, then fix it
+and verify. In-scope test/CI/review failures repeat that loop under the same
+approval; changes to the plan's scope or requirements return to planning.
+
 For Rust changes, run the narrowest relevant set first, then broaden before committing:
 
 ```sh
@@ -119,6 +124,10 @@ cargo test -p tree-sitter-hiko
 
 ## Git and issue workflow
 
+- Use one branch/PR per implementation issue, reusing an existing PR when present.
+- Keep an [issue checkpoint](delivery.md#verification-checkpoint) with the plan
+  revision/approval, phase/claim, PR head, acceptance evidence, findings, and
+  next action. Evidence names the exact head; refresh affected checks after edits.
 - Keep unrelated local changes untouched.
 - Mention unrelated dirty files before committing if they exist.
 - Use focused commit messages that describe the behavior or architecture change.
@@ -126,4 +135,7 @@ cargo test -p tree-sitter-hiko
   - implementation commit
   - short summary
   - validation commands
-- Close issues only when the documented acceptance criteria are satisfied or intentionally rescoped.
+- For delivery work, present the ready PR to the maintainer, confirm its merge,
+  then close the completed issue and update the roadmap/project state. Refresh
+  `main` before starting dependent work. Trackers close only when their own
+  completion criteria are met.

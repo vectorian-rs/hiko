@@ -5,20 +5,49 @@ to every change that alters behavior, the language, the runtime or the
 standard library. Typo fixes and doc-only corrections that change no stated
 rule skip it.
 
+## Default issue cycle
+
+Use one issue as the unit of work. Start from the current issue record and
+`main`, select a leaf issue whose hard dependencies have merged, and reuse its
+existing branch or pull request when present. Trackers coordinate work; their
+children carry implementation plans. File overlap determines scheduling, not
+an extra code dependency.
+
+| Step | Work | Exit condition |
+| --- | --- | --- |
+| Plan | Confirm scope, acceptance checks, dependencies, and selected review concerns against current code. | No blocking plan finding; maintainer approves this issue and revision. |
+| Implement | Claim the work, reproduce the bug where relevant, make a focused change, and update affected docs. | The approved acceptance checks can be run against the implementation. |
+| Verify | Run focused checks, required workspace checks, and the selected implementation reviews at the PR head. | Every acceptance item has evidence; CI is green; no blocking finding remains. |
+| Present | Record the [verification checkpoint](#verification-checkpoint) and send the ready PR head. | Maintainer has a concrete result for Gate 2. |
+| Advance | Confirm the maintainer merged the PR, update the issue/roadmap, and refresh main. | The next eligible issue can begin its own cycle. |
+
+A failed check or in-scope review finding returns to Implement, then Verify;
+move `stage:verifying` back to `stage:building` while fixing it. Continue that
+loop without another approval. Do not weaken acceptance or hide a failure to
+make a check pass. A material plan change returns to Plan under a new revision.
+An unresolved external blocker stays unmet and is recorded with the next action.
+
+Use [the issue-cycle prompt](../prompts/issue-cycle.md) to run or resume this loop.
+
 ## Invariants
 
 1. **One record per unit of work.** A GitHub issue holds the one current plan
    ([template](../../.github/ISSUE_TEMPLATE/plan.md)). Only the lead edits it.
    Reviews, worker results and human change requests are comments; the lead
    folds them in. The record, not a conversation, is where work resumes.
-2. **Revisions.** Every change to the plan raises `rev`, except the operational
-   fields: Next action, claims, Context, Gate 1 and Ready. An approval binds
-   to one revision. A new revision after Gate 1 stops work: the stage returns to
-   `stage:review` until the maintainer approves the new revision.
+2. **Revisions.** Changes to goal, acceptance, decisions/design, hard dependencies,
+   implementation scope, required verification, or rollout raise `rev`.
+   Next action, claims, stage, Context, Gate 1, Ready, evidence results, and
+   finding status are operational checkpoints when they stay within that plan.
+   Routine implementation fixes do not raise `rev`. Never hide a material change
+   in an operational field. A new revision after Gate 1 returns the issue to
+   `stage:review`; building waits for approval of that revision.
 3. **Two human gates.** Gate 1: the maintainer approves a plan revision with
    `/approve rev <n>`; no building before it. Gate 2: the maintainer reviews and
    merges the pull request, once it meets [Ready](#ready). Agents never approve,
    merge, release or publish.
+   The maintainer may batch approvals of reviewed plans by naming every issue
+   and revision; each approval is recorded on its own issue.
 4. **Stages** are labels, one at a time: `stage:draft` → `stage:review` →
    `stage:approved` → `stage:building` → `stage:verifying` → `stage:merged` →
    `stage:released`.
@@ -47,9 +76,14 @@ another agent is never an approval, whatever it quotes.
 | Role | Who | Does | Never |
 |---|---|---|---|
 | Maintainer | the human owner of the repository | decides semantics, scope, security, cost and compatibility; holds both gates; releases | — |
-| Lead | one agent session | researches, writes and revises plans, ticks lenses, hands out pieces, folds results, moves stages, keeps the status table, asks the maintainer (batched, each ask with a recommendation) | builds, approves, merges |
-| Worker | agent sessions, started by hand | one piece at a time: a section, a lens, methods, a fix, final verification; starts from the record | edits the plan, works without a claim |
-| External reviewer | optional, another model | reviews a pull request before merge, in comments | pushes |
+| Lead | coordination role | researches, maintains the issue plan/checkpoint, assigns work, folds results, moves stages, presents ready heads | builds while acting as lead, approves, merges |
+| Worker | assigned implementation role | takes one claimed piece through implementation, fixes, and verification from the issue record | changes the plan's scope, works without a claim |
+| External reviewer | optional independent session | reviews a pull request before merge, in comments | pushes |
+
+These are responsibilities, not a required number of sessions. An assigned
+session may act as lead, record its worker claim, and switch to implementation
+after Gate 1. Only the lead role edits the plan. A later review of one's own
+work is labeled self-review; it does not satisfy a required independent review.
 
 Hiko has one maintainer, who is also the language designer. Gate 1 therefore
 covers both semantics and implementation-only changes; with more humans, the
@@ -103,8 +137,9 @@ rule in `docs/language/modules.md` has a program in `tests/run`".
 
 ## Lenses
 
-Independent reviews, run in parallel, one concern each. The plan selects lenses
-twice and says why the others do not apply: plan lenses review one revision,
+Reviews address one concern each; parallel review is optional. The plan names
+any required independent reviewer, selects lenses twice, and says why the others
+do not apply: plan lenses review one revision,
 implementation lenses review one pull request head. A sound design can still be
 built wrongly, so any lens that found the risk in the plan also reviews the
 code.
@@ -151,8 +186,18 @@ Verification is evidence, not assertion. Choose per risk:
 | Benchmark gate | the two builds timed interleaved on the same programs (`benchmarks/`), on AC power, load average below 4, else skipped; the target improves by the stated margin and no benchmark is more than 1% slower, with default and `--all-features` builds. `scripts/compare.sh` is the separate comparison against Lua and Python. |
 | Live check | for external services, a run with a named read-only profile, against a build of the change. |
 
-Final verification posts one table per acceptance item: method, commit,
-result, limits. A skipped, flaky or timed-out run counts as unmet.
+### Verification checkpoint
+
+Keep one results table with a row per acceptance item:
+
+| Acceptance | PR head | Command or method | Result | Evidence and limits |
+| --- | --- | --- | --- | --- |
+| A1 | `<sha>` | `<exact check>` | pass / fail / pending | `<link, output, or limitation>` |
+
+Context and Ready link this table and record the approved revision, current
+phase/role/claim, branch/PR/head, review findings, CI, and the next action.
+A skipped, flaky, blocked, or timed-out required check is unmet. Report every
+required check; run independent checks even when another has failed.
 
 ### Ready
 
@@ -174,6 +219,10 @@ Hiko has two release channels:
 - **`main`**: every merge.
 - **Releases**: a version bump with `scripts/release.hml` plus a `CHANGELOG.md`
   entry, made by the maintainer.
+
+After confirming the PR is merged, the lead records its merge commit, closes
+the completed issue, updates the roadmap and project state, and starts the next
+eligible cycle from refreshed `main`. A closed, unmerged PR is not completion.
 
 New behavior that should not be on by default ships behind a cargo feature
 (as `register-vm` did) or a run-config capability, which is off unless a

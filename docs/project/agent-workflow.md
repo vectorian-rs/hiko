@@ -20,6 +20,28 @@ Claude Code loads the same content through its
 The import also supports Claude sessions that cannot load `AGENTS.md` directly.
 Other tools can be instructed to read the root `AGENTS.md` explicitly.
 
+## Run or resume an issue
+
+Use [the shared issue-cycle prompt](../prompts/issue-cycle.md) with an issue
+number or roadmap. The [delivery loop](delivery.md#default-issue-cycle) is the
+source of truth for Plan → Implement → Verify → Present → Advance.
+
+```sh
+codex "Use docs/prompts/issue-cycle.md for issue #191; resume its checkpoint."
+claude "Use docs/prompts/issue-cycle.md for issue #191; resume its checkpoint."
+```
+
+A roadmap invocation selects one eligible implementation issue at a time.
+It keeps the issue's existing PR and approved scope through routine fixes and
+verification retries. Material plan changes need a new revision; the maintainer
+approves reviewed revisions and merges ready PRs. Reviewed issue/revision pairs
+can be approved in a batch and recorded separately.
+
+The issue holds the phase/role/claim, approval, branch/PR/head, acceptance results,
+review findings, CI, and next action. A new session reads that checkpoint before
+continuing. One assigned session may coordinate and implement sequentially;
+required independent reviews still need an independent reviewer.
+
 ## Choosing a role
 
 Request a role in the task text. Both tools use the same role names and source
