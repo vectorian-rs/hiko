@@ -42,6 +42,19 @@ The runtime should treat `RunResult` as the only public execution transition.
 It can request cancellation or resume blocked work, but it should not mutate VM
 internals directly.
 
+## Top-level bindings
+
+Rebinding a top-level name creates a new lexical identity. Functions and
+closures keep the identities they resolved when compiled, including after
+multiple rebindings, imports, and child-process snapshots.
+
+The compiler assigns identities with a per-name counter. A binding read by a
+compiled function or closure keeps its global slot. An unread binding, or one
+read only by earlier main-chunk code, can give its slot to the next binding of
+the same name. This avoids retaining unread historical values and consuming a
+new global slot for every rebind. Identity suffixes can therefore have gaps in
+the program's global-name table; `VM::get_global` returns the latest defined one.
+
 ## Execution Boundaries
 
 For the full embedder-facing contract around `VM::run`, `VM::run_slice`, GC,

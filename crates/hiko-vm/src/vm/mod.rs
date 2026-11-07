@@ -650,25 +650,31 @@ impl VM {
     /// The compiler stores a binding that shadows an earlier one, or a
     /// builtin, as `name$1`, `name$2`, ...
     pub fn get_global(&self, name: &str) -> Option<&Value> {
-        let value_of = |global: &str| {
-            let slot = self.global_names.iter().position(|g| **g == *global)?;
-            self.globals.get(slot)?.as_ref()
-        };
-        let mut value = value_of(name);
-        for n in 1.. {
-            match value_of(&format!("{name}${n}")) {
-                Some(found) => value = Some(found),
-                None => break,
-            }
-        }
-        match value {
-            Some(value) => Some(value),
-            None => self
-                .builtins
-                .by_name
-                .get(name)
-                .map(|&id| &self.builtins.values[id as usize]),
-        }
+        // Reused storage removes unread identities from this table, so suffixes
+        // need not be contiguous. Ignore slots not defined at this point in execution.
+        self.global_names
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, global)| {
+                let version = if global.as_ref() == name {
+                    0
+                } else {
+                    global
+                        .strip_prefix(name)?
+                        .strip_prefix('$')?
+                        .parse::<usize>()
+                        .ok()?
+                };
+                Some((version, self.globals.get(slot)?.as_ref()?))
+            })
+            .max_by_key(|(version, _)| *version)
+            .map(|(_, value)| value)
+            .or_else(|| {
+                self.builtins
+                    .by_name
+                    .get(name)
+                    .map(|&id| &self.builtins.values[id as usize])
+            })
     }
 
     pub fn get_output(&self) -> &[String] {

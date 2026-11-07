@@ -1,0 +1,3 @@
+val imported = 1
+val imported = 2
+fun read_imported () = imported

@@ -1182,6 +1182,10 @@ pub struct Compiler {
     /// (`x$1`, `x$2`, ...), so code compiled earlier keeps its binding.
     /// `$` cannot appear in a source identifier.
     global_bindings: HashMap<String, String>,
+    /// Next identity suffix per source name; never reused after shadowing.
+    global_versions: HashMap<String, usize>,
+    /// Slots read by function/closure code that can run after a later rebind.
+    pinned_global_slots: HashSet<u16>,
     /// VM global name -> slot, and the names in slot order.
     global_slots: HashMap<String, u16>,
     global_names: Vec<Arc<str>>,
@@ -1340,6 +1344,8 @@ impl Compiler {
             pending_self_callable: false,
             global_flat_protos: HashMap::new(),
             global_bindings: HashMap::new(),
+            global_versions: HashMap::new(),
+            pinned_global_slots: HashSet::new(),
             global_slots: HashMap::new(),
             global_names: Vec::new(),
             infer_ctx: InferCtx::new(),
@@ -1643,6 +1649,9 @@ impl Compiler {
             self.emit_u16(idx);
         } else {
             let slot = self.global_slot(name)?;
+            if self.func_stack.len() > 1 {
+                self.pinned_global_slots.insert(slot);
+            }
             self.emit(Op::GetGlobal);
             self.emit_u16(slot);
         }
@@ -1658,22 +1667,34 @@ impl Compiler {
     /// Start a new top-level binding of `name`: later references resolve to
     /// it, earlier code keeps the binding it was compiled against.
     fn declare_global(&mut self, name: &str) {
-        let taken = self.global_bindings.contains_key(name)
-            || hiko_builtin_meta::builtin_meta(name).is_some()
-            || self.loader_options.extensions.has_builtin(name);
-        let global = if taken {
-            let mut n = 1;
-            loop {
-                let candidate = format!("{name}${n}");
-                if !self.global_bindings.values().any(|g| *g == candidate) {
-                    break candidate;
-                }
-                n += 1;
-            }
+        let extensions = &self.loader_options.extensions;
+        let next = self
+            .global_versions
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                usize::from(
+                    hiko_builtin_meta::builtin_meta(name).is_some() || extensions.has_builtin(name),
+                )
+            });
+        let version = *next;
+        *next += 1;
+        let global = if version > 0 {
+            format!("{name}${version}")
         } else {
             name.to_string()
         };
-        self.global_bindings.insert(name.to_string(), global);
+        if let Some(previous) = self
+            .global_bindings
+            .insert(name.to_string(), global.clone())
+            && let Some(&slot) = self.global_slots.get(&previous)
+            && !self.pinned_global_slots.contains(&slot)
+        {
+            // Main-chunk reads have consumed their values before this store.
+            // Only deferred reads in functions/closures need historical roots.
+            self.global_slots.remove(&previous);
+            self.global_names[usize::from(slot)] = Arc::from(global.as_str());
+            self.global_slots.insert(global, slot);
+        }
     }
 
     fn emit_set_global(&mut self, name: &str) -> Result<(), CompileError> {
@@ -3751,6 +3772,52 @@ mod tests {
     fn parse_program(source: &str) -> Program {
         let tokens = Lexer::new(source, 0).tokenize().expect("lex");
         Parser::new(tokens).parse_program().expect("parse")
+    }
+
+    #[test]
+    fn lexical_global_bindings_allow_70000_unread_rebindings() {
+        let source = "val x = 1\n".repeat(70_000);
+        let (program, _) =
+            Compiler::compile(parse_program(&source)).expect("compile 70k rebindings");
+        assert_eq!(
+            program.globals.len(),
+            1,
+            "unread bindings reuse their storage"
+        );
+    }
+
+    /// Isolate binding resolution from lexing, inference, code emission, and
+    /// source-name generation. Run explicitly; timing is not a CI gate.
+    #[test]
+    #[ignore = "manual binding-resolution growth measurement"]
+    fn lexical_global_bindings_growth() {
+        for size in [4_000, 8_000, 16_000] {
+            let names: Vec<_> = (0..size).map(|i| format!("v{i}")).collect();
+            let mut samples = Vec::new();
+            for _ in 0..11 {
+                let mut compiler = Compiler::new(
+                    PathBuf::new(),
+                    None,
+                    HashSet::new(),
+                    ModuleLoaderOptions::default(),
+                    StringInterner::default(),
+                );
+                let start = std::time::Instant::now();
+                for _ in 0..2 {
+                    for name in &names {
+                        compiler.declare_global(name);
+                        std::hint::black_box(compiler.global_slot(name).unwrap());
+                    }
+                }
+                samples.push(start.elapsed().as_nanos());
+                assert_eq!(compiler.global_names.len(), size);
+            }
+            samples.sort_unstable();
+            eprintln!(
+                "binding_resolution names={size} median_ns={}",
+                samples[samples.len() / 2]
+            );
+        }
     }
 
     #[cfg(feature = "loader-embedded")]
