@@ -1,0 +1,16 @@
+val x = 1
+val x = 2
+val read_old = fn () => x
+val x = 3
+val x = 4
+val first = spawn read_old
+val x = 5
+val x = 6
+val read_new = fn () => x
+val second = spawn read_new
+val x = 7
+val x = 8
+val _ = assert_eq (await_process first, 2, "earlier child binding")
+val _ = assert_eq (await_process second, 6, "later child binding")
+val _ = assert_eq (read_old (), 2, "parent retains earlier binding")
+val _ = println "binding snapshots passed"
