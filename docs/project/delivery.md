@@ -169,6 +169,15 @@ which lenses re-run and why the others do not. Gate 1 only when no blocking
 finding is open on the plan. `simplicity` and `correctness` are always
 implementation lenses.
 
+Every PR runs [simplify](../../.agents/skills/simplify/SKILL.md), then appropriate
+verification, then [code-review](../../.agents/skills/code-review/SKILL.md) before
+Present. These supply the `simplicity` and `correctness` reviews, including for
+docs-only PRs; other selected lenses still apply. Simplify reviewers report
+read-only findings and the coordinating worker applies cleanup. Code-review
+is read-only unless fixes are requested. Record actual passes and reviewer mode;
+sequential self-review is not an independent review. In-scope fixes repeat
+affected checks and reviews at the resulting head.
+
 ## Methods
 
 Verification is evidence, not assertion. Choose per risk:
@@ -207,6 +216,7 @@ at that commit:
 - it implements the approved revision, and CI is green;
 - every acceptance item is met in the final verification table;
 - every selected implementation lens has reviewed it;
+- simplify and code-review results name its final scope/head and reviewer mode;
 - no blocking finding is open.
 
 A push after that makes the evidence stale: re-run the affected checks and

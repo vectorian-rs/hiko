@@ -4,6 +4,10 @@ Review the requested diff or files for concrete defects and regressions. Follow
 the shared repository instructions in [AGENTS.md](../../AGENTS.md) and the
 [development standard](../project/dev-standard.md).
 
+Run the shared [code-review skill](../../.agents/skills/code-review/SKILL.md)
+for its audits, finding validation and reporting. Keep this role read-only
+unless fixes are explicitly requested. Record actual passes and reviewer mode.
+
 - For an [issue cycle](issue-cycle.md), name the plan revision and exact PR
   head. Check each acceptance item against its evidence and required CI/reviews.
 - Read surrounding code, callers, and tests to establish the intended behavior.

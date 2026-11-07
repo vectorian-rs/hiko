@@ -1,7 +1,7 @@
 # Coding Agent Workflow
 
-Hiko uses one set of repository instructions and role prompts for Codex,
-Claude Code, and other coding agents.
+Hiko uses one set of repository instructions, PR skills and role prompts for
+Codex, Pi, Claude Code, and other coding agents.
 
 ## Entry points
 
@@ -10,6 +10,7 @@ Claude Code, and other coding agents.
 | [AGENTS.md](../../AGENTS.md) | Shared repository rules, role selection, and conditional tool guidance. |
 | [CLAUDE.md](../../CLAUDE.md) | Claude entry point importing `AGENTS.md`. |
 | [prompts/index.md](../prompts/index.md) | Shared role catalog and specialist prompts. |
+| [.agents/skills/](../../.agents/skills/) | Shared simplify and code-review skills for Pi and Codex. |
 | [delivery.md](delivery.md) | Lifecycle, role authority, claims, and human gates for covered work. |
 | [dev-standard.md](dev-standard.md) | Development and validation requirements. |
 
@@ -19,6 +20,52 @@ Claude Code loads the same content through its
 [`@AGENTS.md` import](https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools).
 The import also supports Claude sessions that cannot load `AGENTS.md` directly.
 Other tools can be instructed to read the root `AGENTS.md` explicitly.
+
+## PR skills
+
+Every PR follows Implement → simplify/fix → verify → code-review → fix/reverify
+before Present. Both skills live in `.agents/skills/`, which Codex and Pi discover
+directly. Claude uses its native commands when available.
+
+| Host | Cleanup | Correctness review |
+| --- | --- | --- |
+| Codex | `$simplify` | `$code-review 223` |
+| Pi | `/skill:simplify` | `/skill:code-review 223` |
+| Claude Code | `/simplify` | `/code-review 223` |
+
+Replace `223` with your PR. Without a target, the ports review the branch change
+plus uncommitted work; a path or revision range can narrow that scope. Code-review
+reports without editing or posting by default. Pass `--fix` to request fixes or
+`--comment` to publish, for example `/skill:code-review --comment 223`. Simplify
+applies behavior-preserving cleanup. Use Pi's `/reload` after skill edits; restart
+Codex if a change does not appear. No provider-specific copy is needed.
+
+The [simplify port](../../.agents/skills/simplify/SKILL.md) follows Claude's
+current four cleanup passes: reuse, simplification, efficiency and abstraction
+level, then consolidation and fixes. The
+[code-review port](../../.agents/skills/code-review/SKILL.md) follows Anthropic's
+plugin: two instruction auditors, two bug auditors, separate finding validation
+and optional PR comments. It also accepts the local command's fix, depth and
+finding-limit options; depth is an instruction, not a host model setting.
+
+These adapt Claude's workflows; they are not extracted bundled prompts or its
+cloud service. Sources checked 2026-11-07:
+[Claude commands](https://code.claude.com/docs/en/commands),
+[review plugin](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/code-review/commands/code-review.md),
+[local review](https://code.claude.com/docs/en/code-review-local),
+[Codex skills](https://learn.chatgpt.com/docs/build-skills), and
+[Pi skills](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md).
+
+Tool APIs and model selection belong to the host. Use delegated reviewers when
+available and permitted; otherwise run the same passes sequentially and label
+them self-review. Pi needs a delegation-capable extension for separate reviewers.
+Sequential passes do not satisfy a required independent review. Hiko's all-PR
+rule replaces the plugin's draft/trivial/already-commented skip conditions.
+
+Record scope, actual passes, reviewer mode, findings/fixes and the resulting
+head in PR evidence. Generic `simplicity: none` or `correctness: none` lines
+without running the passes do not supply this evidence. This is a workflow
+requirement; it does not install a CI service or grant merge approval.
 
 ## Run or resume an issue
 
@@ -84,7 +131,8 @@ worker; do not assume every tool inherits the same context.
 
 ## Maintenance and verification
 
-- Edit shared rules in `AGENTS.md` and role prompts in `docs/prompts/`.
+- Edit shared rules in `AGENTS.md`, skills in `.agents/skills/`, and role prompts
+  in `docs/prompts/`.
 - Keep `CLAUDE.md` as the import, avoiding a second copy of repository rules.
 - Keep provider-specific behavior in explicitly conditional sections. Local
   credentials, model choices, permissions, and machine settings belong in local

@@ -39,7 +39,7 @@ labels: stage:draft
 ## Reviews
 
 - Required plan lenses: <concerns, or none with reason>
-- Required implementation lenses: simplicity, correctness, <other concerns>
+- Required implementation lenses: simplicity (simplify skill), correctness (code-review skill), <other concerns>
 - Omitted lenses and why: …
 
 ## Sections
@@ -63,7 +63,7 @@ Approved: not yet.
 
 ## Ready
 
-Not ready. PR #<n> at `<head sha>`; acceptance table: <link>; reviews/CI: <links>.
+Not ready. PR #<n> at `<head sha>`; acceptance table: <link>; skill passes/mode, reviews/CI: <links>.
 <!-- One row per A item: head, check, result, evidence/limits. Missing checks are unmet. -->
 
 ## Rollout
