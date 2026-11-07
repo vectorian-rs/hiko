@@ -172,8 +172,8 @@ environment access and process operations; an empty policy grants no optional
 capabilities. `check` can type-check without a policy and never
 executes the program. Policy paths, like lockfiles, must remain inside their
 manifest directory, including resolved symlinks. A malformed policy reports its
-path, line, column and reason without printing its source line. Relative policy
-entries and filesystem capability folders still use the working directory.
+path, line, column and reason without printing its source line. The `entry` field
+inside a policy and filesystem capability folders still use the working directory.
 
 The lockfile must stay inside the directory that holds `hiko.toml`, so
 subprojects cannot share `../hiko.lock.toml`. Each command checks this when it
