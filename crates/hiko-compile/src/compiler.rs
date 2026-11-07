@@ -1053,6 +1053,8 @@ enum ResolvedImport {
         display_name: String,
         source: &'static str,
         base_dir: PathBuf,
+        /// Set only by the embedded builtin resolver, never by extensions.
+        internal_builtin: bool,
     },
     /// A source compiled into a sealed artifact (`EmbeddedSources`).
     Embedded {
@@ -2066,6 +2068,7 @@ impl Compiler {
                 display_name: module_name.to_string(),
                 source,
                 base_dir: self.base_dir.clone(),
+                internal_builtin: false,
             });
         }
         if is_internal_builtin_package(package_name) {
@@ -2285,6 +2288,7 @@ impl Compiler {
             display_name: module_name.to_string(),
             source: module.source,
             base_dir: self.base_dir.clone(),
+            internal_builtin: true,
         })
     }
 
@@ -2393,6 +2397,14 @@ impl Compiler {
         let key = import.key();
         let display_name = import.display_name().to_string();
         let is_remote = import.is_remote();
+        let is_process_module = matches!(
+            &import,
+            ResolvedImport::Synthetic {
+                import_name: "__Builtin.Process",
+                internal_builtin: true,
+                ..
+            }
+        );
         if self.loading_imports.contains(&key) {
             return Err(CompileError::codegen(format!(
                 "circular import detected while loading '{display_name}'"
@@ -2442,7 +2454,15 @@ impl Compiler {
         // The module's declarations are top-level ones of their own, even
         // when a `use` inside `local` brings it in.
         let importer = self.infer_ctx.suspend_declaration();
-        let result = desugared.iter().try_for_each(|d| self.infer_decl_pass(d));
+        let result = if is_process_module {
+            // Only this embedded source may fill runtime type reservations.
+            // User declarations and imports still use ordinary inference.
+            self.infer_ctx
+                .infer_process_module(&desugared)
+                .map_err(CompileError::from)
+        } else {
+            desugared.iter().try_for_each(|d| self.infer_decl_pass(d))
+        };
         self.infer_ctx.resume_declaration(importer);
 
         self.importing_extension = old_extension;
@@ -4590,6 +4610,69 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected in-memory compile to accept internal builtin import"
+        );
+    }
+
+    #[cfg(feature = "builtin-process")]
+    #[test]
+    fn compile_rejects_forged_process_results_before_or_without_import() {
+        for (payload, child, use_value) in [
+            ("int", "\"text\"", "n + 1"),
+            ("int list", "7", "case n of [] => 0 | x :: _ => x"),
+        ] {
+            let source = format!(
+                "structure BuiltinProcess = struct
+                   datatype 'a await_result = Forged of {payload} | Other of 'a
+                 end
+                 val result = case await_process_result (spawn (fn () => {child})) of
+                     BuiltinProcess.Forged n => {use_value}
+                   | BuiltinProcess.Other _ => 0\n"
+            );
+            for (before, after) in [
+                ("", ""),
+                ("", "import __Builtin.Process\n"),
+                ("import __Builtin.Process\n", ""),
+            ] {
+                let msg = compile_error(&format!("{before}{source}{after}"));
+                assert!(
+                    msg.contains("runtime-owned type 'BuiltinProcess.await_result'"),
+                    "{msg}"
+                );
+            }
+        }
+        // Copying the embedded source into user code does not grant its authority.
+        let source = internal_builtin_module("Process").unwrap().source;
+        let msg = compile_error(source);
+        assert!(
+            msg.contains("runtime-owned type 'BuiltinProcess.error'"),
+            "{msg}"
+        );
+    }
+
+    #[cfg(feature = "builtin-process")]
+    #[test]
+    fn compile_does_not_trust_extension_source_named_builtin_process() {
+        let options = ModuleLoaderOptions {
+            extensions: ExtensionSurface {
+                modules: vec![(
+                    "__Builtin.Process",
+                    "structure BuiltinProcess = struct
+                    datatype 'a await_result = Forged of int | Other of 'a end",
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err =
+            Compiler::compile_with_options(parse_program("import __Builtin.Process"), options)
+                .unwrap_err();
+        let CompileError::Type(err) = err else {
+            panic!("expected type error: {err:?}")
+        };
+        assert!(
+            err.message
+                .contains("runtime-owned type 'BuiltinProcess.await_result'"),
+            "{err:?}"
         );
     }
 

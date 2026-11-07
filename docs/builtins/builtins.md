@@ -268,7 +268,15 @@ What the allowlist does **not** guarantee:
 | `wait_any`      | `'a pid list -> 'a pid`  | Wait until any child in the set finishes |
 
 A pid records what its child returns: `spawn (fn () => 42)` is an `int pid`,
-and awaiting it gives an `int`. Any two pids compare with `=`.
+and awaiting it gives an `int`. Annotate a pid with its result type (`int pid`),
+or use `'a pid` in a polymorphic wrapper. Pids with the same result type compare
+with `=`; a heterogeneous `wait_any` list reports the conflicting pid types.
+
+`BuiltinProcess.await_result` and `BuiltinProcess.error` are runtime-owned
+nominal types, reserved even before `__Builtin.Process` is imported. Source
+cannot redefine them with a datatype, type alias or signature ascription.
+Only the embedded internal module defines their constructors; its constructor
+order matches the runtime tags. Import it to match a typed await result.
 
 `wait_any [p1, p2, ..., pn]` is deterministic: it blocks until at least one listed child has completed, then returns the leftmost PID in the original input list whose child is complete. If multiple children complete concurrently, input list order breaks ties. A child completion is only a wakeup signal; it is not automatically the winner.
 

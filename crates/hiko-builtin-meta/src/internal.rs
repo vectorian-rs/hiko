@@ -1,5 +1,12 @@
 pub const INTERNAL_BUILTIN_PACKAGE: &str = "__Builtin";
 
+/// Nominal process types whose constructor layout is owned by the runtime.
+/// Reserve them even before the embedded `__Builtin.Process` module is imported.
+pub const PROCESS_RUNTIME_TYPES: &[(&str, usize)] = &[
+    ("BuiltinProcess.error", 0),
+    ("BuiltinProcess.await_result", 1),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InternalBuiltinModule {
     pub leaf_name: &'static str,
