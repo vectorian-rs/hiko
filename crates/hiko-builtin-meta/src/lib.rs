@@ -70,8 +70,8 @@ impl BuiltinMeta {
 }
 
 pub use internal::{
-    INTERNAL_BUILTIN_PACKAGE, InternalBuiltinModule, internal_builtin_module,
-    is_internal_builtin_package,
+    INTERNAL_BUILTIN_PACKAGE, InternalBuiltinModule, PROCESS_RUNTIME_TYPES,
+    internal_builtin_module, is_internal_builtin_package,
 };
 pub use signatures::{
     BuiltinTypeSignature, PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_AWAIT_RESULT_ERR_TAG,

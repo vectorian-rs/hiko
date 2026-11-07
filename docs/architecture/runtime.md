@@ -342,12 +342,14 @@ A pid that belongs to another parent and is still live or unconsumed is
 rejected as "not a child"; a pid that was never allocated as "unknown".
 
 For example, `val q = await_process (spawn (fn () => spawn (fn () => 41)))`
-returns a grandchild's pid after its parent exits. `await_process q` fails with
-"child result already consumed", and `await_process_result q` returns
+returns a grandchild's pid after its parent exits. Once q is reaped,
+`await_process q` fails with "child result already consumed", and
+`await_process_result q` returns
 `Err AlreadyJoined`. Neither operation successfully joins that grandchild.
 The diagnostic cannot distinguish this case from an actual second join;
-runtime process errors also lack source spans. Keep the spawning parent live
-and await its child there.
+runtime process errors also lack source spans. During threaded parent cleanup,
+the grandchild may still be classified as foreign and rejected as "not a child".
+Keep the spawning parent live and await its child there.
 
 On the threaded runtime, a process blocked on a child registers itself, then
 parks, then rechecks the child; a terminating child records its outcome

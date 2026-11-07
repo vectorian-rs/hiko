@@ -166,6 +166,78 @@ fn nested_raw_await_chain_propagates_deepest_panic() {
 }
 
 #[test]
+fn process_result_types_preserve_polymorphic_join_wrappers() {
+    let source = r#"
+        import __Builtin.Process
+        fun join (p : 'a pid) = case BuiltinProcess.await_result_raw p of
+            BuiltinProcess.Ok v => v
+          | BuiltinProcess.Err _ => panic "unexpected failure"
+        fun sum xs = case xs of [] => 0 | x :: rest => x + sum rest
+        val _ = println (int_to_string (join (spawn (fn () => 42))))
+        val _ = println (join (spawn (fn () => "text")))
+        val _ = println (int_to_string (sum (join (spawn (fn () => [1, 2, 3])))))
+        val f = join (spawn (fn () => fn (x : int) => x + 1))
+        val _ = println (int_to_string (f 6))
+    "#;
+    assert_scenario(
+        |_| source.into(),
+        Io::Real,
+        &["42\n", "text\n", "6\n", "7\n"],
+        "Done",
+    );
+}
+
+#[test]
+fn process_result_types_do_not_allow_joining_a_dead_parents_child() {
+    let source = r#"
+        import __Builtin.Process
+        val q = await_process (spawn (fn () => spawn (fn () => 41)))
+        val _ = case await_process_result q of
+            BuiltinProcess.Err BuiltinProcess.AlreadyJoined => println "reaped"
+          | _ => panic "a grandchild must not be joined"
+        val _ = await_process q
+    "#;
+    let program = compile(source);
+    let assert_rejected = |report: Report| {
+        // Threaded parent cleanup may still be cancelling/reaping q when
+        // its parent result arrives. Both states reject the foreign join.
+        if report.output.is_empty() {
+            assert!(report.status.contains("not a child"), "{report:?}");
+        } else {
+            assert_eq!(report.output, ["reaped\n"]);
+            assert!(
+                report.status.contains("child result already consumed"),
+                "{report:?}"
+            );
+        }
+        assert!(report.status.starts_with("Failed("), "{report:?}");
+        assert!(report.leftovers.is_empty(), "{report:?}");
+    };
+    assert_rejected(run_single(&program));
+    for run in 0..THREADED_RUNS {
+        assert_rejected(run_threaded(&program, 1 + run % 4, None));
+    }
+}
+
+#[test]
+fn process_result_types_do_not_allow_joining_a_live_parents_child() {
+    // The sibling is live until it tries to await the root's child. Its
+    // failure is observed by the actual parent, which can still join q.
+    let source = r#"
+        import __Builtin.Process
+        val q = spawn (fn () => 41)
+        val sibling = spawn (fn () => await_process q)
+        val _ = case await_process_result sibling of
+            BuiltinProcess.Err (BuiltinProcess.RuntimeError m) =>
+                if string_contains (m, "not a child") then println "foreign"
+                else panic m
+          | _ => panic "a sibling must not join another parent's child"
+        val _ = println (int_to_string (await_process q))
+    "#;
+    assert_scenario(|_| source.into(), Io::Real, &["foreign\n", "41\n"], "Done");
+}
+
+#[test]
 fn nested_result_await_chain_returns_err_at_every_level() {
     // root -> c4 -> c3 -> c2 -> c1 -> c0; c0 panics. Every level sees `Err`
     // and fails with its own message, which its parent sees as `Err`.

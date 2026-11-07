@@ -361,6 +361,9 @@ impl InferCtx {
         };
         ctx.type_arities.insert("list".into(), 1);
         ctx.type_arities.insert("pid".into(), 1);
+        for &(name, arity) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+            ctx.type_arities.insert(name.into(), arity);
+        }
         ctx.bind_builtin_type_signatures();
         ctx
     }
@@ -650,7 +653,21 @@ impl InferCtx {
                 if n1 == n2 && args1.len() == args2.len() =>
             {
                 for (a, b) in args1.iter().zip(args2.iter()) {
-                    self.unify(a, b, span)?;
+                    self.unify(a, b, span).map_err(|err| {
+                        if n1 == "pid" {
+                            self.err(
+                                &format!(
+                                    "{} (matching {} with {})",
+                                    err.message,
+                                    self.display(&t1),
+                                    self.display(&t2)
+                                ),
+                                err.span,
+                            )
+                        } else {
+                            err
+                        }
+                    })?;
                 }
                 Ok(())
             }
@@ -811,6 +828,25 @@ impl InferCtx {
             self.infer_decl(decl)?;
         }
         Ok(())
+    }
+
+    /// Elaborate the embedded Process module's runtime-owned datatypes.
+    /// The caller must establish source identity; never call this for user,
+    /// file-backed or extension declarations, even if their names match.
+    pub fn infer_process_module(&mut self, decls: &[Decl]) -> Result<(), TypeError> {
+        for &(name, _) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+            if !self.datatype_constructors.contains_key(name) {
+                self.type_arities.remove(name);
+            }
+        }
+        // Ordinary inference handles the desugared structure's Local block,
+        // checks payloads/constructors and records the runtime ABI tags.
+        let result = decls.iter().try_for_each(|decl| self.infer_decl(decl));
+        // Restore reservations even when elaboration failed partway through.
+        for &(name, arity) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+            self.type_arities.entry(name.into()).or_insert(arity);
+        }
+        result
     }
 
     // ── Declaration inference ────────────────────────────────────────
@@ -1114,6 +1150,15 @@ impl InferCtx {
         }
         // Type aliases are also recorded in `type_arities`.
         if self.type_arities.contains_key(name) {
+            if hiko_builtin_meta::PROCESS_RUNTIME_TYPES
+                .iter()
+                .any(|&(reserved, _)| reserved == name)
+            {
+                return Err(self.err(
+                    &format!("cannot redefine runtime-owned type '{name}'; import __Builtin.Process to use it"),
+                    span,
+                ));
+            }
             return Err(self.err(&format!("duplicate type name: {name}"), span));
         }
         Ok(())
@@ -1851,6 +1896,12 @@ impl InferCtx {
                     if arity == 0 {
                         return Ok(Type::Con(name.to_string()));
                     }
+                    if name == "pid" {
+                        return Err(self.err(
+                            "pid needs its child's result type, as in 'int pid'; use 'a pid in a polymorphic wrapper",
+                            ty_expr.span,
+                        ));
+                    }
                     return Err(self.err(
                         &format!("type {name} expects {arity} argument(s)"),
                         ty_expr.span,
@@ -2437,7 +2488,16 @@ mod tests {
             internal_builtin_module,
         };
         let module = internal_builtin_module("Process").expect("Process module");
-        let ctx = infer(module.source);
+        let tokens = Lexer::new(module.source, 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let program = hiko_syntax::desugar::desugar_program(program);
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner;
+        ctx.infer_process_module(&program.decls)
+            .expect("trusted Process source");
+        for &(name, arity) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+            assert_eq!(ctx.type_arities.get(name), Some(&arity));
+        }
         for &(name, tag, arity) in PROCESS_AWAIT_RESULT_CONSTRUCTORS
             .iter()
             .chain(PROCESS_JOIN_ERROR_CONSTRUCTORS)
@@ -3107,6 +3167,26 @@ mod tests {
     }
 
     #[test]
+    fn test_runtime_process_type_names_are_reserved() {
+        for source in [
+            "structure BuiltinProcess = struct datatype 'a await_result = Forged of int end",
+            "structure BuiltinProcess = struct type 'a await_result = int end",
+            "structure BuiltinProcess = struct datatype error = Forged end",
+            "structure BuiltinProcess = struct type error = int end",
+            "signature S = sig type 'a await_result end
+             structure BuiltinProcess :> S = struct type 'a await_result = int end",
+            "signature S = sig type 'a await_result end
+             structure BuiltinProcess : S = struct type 'a await_result = int end",
+        ] {
+            let msg = infer_err(source);
+            assert!(
+                msg.contains("runtime-owned type 'BuiltinProcess."),
+                "{source}: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn test_datatype_cannot_reuse_primitive_name() {
         // `Int` is the internal name of `int`; a datatype with that name
         // would make its constructors usable as integers.
@@ -3165,8 +3245,10 @@ mod tests {
 
     #[test]
     fn test_wait_any_needs_children_of_one_type() {
-        let msg = infer_err("val p = wait_any [spawn (fn () => 1), spawn (fn () => true)]");
+        let msg = infer_err("val p = wait_any [spawn (fn () => 1), spawn (fn () => \"text\")]");
         assert!(msg.contains("type mismatch"), "got: {msg}");
+        assert!(msg.contains("int pid"), "got: {msg}");
+        assert!(msg.contains("string pid"), "got: {msg}");
     }
 
     #[test]
@@ -3180,10 +3262,27 @@ mod tests {
 
     #[test]
     fn test_a_pid_annotation_needs_its_result_type() {
-        let msg = infer_err("fun f (p : pid) = cancel p");
-        assert!(msg.contains("type pid expects 1 argument(s)"), "got: {msg}");
+        for source in [
+            "fun f (p : pid) = cancel p",
+            "val p : pid = spawn (fn () => 1)",
+            "type p = pid",
+            "type p = pid list",
+            "datatype p = P of pid",
+        ] {
+            assert_eq!(
+                infer_err(source),
+                "pid needs its child's result type, as in 'int pid'; use 'a pid in a polymorphic wrapper"
+            );
+        }
         let ctx = infer("fun f (p : int pid) = cancel p");
         assert_eq!(type_of(&ctx, "f"), "int pid -> unit");
+        let ctx = infer("fun f (p : 'a pid) = await_process p");
+        assert!(!ctx.lookup_type("f").unwrap().vars.is_empty());
+        let msg = infer_err("type p = (int, string) pid");
+        assert!(
+            msg.contains("type pid expects 1 argument(s), got 2"),
+            "{msg}"
+        );
     }
 
     #[test]
