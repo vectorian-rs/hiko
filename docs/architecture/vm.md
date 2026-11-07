@@ -44,6 +44,13 @@ internals directly.
 
 ## Top-level bindings
 
+An exported function in a top-level `local` block captures the private values
+it uses before that block ends. Mutually recursive exports keep their lexical
+bindings and call captured functions through their closure environments.
+Captured values remain GC roots and use the normal spawn sendability checks.
+Capture-free functions retain direct calls, tuple flattening and their existing
+work accounting. This uses the ordinary closure representation.
+
 Rebinding a top-level name creates a new lexical identity. Functions and
 closures keep the identities they resolved when compiled, including after
 multiple rebindings, imports, and child-process snapshots.

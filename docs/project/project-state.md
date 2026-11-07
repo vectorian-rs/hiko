@@ -14,8 +14,13 @@ Its verified head passed 1,150 default and 1,217 all-features workspace tests,
 lint and CI. Runtime-owned process result types are sealed; the documented
 reaped-pid diagnostic limits remain.
 
-Next is [#184 rev 4](https://github.com/vectorian-rs/hiko/issues/184), the typed
-JSON boundary, approved and in implementation. Package/import contract and preparatory
+[PR #222](https://github.com/vectorian-rs/hiko/pull/222) completed
+[#184](https://github.com/vectorian-rs/hiko/issues/184) at `38fe092`. Its verified
+head passed 1,154 default and 1,232 all-features tests, lint, CLI/mutation checks
+and CI. JSON converters now use the protected runtime-owned datatype.
+
+Next is [#209 rev 2](https://github.com/vectorian-rs/hiko/issues/209): exported
+functions with private captures, approved and in implementation. Package/import contract and preparatory
 internals belong to [#210](https://github.com/vectorian-rs/hiko/issues/210);
 [#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
