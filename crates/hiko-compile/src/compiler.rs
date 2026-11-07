@@ -16,6 +16,7 @@ use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
+use hiko_syntax::token::{Token, TokenKind};
 use hiko_types::infer::{InferCtx, TypeError};
 use hiko_types::ty::Type;
 use serde::Deserialize;
@@ -195,6 +196,22 @@ fn collect_uses<'a>(decls: &'a [Decl], uses: &mut Vec<&'a str>) {
             _ => {}
         }
     }
+}
+
+/// The path of the first `use` in `tokens`, wherever it sits.
+fn first_use_path(tokens: &[Token]) -> Option<String> {
+    tokens
+        .windows(2)
+        .find_map(|pair| match (&pair[0].kind, &pair[1].kind) {
+            (TokenKind::Use, TokenKind::StringLit(path)) => Some(path.clone()),
+            _ => None,
+        })
+}
+
+fn remote_use_refused(path: &str) -> CompileError {
+    CompileError::codegen(format!(
+        "local use '{path}' is not allowed in a remote module; use a named import instead"
+    ))
 }
 
 /// A locked module's verified source, from [`Compiler::locked_module_sources`].
@@ -1107,6 +1124,7 @@ impl ResolvedImport {
 struct CachedImportedProgram {
     base_dir: PathBuf,
     decls: Vec<Decl>,
+    is_remote: bool,
 }
 
 pub struct Compiler {
@@ -1988,9 +2006,7 @@ impl Compiler {
             )));
         }
         if self.in_remote_import {
-            return Err(CompileError::codegen(format!(
-                "local use '{path}' is not allowed in a remote module; use a named import instead"
-            )));
+            return Err(remote_use_refused(path));
         }
         if let Some(files) = self.loader_options.embedded.and_then(|e| e.files) {
             let key = embedded_file_path(&self.base_dir, path)?;
@@ -2377,6 +2393,12 @@ impl Compiler {
         let tokens = Lexer::new(&source, 0).tokenize().map_err(|e| {
             CompileError::codegen(format!("lex error in '{display_name}': {}", e.message))
         })?;
+        let remote_use = if is_remote || self.in_remote_import {
+            first_use_path(&tokens)
+        } else {
+            None
+        };
+
         // Use the same interner for import parsing so symbols are shared
         let import_interner = std::mem::take(&mut self.interner);
         let program = Parser::with_interner(tokens, import_interner)
@@ -2412,6 +2434,11 @@ impl Compiler {
         self.base_dir = old_base;
         self.loading_imports.remove(&key);
 
+        // Inference does not load a `use` in a `let`, so its names are
+        // unbound there. Pass 2 refuses the `use` when they are bound.
+        if let (Err(_), Some(path)) = (&result, &remote_use) {
+            return Err(remote_use_refused(path));
+        }
         result?;
         self.inferred_imports.insert(key.clone());
         self.imported_programs.insert(
@@ -2419,6 +2446,7 @@ impl Compiler {
             CachedImportedProgram {
                 base_dir: imported_base_dir,
                 decls: desugared,
+                is_remote,
             },
         );
         Ok(())
@@ -2505,19 +2533,25 @@ impl Compiler {
             return Ok(());
         }
 
-        let CachedImportedProgram { base_dir, decls } =
-            self.imported_programs.remove(&key).ok_or_else(|| {
-                CompileError::codegen(format!("import not found during compilation: {key:?}"))
-            })?;
+        let CachedImportedProgram {
+            base_dir,
+            decls,
+            is_remote,
+        } = self.imported_programs.remove(&key).ok_or_else(|| {
+            CompileError::codegen(format!("import not found during compilation: {key:?}"))
+        })?;
 
         let old_base = self.base_dir.clone();
         self.base_dir = base_dir;
         // Set here too: pass 1 does not reach an import or `use` in a `let`.
+        let old_in_remote = self.in_remote_import;
+        self.in_remote_import |= is_remote;
         let old_extension = self.importing_extension;
         self.importing_extension = self.extension_of(&key);
         for decl in &decls {
             self.compile_decl(decl)?;
         }
+        self.in_remote_import = old_in_remote;
         self.importing_extension = old_extension;
         self.base_dir = old_base;
         self.compiled_imports.insert(key);
@@ -4978,6 +5012,116 @@ Answer = "blake3:deadbeef"
         }
         let _ = std::fs::remove_file(&cache_path);
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    /// Compiles `script` against a cached, pinned module `module_source`,
+    /// with a `helper.hml` in the project, `../helper.hml` from the cache.
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn compile_with_pinned_module(
+        name: &str,
+        module_source: &str,
+        script: &str,
+    ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
+        let project_dir = unique_temp_dir(name);
+        write_project_manifest(&project_dir);
+        let entry_path = project_dir.join("main.hml");
+        let base_url = "http://127.0.0.1:9/Test-v0.1.0";
+        let module_hash = blake3_hex(module_source.as_bytes());
+        let cache_path = cached_module_path(
+            &entry_path,
+            &format!("{base_url}/modules/Answer.hml"),
+            &module_hash,
+        );
+        write_file(&cache_path, module_source);
+        write_file(&project_dir.join("helper.hml"), "val helper = 41\n");
+        write_file(
+            &project_dir.join("hiko.lock.toml"),
+            &format!(
+                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+            ),
+        );
+        write_file(&entry_path, script);
+        let result = compile_path(&entry_path);
+        std::fs::remove_dir_all(&project_dir).ok();
+        result
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn assert_nested_use_refused(
+        result: Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError>,
+    ) {
+        match result {
+            Err(CompileError::Codegen(message)) => assert!(
+                message.contains("local use '../helper.hml' is not allowed in a remote module"),
+                "unexpected error: {message}"
+            ),
+            Err(other) => panic!("expected the nested use to be refused, got {other:?}"),
+            Ok(_) => panic!("expected the nested use to be refused, but it compiled"),
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_use_in_let_refused_when_script_used_file() {
+        assert_nested_use_refused(compile_with_pinned_module(
+            "pinned-let-use-script-used",
+            "val n = let use \"../helper.hml\" in helper end\n",
+            "use \"./helper.hml\"\nimport Test.Answer\nval m = n\n",
+        ));
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_use_in_let_refused_when_script_did_not_use_file() {
+        assert_nested_use_refused(compile_with_pinned_module(
+            "pinned-let-use-alone",
+            "val n = let use \"../helper.hml\" in helper end\n",
+            "import Test.Answer\nval m = n\n",
+        ));
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_use_in_let_in_fun_refused() {
+        for (name, script) in [
+            (
+                "pinned-fun-use-script-used",
+                "use \"./helper.hml\"\nimport Test.Answer\nval m = f ()\n",
+            ),
+            ("pinned-fun-use-alone", "import Test.Answer\nval m = f ()\n"),
+            (
+                "pinned-fun-use-not-called",
+                "use \"./helper.hml\"\nimport Test.Answer\nval m = 1\n",
+            ),
+        ] {
+            assert_nested_use_refused(compile_with_pinned_module(
+                name,
+                "fun f () = let use \"../helper.hml\" in helper end\n",
+                script,
+            ));
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn pinned_module_without_use_compiles_and_type_errors_stand() {
+        assert!(
+            compile_with_pinned_module(
+                "pinned-plain",
+                "val n = let val x = 1 in x end\n",
+                "import Test.Answer\nval m = n\n",
+            )
+            .is_ok()
+        );
+        let result = compile_with_pinned_module(
+            "pinned-unbound",
+            "val n = unknown_name\n",
+            "import Test.Answer\nval m = n\n",
+        );
+        assert!(
+            matches!(&result, Err(e) if format!("{e:?}").contains("unbound variable")),
+            "an unrelated error stands"
+        );
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
