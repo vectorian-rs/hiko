@@ -25,6 +25,12 @@ This is deliberate. Hiko currently treats modules as a **single top-level namesp
 
 ## What The Current Model Is For
 
+A constructor can be re-exported with an explicit alias, for example
+`val JInt = BuiltinJson.JInt` inside a structure. The right side must name an
+existing constructor and the alias must be new. The alias keeps the original
+nominal type, constructor tag and pattern behavior; it does not introduce a
+second datatype. A separate `type json = BuiltinJson.json` re-exports the type.
+
 The module system is there to solve two practical problems:
 
 - **namespacing**

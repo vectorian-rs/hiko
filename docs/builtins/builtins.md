@@ -119,11 +119,22 @@ Use `import Std.Json` for the typed JSON ADT (`JNull | JBool | JInt | JFloat | J
 
 | Builtin          | Type                        | Description                           |
 | ---------------- | --------------------------- | ------------------------------------- |
-| `json_parse`     | `string -> 'a`              | Parse JSON string to typed JSON value |
-| `json_to_string` | `'a -> string`              | Serialize value to JSON string        |
+| `Json.parse`     | `string -> Json.json`       | Parse text into a JSON value          |
+| `Json.to_string` | `Json.json -> string`       | Serialize a JSON value                |
 | `json_get`       | `string * string -> string` | Get field from JSON string by key     |
 | `json_keys`      | `string -> string list`     | Get keys from JSON object string      |
 | `json_length`    | `string -> int`             | Length of JSON array/object string    |
+
+The JSON datatype is owned by the embedded `BuiltinJson` module. `Std.Json`
+re-exports its type and constructors, so values built with `Json.JInt`,
+`Json.JArray` and the other constructors can be matched and serialized directly.
+Parsing as an unrelated Hiko type or serializing a function is a type error.
+
+The host converters `json_parse` and `json_to_string` are available only while
+the embedded `__Builtin.Json` module is compiled. Direct calls report the
+replacement and `import Std.Json`; source cannot redefine `BuiltinJson.json`.
+The existing `capabilities.json.json_parse` and
+`capabilities.json.json_to_string` policy keys still control these operations.
 
 ## bytes
 

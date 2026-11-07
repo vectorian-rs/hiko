@@ -6,6 +6,21 @@ This document records where Hiko stands against a narrowed focus. It is an
 inventory and triage, not a plan that has been executed. Nothing listed as
 "out of focus" has been removed yet.
 
+## Delivery checkpoint (2026-11-07)
+
+[PR #221](https://github.com/vectorian-rs/hiko/pull/221) completed
+[#183](https://github.com/vectorian-rs/hiko/issues/183) and merged at `e980d88`.
+Its verified head passed 1,150 default and 1,217 all-features workspace tests,
+lint and CI. Runtime-owned process result types are sealed; the documented
+reaped-pid diagnostic limits remain.
+
+Next is [#184 rev 4](https://github.com/vectorian-rs/hiko/issues/184), the typed
+JSON boundary, approved and in implementation. Package/import contract and preparatory
+internals belong to [#210](https://github.com/vectorian-rs/hiko/issues/210);
+[#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.
+[Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
+delivery and evidence. The inventory below retains its original snapshot.
+
 ## Focus
 
 Hiko is being refocused on three things:
