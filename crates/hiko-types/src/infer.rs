@@ -274,6 +274,11 @@ impl<'a> BuiltinTypeParser<'a> {
         if self.opaque.contains(&ident) {
             return Ok(Type::Con(ident));
         }
+        if hiko_builtin_meta::runtime_type_owner(&ident)
+            .is_some_and(|owner| owner.owned_types().contains(&(ident.as_str(), 0)))
+        {
+            return Ok(Type::Con(ident));
+        }
         Type::primitive(&ident).ok_or_else(|| format!("unknown type constructor '{ident}"))
     }
 
@@ -361,7 +366,7 @@ impl InferCtx {
         };
         ctx.type_arities.insert("list".into(), 1);
         ctx.type_arities.insert("pid".into(), 1);
-        for &(name, arity) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+        for (name, arity) in hiko_builtin_meta::runtime_type_arities() {
             ctx.type_arities.insert(name.into(), arity);
         }
         ctx.bind_builtin_type_signatures();
@@ -370,6 +375,12 @@ impl InferCtx {
 
     fn bind_builtin_type_signatures(&mut self) {
         for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
+            if matches!(
+                hiko_builtin_meta::builtin_meta(name).unwrap().surface,
+                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
+            ) {
+                continue;
+            }
             let scheme = self
                 .parse_builtin_scheme(sig)
                 .unwrap_or_else(|err| panic!("invalid builtin type signature for {name}: {err}"));
@@ -396,7 +407,7 @@ impl InferCtx {
         name: &str,
         sig: hiko_builtin_meta::BuiltinTypeSignature,
     ) -> Result<(), String> {
-        if self.lookup(name).is_some() {
+        if self.lookup(name).is_some() || hiko_builtin_meta::builtin_meta(name).is_some() {
             return Err(format!("extension builtin '{name}' is already defined"));
         }
         let scheme = self
@@ -830,21 +841,45 @@ impl InferCtx {
         Ok(())
     }
 
-    /// Elaborate the embedded Process module's runtime-owned datatypes.
+    /// Elaborate an embedded builtin module's runtime-owned types and private builtins.
     /// The caller must establish source identity; never call this for user,
     /// file-backed or extension declarations, even if their names match.
-    pub fn infer_process_module(&mut self, decls: &[Decl]) -> Result<(), TypeError> {
-        for &(name, _) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+    pub fn infer_builtin_module(
+        &mut self,
+        module: &hiko_builtin_meta::InternalBuiltinModule,
+        decls: &[Decl],
+    ) -> Result<(), TypeError> {
+        for &(name, _) in module.owned_types() {
             if !self.datatype_constructors.contains_key(name) {
                 self.type_arities.remove(name);
+            }
+        }
+        let mut previous = Vec::new();
+        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
+            if matches!(hiko_builtin_meta::builtin_meta(name).unwrap().surface,
+                hiko_builtin_meta::BuiltinSurface::ModuleOnly { owner, .. } if owner == module.import_name)
+            {
+                let scheme = self
+                    .parse_builtin_scheme(sig)
+                    .expect("valid internal builtin signature");
+                let old = self.scopes.last_mut().unwrap().insert(name.into(), scheme);
+                previous.push((name, old));
             }
         }
         // Ordinary inference handles the desugared structure's Local block,
         // checks payloads/constructors and records the runtime ABI tags.
         let result = decls.iter().try_for_each(|decl| self.infer_decl(decl));
         // Restore reservations even when elaboration failed partway through.
-        for &(name, arity) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
+        for &(name, arity) in module.owned_types() {
             self.type_arities.entry(name.into()).or_insert(arity);
+        }
+        for (name, old) in previous {
+            let scope = self.scopes.last_mut().unwrap();
+            if let Some(scheme) = old {
+                scope.insert(name.into(), scheme);
+            } else {
+                scope.remove(name);
+            }
         }
         result
     }
@@ -925,6 +960,15 @@ impl InferCtx {
     fn infer_decl_inner(&mut self, decl: &Decl) -> Result<(), TypeError> {
         match &decl.kind {
             DeclKind::Val(pat, expr) => {
+                if let (PatKind::Constructor(alias, None), ExprKind::Constructor(target)) =
+                    (&pat.kind, &expr.kind)
+                {
+                    let alias = self.interner.resolve(*alias).to_string();
+                    let target = self.interner.resolve(*target).to_string();
+                    return self
+                        .bind_constructor_alias(&alias, &target)
+                        .map_err(|message| self.err(&message, decl.span));
+                }
                 let bindings = self.at_inner_level(|this| {
                     let expr_ty = this.infer_expr(expr)?;
                     let (pat_ty, bindings) = this.infer_pat(pat)?;
@@ -1150,12 +1194,12 @@ impl InferCtx {
         }
         // Type aliases are also recorded in `type_arities`.
         if self.type_arities.contains_key(name) {
-            if hiko_builtin_meta::PROCESS_RUNTIME_TYPES
-                .iter()
-                .any(|&(reserved, _)| reserved == name)
-            {
+            if let Some(owner) = hiko_builtin_meta::runtime_type_owner(name) {
                 return Err(self.err(
-                    &format!("cannot redefine runtime-owned type '{name}'; import __Builtin.Process to use it"),
+                    &format!(
+                        "cannot redefine runtime-owned type '{name}'; import {} to use it",
+                        owner.import_name
+                    ),
                     span,
                 ));
             }
@@ -1414,7 +1458,7 @@ impl InferCtx {
             }
             ExprKind::Constructor(sym) => {
                 let name = self.interner.resolve(*sym);
-                if let Some(scheme) = self.constructors.get(name).cloned() {
+                if let Some(scheme) = self.visible_constructor(name).cloned() {
                     Ok(self.instantiate(&scheme))
                 } else {
                     Err(self.err(&format!("unknown constructor: {name}"), expr.span))
@@ -1789,10 +1833,10 @@ impl InferCtx {
 
             PatKind::Constructor(sym, payload) => {
                 let name = self.interner.resolve(*sym).to_string();
-                let scheme =
-                    self.constructors.get(&name).cloned().ok_or_else(|| {
-                        self.err(&format!("unknown constructor: {name}"), pat.span)
-                    })?;
+                let scheme = self
+                    .visible_constructor(&name)
+                    .cloned()
+                    .ok_or_else(|| self.err(&format!("unknown constructor: {name}"), pat.span))?;
                 let con_ty = self.instantiate(&scheme);
                 match payload {
                     None => Ok((con_ty, vec![])),
@@ -2067,6 +2111,14 @@ impl InferCtx {
         self.constructors.get(name)
     }
 
+    /// Constructor metadata survives inference scopes for codegen and
+    /// exhaustiveness; source references still require a visible binding.
+    fn visible_constructor(&self, name: &str) -> Option<&Scheme> {
+        self.constructors
+            .get(name)
+            .filter(|_| self.lookup(name).is_some())
+    }
+
     /// Check if a value binding name exists.
     pub fn has_value(&self, name: &str) -> bool {
         self.lookup(name).is_some()
@@ -2092,8 +2144,7 @@ impl InferCtx {
         target_name: &str,
     ) -> Result<(), String> {
         let scheme = self
-            .constructors
-            .get(target_name)
+            .visible_constructor(target_name)
             .cloned()
             .ok_or_else(|| format!("import alias: constructor '{}' not found", target_name))?;
         if self.constructors.contains_key(alias_name) {
@@ -2238,7 +2289,12 @@ fn unbound_message(name: &str) -> String {
         Some(feature) => format!(
             "builtin `{name}` is not in this build of hiko; enable cargo feature `{feature}`"
         ),
-        None => format!("unbound variable: {name}"),
+        None => match hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface) {
+            Some(hiko_builtin_meta::BuiltinSurface::ModuleOnly { replacement, .. }) => {
+                format!("builtin `{name}` is internal; import Std.Json and use {replacement}")
+            }
+            _ => format!("unbound variable: {name}"),
+        },
     }
 }
 
@@ -2468,7 +2524,12 @@ mod tests {
     #[test]
     fn infer_ctx_contains_all_metadata_builtins() {
         let ctx = InferCtx::new();
-        for meta in builtins() {
+        for meta in builtins().filter(|meta| {
+            !matches!(
+                meta.surface,
+                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
+            )
+        }) {
             assert!(
                 ctx.lookup_type(meta.name).is_some(),
                 "missing builtin in InferCtx: {}",
@@ -2493,7 +2554,7 @@ mod tests {
         let program = hiko_syntax::desugar::desugar_program(program);
         let mut ctx = InferCtx::new();
         ctx.interner = program.interner;
-        ctx.infer_process_module(&program.decls)
+        ctx.infer_builtin_module(module, &program.decls)
             .expect("trusted Process source");
         for &(name, arity) in hiko_builtin_meta::PROCESS_RUNTIME_TYPES {
             assert_eq!(ctx.type_arities.get(name), Some(&arity));
@@ -3184,6 +3245,63 @@ mod tests {
                 "{source}: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn test_constructor_reexports_keep_the_nominal_type_and_patterns() {
+        let ctx = infer(
+            "structure Original = struct datatype t = Empty | Item of int end
+             structure Public = struct
+               type t = Original.t
+               val Empty = Original.Empty
+               val Item = Original.Item
+             end
+             val x : Public.t = Public.Item 42
+             val n = case x of Public.Empty => 0 | Public.Item n => n",
+        );
+        assert_eq!(type_of(&ctx, "n"), "int");
+        assert!(ctx.warnings.is_empty(), "{:?}", ctx.warnings);
+        assert_eq!(
+            ctx.constructor_tag("Public.Item"),
+            ctx.constructor_tag("Original.Item")
+        );
+        let message = infer_err(
+            "datatype original = Item of int
+             datatype other = Other of string
+             structure Public = struct val Copy = Item end
+             val x : other = Public.Copy 42",
+        );
+        assert!(message.contains("type mismatch"), "{message}");
+    }
+
+    #[test]
+    fn test_constructor_reexports_do_not_escape_their_scope() {
+        for outside in [
+            "val x = Hidden 42",
+            "val x = case Original 42 of Hidden n => n",
+            "val Escaped = Hidden",
+        ] {
+            let message = infer_err(&format!(
+                "datatype original = Original of int
+                 fun f () = let val Hidden = Original in Hidden 1 end
+                 {outside}"
+            ));
+            assert!(message.contains("Hidden"), "{message}");
+        }
+    }
+
+    #[cfg(feature = "builtin-json")]
+    #[test]
+    fn test_failed_builtin_inference_restores_json_privacy_and_ownership() {
+        let module = hiko_builtin_meta::internal_builtin_module("Json").unwrap();
+        let tokens = Lexer::new("val bad = missing", 0).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let mut ctx = InferCtx::new();
+        ctx.interner = program.interner;
+        assert!(ctx.infer_builtin_module(module, &program.decls).is_err());
+        assert!(ctx.lookup_type("json_parse").is_none());
+        assert!(ctx.lookup_type("json_to_string").is_none());
+        assert_eq!(ctx.type_arities.get("BuiltinJson.json"), Some(&0));
     }
 
     #[test]

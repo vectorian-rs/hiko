@@ -5,7 +5,7 @@ import Std.List
 (* ── Functional test ────────────────────────────────────────────────── *)
 val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"stars\": 42, \"pi\": 3.14, \"active\": true, \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com\", \"private\": false}, \"legacy\": null}"
 
-val parsed = json_parse data
+val parsed = Json.parse data
 
 (* Pattern match on the top level *)
 val _ =
@@ -80,14 +80,14 @@ val _ =
     | _ => ()
 
 (* ── Round-trip test ────────────────────────────────────────────────── *)
-val serialized = json_to_string parsed
+val serialized = Json.to_string parsed
 
 val _ = println ("\nRound-trip: " ^ serialized)
 
 (* Parse it again and verify *)
-val reparsed = json_parse serialized
+val reparsed = Json.parse serialized
 
-val reserialized = json_to_string reparsed
+val reserialized = Json.to_string reparsed
 
 val _ = println ("Re-serialized: " ^ reserialized)
 
@@ -101,7 +101,7 @@ val large = "[{\"id\":0,\"name\":\"item0\",\"values\":[1,2,3],\"nested\":{\"a\":
 
 val t0 = epoch ()
 
-val parsed_large = json_parse large
+val parsed_large = Json.parse large
 
 val t1 = epoch ()
 
@@ -110,7 +110,7 @@ val _ =
       Json.JArray items => println ("\nParsed " ^ int_to_string (List.length items) ^ " items")
     | _ => println "ERROR"
 
-val serialized_large = json_to_string parsed_large
+val serialized_large = Json.to_string parsed_large
 
 val t2 = epoch ()
 

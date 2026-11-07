@@ -16,6 +16,28 @@ pub struct InternalBuiltinModule {
     pub source: &'static str,
 }
 
+impl InternalBuiltinModule {
+    pub fn owned_types(&self) -> &'static [(&'static str, usize)] {
+        match self.leaf_name {
+            "Process" => PROCESS_RUNTIME_TYPES,
+            "Json" => &[("BuiltinJson.json", 0)],
+            _ => &[],
+        }
+    }
+}
+
+pub fn runtime_type_arities() -> impl Iterator<Item = (&'static str, usize)> {
+    MODULES
+        .iter()
+        .flat_map(|module| module.owned_types().iter().copied())
+}
+
+pub fn runtime_type_owner(name: &str) -> Option<&'static InternalBuiltinModule> {
+    MODULES
+        .iter()
+        .find(|module| module.owned_types().iter().any(|&(owned, _)| owned == name))
+}
+
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
   val read_text_raw = read_file
   val read_bytes_raw = read_file_bytes
@@ -37,6 +59,15 @@ end
 "#;
 
 const JSON_SOURCE: &str = r#"structure BuiltinJson = struct
+  datatype json =
+      JNull
+    | JBool of bool
+    | JInt of int
+    | JFloat of float
+    | JStr of string
+    | JArray of json list
+    | JObject of (string * json) list
+
   val parse_raw = json_parse
   val to_string_raw = json_to_string
   val get_raw = json_get

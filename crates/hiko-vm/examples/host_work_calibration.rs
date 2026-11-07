@@ -101,7 +101,7 @@ const INPUTS: &[(&str, &[&str], &str)] = &[
     (
         "parsed",
         &["json_array"],
-        "val parsed = json_parse json_array",
+        "val parsed = BuiltinJson.parse_raw json_array",
     ),
     (
         "rng",
@@ -152,8 +152,11 @@ const CALLS: &[(&str, &str)] = &[
     ),
     ("json_length", "json_length json_array"),
     ("json_get", "json_get (json_object, \"k.0\")"),
-    ("json_parse", "(json_parse json_array : int list)"),
-    ("json_to_string", "json_to_string parsed"),
+    (
+        "json_parse",
+        "(BuiltinJson.parse_raw json_array : BuiltinJson.json)",
+    ),
+    ("json_to_string", "BuiltinJson.to_string_raw parsed"),
     ("random_bytes", "random_bytes SIZE"),
     ("rng_bytes", "rng_bytes (rng, SIZE)"),
     ("rng_seed", "rng_seed bytes"),
@@ -238,7 +241,23 @@ fn program_for(call: &str, size: usize, k: usize) -> CompiledProgram {
             .replace("CALL", &call.replace("SIZE", &size.to_string()))
             .replace("(K, 0)", &format!("({k}, 0)")),
     );
+    if source.contains("BuiltinJson.") {
+        source.insert_str(0, "import __Builtin.Json\n");
+    }
     compile(&source)
+}
+
+#[cfg(all(test, feature = "builtin-json"))]
+mod tests {
+    #[test]
+    fn typed_json_calibration_programs_run() {
+        for &(name, call) in super::CALLS {
+            if matches!(name, "json_parse" | "json_to_string") {
+                let program = super::program_for(call, 16, 1);
+                super::try_run(&program).unwrap_or_else(|error| panic!("{name}: {error}"));
+            }
+        }
+    }
 }
 
 /// Time of one opcode, from a loop that does nothing else.

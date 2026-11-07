@@ -26,7 +26,7 @@ pub enum Shape {
     Word,
     Pid,
     Rng,
-    /// Type variable — matches anything (polymorphic builtins like json_parse).
+    /// A type variable or nominal Hiko datatype, unconstrained by this shape checker.
     Var,
     /// Tuple with N fields of specific shapes.
     Tuple(Vec<Shape>),
@@ -152,6 +152,7 @@ impl ShapeParser {
             "bytes" => Ok(Shape::Bytes),
             "word" => Ok(Shape::Word),
             "rng" => Ok(Shape::Rng),
+            "BuiltinJson.json" => Ok(Shape::Var),
             other => Err(format!("unknown type '{}'", other)),
         }
     }

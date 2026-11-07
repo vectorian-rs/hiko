@@ -149,6 +149,21 @@ fn collect_decl_exports(
     hide_exports: bool,
 ) {
     match &decl.kind {
+        DeclKind::Val(
+            Pat {
+                kind: PatKind::Constructor(name, None),
+                ..
+            },
+            Expr {
+                kind: ExprKind::Constructor(_),
+                ..
+            },
+        ) => {
+            scope.constructors.insert(
+                *name,
+                mangle_symbol(module_path, *name, interner, hide_exports),
+            );
+        }
         DeclKind::Val(pat, _) => {
             for sym in pat_bound_names(pat) {
                 scope
