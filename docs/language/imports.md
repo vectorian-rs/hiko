@@ -300,6 +300,17 @@ The loader must verify integrity twice:
 
 That means cached content is not trusted just because it already exists locally.
 
+Pinned modules cannot contain local `use` declarations, including inside `let`,
+`local`, functions, or structures. Their tokens are checked before parsing,
+type inference, or reuse of an inferred module, so a separate parse/type error
+does not hide the refusal. Comments and string contents do not count as declarations.
+This rule also applies to transitive imports, verified local package sources,
+and modules embedded by `build-vm`. Ordinary project files can still use local files.
+
+Verified modules have a separate compiler-cache identity from local `use`
+files, even at the same canonical path. Loading a cache file as project source
+cannot make a later named import reuse that unverified program.
+
 Failure behavior should be explicit:
 
 - network down + valid cache hit -> proceed
