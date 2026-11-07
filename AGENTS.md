@@ -67,6 +67,20 @@ plan revisions and merges ready PRs.
 - For documentation-only changes, check local links and instruction references.
 - Report the result, validation actually run, and any remaining limitations.
 
+## Required PR skills
+
+Before presenting any PR, run [simplify](.agents/skills/simplify/SKILL.md), verify
+the result, then run [code-review](.agents/skills/code-review/SKILL.md). Apply
+in-scope fixes and repeat affected checks/reviews at the resulting head. This
+includes docs-only PRs. These supply the `simplicity` and `correctness` reviews;
+other selected lenses and required independent reviews still apply.
+
+Follow the skills' delegated reviewer passes when the host supports and permits
+delegation, in waves within its concurrency limit. Reviewers stay read-only;
+the coordinating worker applies fixes. Otherwise run the same passes
+sequentially and label them self-review. Record scope, passes, reviewer mode,
+findings/fixes and checks at the final PR head.
+
 ## Conditional tool guidance
 
 Apply only the section matching the tool hosting this session. Having a CLI
@@ -80,8 +94,17 @@ installed, or mentioning another tool in a task, does not activate its guidance.
   docs explicitly. Do not rely on Claude's `@path` import syntax.
 - Use the session's Codex configuration and available tools. Claude settings,
   hooks, permission names, and native agent definitions apply only to Claude.
-- For the `correctness` lens, use native code review when available or the
-  shared lens-reviewer prompt. The shared prompt also covers `simplicity`.
+- Load the shared skills as `$simplify` and `$code-review`, or read their
+  `SKILL.md` files directly. Native review may assist their passes; record
+  what actually ran.
+
+### When running in Pi
+
+- Use shared `AGENTS.md` and `.agents/skills/` discovery.
+- Invoke `/skill:simplify` and `/skill:code-review`; use `/reload` after skill
+  changes in an active session.
+- Use delegated reviewers when the session has that capability; otherwise
+  use the skills' sequential self-review mode.
 
 ### When running in Claude Code
 
@@ -91,9 +114,10 @@ installed, or mentioning another tool in a task, does not activate its guidance.
   Use `/memory` to inspect loaded instruction files when troubleshooting.
 - Use the session's Claude configuration and available tools. Codex settings,
   approval options, and native agent definitions apply only to Codex.
-- If available, `/simplify` and `/code-review` can help with the `simplicity`
-  and `correctness` lenses. Keep lens reviews read-only; fixes belong to the
-  assigned worker. Use the shared lens-reviewer prompt when no helper applies.
+- Use native `/simplify` and `/code-review` when available, with the same
+  required sequence and evidence rules. The shared ports describe the passes
+  for sessions without those commands. Reviewers stay read-only; the
+  coordinating worker applies cleanup.
 
 See [docs/project/agent-workflow.md](docs/project/agent-workflow.md) for usage and
 maintenance of this setup.

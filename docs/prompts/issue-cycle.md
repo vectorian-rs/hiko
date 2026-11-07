@@ -37,12 +37,15 @@ provider, model, tool API, or a required number of sessions.
 
 ## Verify and retry
 
+- Run [simplify](../../.agents/skills/simplify/SKILL.md) on the complete PR
+  change. The coordinating worker applies cleanup; reviewers stay read-only.
 - Run focused checks first, then the plan's required workspace and CI checks.
   Add differential, growth, mutation, or concurrency evidence when selected.
   Documentation-only work checks links and instruction consistency.
-- Review the implementation against its acceptance criteria and selected
-  concerns. Label self-review honestly; it cannot replace an independent review
-  required by the plan.
+- Run [code-review](../../.agents/skills/code-review/SKILL.md) after verification,
+  plus other selected concerns, against acceptance and the resulting head.
+  Record actual skill passes and reviewer mode. Label self-review honestly;
+  it cannot replace an independent review required by the plan.
 - For an in-scope failure, return to Implement and then Verify without asking
   again. Do not weaken acceptance or hide a failing required check.
 - A required check that is pending, blocked, skipped, flaky, or timed out is

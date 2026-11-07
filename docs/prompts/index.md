@@ -11,6 +11,15 @@ Advance, one issue at a time. It resumes the issue checkpoint, repeats fixes
 and verification within approved scope, and retains plan approval and PR merge
 as human checkpoints. Example: "Use docs/prompts/issue-cycle.md for issue #191."
 
+## Required PR skills
+
+Every PR uses [simplify](../../.agents/skills/simplify/SKILL.md) for cleanup,
+then verification, then [code-review](../../.agents/skills/code-review/SKILL.md)
+for validated defects. These skill files are the shared implementation for Pi
+and Codex; Claude can use its native commands. See
+[agent-workflow.md](../project/agent-workflow.md#pr-skills) for invocation and
+differences from Claude. Record actual passes, reviewer mode and final head.
+
 ## Delivery roles
 
 For work covered by the [delivery lifecycle](../project/delivery.md), use the

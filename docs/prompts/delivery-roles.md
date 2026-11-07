@@ -65,6 +65,9 @@ its stated concern and return the same finding format.
 >   Context names. Docs change in the first commit when the decision is new.
 > - Run every check the section lists and report each result, including the
 >   ones that fail. A skipped or timed-out check is unmet.
+> - Run the shared simplify and code-review skills for every PR, as required
+>   by `AGENTS.md`. Keep delegated reviewers read-only, apply cleanup as the
+>   worker, and record actual passes and reviewer mode at the resulting head.
 > - Fix in-scope test, CI, and review failures, then verify again. Keep the same
 >   plan approval; return material scope/design changes to the lead. Do not
 >   weaken acceptance to get a pass.
