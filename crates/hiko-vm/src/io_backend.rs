@@ -524,6 +524,30 @@ enum TimerKind {
     QueueDeadline,
 }
 
+impl TimerState {
+    fn add_at(&mut self, token: IoToken, deadline: Instant, kind: TimerKind) -> Result<(), String> {
+        if self.shutdown {
+            return Err("io backend is shut down".into());
+        }
+        self.deadlines.push(std::cmp::Reverse((deadline, token.0)));
+        self.pending.insert(token, kind);
+        Ok(())
+    }
+
+    fn cancel(&mut self, token: IoToken) -> bool {
+        if self.pending.remove(&token).is_none() {
+            return false;
+        }
+        // Keep the heap proportional to the live timers so that cancelled
+        // long sleeps and refused publications do not accumulate.
+        if self.deadlines.len() > 2 * self.pending.len() + 16 {
+            self.deadlines
+                .retain(|entry| self.pending.contains_key(&IoToken(entry.0.1)));
+        }
+        true
+    }
+}
+
 impl Timers {
     fn new() -> Self {
         Self {
@@ -547,29 +571,41 @@ impl Timers {
 
     fn add_at(&self, token: IoToken, deadline: Instant, kind: TimerKind) -> Result<(), String> {
         let mut state = self.lock();
-        if state.shutdown {
-            return Err("io backend is shut down".into());
-        }
-        state.deadlines.push(std::cmp::Reverse((deadline, token.0)));
-        state.pending.insert(token, kind);
+        state.add_at(token, deadline, kind)?;
         self.changed.notify_one();
         Ok(())
     }
 
-    fn cancel(&self, token: IoToken) {
+    /// Keep cancellation/expiry out until the deadline and job are both
+    /// published. The callback takes the work lock: order is timers -> work.
+    fn publish_queued(
+        &self,
+        token: IoToken,
+        deadline: Instant,
+        publish: impl FnOnce() -> Result<bool, String>,
+    ) -> Result<bool, String> {
         let mut state = self.lock();
-        if state.pending.remove(&token).is_none() {
-            return;
-        }
-        // Keep the heap proportional to the live timers so that cancelled
-        // long sleeps do not accumulate.
-        if state.deadlines.len() > 2 * state.pending.len() + 16 {
-            let TimerState {
-                deadlines, pending, ..
-            } = &mut *state;
-            deadlines.retain(|entry| pending.contains_key(&IoToken(entry.0.1)));
+        state.add_at(token, deadline, TimerKind::QueueDeadline)?;
+        let result = publish();
+        if result.is_err() {
+            state.cancel(token);
         }
         self.changed.notify_one();
+        result
+    }
+
+    fn cancel(&self, token: IoToken) {
+        self.cancel_queued(token, || {});
+    }
+
+    /// Exclude publication until both timer cleanup and queue removal finish,
+    /// even when the token was unknown at the start of cancellation.
+    fn cancel_queued(&self, token: IoToken, remove: impl FnOnce()) {
+        let mut state = self.lock();
+        if state.cancel(token) {
+            self.changed.notify_one();
+        }
+        remove();
     }
 
     fn shutdown(&self) {
@@ -728,13 +764,14 @@ impl IoBackend for ThreadPoolIoBackend {
             context,
             deadline,
         };
-        if self.work.push(job)? {
+        let grow = match deadline {
+            Some(deadline) => self
+                .timers
+                .publish_queued(token, deadline, || self.work.push(job))?,
+            None => self.work.push(job)?,
+        };
+        if grow {
             self.spawn_worker();
-        }
-        if let Some(deadline) = deadline {
-            // If a worker already took the job, the timer finds nothing queued.
-            self.timers
-                .add_at(token, deadline, TimerKind::QueueDeadline)?;
         }
         Ok(())
     }
@@ -751,8 +788,9 @@ impl IoBackend for ThreadPoolIoBackend {
         // A queued request is dropped. A blocking request cannot be
         // interrupted once a worker has started it; the runtime ignores its
         // late result.
-        self.timers.cancel(token);
-        self.work.remove_queued(token);
+        self.timers.cancel_queued(token, || {
+            self.work.remove_queued(token);
+        });
     }
 }
 
@@ -1331,6 +1369,229 @@ mod tests {
                 global: timeout,
             },
         }
+    }
+
+    /// An isolated publication transaction: actors below drive the queue and
+    /// timer thread explicitly, so worker scheduling cannot choose the race.
+    #[cfg(feature = "builtin-http")]
+    fn publication_backend() -> ThreadPoolIoBackend {
+        let backend = ThreadPoolIoBackend {
+            work: Arc::new(WorkQueue::new(1, 1)),
+            completed: Arc::new(Completions::default()),
+            workers: Mutex::new(Vec::new()),
+            timers: Arc::new(Timers::new()),
+            timer_thread: None,
+        };
+        // Reserve the worker slot so register_for cannot start a real worker;
+        // each test drives handoff/expiry explicitly.
+        backend.work.lock().threads = 1;
+        backend
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum PublicationRace {
+        Cancel,
+        Expire,
+        Worker,
+    }
+
+    #[cfg(feature = "builtin-http")]
+    fn assert_atomic_publication(race: PublicationRace) {
+        use std::sync::{TryLockError, mpsc};
+
+        let backend = publication_backend();
+        let token = IoToken(1);
+        let deadline = Instant::now();
+        let mut job = Some(Job {
+            token,
+            request: http_get_request("http://127.0.0.1:9", Duration::ZERO),
+            context: IoContext::default(),
+            deadline: Some(deadline),
+        });
+        let (observed, observation) = mpsc::channel();
+        let mut isolated = false;
+        std::thread::scope(|scope| {
+            let mut actor = None;
+            backend
+                .timers
+                .publish_queued(token, deadline, || {
+                    let grow = if race == PublicationRace::Worker {
+                        Some(backend.work.push(job.take().unwrap())?)
+                    } else {
+                        None
+                    };
+                    actor = Some(scope.spawn(|| {
+                        let taken = if race == PublicationRace::Worker {
+                            Some(backend.work.lock().take_next().expect("published job"))
+                        } else {
+                            None
+                        };
+                        // This probe occurs inside publication, before the
+                        // actor's blocking cleanup/expiry. A split publication
+                        // lets it observe a half-registered request.
+                        let hidden = matches!(
+                            backend.timers.state.try_lock(),
+                            Err(TryLockError::WouldBlock)
+                        );
+                        observed.send(hidden).unwrap();
+                        match race {
+                            PublicationRace::Cancel => backend.cancel(token),
+                            PublicationRace::Expire => {
+                                backend.timers.run(&backend.completed, &backend.work);
+                            }
+                            PublicationRace::Worker => {
+                                let job = taken.unwrap();
+                                backend.timers.cancel(token);
+                                let owner = job.context.owner;
+                                backend.completed.push(token, run_job(job));
+                                backend.work.lock().finish(owner);
+                            }
+                        }
+                    }));
+                    isolated = observation.recv_timeout(Duration::from_secs(5)).unwrap();
+                    match grow {
+                        Some(grow) => Ok(grow),
+                        None => backend.work.push(job.take().unwrap()),
+                    }
+                })
+                .unwrap();
+
+            if race != PublicationRace::Expire {
+                actor.take().unwrap().join().unwrap();
+            } else if isolated {
+                let end = Instant::now() + Duration::from_secs(5);
+                while backend.completed.lock().is_empty() && Instant::now() < end {
+                    backend
+                        .completed
+                        .wait(end.saturating_duration_since(Instant::now()));
+                }
+            }
+            let pending = backend.timers.lock().pending.len();
+            backend.timers.shutdown();
+            if let Some(actor) = actor {
+                actor.join().unwrap();
+            }
+            assert!(
+                isolated,
+                "actor observed timer state during queue publication"
+            );
+            assert_eq!(pending, 0, "active timer left after cleanup");
+            let work = backend.work.lock();
+            assert!(work.queues.is_empty());
+            assert!(work.order.is_empty());
+            assert!(work.in_flight.is_empty());
+            let results = backend.poll();
+            if race == PublicationRace::Cancel {
+                assert!(results.is_empty());
+            } else {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0, token);
+                assert!(matches!(&results[0].1, IoResult::Err(e) if e.contains("timeout")));
+            }
+        });
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_atomic_queue_publication_cancel() {
+        assert_atomic_publication(PublicationRace::Cancel);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_atomic_queue_publication_expiry() {
+        assert_atomic_publication(PublicationRace::Expire);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_atomic_queue_publication_worker_handoff() {
+        assert_atomic_publication(PublicationRace::Worker);
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_atomic_queue_publication_cancellation_straddles_registration() {
+        use std::sync::{TryLockError, mpsc};
+
+        let backend = publication_backend();
+        let token = IoToken(1);
+        let (observed, observation) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let mut registration = None;
+            let mut isolated = false;
+            backend.timers.cancel_queued(token, || {
+                registration = Some(scope.spawn(|| {
+                    let hidden = matches!(
+                        backend.timers.state.try_lock(),
+                        Err(TryLockError::WouldBlock)
+                    );
+                    if hidden {
+                        observed.send(hidden).unwrap();
+                    }
+                    // If publication is not excluded, finish it before queue
+                    // removal: split cancellation would orphan its timer.
+                    backend
+                        .register(
+                            token,
+                            http_get_request("http://127.0.0.1:9", Duration::ZERO),
+                        )
+                        .unwrap();
+                    if !hidden {
+                        observed.send(hidden).unwrap();
+                    }
+                }));
+                isolated = observation.recv_timeout(Duration::from_secs(5)).unwrap();
+                backend.work.remove_queued(token);
+            });
+            registration.unwrap().join().unwrap();
+            let pending = backend.timers.lock().pending.contains_key(&token);
+            let queued = !backend.work.lock().queues.is_empty();
+            backend.cancel(token);
+            assert_eq!(pending, queued, "cancellation left an orphaned deadline");
+            assert!(isolated, "registration entered during cancellation cleanup");
+            assert!(backend.timers.lock().pending.is_empty());
+            assert!(backend.work.lock().queues.is_empty());
+            assert!(backend.poll().is_empty());
+        });
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_atomic_queue_publication_queue_refusal_rolls_back_deadline() {
+        let backend = publication_backend();
+        backend.work.shutdown();
+        let error = backend
+            .register(
+                IoToken(1),
+                http_get_request("http://127.0.0.1:9", Duration::ZERO),
+            )
+            .unwrap_err();
+        assert_eq!(error, "io backend is shut down");
+        assert!(backend.timers.lock().pending.is_empty());
+        backend.cancel(IoToken(1));
+        backend.cancel(IoToken(1));
+        assert!(backend.timers.lock().pending.is_empty());
+        assert!(backend.work.lock().queues.is_empty());
+        assert!(backend.poll().is_empty());
+    }
+
+    #[cfg(feature = "builtin-http")]
+    #[test]
+    fn test_atomic_queue_publication_timer_shutdown_does_not_publish_job() {
+        let backend = publication_backend();
+        backend.timers.shutdown();
+        let error = backend
+            .register(
+                IoToken(1),
+                http_get_request("http://127.0.0.1:9", Duration::ZERO),
+            )
+            .unwrap_err();
+        assert_eq!(error, "io backend is shut down");
+        assert!(backend.work.lock().queues.is_empty());
+        assert!(backend.timers.lock().pending.is_empty());
+        assert!(backend.poll().is_empty());
     }
 
     /// Poll until `count` completions arrived or `limit` passed.
