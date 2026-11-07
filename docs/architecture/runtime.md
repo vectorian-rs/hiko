@@ -285,6 +285,14 @@ Cancellation is cooperative:
 - cancelling an already-finished child is a no-op
 - `Fiber.join` on a cancelled child returns `Result.Err ...`
 
+The threaded I/O backend publishes a queued HTTP request and its deadline under
+the same timer lock, taking locks in timer then work-queue order. Cancellation
+and expiry see a complete registration. Cancellation keeps that lock until both
+the timer and queued job are removed. A worker releases the queue lock before
+cancelling its queue timer. Refused publication rolls the deadline back; repeated
+cleanup remains harmless. The runtime also rechecks cancellation after backend
+registration, covering cancellation before the backend knew the request token.
+
 ### Semantics
 
 - `spawn` creates a new isolated process
