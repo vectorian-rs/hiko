@@ -156,10 +156,22 @@ Hash = { version = "0.1.0", registry = "local" }
 then use that one configured project lockfile. Entry-file-relative lockfiles are
 not part of the model.
 
-A project is the `hiko.toml` in or above the script's directory. `--config`
-selects policy for `hiko run` and `hiko check`, and the lockfile still comes
-from the script's project. `hiko install` and `hiko lock verify` take no script,
-so `--config` names their project.
+A project is the nearest `hiko.toml` above the canonical script path. A symlink
+to a script keeps the target's project identity. Without `--config`, `run` and
+`check` use that project's policy registry and require the canonical working
+directory to be inside that project. Running from elsewhere requires an explicit
+manifest, for example `hiko run --config /path/to/hiko.toml --policy core script.hml`.
+`--config` selects policy authority; imports still use the script project's
+lockfile. `hiko install` and `hiko lock verify` take no script, so `--config`
+names their project.
+
+`run` requires a policy even for programs using only core builtins. Register a
+named policy such as `policies/core.policy.toml` in `hiko.toml`; an empty policy
+grants only core builtins. `check` can type-check without a policy and never
+executes the program. Policy paths, like lockfiles, must remain inside their
+manifest directory, including resolved symlinks. A malformed policy reports its
+path, line, column and reason without printing its source line. Relative policy
+entries and filesystem capability folders still use the working directory.
 
 The lockfile must stay inside the directory that holds `hiko.toml`, so
 subprojects cannot share `../hiko.lock.toml`. Each command checks this when it
