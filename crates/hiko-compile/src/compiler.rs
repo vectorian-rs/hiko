@@ -390,8 +390,21 @@ pub fn bounded_lockfile_path(
     manifest_path: &Path,
     lockfile: Option<&str>,
 ) -> Result<PathBuf, String> {
+    bounded_project_path(
+        manifest_path,
+        "lockfile",
+        lockfile.unwrap_or("hiko.lock.toml"),
+    )
+}
+
+/// Resolve a project-owned file while confining existing ancestors and symlinks
+/// to the manifest directory. Missing files inside that directory are allowed.
+pub fn bounded_project_path(
+    manifest_path: &Path,
+    kind: &str,
+    value: &str,
+) -> Result<PathBuf, String> {
     let dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let lockfile = lockfile.unwrap_or("hiko.lock.toml");
     // `--config hiko.toml` has an empty parent.
     let root = if dir.as_os_str().is_empty() {
         Path::new(".")
@@ -406,14 +419,14 @@ pub fn bounded_lockfile_path(
     })?;
     let outside = || {
         format!(
-            "project manifest '{}' sets lockfile to '{lockfile}', which is outside its directory; use a path inside it",
+            "project manifest '{}' sets {kind} to '{value}', which is outside its directory; use a path inside it",
             manifest_path.display()
         )
     };
 
     // A `..` above the deepest path that exists could climb anywhere. A
     // symlink that does not resolve cannot be shown to stay inside.
-    let target = root.join(lockfile);
+    let target = root.join(value);
     let mut existing = target.as_path();
     while existing.symlink_metadata().is_err() {
         match existing.parent() {
@@ -424,10 +437,10 @@ pub fn bounded_lockfile_path(
         }
     }
     match std::fs::canonicalize(existing) {
-        Ok(real) if real.starts_with(&root) => Ok(dir.join(lockfile)),
+        Ok(real) if real.starts_with(&root) => Ok(dir.join(value)),
         Ok(_) => Err(outside()),
         Err(e) => Err(format!(
-            "project manifest '{}' uses lockfile '{lockfile}', but '{}' cannot be resolved ({e}); fix or remove it",
+            "project manifest '{}' uses {kind} '{value}', but '{}' cannot be resolved ({e}); fix or remove it",
             manifest_path.display(),
             existing.display()
         )),
@@ -448,9 +461,10 @@ pub fn resolve_directory_of(path: &Path) -> std::io::Result<PathBuf> {
     Ok(std::fs::canonicalize(dir)?.join(name))
 }
 
-#[cfg(feature = "loader-integrity-blake3")]
-fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
-    let mut dir = entry_file.parent();
+/// Find the nearest project above a directory, following its canonical identity.
+pub fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(start_dir).ok()?;
+    let mut dir = Some(canonical.as_path());
     while let Some(current) = dir {
         let candidate = current.join("hiko.toml");
         if candidate.is_file() {
@@ -459,6 +473,11 @@ fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
         dir = current.parent();
     }
     None
+}
+
+#[cfg(feature = "loader-integrity-blake3")]
+fn find_project_manifest_path(entry_file: &Path) -> Option<PathBuf> {
+    entry_file.parent().and_then(find_project_manifest_from)
 }
 
 #[cfg(feature = "loader-integrity-blake3")]

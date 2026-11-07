@@ -815,7 +815,8 @@ impl Default for RunConfig {
 impl RunConfig {
     /// Parse a run config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, String> {
-        let config: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        let config: Self =
+            toml::from_str(text).map_err(|e| hiko_compile::compiler::toml_error_text(&e, text))?;
         validate_config_paths(&config)?;
         Ok(config)
     }
