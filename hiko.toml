@@ -20,6 +20,9 @@ Std = { version = "0.1.0", registry = "local" }
 [policies.docs-writer]
 path = "policies/docs-writer.policy.toml"
 
+[policies.core]
+path = "policies/core.policy.toml"
+
 [policies.software-developer-role]
 path = "policies/software-developer-role.policy.toml"
 

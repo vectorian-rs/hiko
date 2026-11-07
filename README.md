@@ -32,7 +32,7 @@ cargo build --release -p hiko-cli --features builtin-all
 cargo build --release -p hiko-cli --features ext-github,ext-aws
 
 # Run a program
-cargo run -- run examples/factorial.hml
+cargo run -- run --config hiko.toml --policy core examples/factorial.hml
 
 # Type-check without executing
 cargo run -- check examples/closures.hml
@@ -332,7 +332,15 @@ cd hiko-vm-reader && cargo build --release
 ### Run Config Files
 
 Each run config (policy file) defines a capability boundary.
-- `hiko run [--config <hiko.toml>] [--policy <name>] script.hml` resolves a project manifest, `hiko.toml`. With `--config` it uses that manifest; without it, the CLI searches upward from the current directory for `hiko.toml`. The manifest maps policy names to run config files under `[policies.<name>]` and names a default in `[defaults].policy`. `--policy` selects a different named policy. Only the builtins that the policy allows are registered for that invocation. When no manifest is found, the script runs with the core-only builtin surface.
+- `hiko run [--config <hiko.toml>] [--policy <name>] script.hml` requires a runtime
+  policy. Without `--config`, the CLI finds the project above the canonical script
+  and requires the working directory to be inside it. With `--config`, that
+  manifest supplies policy; imports still use the script project's lockfile.
+  The manifest maps names under `[policies.<name>]` and selects a default with
+  `[defaults].policy`. `--policy core` selects the explicit former core surface in
+  `policies/core.policy.toml`; other named policies grant their listed capabilities.
+  Policy paths must stay inside their manifest directory, including symlinks.
+  `check` can type-check without a policy and never executes the program.
 - `hiko build-vm <run-config.toml>` bakes one run config into a generated binary, so disallowed builtins are not compiled into that artifact. With `--lock <hiko.lock.toml>` it also seals the locked modules into the binary, and with `--script <entry.hml>` the program itself (see [imports](docs/language/imports.md#generated-artifacts)).
 
 Path rules:
@@ -411,7 +419,7 @@ agent="$1"; shift; script="$1"; shift
 """
 
 [tasks.dev]
-description = "Run a script with the full CLI (hiko.toml default policy, or core only without a manifest)"
+description = "Run a script with an explicit project policy"
 run = "hiko run \"$@\""
 
 [tasks.check]
@@ -431,7 +439,7 @@ done
 ```bash
 mise run build reader          # Build the reader VM
 mise run run reader analyze.hml # Run a script sandboxed
-mise run dev analyze.hml        # Quick iteration, core only by default
+mise run dev analyze.hml        # Quick iteration with the project default policy
 mise run check analyze.hml      # Type-check only
 mise run build-all              # Build all config VMs
 ```

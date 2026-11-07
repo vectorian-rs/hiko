@@ -166,8 +166,10 @@ lockfile. `hiko install` and `hiko lock verify` take no script, so `--config`
 names their project.
 
 `run` requires a policy even for programs using only core builtins. Register a
-named policy such as `policies/core.policy.toml` in `hiko.toml`; an empty policy
-grants only core builtins. `check` can type-check without a policy and never
+named policy such as `policies/core.policy.toml` in `hiko.toml`. The repository's
+`core` policy explicitly grants the former core surface, including stdio,
+environment access and process operations; an empty policy grants no optional
+capabilities. `check` can type-check without a policy and never
 executes the program. Policy paths, like lockfiles, must remain inside their
 manifest directory, including resolved symlinks. A malformed policy reports its
 path, line, column and reason without printing its source line. Relative policy

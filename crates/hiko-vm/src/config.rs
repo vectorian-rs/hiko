@@ -1216,6 +1216,21 @@ folders = ["."]
     }
 
     #[test]
+    fn named_core_policy_preserves_the_core_builtin_surface() {
+        let config = RunConfig::from_toml(include_str!("../../../policies/core.policy.toml"))
+            .expect("core policy should parse");
+        let expected = hiko_builtin_meta::core_builtin_names().collect();
+        // Policy leaves can name families omitted from this Cargo build;
+        // registration only includes builtins linked into the host.
+        let available = config
+            .enabled_builtin_names()
+            .into_iter()
+            .filter(|name| hiko_builtin_meta::builtin_meta(name).is_some())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(available, expected);
+    }
+
+    #[test]
     fn rust_source_includes_host_resource_limits() {
         let config = RunConfig::from_toml(
             r#"

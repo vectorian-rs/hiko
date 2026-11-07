@@ -463,6 +463,11 @@ pub fn resolve_directory_of(path: &Path) -> std::io::Result<PathBuf> {
 
 /// Find the nearest project above a directory, following its canonical identity.
 pub fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
+    let start_dir = if start_dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        start_dir
+    };
     let canonical = std::fs::canonicalize(start_dir).ok()?;
     let mut dir = Some(canonical.as_path());
     while let Some(current) = dir {

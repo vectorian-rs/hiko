@@ -671,13 +671,11 @@ fn parse_inspect_work_args(args: &[String]) -> String {
     args[0].clone()
 }
 
-fn resolve_run_target(config: Option<&RunConfig>, script_path: Option<&str>) -> String {
+fn resolve_run_target(config: &RunConfig, script_path: Option<&str>) -> String {
     if let Some(path) = script_path {
         return path.to_string();
     }
-    if let Some(config) = config
-        && let Some(entry) = &config.entry
-    {
+    if let Some(entry) = &config.entry {
         return entry.clone();
     }
     eprintln!(
@@ -1082,7 +1080,7 @@ fn run_file(options: &ScriptOptions) {
     };
     eprintln!("info: {}", surface.describe());
     let config = load_policy_config(policy);
-    let path = resolve_run_target(Some(&config), options.script_path.as_deref());
+    let path = resolve_run_target(&config, options.script_path.as_deref());
     if options.config_path.is_none() && options.script_path.is_none() {
         let cwd = env::current_dir().unwrap_or_else(|e| {
             eprintln!("Cannot determine current working directory: {e}");
@@ -1636,7 +1634,7 @@ mod tests {
             ..RunConfig::default()
         };
         assert_eq!(
-            resolve_run_target(Some(&config), Some("scripts/override.hml")),
+            resolve_run_target(&config, Some("scripts/override.hml")),
             "scripts/override.hml"
         );
     }
@@ -1647,10 +1645,7 @@ mod tests {
             entry: Some("scripts/default.hml".to_string()),
             ..RunConfig::default()
         };
-        assert_eq!(
-            resolve_run_target(Some(&config), None),
-            "scripts/default.hml"
-        );
+        assert_eq!(resolve_run_target(&config, None), "scripts/default.hml");
     }
 
     #[test]

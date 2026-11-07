@@ -10,8 +10,10 @@ const SCRIPT: &str = "val x = 1\n";
 
 /// An empty directory for test `name`, by its real path.
 fn empty_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("project_boundary")
+    // Invalid/symlink fixtures must not sit below the repository: capability
+    // glob/walk tests traverse it, even when their pattern only names examples.
+    let dir = std::env::temp_dir()
+        .join(format!("hiko-project-boundary-{}", std::process::id()))
         .join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
@@ -462,15 +464,27 @@ fn a_configured_entry_in_another_project_requires_explicit_config() {
     assert!(stderr(&output).contains("--config"), "{}", stderr(&output));
     let output = hiko(&project, &["run", "--config", "hiko.toml"]);
     assert!(output.status.success(), "{}", stderr(&output));
+    // Conversely, cwd can be inside the entry's parent project while auto
+    // selection initially chose a nested manifest. That also needs --config.
+    fs::write(
+        nested.join("p.toml"),
+        format!("entry = {:?}\n", project.join("a.hml")),
+    )
+    .unwrap();
+    let output = hiko(&nested, &["run"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("different project"),
+        "{}",
+        stderr(&output)
+    );
+    let output = hiko(&nested, &["run", "--config", "hiko.toml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
 }
 
 #[test]
 fn run_requires_policy_but_check_stays_non_executing() {
-    // This fixture must be outside the repository, whose manifest would
-    // otherwise be discovered through target/tmp.
-    let dir = std::env::temp_dir().join(format!("hiko-no-policy-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    let dir = empty_dir("no-policy");
     fs::write(dir.join("a.hml"), "val _ = panic \"must not execute\"\n").unwrap();
     let output = hiko(&dir, &["run", "a.hml"]);
     assert!(!output.status.success());
