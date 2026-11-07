@@ -51,13 +51,13 @@ import Std.Json
 
 val original = "{\"name\":\"test\",\"value\":42}"
 
-val parsed = json_parse original
+val parsed = Json.parse original
 
-val serialized = json_to_string parsed
+val serialized = Json.to_string parsed
 
-val reparsed = json_parse serialized
+val reparsed = Json.parse serialized
 
-val reserialized = json_to_string reparsed
+val reserialized = Json.to_string reparsed
 
 val _ = assert (serialized = reserialized, "json round-trip")
 

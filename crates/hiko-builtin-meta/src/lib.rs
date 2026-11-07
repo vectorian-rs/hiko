@@ -24,6 +24,10 @@ mod time;
 pub enum BuiltinSurface {
     Public,
     RuntimeOnly,
+    ModuleOnly {
+        owner: &'static str,
+        replacement: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,20 @@ pub struct BuiltinMeta {
 // Each constructor is unused in builds that disable every family using it.
 #[allow(dead_code)]
 impl BuiltinMeta {
+    const fn module_only(
+        name: &'static str,
+        capability_path: &'static str,
+        owner: &'static str,
+        replacement: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: true,
+            surface: BuiltinSurface::ModuleOnly { owner, replacement },
+        }
+    }
+
     /// Public builtin that the core-only VM registers by default.
     const fn core(name: &'static str, capability_path: &'static str) -> Self {
         Self {
@@ -71,7 +89,7 @@ impl BuiltinMeta {
 
 pub use internal::{
     INTERNAL_BUILTIN_PACKAGE, InternalBuiltinModule, PROCESS_RUNTIME_TYPES,
-    internal_builtin_module, is_internal_builtin_package,
+    internal_builtin_module, is_internal_builtin_package, runtime_type_arities, runtime_type_owner,
 };
 pub use signatures::{
     BuiltinTypeSignature, PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_AWAIT_RESULT_ERR_TAG,

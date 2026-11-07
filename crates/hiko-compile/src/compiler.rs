@@ -6,7 +6,9 @@ use std::sync::Arc;
 #[cfg(feature = "loader-integrity-blake3")]
 use std::time::Duration;
 
-use hiko_builtin_meta::{internal_builtin_module, is_internal_builtin_package};
+use hiko_builtin_meta::{
+    BuiltinSurface, InternalBuiltinModule, internal_builtin_module, is_internal_builtin_package,
+};
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_common::blake3_hex;
 #[cfg(feature = "loader-integrity-blake3")]
@@ -1054,7 +1056,7 @@ enum ResolvedImport {
         source: &'static str,
         base_dir: PathBuf,
         /// Set only by the embedded builtin resolver, never by extensions.
-        internal_builtin: bool,
+        builtin_module: Option<&'static InternalBuiltinModule>,
     },
     /// A source compiled into a sealed artifact (`EmbeddedSources`).
     Embedded {
@@ -1128,6 +1130,7 @@ impl ResolvedImport {
 struct CachedImportedProgram {
     base_dir: PathBuf,
     decls: Vec<Decl>,
+    builtin_module: Option<&'static InternalBuiltinModule>,
 }
 
 pub struct Compiler {
@@ -1148,6 +1151,8 @@ pub struct Compiler {
     /// The extension module being inferred, if any: its library imports are
     /// checked against its extension's `requires`.
     importing_extension: Option<(ExtensionRequires, &'static str)>,
+    /// Trusted source currently being compiled; its private names bypass user bindings.
+    compiling_builtin: Option<&'static InternalBuiltinModule>,
     /// Imports whose type inference is complete.
     inferred_imports: HashSet<ImportKey>,
     /// Imports whose codegen is complete.
@@ -1334,6 +1339,7 @@ impl Compiler {
             entry_file,
             loading_imports,
             importing_extension: None,
+            compiling_builtin: None,
             inferred_imports: HashSet::new(),
             compiled_imports: HashSet::new(),
             imported_programs: HashMap::new(),
@@ -1644,26 +1650,40 @@ impl Compiler {
     }
 
     fn emit_get_var(&mut self, name: &str) -> Result<(), CompileError> {
-        if let Some(slot) = self.resolve_local(name) {
-            self.emit_get_local(slot);
-        } else if let Some(idx) = self.resolve_upvalue(name) {
-            self.emit(Op::GetUpvalue);
-            self.emit_u16(idx);
-        } else {
-            let slot = self.global_slot(name)?;
-            if self.func_stack.len() > 1 {
-                self.pinned_global_slots.insert(slot);
+        if !self.is_private_builtin(name) {
+            if let Some(slot) = self.resolve_local(name) {
+                self.emit_get_local(slot);
+                return Ok(());
             }
-            self.emit(Op::GetGlobal);
-            self.emit_u16(slot);
+            if let Some(idx) = self.resolve_upvalue(name) {
+                self.emit(Op::GetUpvalue);
+                self.emit_u16(idx);
+                return Ok(());
+            }
         }
+        let slot = self.global_slot(name)?;
+        if self.func_stack.len() > 1 {
+            self.pinned_global_slots.insert(slot);
+        }
+        self.emit(Op::GetGlobal);
+        self.emit_u16(slot);
         Ok(())
     }
 
     /// VM global name for the top-level binding of `name` in scope; a name
     /// with no top-level binding is a builtin.
     fn global_name<'a>(&'a self, name: &'a str) -> &'a str {
+        if self.is_private_builtin(name) {
+            return name;
+        }
         self.global_bindings.get(name).map_or(name, String::as_str)
+    }
+
+    fn is_private_builtin(&self, name: &str) -> bool {
+        self.compiling_builtin.is_some_and(|module| {
+            matches!(hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
+                Some(BuiltinSurface::ModuleOnly { owner, .. }) if owner == module.import_name)
+        })
     }
 
     /// Start a new top-level binding of `name`: later references resolve to
@@ -1730,6 +1750,9 @@ impl Compiler {
     /// Proto index for a `CallDirect` to `name`: only when `name` resolves to
     /// a global that is currently bound to a capture-free function.
     fn direct_call_proto(&mut self, name: &str) -> Option<u16> {
+        if self.is_private_builtin(name) {
+            return None;
+        }
         if self.resolve_local(name).is_some() || self.resolve_upvalue(name).is_some() {
             return None;
         }
@@ -1871,6 +1894,22 @@ impl Compiler {
         match &decl.kind {
             DeclKind::Val(pat, expr) => {
                 self.compile_expr(expr)?;
+                if let (PatKind::Constructor(alias, None), ExprKind::Constructor(_)) =
+                    (&pat.kind, &expr.kind)
+                {
+                    let name = self.interner.resolve(*alias).to_string();
+                    let tag = self.infer_ctx.constructor_tag(&name).ok_or_else(|| {
+                        CompileError::codegen(format!("missing constructor alias: {name}"))
+                    })?;
+                    self.constructor_tags.insert(name.clone(), tag);
+                    let arity = self
+                        .infer_ctx
+                        .constructor_scheme(&name)
+                        .is_some_and(|scheme| matches!(scheme.ty, Type::Arrow(..)));
+                    self.constructor_arities
+                        .insert(name.clone(), u8::from(arity));
+                    return self.bind_name(&name);
+                }
                 self.compile_binding_pattern(pat)
             }
             DeclKind::ValRec(sym, expr) => {
@@ -2068,7 +2107,7 @@ impl Compiler {
                 display_name: module_name.to_string(),
                 source,
                 base_dir: self.base_dir.clone(),
-                internal_builtin: false,
+                builtin_module: None,
             });
         }
         if is_internal_builtin_package(package_name) {
@@ -2288,7 +2327,7 @@ impl Compiler {
             display_name: module_name.to_string(),
             source: module.source,
             base_dir: self.base_dir.clone(),
-            internal_builtin: true,
+            builtin_module: Some(module),
         })
     }
 
@@ -2397,14 +2436,10 @@ impl Compiler {
         let key = import.key();
         let display_name = import.display_name().to_string();
         let is_remote = import.is_remote();
-        let is_process_module = matches!(
-            &import,
-            ResolvedImport::Synthetic {
-                import_name: "__Builtin.Process",
-                internal_builtin: true,
-                ..
-            }
-        );
+        let builtin_module = match &import {
+            ResolvedImport::Synthetic { builtin_module, .. } => *builtin_module,
+            _ => None,
+        };
         if self.loading_imports.contains(&key) {
             return Err(CompileError::codegen(format!(
                 "circular import detected while loading '{display_name}'"
@@ -2454,11 +2489,11 @@ impl Compiler {
         // The module's declarations are top-level ones of their own, even
         // when a `use` inside `local` brings it in.
         let importer = self.infer_ctx.suspend_declaration();
-        let result = if is_process_module {
+        let result = if let Some(module) = builtin_module {
             // Only this embedded source may fill runtime type reservations.
             // User declarations and imports still use ordinary inference.
             self.infer_ctx
-                .infer_process_module(&desugared)
+                .infer_builtin_module(module, &desugared)
                 .map_err(CompileError::from)
         } else {
             desugared.iter().try_for_each(|d| self.infer_decl_pass(d))
@@ -2476,6 +2511,7 @@ impl Compiler {
             CachedImportedProgram {
                 base_dir: imported_base_dir,
                 decls: desugared,
+                builtin_module,
             },
         );
         Ok(())
@@ -2562,20 +2598,25 @@ impl Compiler {
             return Ok(());
         }
 
-        let CachedImportedProgram { base_dir, decls } =
-            self.imported_programs.remove(&key).ok_or_else(|| {
-                CompileError::codegen(format!("import not found during compilation: {key:?}"))
-            })?;
+        let CachedImportedProgram {
+            base_dir,
+            decls,
+            builtin_module,
+        } = self.imported_programs.remove(&key).ok_or_else(|| {
+            CompileError::codegen(format!("import not found during compilation: {key:?}"))
+        })?;
 
         let old_base = self.base_dir.clone();
         self.base_dir = base_dir;
         let old_extension = self.importing_extension;
         self.importing_extension = self.extension_of(&key);
-        for decl in &decls {
-            self.compile_decl(decl)?;
-        }
+        let old_builtin = self.compiling_builtin;
+        self.compiling_builtin = builtin_module;
+        let result = decls.iter().try_for_each(|decl| self.compile_decl(decl));
+        self.compiling_builtin = old_builtin;
         self.importing_extension = old_extension;
         self.base_dir = old_base;
+        result?;
         self.compiled_imports.insert(key);
         Ok(())
     }
@@ -4646,6 +4687,100 @@ mod tests {
         assert!(
             msg.contains("runtime-owned type 'BuiltinProcess.error'"),
             "{msg}"
+        );
+    }
+
+    #[cfg(feature = "builtin-json")]
+    #[test]
+    fn compile_rejects_global_json_converters() {
+        for (call, replacement) in [
+            ("json_parse \"[]\"", "Json.parse"),
+            ("json_to_string (fn (x : int) => x)", "Json.to_string"),
+        ] {
+            for import in ["", "import __Builtin.Json\n"] {
+                let message = compile_error(&format!("{import}val x = {call}"));
+                assert!(message.contains("import Std.Json"), "{message}");
+                assert!(message.contains(replacement), "{message}");
+            }
+        }
+    }
+
+    #[cfg(feature = "builtin-json")]
+    #[test]
+    fn compile_json_raw_aliases_are_monomorphic() {
+        for source in [
+            "val x : int = BuiltinJson.parse_raw \"[]\"",
+            "val s = BuiltinJson.to_string_raw (fn (x : int) => x)",
+        ] {
+            let message = compile_error(&format!("import __Builtin.Json\n{source}"));
+            assert!(message.contains("type mismatch"), "{message}");
+        }
+    }
+
+    #[test]
+    fn compile_rejects_forged_builtin_json_types() {
+        for declaration in ["datatype json = Forged of int", "type json = int"] {
+            let message =
+                compile_error(&format!("structure BuiltinJson = struct {declaration} end"));
+            assert!(
+                message.contains("runtime-owned type 'BuiltinJson.json'"),
+                "{message}"
+            );
+        }
+        for ascription in [":", ":>"] {
+            let source = format!(
+                "signature S = sig type json end
+                structure BuiltinJson {ascription} S = struct type json = int end"
+            );
+            let message = compile_error(&source);
+            assert!(
+                message.contains("runtime-owned type 'BuiltinJson.json'"),
+                "{message}"
+            );
+        }
+    }
+
+    #[cfg(feature = "builtin-json")]
+    #[test]
+    fn compile_does_not_trust_extension_source_named_builtin_json() {
+        for source in [
+            internal_builtin_module("Json").unwrap().source,
+            "structure BuiltinJson = struct val parse_raw = json_parse end",
+        ] {
+            let options = ModuleLoaderOptions {
+                extensions: ExtensionSurface {
+                    modules: vec![("__Builtin.Json", source)],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let error =
+                Compiler::compile_with_options(parse_program("import __Builtin.Json"), options)
+                    .unwrap_err();
+            let message = format!("{error:?}");
+            assert!(
+                message.contains("runtime-owned type") || message.contains("import Std.Json"),
+                "{message}"
+            );
+        }
+        let options = ModuleLoaderOptions {
+            extensions: ExtensionSurface {
+                builtins: vec![(
+                    "json_parse",
+                    hiko_builtin_meta::BuiltinTypeSignature {
+                        vars: &[],
+                        ty: "string -> int",
+                    },
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error =
+            Compiler::compile_with_options(parse_program("val x = 1"), options).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("extension builtin 'json_parse' is already defined"),
+            "{error:?}"
         );
     }
 

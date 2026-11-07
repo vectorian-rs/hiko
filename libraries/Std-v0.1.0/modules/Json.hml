@@ -1,28 +1,20 @@
 import __Builtin.Json
 
 structure Json = struct
-  (* Constructor tags are fixed (0-6) and must match
-   * the json_parse builtin in builtins.rs.
-   *)
-  datatype json =
-      JNull
-    | JBool of bool
-    | JInt of int
-    | JFloat of float
-    | JStr of string
-    | JArray of json list
-    | JObject of (string * json) list
+  (* JSON values share the runtime-owned type and constructor layout. *)
+  type json = BuiltinJson.json
+  val JNull = BuiltinJson.JNull
+  val JBool = BuiltinJson.JBool
+  val JInt = BuiltinJson.JInt
+  val JFloat = BuiltinJson.JFloat
+  val JStr = BuiltinJson.JStr
+  val JArray = BuiltinJson.JArray
+  val JObject = BuiltinJson.JObject
 
-  fun parse text =
-    case BuiltinJson.parse_raw text of
-        JNull => JNull
-      | JBool value => JBool value
-      | JInt value => JInt value
-      | JFloat value => JFloat value
-      | JStr value => JStr value
-      | JArray value => JArray value
-      | JObject value => JObject value
+  (* Parse text into a JSON value; malformed text raises a runtime error. *)
+  fun parse text = BuiltinJson.parse_raw text
 
+  (* Serialize a JSON value. Other Hiko types must be converted explicitly. *)
   fun to_string value = BuiltinJson.to_string_raw value
 
   fun get path text = BuiltinJson.get_raw (text, path)

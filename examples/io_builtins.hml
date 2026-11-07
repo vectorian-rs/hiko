@@ -11,6 +11,8 @@
  *   - Single-threaded: builtins block the thread
  *   - Threaded: builtins suspend the process (no thread blocked)
  *)
+import Std.Json
+
 
 (* ── File I/O ──────────────────────────────────────────────── *)
 val _ = println "--- File I/O ---"
@@ -50,9 +52,9 @@ val _ = println "\n--- JSON ---"
 
 val data = "{\"lang\": \"hiko\", \"version\": 4, \"typed\": true}"
 
-val parsed = json_parse data
+val parsed = Json.parse data
 
-val back = json_to_string parsed
+val back = Json.to_string parsed
 
 val _ = println ("Parsed and re-serialized: " ^ back)
 

@@ -118,8 +118,8 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "json_get" => "string * string -> string",
         "json_keys" => "string -> string list",
         "json_length" => "string -> int",
-        "json_parse" => return poly_a("string -> 'a"),
-        "json_to_string" => return poly_a("'a -> string"),
+        "json_parse" => "string -> BuiltinJson.json",
+        "json_to_string" => "BuiltinJson.json -> string",
 
         // Environment, time, date
         "getenv" => "string -> string",

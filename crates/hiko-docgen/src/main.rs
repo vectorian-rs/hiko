@@ -575,7 +575,7 @@ fn extract_exports(source: &str, module_name: &str) -> Result<Vec<ExportItem>, D
 }
 
 fn export_name_from_pattern(pattern: Node<'_>, source: &str) -> Option<String> {
-    if pattern.kind() == "identifier" {
+    if matches!(pattern.kind(), "identifier" | "upper_identifier") {
         return Some(node_text(pattern, source));
     }
 
@@ -1049,6 +1049,23 @@ end
     }
 
     #[test]
+    fn extract_exports_includes_constructor_reexports() {
+        let source = "structure Json = struct
+            type json = BuiltinJson.json
+            val JNull = BuiltinJson.JNull
+            val JInt = BuiltinJson.JInt
+            end";
+        let exports = extract_exports(source, "Json").unwrap();
+        for name in ["JNull", "JInt"] {
+            assert!(
+                exports
+                    .iter()
+                    .any(|item| item.kind == "val" && item.name == name)
+            );
+        }
+    }
+
+    #[test]
     fn extract_exports_uses_structure_matching_module_name() {
         let source = "\
 structure FiberInternal = struct
@@ -1131,10 +1148,10 @@ end
 val input_json =
   \"{\\\"count\\\":3,\\\"ok\\\":true,\\\"tags\\\":[\\\"ml\\\",\\\"effects\\\"]}\"
 
-val parsed = json_parse input_json</code></pre>";
+val parsed = Json.parse input_json</code></pre>";
         let output = highlight_html_code_blocks(html).unwrap();
         assert_eq!(output.matches("pre class=\"code-block\"").count(), 2);
-        assert!(output.contains("json_parse"));
+        assert!(output.contains("parse"));
         assert!(output.contains("tok-string"));
     }
 }
