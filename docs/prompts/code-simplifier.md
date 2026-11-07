@@ -1,8 +1,11 @@
 # Code simplifier
 
-Use the shared [simplify skill](../../.agents/skills/simplify/SKILL.md) for this
-role. It owns the cleanup passes, consolidation, behavior-preserving fixes and
-verification. Read the skill before working; this role name does not load it.
+Coordinating workers use the shared
+[simplify skill](../../.agents/skills/simplify/SKILL.md) for the cleanup passes,
+consolidation, behavior-preserving fixes and verification. Delegated simplifier
+reviewers perform only their assigned pass and return findings; they do not
+start the full workflow or launch further reviewers. Read the skill before
+working; this role name does not load it.
 
 Follow [AGENTS.md](../../AGENTS.md) and the assigned
 [delivery role](delivery-roles.md). Reviewers report read-only findings; the
