@@ -23,6 +23,7 @@ use crate::chunk::{Chunk, CompiledProgram, Constant, FunctionProto};
 use crate::op::{
     HANDLER_CLAUSE_PROVIDER, Op, REC_CAPTURE_GROUP, REC_CAPTURE_LOCAL, REC_CAPTURE_UPVALUE,
 };
+use crate::package::PackageOwner;
 
 /// Overrides for resolving named imports listed in `hiko.lock.toml`.
 ///
@@ -215,6 +216,8 @@ fn remote_use_refused(path: &str) -> CompileError {
 /// A locked module's verified source, from [`Compiler::locked_module_sources`].
 #[derive(Debug, Clone)]
 pub struct LockedModuleSource {
+    /// Locked package provenance, preserved independently of transport.
+    pub owner: PackageOwner,
     pub import_name: String,
     /// The lockfile hash, as written there.
     pub blake3: String,
@@ -282,7 +285,7 @@ impl From<TypeError> for CompileError {
 }
 
 impl CompileError {
-    fn codegen(msg: impl Into<String>) -> Self {
+    pub(crate) fn codegen(msg: impl Into<String>) -> Self {
         CompileError::Codegen(msg.into())
     }
 }
@@ -579,7 +582,11 @@ pub fn store_cached_module(
 }
 
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
-fn verify_blake3(bytes: &[u8], expected_hash: &str, label: &str) -> Result<(), CompileError> {
+pub(crate) fn verify_blake3(
+    bytes: &[u8],
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), CompileError> {
     let actual = blake3_hex(bytes);
     if actual == expected_hash {
         Ok(())
@@ -821,8 +828,23 @@ fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
     Ok((package, module))
 }
 
-#[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
-fn normalize_blake3(hash: &str) -> String {
+pub(crate) fn checked_builtin_module(
+    import: &str,
+    module: &str,
+) -> Result<&'static InternalBuiltinModule, CompileError> {
+    let module = internal_builtin_module(module).ok_or_else(|| {
+        CompileError::codegen(format!("unknown internal builtin module '{import}'"))
+    })?;
+    if !module.enabled {
+        return Err(CompileError::codegen(format!(
+            "internal builtin module '{import}' is not available in this build of hiko; enable cargo feature '{}'",
+            module.feature_name
+        )));
+    }
+    Ok(module)
+}
+
+pub(crate) fn normalize_blake3(hash: &str) -> String {
     hash.trim()
         .strip_prefix("blake3:")
         .unwrap_or(hash.trim())
@@ -858,7 +880,8 @@ fn resolve_embedded_module(
         )
     })?;
     Ok(ResolvedImport::Embedded {
-        key: ImportKey::Synthetic(module.import_name),
+        key: ImportSourceKey::Synthetic(module.import_name),
+        owner: PackageOwner::embedded(module.import_name.split_once('.').map(|(name, _)| name)),
         display_name: module_name.to_string(),
         source: module.source,
         base_dir: PathBuf::new(),
@@ -1035,7 +1058,7 @@ struct LockedPackage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ImportKey {
+enum ImportSourceKey {
     File(PathBuf),
     #[cfg(feature = "loader-integrity-blake3")]
     VerifiedFile(PathBuf),
@@ -1043,17 +1066,39 @@ enum ImportKey {
     EmbeddedFile(&'static str),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ImportKey {
+    owner: Option<PackageOwner>,
+    source: ImportSourceKey,
+}
+
+fn entry_package_owner(entry: Option<&Path>, embedded: bool) -> Option<PackageOwner> {
+    if embedded {
+        return Some(PackageOwner::embedded(None));
+    }
+    entry
+        .and_then(Path::parent)
+        .and_then(find_project_manifest_from)
+        .and_then(|manifest| {
+            manifest
+                .parent()
+                .map(|root| PackageOwner::project_root(root.into()))
+        })
+}
+
 #[derive(Debug)]
 enum ResolvedImport {
     File {
         canonical: PathBuf,
         display_name: String,
+        owner: Option<PackageOwner>,
     },
     #[cfg(feature = "loader-integrity-blake3")]
     VerifiedFile {
         canonical: PathBuf,
         display_name: String,
         source: String,
+        owner: PackageOwner,
     },
     Synthetic {
         import_name: &'static str,
@@ -1062,10 +1107,12 @@ enum ResolvedImport {
         base_dir: PathBuf,
         /// Set only by the embedded builtin resolver, never by extensions.
         builtin_module: Option<&'static InternalBuiltinModule>,
+        owner: PackageOwner,
     },
     /// A source compiled into a sealed artifact (`EmbeddedSources`).
     Embedded {
-        key: ImportKey,
+        key: ImportSourceKey,
+        owner: PackageOwner,
         display_name: String,
         source: &'static str,
         base_dir: PathBuf,
@@ -1076,12 +1123,27 @@ enum ResolvedImport {
 
 impl ResolvedImport {
     fn key(&self) -> ImportKey {
-        match self {
-            Self::File { canonical, .. } => ImportKey::File(canonical.clone()),
+        let source = match self {
+            Self::File { canonical, .. } => ImportSourceKey::File(canonical.clone()),
             #[cfg(feature = "loader-integrity-blake3")]
-            Self::VerifiedFile { canonical, .. } => ImportKey::VerifiedFile(canonical.clone()),
-            Self::Synthetic { import_name, .. } => ImportKey::Synthetic(import_name),
+            Self::VerifiedFile { canonical, .. } => {
+                ImportSourceKey::VerifiedFile(canonical.clone())
+            }
+            Self::Synthetic { import_name, .. } => ImportSourceKey::Synthetic(import_name),
             Self::Embedded { key, .. } => key.clone(),
+        };
+        ImportKey {
+            owner: self.owner().cloned(),
+            source,
+        }
+    }
+
+    fn owner(&self) -> Option<&PackageOwner> {
+        match self {
+            Self::File { owner, .. } => owner.as_ref(),
+            #[cfg(feature = "loader-integrity-blake3")]
+            Self::VerifiedFile { owner, .. } => Some(owner),
+            Self::Synthetic { owner, .. } | Self::Embedded { owner, .. } => Some(owner),
         }
     }
 
@@ -1148,6 +1210,8 @@ pub struct Compiler {
     next_effect_tag: u16,
     /// Base directory for resolving relative local file includes via `use`.
     base_dir: PathBuf,
+    /// Provenance of the source being inferred or compiled, including cached ASTs.
+    source_owner: Option<PackageOwner>,
     /// Entry file for file-based compilation. External named-import loader state is derived lazily from this.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     entry_file: Option<PathBuf>,
@@ -1228,9 +1292,13 @@ impl Compiler {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
-        let mut loading = HashSet::new();
-        loading.insert(ImportKey::File(canonical.clone()));
-        Self::compile_with_ctx(program, base_dir, Some(canonical), loading, loader_options)
+        Self::compile_with_ctx(
+            program,
+            base_dir,
+            Some(canonical),
+            HashSet::new(),
+            loader_options,
+        )
     }
 
     /// The lockfile that named imports in the project of `entry_file` use:
@@ -1274,12 +1342,13 @@ impl Compiler {
         let mut sources = Vec::new();
         for (import_name, blake3) in names {
             let (package_name, leaf_module) = split_import_name(&import_name)?;
-            let ResolvedImport::VerifiedFile { source, .. } =
+            let ResolvedImport::VerifiedFile { source, owner, .. } =
                 c.resolve_external_named_import(&import_name, package_name, leaf_module)?
             else {
                 unreachable!("external named imports resolve to verified files");
             };
             sources.push(LockedModuleSource {
+                owner,
                 import_name,
                 digest: normalize_blake3(&blake3),
                 blake3,
@@ -1333,6 +1402,8 @@ impl Compiler {
         loader_options: ModuleLoaderOptions,
         interner: StringInterner,
     ) -> Compiler {
+        let source_owner =
+            entry_package_owner(entry_file.as_deref(), loader_options.embedded.is_some());
         let mut c = Compiler {
             functions: Vec::new(),
             func_stack: vec![FuncCtx::new(None, 0)],
@@ -1341,6 +1412,7 @@ impl Compiler {
             effect_tags: HashMap::new(),
             next_effect_tag: 0,
             base_dir,
+            source_owner,
             entry_file,
             loading_imports,
             importing_extension: None,
@@ -1388,6 +1460,12 @@ impl Compiler {
             loader_options,
             interner,
         );
+        if let Some(entry) = &c.entry_file {
+            c.loading_imports.insert(ImportKey {
+                owner: c.source_owner.clone(),
+                source: ImportSourceKey::File(entry.clone()),
+            });
+        }
         let surface = &c.loader_options.extensions;
         for ty in &surface.types {
             c.infer_ctx
@@ -2121,7 +2199,8 @@ impl Compiler {
                 ))
             })?;
             return Ok(ResolvedImport::Embedded {
-                key: ImportKey::EmbeddedFile(file.path),
+                key: ImportSourceKey::EmbeddedFile(file.path),
+                owner: PackageOwner::embedded(None),
                 display_name: path.to_string(),
                 source: file.source,
                 base_dir: Path::new(file.path)
@@ -2141,6 +2220,7 @@ impl Compiler {
         Ok(ResolvedImport::File {
             canonical,
             display_name: path.to_string(),
+            owner: self.source_owner.clone(),
         })
     }
 
@@ -2158,6 +2238,13 @@ impl Compiler {
                 source,
                 base_dir: self.base_dir.clone(),
                 builtin_module: None,
+                owner: PackageOwner::extension(
+                    self.loader_options
+                        .extensions
+                        .requires_for(module_name)
+                        .map_or(package_name, |requires| requires.extension),
+                    package_name,
+                ),
             });
         }
         if is_internal_builtin_package(package_name) {
@@ -2276,6 +2363,7 @@ impl Compiler {
             ))
         })?;
         let expected_hash = normalize_blake3(expected_hash);
+        let owner = PackageOwner::locked(package_name, &package.version, &package.base_url);
 
         if let Some(root) = &local_package_root {
             let local_path = root
@@ -2305,6 +2393,7 @@ impl Compiler {
                     canonical,
                     display_name: module_name.to_string(),
                     source,
+                    owner,
                 });
             }
         }
@@ -2348,6 +2437,7 @@ impl Compiler {
             canonical: cache_path,
             display_name: module_name.to_string(),
             source,
+            owner,
         })
     }
 
@@ -2356,21 +2446,14 @@ impl Compiler {
         module_name: &str,
         leaf_module: &str,
     ) -> Result<ResolvedImport, CompileError> {
-        let module = internal_builtin_module(leaf_module).ok_or_else(|| {
-            CompileError::codegen(format!("unknown internal builtin module '{module_name}'"))
-        })?;
-        if !module.enabled {
-            return Err(CompileError::codegen(format!(
-                "internal builtin module '{}' is not available in this build of hiko; enable cargo feature '{}'",
-                module.import_name, module.feature_name
-            )));
-        }
+        let module = checked_builtin_module(module_name, leaf_module)?;
         Ok(ResolvedImport::Synthetic {
             import_name: module.import_name,
             display_name: module_name.to_string(),
             source: module.source,
             base_dir: self.base_dir.clone(),
             builtin_module: Some(module),
+            owner: PackageOwner::builtin(),
         })
     }
 
@@ -2466,8 +2549,8 @@ impl Compiler {
 
     /// The extension whose module `key` is, with that module's name.
     fn extension_of(&self, key: &ImportKey) -> Option<(ExtensionRequires, &'static str)> {
-        match key {
-            ImportKey::Synthetic(name) => self
+        match &key.source {
+            ImportSourceKey::Synthetic(name) => self
                 .loader_options
                 .extensions
                 .requires_for(name)
@@ -2527,6 +2610,8 @@ impl Compiler {
         let old_base = self.base_dir.clone();
         self.base_dir = imported_base_dir.clone();
         let old_extension = self.importing_extension;
+        let old_owner = self.source_owner.clone();
+        self.source_owner = key.owner.clone();
         // None inside a library module: its own imports are not the
         // extension's.
         self.importing_extension = self.extension_of(&key);
@@ -2546,6 +2631,7 @@ impl Compiler {
         self.infer_ctx.resume_declaration(importer);
 
         self.importing_extension = old_extension;
+        self.source_owner = old_owner;
         self.base_dir = old_base;
         self.loading_imports.remove(&key);
 
@@ -2654,12 +2740,15 @@ impl Compiler {
         let old_base = self.base_dir.clone();
         self.base_dir = base_dir;
         let old_extension = self.importing_extension;
+        let old_owner = self.source_owner.clone();
+        self.source_owner = key.owner.clone();
         self.importing_extension = self.extension_of(&key);
         let old_builtin = self.compiling_builtin;
         self.compiling_builtin = builtin_module;
         let result = decls.iter().try_for_each(|decl| self.compile_decl(decl));
         self.compiling_builtin = old_builtin;
         self.importing_extension = old_extension;
+        self.source_owner = old_owner;
         self.base_dir = old_base;
         result?;
         self.compiled_imports.insert(key);
@@ -5601,6 +5690,95 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
+    fn cached_imports_retain_owner_across_inference_and_codegen() {
+        let source = "structure Answer = struct val value = 42 end";
+        let (root, entry) = write_local_package_project(source, &blake3_hex(source.as_bytes()));
+        let entry = std::fs::canonicalize(entry).unwrap();
+        let program = parse_program("import Test.Answer\nval result = Answer.value");
+        let options = ModuleLoaderOptions {
+            local_package_root: Some(root.join("libraries")),
+            cache_dir: Some(root.join("unused-cache")),
+            ..Default::default()
+        };
+        let expected = PackageOwner::locked("Test", "0.1.0", "http://127.0.0.1:9/Test-v0.1.0");
+        let sources = Compiler::locked_module_sources(&entry, options.clone()).unwrap();
+        assert_eq!(
+            sources[0].owner, expected,
+            "sealing retains locked provenance"
+        );
+        let mut compiler = Compiler::new(
+            root.clone(),
+            Some(entry),
+            HashSet::new(),
+            options,
+            program.interner,
+        );
+        let project = compiler.source_owner.clone();
+        assert_eq!(project.as_ref().unwrap().name(), "Proj");
+        for decl in &program.decls {
+            compiler.infer_decl_pass(decl).unwrap();
+            assert_eq!(compiler.source_owner, project);
+        }
+        let key = compiler.imported_programs.keys().next().unwrap().clone();
+        assert_eq!(key.owner.as_ref(), Some(&expected));
+        for decl in &program.decls {
+            compiler.compile_decl(decl).unwrap();
+            assert_eq!(compiler.source_owner, project);
+        }
+        let emitted = compiler.chunk().code.clone();
+        compiler.compile_import_source(key).unwrap();
+        assert_eq!(
+            compiler.chunk().code,
+            emitted,
+            "repeated import emits no duplicate effects"
+        );
+        assert!(!root.join("unused-cache").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn failed_import_restores_the_callers_owner() {
+        let source = "val bad = undefined";
+        let (root, entry) = write_local_package_project(source, &blake3_hex(source.as_bytes()));
+        let program = parse_program("import Test.Answer");
+        let mut compiler = Compiler::new(
+            root.clone(),
+            Some(entry),
+            HashSet::new(),
+            ModuleLoaderOptions {
+                local_package_root: Some(root.join("libraries")),
+                ..Default::default()
+            },
+            program.interner,
+        );
+        let project = compiler.source_owner.clone();
+        assert!(compiler.infer_decl_pass(&program.decls[0]).is_err());
+        assert_eq!(compiler.source_owner, project);
+        assert!(compiler.loading_imports.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_entry_cycle_keeps_its_owner_and_canonical_file_identity() {
+        let root = unique_temp_dir("owned-entry-cycle");
+        write_file(
+            &root.join("hiko.toml"),
+            "[project]\nname = 'display-name'\n",
+        );
+        let entry = root.join("src/Main.hml");
+        write_file(&entry, "use \"./Util.hml\"");
+        write_file(&root.join("src/Util.hml"), "use \"./Main.hml\"");
+        let result = Compiler::compile_file(parse_program("use \"./Util.hml\""), &entry);
+        assert!(
+            matches!(result, Err(CompileError::Codegen(ref message)) if message.contains("circular import detected while loading './Main.hml'")),
+            "{result:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
     fn named_import_reads_verified_module_from_local_package_root() {
         let module_source = "structure Answer = struct\n  val value = 42\nend\n";
         let (project_dir, entry_path) =
@@ -5648,6 +5826,7 @@ Answer = "blake3:deadbeef"
         let local = ResolvedImport::File {
             canonical: canonical.clone(),
             display_name: "module.hml".into(),
+            owner: None,
         };
         let local_key = local.key();
         let mut compiler = Compiler::new(
@@ -5664,6 +5843,7 @@ Answer = "blake3:deadbeef"
         // own declarations, regardless of previously inferred/compiled bytes.
         let verified = ResolvedImport::VerifiedFile {
             canonical,
+            owner: PackageOwner::locked("Test", "0.1.0", "https://example.com/Test-v0.1.0"),
             display_name: "Test.Answer".into(),
             source: "val answer = 42".into(),
         };
@@ -5682,6 +5862,7 @@ Answer = "blake3:deadbeef"
         let cache_path = project_dir.join("module.hml");
         write_file(&cache_path, "val answer = 0\n");
         let import = ResolvedImport::VerifiedFile {
+            owner: PackageOwner::locked("Test", "0.1.0", "https://example.com/Test-v0.1.0"),
             canonical: cache_path.clone(),
             display_name: "Test.Module".into(),
             source: "val answer = 42\n".into(),
