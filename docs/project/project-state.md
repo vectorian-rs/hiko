@@ -44,7 +44,8 @@ The three issues are complete and their claims are released.
 [PR #229](https://github.com/vectorian-rs/hiko/pull/229) completed
 [#187 rev 3](https://github.com/vectorian-rs/hiko/issues/187) at `82278ea`:
 compilation reads verified sources without network access or cache writes;
-explicit installation populates and repairs the cache without repinning.
+explicit installation populates and repairs the cache, preserving pins when
+registry metadata is unchanged.
 Its verified head `40cb170` passed 1,190 default and 1,268 all-features workspace
 tests, lint, four mutation checks, selected reviews and all five CI jobs.
 The issue is complete and its claim is released.
