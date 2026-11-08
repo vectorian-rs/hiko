@@ -6,7 +6,7 @@ This document records where Hiko stands against a narrowed focus. It is an
 inventory and triage, not a plan that has been executed. Nothing listed as
 "out of focus" has been removed yet.
 
-## Delivery checkpoint (2026-11-07)
+## Delivery checkpoint (2026-11-08)
 
 [PR #221](https://github.com/vectorian-rs/hiko/pull/221) completed
 [#183](https://github.com/vectorian-rs/hiko/issues/183) and merged at `e980d88`.
@@ -25,9 +25,24 @@ Shared Pi/Codex review skills merged in
 [PR #224](https://github.com/vectorian-rs/hiko/pull/224) at `7f6ae6c`.
 The research snapshots in PRs #195/#200 also merged.
 
-Next is [#214 rev 1](https://github.com/vectorian-rs/hiko/issues/214): cancellable
-exec, approved and in implementation. Plans #196 rev 2 and #204 rev 2 are also
-approved, queued for separate PRs. Package/import
+[PR #225](https://github.com/vectorian-rs/hiko/pull/225) completed
+[#214](https://github.com/vectorian-rs/hiko/issues/214) at `39e8e0e`:
+threaded exec runs as cancellable runtime I/O and waits for child/reader cleanup.
+
+[PR #226](https://github.com/vectorian-rs/hiko/pull/226) completed
+[#196](https://github.com/vectorian-rs/hiko/issues/196) at `b367205`:
+canonical script identity selects project authority, and execution requires a
+runtime policy. Explicit config selects policy while imports keep the script lockfile.
+
+[PR #227](https://github.com/vectorian-rs/hiko/pull/227) completed
+[#204](https://github.com/vectorian-rs/hiko/issues/204) at `d14a867`:
+the benchmark and software-developer profiles explicitly grant the full Fiber API.
+Each PR passed acceptance checks, workspace tests with default/all features, lint,
+selected reviews and all five CI jobs at its verified implementation head.
+The three issues are complete and their claims are released.
+
+Next is [#187 rev 3](https://github.com/vectorian-rs/hiko/issues/187): offline
+compilation and explicit installation, awaiting plan approval. Package/import
 contract and preparatory internals belong to
 [#210](https://github.com/vectorian-rs/hiko/issues/210);
 [#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.
