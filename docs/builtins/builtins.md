@@ -293,6 +293,12 @@ order matches the runtime tags. Import it to match a typed await result.
 
 The raw builtins are intended to sit under `Std.Fiber`, which provides the user-facing structured-concurrency surface (`Fiber.spawn`, `Fiber.join`, `Fiber.both`, `Fiber.all`, `Fiber.first`, `Fiber.any`). `Fiber.join` is `Result`-typed, so child/runtime failure is handled as a value rather than propagating failure to the parent. `Fiber.both` and `Fiber.all` return the first failure as soon as it happens, and cancel the other fibers.
 
+Loading `Std.Fiber` binds all four process operations, so its policy needs
+`capabilities.process.spawn`, `await_process`, `cancel`, and `wait_any` enabled.
+The `benchmark` and `software-developer-role` profiles grant these explicitly.
+Profiles without process permissions still cannot load the module. The host must
+also compile the `builtin-process` Cargo feature; a policy cannot enable it.
+
 ## Testing
 
 | Builtin     | Type                       | Description                   |

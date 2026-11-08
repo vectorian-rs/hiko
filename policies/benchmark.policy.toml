@@ -59,6 +59,12 @@ enabled = true
 [capabilities.process.await_process]
 enabled = true
 
+[capabilities.process.cancel]
+enabled = true
+
+[capabilities.process.wait_any]
+enabled = true
+
 [capabilities.filesystem.read_file]
 enabled = true
 folders = ["."]
