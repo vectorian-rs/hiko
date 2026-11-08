@@ -3,16 +3,12 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-#[cfg(feature = "loader-integrity-blake3")]
-use std::time::Duration;
 
 use hiko_builtin_meta::{
     BuiltinSurface, InternalBuiltinModule, internal_builtin_module, is_internal_builtin_package,
 };
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_common::blake3_hex;
-#[cfg(feature = "loader-integrity-blake3")]
-use hiko_common::http_get_text_limited;
 use hiko_syntax::ast::*;
 use hiko_syntax::intern::{StringInterner, Symbol};
 use hiko_syntax::lexer::Lexer;
@@ -30,15 +26,15 @@ use crate::op::{
 
 /// Overrides for resolving named imports listed in `hiko.lock.toml`.
 ///
-/// The defaults match the CLI: modules come from `~/.hiko/lib-cache` or are
-/// downloaded from the lockfile `base_url`. Whatever the source, a module is
-/// only accepted if its BLAKE3 hash matches the lockfile entry.
+/// The defaults match the CLI: modules come from the configured local cache.
+/// Compilation never downloads or writes modules; use explicit `hiko install`
+/// to populate/repair the cache. Every source must match its locked BLAKE3 hash.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleLoaderOptions {
     /// Module cache directory. `None` uses the manifest's `[defaults]
     /// lib_cache` (relative to `hiko.toml`), else `$HOME/.hiko/lib-cache`.
     pub cache_dir: Option<PathBuf>,
-    /// Local package directory checked before the cache and the network.
+    /// Local package directory checked before the cache.
     /// A module `Pkg.Mod` locked at version `V` is read from
     /// `<root>/Pkg-vV/modules/Mod.hml` if that file exists (the layout of the
     /// repository's `libraries/` directory). A hash mismatch is an error.
@@ -307,11 +303,10 @@ const INSTALL_REWRITES_LOCKFILE: &str =
 #[cfg(feature = "loader-integrity-blake3")]
 const REPAIR_MODULE_FILE: &str = "repair or remove that file";
 
-/// The fix for a module cache that cannot be written. `hiko install` writes
-/// to the same path, so it does not repair this.
+/// Explicit recovery for missing or corrupt cached modules. Compilation never
+/// removes a bad entry, fetches its replacement, or writes the cache.
 #[cfg(feature = "loader-integrity-blake3")]
-const REPAIR_MODULE_CACHE: &str =
-    "repair that path: the module cache must be a directory this user can write";
+const INSTALL_MODULE_CACHE: &str = "run 'hiko install' to populate or repair the module cache";
 
 /// The fix for a module that fails its lockfile hash.
 #[cfg(feature = "loader-integrity-blake3")]
@@ -581,20 +576,6 @@ pub fn store_cached_module(
     let cache_path = module_cache_path(cache_dir, module_url, hash);
     write_verified_cache_file(&cache_path, source.as_bytes())?;
     Ok(cache_path)
-}
-
-#[cfg(feature = "loader-integrity-blake3")]
-const REMOTE_MODULE_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(feature = "loader-integrity-blake3")]
-const REMOTE_MODULE_MAX_BYTES: u64 = 1024 * 1024;
-
-#[cfg(feature = "loader-integrity-blake3")]
-fn fetch_remote_module(url: &str, module_name: &str) -> Result<String, CompileError> {
-    http_get_text_limited(url, REMOTE_MODULE_TIMEOUT, REMOTE_MODULE_MAX_BYTES).map_err(|e| {
-        CompileError::codegen(format!(
-            "cannot fetch named import '{module_name}' from '{url}': {e}"
-        ))
-    })
 }
 
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
@@ -1189,7 +1170,7 @@ pub struct Compiler {
     /// Where `import_lockfile` was read from.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     import_lockfile_path: Option<PathBuf>,
-    /// Cache directory for fetched remote modules.
+    /// Cache directory for installed remote modules.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     module_cache_dir: Option<PathBuf>,
     /// Caller-supplied overrides for named-import resolution.
@@ -1265,7 +1246,7 @@ impl Compiler {
 
     /// The source of every module in the lockfile of the project that
     /// `entry_file` belongs to, each read through the normal loader (local
-    /// package root, cache, then network) and checked against its BLAKE3
+    /// package root, then installed cache) and checked against its BLAKE3
     /// hash. `build-vm` embeds these in a sealed artifact. Sorted by import
     /// name.
     #[cfg(feature = "loader-integrity-blake3")]
@@ -2334,42 +2315,35 @@ impl Compiler {
         );
         let cache_path = module_cache_path(cache_dir, &module_url, &expected_hash);
 
-        if cache_path.exists() {
-            let cached = std::fs::read_to_string(&cache_path)
-                .map_err(|e| {
-                    CompileError::codegen(format!(
-                        "cannot read cached module '{}': {e}",
-                        cache_path.display()
-                    ))
-                })
-                .map_err(load_failed(REPAIR_MODULE_FILE))?;
-            if verify_blake3(
-                cached.as_bytes(),
-                &expected_hash,
-                &format!("cached named import '{module_name}'"),
-            )
-            .is_ok()
-            {
-                return Ok(ResolvedImport::VerifiedFile {
-                    canonical: cache_path,
-                    display_name: module_name.to_string(),
-                    source: cached,
-                });
+        let cache_failed = |error| match extension {
+            Some(_) => load_failed(INSTALL_MODULE_CACHE)(error),
+            None => CompileError::codegen(format!(
+                "{}; {INSTALL_MODULE_CACHE}",
+                codegen_message(error)
+            )),
+        };
+        let source = std::fs::read_to_string(&cache_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                cache_failed(CompileError::codegen(format!(
+                    "named import '{module_name}' is missing from module cache '{}'",
+                    cache_path.display()
+                )))
+            } else {
+                load_failed(REPAIR_MODULE_FILE)(CompileError::codegen(format!(
+                    "cannot read cached module '{}': {e}",
+                    cache_path.display()
+                )))
             }
-            let _ = std::fs::remove_file(&cache_path);
-        }
-
-        let source = fetch_remote_module(&module_url, module_name).map_err(load_failed(
-            "check that the registry in hiko.toml is reachable",
-        ))?;
+        })?;
         verify_blake3(
             source.as_bytes(),
             &expected_hash,
-            &format!("named import '{module_name}'"),
+            &format!(
+                "cached named import '{module_name}' ({})",
+                cache_path.display()
+            ),
         )
-        .map_err(load_failed(HASH_DIFFERS_FROM_PIN))?;
-        let cache_path = store_cached_module(cache_dir, &module_url, &expected_hash, &source)
-            .map_err(load_failed(REPAIR_MODULE_CACHE))?;
+        .map_err(cache_failed)?;
         Ok(ResolvedImport::VerifiedFile {
             canonical: cache_path,
             display_name: module_name.to_string(),
@@ -3893,12 +3867,6 @@ fn binop_to_op(op: BinOp) -> Op {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "loader-integrity-blake3")]
-    use std::io::{Read, Write};
-    #[cfg(feature = "loader-integrity-blake3")]
-    use std::net::TcpListener;
-    #[cfg(feature = "loader-integrity-blake3")]
-    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn parse_program(source: &str) -> Program {
@@ -4320,53 +4288,7 @@ mod tests {
 
     #[cfg(feature = "loader-integrity-blake3")]
     fn cached_module_path(entry_path: &Path, url: &str, hash: &str) -> PathBuf {
-        test_cache_dir(entry_path).join(format!("{}-{}.hml", blake3_hex(url.as_bytes()), hash))
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    fn spawn_response_server(
-        expected_path: &'static str,
-        body: String,
-        request_count: usize,
-    ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind server");
-        let addr = listener.local_addr().expect("server addr");
-        let handle = thread::spawn(move || {
-            for _ in 0..request_count {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = [0_u8; 4096];
-                let count = stream.read(&mut request).expect("read request");
-                let request = String::from_utf8_lossy(&request[..count]);
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or("/");
-                let (status, response_body) = if path == expected_path {
-                    ("200 OK", body.clone())
-                } else {
-                    ("404 Not Found", "not found".to_string())
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{}",
-                    response_body.len(),
-                    response_body
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("write response");
-                stream.flush().expect("flush response");
-            }
-        });
-        (format!("http://{addr}{expected_path}"), handle)
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    fn spawn_single_response_server(
-        expected_path: &'static str,
-        body: String,
-    ) -> (String, thread::JoinHandle<()>) {
-        spawn_response_server(expected_path, body, 1)
+        module_cache_path(&test_cache_dir(entry_path), url, hash)
     }
 
     fn compile_path(
@@ -4980,14 +4902,13 @@ val result = Box.get (Box.make 41)
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
-    fn named_import_fetches_over_http_and_reuses_cache() {
+    fn named_import_reads_verified_cache_without_network() {
         let project_dir = unique_temp_dir("named-import-ok");
         write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "structure List = struct\n  val forty_two = 42\nend\n".to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
-        let (list_url, server) = spawn_single_response_server("/modules/List.hml", module_source);
-        let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
+        let base_url = "http://127.0.0.1:1";
         let cache_path = cached_module_path(
             &entry_path,
             &format!("{base_url}/modules/List.hml"),
@@ -5005,17 +4926,16 @@ val result = Box.get (Box.make 41)
             "import Std.List\nval answer = List.forty_two\n",
         );
 
-        let _ = std::fs::remove_file(&cache_path);
+        write_file(&cache_path, &module_source);
 
         let first = compile_path(&entry_path);
-        server.join().expect("join server");
-        assert!(first.is_ok(), "first compile should fetch remote module");
+        assert!(first.is_ok(), "first compile should read installed module");
 
         let second = compile_path(&entry_path);
         assert!(second.is_ok(), "second compile should reuse cached module");
         assert!(
             cache_path.is_file(),
-            "expected fetched module in the test cache"
+            "expected installed module in the test cache"
         );
 
         let _ = std::fs::remove_file(&cache_path);
@@ -5024,7 +4944,7 @@ val result = Box.get (Box.make 41)
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
-    fn manifest_lib_cache_holds_fetched_modules() {
+    fn manifest_lib_cache_holds_installed_modules() {
         let project_dir = unique_temp_dir("manifest-lib-cache");
         write_file(
             &project_dir.join("hiko.toml"),
@@ -5033,8 +4953,7 @@ val result = Box.get (Box.make 41)
         let entry_path = project_dir.join("main.hml");
         let module_source = "structure List = struct\n  val forty_two = 42\nend\n".to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
-        let (list_url, server) = spawn_single_response_server("/modules/List.hml", module_source);
-        let base_url = list_url.trim_end_matches("/modules/List.hml").to_string();
+        let base_url = "http://127.0.0.1:1";
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
@@ -5055,19 +4974,23 @@ val result = Box.get (Box.make 41)
             )
         };
 
+        let cached = module_cache_path(
+            &project_dir.join("modules-cache"),
+            &format!("{base_url}/modules/List.hml"),
+            &module_hash,
+        );
+        write_file(&cached, &module_source);
         let first = compile();
-        server.join().expect("join server");
-        assert!(first.is_ok(), "first compile should fetch: {first:?}");
-        let cached = project_dir.join("modules-cache").join(format!(
-            "{}-{module_hash}.hml",
-            blake3_hex(format!("{base_url}/modules/List.hml").as_bytes())
-        ));
+        assert!(
+            first.is_ok(),
+            "first compile should read installed cache: {first:?}"
+        );
         assert!(
             cached.is_file(),
             "expected the module in the manifest's lib_cache"
         );
 
-        // The server has gone, so this compile can only use the cache.
+        // No registry is running; both compilations use installed sources.
         let second = compile();
         assert!(
             second.is_ok(),
@@ -5130,11 +5053,7 @@ val result = Box.get (Box.make 41)
         let entry_path = project_dir.join("main.hml");
         let module_source = "structure Result = struct\n  datatype ('a, 'e) result = Ok of 'a | Err of 'e\n  fun map f r = case r of Ok x => Ok (f x) | Err e => Err e\nend\n".to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
-        let (result_url, server) =
-            spawn_single_response_server("/modules/Result.hml", module_source);
-        let base_url = result_url
-            .trim_end_matches("/modules/Result.hml")
-            .to_string();
+        let base_url = "http://127.0.0.1:1";
         let cache_path = cached_module_path(
             &entry_path,
             &format!("{base_url}/modules/Result.hml"),
@@ -5152,9 +5071,8 @@ val result = Box.get (Box.make 41)
             "import Std.Result (Ok, Err, map)\nval x : (int, string) Result.result = Ok 41\nval y = map (fn n => n + 1) x\nval z = case y of Ok n => n | Err _ => 0\n",
         );
 
-        let _ = std::fs::remove_file(&cache_path);
+        write_file(&cache_path, &module_source);
         let result = compile_path(&entry_path);
-        server.join().expect("join server");
         assert!(
             result.is_ok(),
             "selective import should typecheck and compile, got {result:?}"
@@ -5174,11 +5092,7 @@ val result = Box.get (Box.make 41)
             "structure Result = struct\n  datatype ('a, 'e) result = Ok of 'a | Err of 'e\nend\n"
                 .to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
-        let (result_url, server) =
-            spawn_single_response_server("/modules/Result.hml", module_source);
-        let base_url = result_url
-            .trim_end_matches("/modules/Result.hml")
-            .to_string();
+        let base_url = "http://127.0.0.1:1";
         let cache_path = cached_module_path(
             &entry_path,
             &format!("{base_url}/modules/Result.hml"),
@@ -5196,9 +5110,8 @@ val result = Box.get (Box.make 41)
             "import Std.Result (Ok)\nimport Std.Result (Ok)\nval x = Ok 1\n",
         );
 
-        let _ = std::fs::remove_file(&cache_path);
+        write_file(&cache_path, &module_source);
         let result = compile_path(&entry_path);
-        server.join().expect("join server");
         match result {
             Err(CompileError::Codegen(message)) => {
                 assert!(
@@ -5335,62 +5248,13 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
-    fn named_import_rejects_oversized_remote_module() {
-        let project_dir = unique_temp_dir("named-import-too-large");
-        write_project_manifest(&project_dir);
-        let entry_path = project_dir.join("main.hml");
-        let module_source = format!("val answer = \"{}\"\n", "x".repeat(1024 * 1024));
-        let module_hash = blake3_hex(module_source.as_bytes());
-        let (answer_url, server) =
-            spawn_single_response_server("/modules/Answer.hml", module_source);
-        let base_url = answer_url
-            .trim_end_matches("/modules/Answer.hml")
-            .to_string();
-        let cache_path = cached_module_path(
-            &entry_path,
-            &format!("{base_url}/modules/Answer.hml"),
-            &module_hash,
-        );
-
-        write_file(
-            &project_dir.join("hiko.lock.toml"),
-            &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
-            ),
-        );
-        write_file(
-            &entry_path,
-            "import Test.Answer\nval result = Answer.answer\n",
-        );
-        let _ = std::fs::remove_file(&cache_path);
-
-        let result = compile_path(&entry_path);
-        server.join().expect("join server");
-        match result {
-            Err(CompileError::Codegen(message)) => {
-                assert!(message.contains("cannot fetch named import"));
-                assert!(message.contains("larger than request limit"));
-            }
-            other => panic!("expected oversized module failure, got {other:?}"),
-        }
-        assert!(!cache_path.exists());
-
-        std::fs::remove_dir_all(&project_dir).ok();
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    #[test]
     fn named_import_rejects_local_use_inside_remote_module() {
         let project_dir = unique_temp_dir("named-import-remote-use");
         write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "use \"../secret.hml\"\nval remote_answer = 42\n".to_string();
         let module_hash = blake3_hex(module_source.as_bytes());
-        let (answer_url, server) =
-            spawn_single_response_server("/modules/Answer.hml", module_source);
-        let base_url = answer_url
-            .trim_end_matches("/modules/Answer.hml")
-            .to_string();
+        let base_url = "http://127.0.0.1:1";
         let cache_path = cached_module_path(
             &entry_path,
             &format!("{base_url}/modules/Answer.hml"),
@@ -5407,10 +5271,9 @@ Answer = "blake3:deadbeef"
             &entry_path,
             "import Test.Answer\nval result = remote_answer\n",
         );
-        let _ = std::fs::remove_file(&cache_path);
+        write_file(&cache_path, &module_source);
 
         let result = compile_path(&entry_path);
-        server.join().expect("join server");
         match result {
             Err(CompileError::Codegen(message)) => {
                 assert!(
@@ -5658,11 +5521,7 @@ Answer = "blake3:deadbeef"
         write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
         let module_source = "val remote_answer = 42\n".to_string();
-        let (answer_url, server) =
-            spawn_single_response_server("/modules/Answer.hml", module_source);
-        let base_url = answer_url
-            .trim_end_matches("/modules/Answer.hml")
-            .to_string();
+        let base_url = "http://127.0.0.1:1";
         let cache_path = cached_module_path(
             &entry_path,
             &format!("{base_url}/modules/Answer.hml"),
@@ -5679,10 +5538,9 @@ Answer = "blake3:deadbeef"
             &entry_path,
             "import Test.Answer\nval result = remote_answer\n",
         );
-        let _ = std::fs::remove_file(&cache_path);
+        write_file(&cache_path, &module_source);
 
         let result = compile_path(&entry_path);
-        server.join().expect("join server");
         match result {
             Err(CompileError::Codegen(message)) => {
                 assert!(message.contains("failed BLAKE3 verification"));
@@ -5839,53 +5697,34 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
-    fn named_import_revalidates_cached_file_on_later_load() {
+    fn named_import_revalidates_cached_file_without_repairing_it() {
         let project_dir = unique_temp_dir("named-import-revalidate");
         write_project_manifest(&project_dir);
         let entry_path = project_dir.join("main.hml");
-        let module_source = "structure Cache = struct\n  val value = 7\nend\n".to_string();
-        let module_hash = blake3_hex(module_source.as_bytes());
-        let (cache_url, server) =
-            spawn_response_server("/modules/Cache.hml", module_source.clone(), 2);
-        let base_url = cache_url.trim_end_matches("/modules/Cache.hml").to_string();
-        let cache_path = cached_module_path(
-            &entry_path,
-            &format!("{base_url}/modules/Cache.hml"),
-            &module_hash,
-        );
-
+        let source = "structure Cache = struct val value = 7 end\n";
+        let hash = blake3_hex(source.as_bytes());
+        let base_url = "http://127.0.0.1:1";
+        let cached =
+            cached_module_path(&entry_path, &format!("{base_url}/modules/Cache.hml"), &hash);
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nCache = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n[packages.Test.modules]\nCache = \"blake3:{hash}\"\n"
             ),
         );
         write_file(&entry_path, "import Test.Cache\nval answer = Cache.value\n");
-        let _ = std::fs::remove_file(&cache_path);
-
+        write_file(&cached, source);
+        assert!(compile_path(&entry_path).is_ok());
+        let poison = "structure Cache = struct val value = 0 end\n";
+        write_file(&cached, poison);
+        let error = compile_path(&entry_path).unwrap_err();
+        let message = codegen_message(error);
         assert!(
-            compile_path(&entry_path).is_ok(),
-            "initial compile should fetch"
+            message.contains("BLAKE3") && message.contains("hiko install"),
+            "{message}"
         );
-        assert_eq!(
-            std::fs::read_to_string(&cache_path).expect("cached source"),
-            module_source
-        );
-
-        std::fs::write(&cache_path, "structure Cache = struct val value = 0 end\n")
-            .expect("poison cache");
-
-        assert!(
-            compile_path(&entry_path).is_ok(),
-            "second compile should refetch after cache verification fails"
-        );
-        server.join().expect("join server");
-        assert_eq!(
-            std::fs::read_to_string(&cache_path).expect("repaired cache"),
-            module_source
-        );
-
-        let _ = std::fs::remove_file(&cache_path);
+        assert!(message.contains(cached.to_str().unwrap()), "{message}");
+        assert_eq!(std::fs::read_to_string(&cached).unwrap(), poison);
         std::fs::remove_dir_all(&project_dir).ok();
     }
 

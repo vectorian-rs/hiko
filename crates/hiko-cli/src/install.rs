@@ -501,6 +501,16 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_download_writes_neither_cache_nor_pins() {
+        let source = "x".repeat(usize::try_from(LOCK_VERIFY_MAX_BYTES).unwrap() + 1);
+        let (project, _) = setup("oversized", &[("A", &source)]);
+        let err = install(&project.join("hiko.toml"), false).unwrap_err();
+        assert!(err.contains("larger than request limit"), "{err}");
+        assert!(!project.join("hiko.lock.toml").exists());
+        assert!(!project.join("cache").exists());
+    }
+
+    #[test]
     fn check_fails_on_an_outdated_lockfile_and_writes_nothing() {
         let (project, package) = setup("outdated", &[("A", "val a = 1\n")]);
         let manifest = project.join("hiko.toml");

@@ -107,7 +107,7 @@ lockfile. A library module's own imports are not checked against
 - a `[dependencies]` entry naming an undefined registry: the existing cause,
   then `; add [registries.<name>] to hiko.toml (see
   docs/language/imports.md), then run 'hiko install'`;
-- a pinned module that fails its hash: `module Aws.S3 of extension 'aws'
+- a local package module that fails its hash: `module Aws.S3 of extension 'aws'
   needs Std.Result: <cause>; the source differs from the lockfile's pin, so
   find out why at the registry before 'hiko install' replaces the pin`;
 - a pinned module missing from the cache: the module and cache path, followed

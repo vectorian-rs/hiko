@@ -280,8 +280,8 @@ Remote modules are cached locally for reuse.
 
 Compilation is offline and reads the cache without changing it. `run`, `check`,
 and `build-vm` never fetch modules, create cache directories, remove corrupt
-entries or populate the cache. A missing or corrupt entry reports the module,
-cache path and `hiko install` recovery. Run that explicit command before compiling.
+entries or populate the cache. A missing entry or BLAKE3 mismatch reports the
+module, cache path and `hiko install` recovery. Run that command before compiling.
 Script HTTP/filesystem permissions do not authorize compiler network access or
 cache writes. Sealed artifacts read only their embedded verified sources.
 
@@ -398,5 +398,5 @@ The remaining library/import work is operational hardening rather than deeper
 module theory:
 
 - make `local_package_root` (used by `build-vm` and tests) exclusive: today a
-  module missing from it falls through to the cache and the network
+  module missing from it falls through to the installed cache
 - embed only the modules a `--script` program imports, not the whole lockfile
