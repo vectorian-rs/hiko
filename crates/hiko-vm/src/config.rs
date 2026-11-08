@@ -815,7 +815,8 @@ impl Default for RunConfig {
 impl RunConfig {
     /// Parse a run config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, String> {
-        let config: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        let config: Self =
+            toml::from_str(text).map_err(|e| hiko_compile::compiler::toml_error_text(&e, text))?;
         validate_config_paths(&config)?;
         Ok(config)
     }
@@ -1212,6 +1213,21 @@ folders = ["."]
         assert!(rust_source.contains(".register_builtin_name(\"numeric_int32_min_value\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_word32_add\")"));
         assert!(rust_source.contains(".register_builtin_name(\"numeric_float32_add\")"));
+    }
+
+    #[test]
+    fn named_core_policy_preserves_the_core_builtin_surface() {
+        let config = RunConfig::from_toml(include_str!("../../../policies/core.policy.toml"))
+            .expect("core policy should parse");
+        let expected = hiko_builtin_meta::core_builtin_names().collect();
+        // Policy leaves can name families omitted from this Cargo build;
+        // registration only includes builtins linked into the host.
+        let available = config
+            .enabled_builtin_names()
+            .into_iter()
+            .filter(|name| hiko_builtin_meta::builtin_meta(name).is_some())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(available, expected);
     }
 
     #[test]

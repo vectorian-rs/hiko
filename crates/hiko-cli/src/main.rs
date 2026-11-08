@@ -16,14 +16,13 @@ use hiko_common::blake3_hex;
 use hiko_compile::chunk::{Chunk, CompiledProgram};
 use hiko_compile::compiler::{
     CompileError, Compiler, ExtensionSurface, ModuleLoaderOptions, bounded_lockfile_path,
-    toml_error_text,
+    bounded_project_path, toml_error_text,
 };
 use hiko_compile::op::{HANDLER_CLAUSE_BYTES, Op};
 use hiko_syntax::format::{FormatError, format_source};
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
 use hiko_syntax::span::Span;
-use hiko_vm::builder::VMBuilder;
 use hiko_vm::config::RunConfig;
 use hiko_vm::extension::Extension;
 use hiko_vm::threaded::ThreadedRuntime;
@@ -31,6 +30,7 @@ use hiko_vm::vm::{StderrOutputSink, StdoutOutputSink, VM};
 use serde::Deserialize;
 
 mod build_vm;
+pub(crate) use hiko_compile::compiler::find_project_manifest_from;
 #[cfg(feature = "cli-lock")]
 mod install;
 #[cfg(feature = "cli-lock")]
@@ -251,7 +251,7 @@ struct ResolvedPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RuntimeSurface {
-    CoreOnly,
+    CheckOnly,
     Policy(ResolvedPolicy),
 }
 
@@ -285,7 +285,7 @@ impl ResolvedPolicy {
 impl RuntimeSurface {
     fn describe(&self) -> String {
         match self {
-            Self::CoreOnly => "using core-only runtime surface (no hiko.toml resolved)".to_string(),
+            Self::CheckOnly => "checking core builtins without a runtime policy".to_string(),
             Self::Policy(policy) => policy.describe(),
         }
     }
@@ -296,18 +296,6 @@ pub(crate) fn read_source_or_exit(path: &str) -> String {
         eprintln!("error: cannot read {path}: {e}");
         process::exit(1);
     })
-}
-
-pub(crate) fn find_project_manifest_from(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = Some(start_dir);
-    while let Some(dir) = current {
-        let candidate = dir.join("hiko.toml");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        current = dir.parent();
-    }
-    None
 }
 
 /// Applies the lockfile bound to the project of the script at `path`, so a
@@ -403,10 +391,10 @@ fn load_policy_config(policy: &ResolvedPolicy) -> RunConfig {
     )
 }
 
-/// Loads the run config behind `surface`, or `None` for the core-only surface.
+/// Loads the run config, or `None` for checking without a policy.
 fn load_surface_config(surface: &RuntimeSurface) -> Option<RunConfig> {
     match surface {
-        RuntimeSurface::CoreOnly => None,
+        RuntimeSurface::CheckOnly => None,
         RuntimeSurface::Policy(policy) => Some(load_policy_config(policy)),
     }
 }
@@ -471,12 +459,12 @@ fn resolve_policy_from_manifest(
         )
     })?;
 
-    let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let policy_path = bounded_project_path(manifest_path, "policy path", &policy.path)?;
     Ok(ResolvedPolicy {
         manifest_path: manifest_path.to_path_buf(),
         manifest_source,
         policy_name: selected,
-        policy_path: root.join(&policy.path),
+        policy_path,
     })
 }
 
@@ -488,14 +476,19 @@ fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
 
     let (manifest_path, manifest_source) = if let Some(config_path) = &options.config_path {
         (PathBuf::from(config_path), ManifestSource::ExplicitConfig)
-    } else if let Some(path) = find_project_manifest_from(&cwd) {
+    } else if let Some(path) = auto_project_manifest(options.script_path.as_deref(), &cwd)
+        .unwrap_or_else(|message| {
+            eprintln!("{message}");
+            process::exit(1);
+        })
+    {
         (path, ManifestSource::AutoDiscovered)
     } else {
         if let Some(policy_name) = &options.policy_name {
             eprintln!("No hiko.toml found while resolving policy '{policy_name}'");
             process::exit(1);
         }
-        return RuntimeSurface::CoreOnly;
+        return RuntimeSurface::CheckOnly;
     };
 
     match resolve_policy_from_manifest(
@@ -509,6 +502,30 @@ fn resolve_runtime_surface(options: &ScriptOptions) -> RuntimeSurface {
             process::exit(1);
         }
     }
+}
+
+/// Auto-selection derives authority from the real script, never an alias or
+/// an unrelated working directory. Explicit --config bypasses this selection.
+fn auto_project_manifest(script: Option<&str>, cwd: &Path) -> Result<Option<PathBuf>, String> {
+    let cwd = fs::canonicalize(cwd)
+        .map_err(|e| format!("Cannot resolve working directory '{}': {e}", cwd.display()))?;
+    let Some(script) = script else {
+        return Ok(find_project_manifest_from(&cwd));
+    };
+    let script =
+        fs::canonicalize(script).map_err(|e| format!("Cannot read script '{script}': {e}"))?;
+    let manifest = script.parent().and_then(find_project_manifest_from);
+    if let Some(manifest) = &manifest
+        && !cwd.starts_with(manifest.parent().expect("manifest has a directory"))
+    {
+        return Err(format!(
+            "Working directory '{}' is outside script project '{}'; select policy explicitly with --config '{}' [--policy <name>]",
+            cwd.display(),
+            manifest.display(),
+            manifest.display()
+        ));
+    }
+    Ok(manifest)
 }
 
 /// Parses `<flag> <value>` or `<flag>=<value>` starting at `args[index]`.
@@ -654,13 +671,11 @@ fn parse_inspect_work_args(args: &[String]) -> String {
     args[0].clone()
 }
 
-fn resolve_run_target(config: Option<&RunConfig>, script_path: Option<&str>) -> String {
+fn resolve_run_target(config: &RunConfig, script_path: Option<&str>) -> String {
     if let Some(path) = script_path {
         return path.to_string();
     }
-    if let Some(config) = config
-        && let Some(entry) = &config.entry
-    {
+    if let Some(entry) = &config.entry {
         return entry.clone();
     }
     eprintln!(
@@ -915,8 +930,8 @@ fn enforce_strict_or_exit(
 fn strict_message(violation: &StrictViolation, surface: &RuntimeSurface) -> String {
     if let Some(path) = violation.capability_path {
         match surface {
-            RuntimeSurface::CoreOnly => format!(
-                "builtin '{}' is not available in the core-only runtime surface (layer: VMBuilder::with_core; pass --config and enable [{}])",
+            RuntimeSurface::CheckOnly => format!(
+                "builtin '{}' is not enabled for checking without a policy (pass --config and enable [{}])",
                 violation.builtin, path
             ),
             RuntimeSurface::Policy(policy) => format!(
@@ -930,8 +945,8 @@ fn strict_message(violation: &StrictViolation, surface: &RuntimeSurface) -> Stri
         .is_some_and(|meta| meta.surface == BuiltinSurface::RuntimeOnly)
     {
         match surface {
-            RuntimeSurface::CoreOnly => format!(
-                "builtin '{}' is runtime-only and not part of the public core-only surface (layer: internal builtin alias)",
+            RuntimeSurface::CheckOnly => format!(
+                "builtin '{}' is runtime-only and not part of the public checking surface (layer: internal builtin alias)",
                 violation.builtin
             ),
             RuntimeSurface::Policy(policy) => format!(
@@ -945,43 +960,28 @@ fn strict_message(violation: &StrictViolation, surface: &RuntimeSurface) -> Stri
     }
 }
 
-fn runtime_error_message(message: &str, surface: &RuntimeSurface) -> String {
+fn runtime_error_message(message: &str, policy: &ResolvedPolicy) -> String {
     let Some(name) = message.strip_prefix("undefined global: ") else {
         return message.to_string();
     };
     let Some(meta) = builtin_meta(name) else {
         return message.to_string();
     };
-
     if let Some(path) = meta.capability_path {
-        return match surface {
-            RuntimeSurface::CoreOnly => format!(
-                "builtin '{}' was not registered in the core-only VM (layer: VMBuilder::with_core; pass --config and enable [{}])",
-                name, path
-            ),
-            RuntimeSurface::Policy(policy) => format!(
-                "builtin '{}' was not registered by the active policy-filtered VM (layer: RunConfig::build_vm; {}; enable [{}])",
-                name,
-                policy.error_context(),
-                path
-            ),
-        };
+        return format!(
+            "builtin '{}' was not registered by the active policy-filtered VM (layer: RunConfig::build_vm; {}; enable [{}])",
+            name,
+            policy.error_context(),
+            path
+        );
     }
-
     if meta.surface == BuiltinSurface::RuntimeOnly {
-        return match surface {
-            RuntimeSurface::CoreOnly => format!(
-                "runtime builtin '{}' was not registered in the core-only VM (layer: internal builtin alias / VMBuilder::with_core)",
-                name
-            ),
-            RuntimeSurface::Policy(policy) => format!(
-                "runtime builtin '{}' was not registered by the active policy-filtered VM (layer: internal builtin alias / RunConfig::build_vm; {}). This usually means the supporting public capability family is missing from the active policy.",
-                name,
-                policy.error_context()
-            ),
-        };
+        return format!(
+            "runtime builtin '{}' was not registered by the active policy-filtered VM (layer: internal builtin alias / RunConfig::build_vm; {}). This usually means the supporting public capability family is missing from the active policy.",
+            name,
+            policy.error_context()
+        );
     }
-
     message.to_string()
 }
 
@@ -1072,17 +1072,40 @@ fn inspect_work_file(path: &str) {
 
 fn run_file(options: &ScriptOptions) {
     let surface = resolve_runtime_surface(options);
+    let RuntimeSurface::Policy(policy) = &surface else {
+        eprintln!(
+            "run requires a runtime policy; register a named policy in hiko.toml and use: hiko run --config /path/to/hiko.toml --policy core script.hml"
+        );
+        process::exit(1);
+    };
     eprintln!("info: {}", surface.describe());
-    let config = load_surface_config(&surface);
-    let path = resolve_run_target(config.as_ref(), options.script_path.as_deref());
-    let compiled = compile_or_exit(&path, extension_surface_or_exit(config.as_ref()));
+    let config = load_policy_config(policy);
+    let path = resolve_run_target(&config, options.script_path.as_deref());
+    if options.config_path.is_none() && options.script_path.is_none() {
+        let cwd = env::current_dir().unwrap_or_else(|e| {
+            eprintln!("Cannot determine current working directory: {e}");
+            process::exit(1);
+        });
+        let target = auto_project_manifest(Some(&path), &cwd).unwrap_or_else(|message| {
+            eprintln!("{message}");
+            process::exit(1);
+        });
+        if target.as_ref() != Some(&policy.manifest_path) {
+            eprintln!(
+                "Configured entry belongs to a different project; select policy explicitly with --config '{}'",
+                policy.manifest_path.display()
+            );
+            process::exit(1);
+        }
+    }
+    let compiled = compile_or_exit(&path, extension_surface_or_exit(Some(&config)));
     if options.strict {
-        enforce_strict_or_exit(&compiled, config.as_ref(), &surface);
+        enforce_strict_or_exit(&compiled, Some(&config), &surface);
     }
 
     let output_sink = Arc::new(StdoutOutputSink::default());
-    if let Some(config) = config.as_ref().filter(|config| config.requires_runtime()) {
-        let mut vm = build_vm_or_exit(config, compiled.program);
+    if config.requires_runtime() {
+        let mut vm = build_vm_or_exit(&config, compiled.program);
         report_exec_notes(&vm);
         vm.set_output_sink(output_sink);
         vm.set_error_sink(Arc::new(StderrOutputSink));
@@ -1095,23 +1118,19 @@ fn run_file(options: &ScriptOptions) {
         }
 
         if let Some(failure) = runtime.failure(pid) {
-            let message = runtime_error_message(&failure.to_string(), &surface);
+            let message = runtime_error_message(&failure.to_string(), policy);
             compiled.ctx.error(&message, None);
             process::exit(1);
         }
         return;
     }
 
-    let mut vm = if let Some(config) = &config {
-        build_vm_or_exit(config, compiled.program)
-    } else {
-        VMBuilder::new(compiled.program).with_core().build()
-    };
+    let mut vm = build_vm_or_exit(&config, compiled.program);
     report_exec_notes(&vm);
     vm.set_output_sink(output_sink);
     vm.set_error_sink(Arc::new(StderrOutputSink));
     if let Err(e) = vm.run() {
-        let message = runtime_error_message(&e.message, &surface);
+        let message = runtime_error_message(&e.message, policy);
         compiled.ctx.error(&message, vm.error_span());
         process::exit(1);
     }
@@ -1615,7 +1634,7 @@ mod tests {
             ..RunConfig::default()
         };
         assert_eq!(
-            resolve_run_target(Some(&config), Some("scripts/override.hml")),
+            resolve_run_target(&config, Some("scripts/override.hml")),
             "scripts/override.hml"
         );
     }
@@ -1626,10 +1645,7 @@ mod tests {
             entry: Some("scripts/default.hml".to_string()),
             ..RunConfig::default()
         };
-        assert_eq!(
-            resolve_run_target(Some(&config), None),
-            "scripts/default.hml"
-        );
+        assert_eq!(resolve_run_target(&config, None), "scripts/default.hml");
     }
 
     #[test]
@@ -1805,9 +1821,15 @@ name = "demo"
     }
 
     #[test]
-    fn runtime_error_message_explains_core_only_surface() {
-        let message = runtime_error_message("undefined global: exec", &RuntimeSurface::CoreOnly);
-        assert!(message.contains("VMBuilder::with_core"), "got: {message}");
+    fn runtime_error_message_names_the_policy() {
+        let policy = ResolvedPolicy {
+            manifest_path: PathBuf::from("/tmp/hiko.toml"),
+            manifest_source: ManifestSource::ExplicitConfig,
+            policy_name: "core".to_string(),
+            policy_path: PathBuf::from("/tmp/policies/core.policy.toml"),
+        };
+        let message = runtime_error_message("undefined global: exec", &policy);
+        assert!(message.contains("policy 'core'"), "got: {message}");
         assert!(message.contains("capabilities.exec.exec"), "got: {message}");
     }
 }

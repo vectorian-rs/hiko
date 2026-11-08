@@ -62,3 +62,15 @@ fn use_cycle_example_fails() {
     assert!(!ok, "cycle_a.hml should fail");
     assert!(stderr.contains("circular import detected"), "{stderr}");
 }
+
+#[test]
+fn formerly_core_only_examples_use_the_named_core_policy() {
+    for script in [
+        "examples/hello.hml",
+        "examples/factorial.hml",
+        "examples/closures.hml",
+    ] {
+        let (ok, stderr) = run(script, "core", b"");
+        assert!(ok, "{script}: {stderr}");
+    }
+}

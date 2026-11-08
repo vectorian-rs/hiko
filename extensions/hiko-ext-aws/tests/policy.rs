@@ -54,7 +54,7 @@ fn project(name: &str, modules: &[&str]) -> PathBuf {
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("hiko-ext-aws-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    std::fs::canonicalize(dir).unwrap()
 }
 
 /// The project most tests compile in: it pins Std.Result, which the AWS

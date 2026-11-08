@@ -3,10 +3,12 @@
 Run an example from the repository root:
 
 ```sh
-hiko run examples/hello.hml
+hiko run --config hiko.toml --policy core examples/hello.hml
 ```
 
 Some examples use regex, JSON or dates, which the default build leaves out.
+Examples needing filesystem, HTTP or exec use an appropriate named policy,
+such as `--policy software-developer-role`, instead of `core`.
 Build with every builtin to run them all:
 
 ```sh

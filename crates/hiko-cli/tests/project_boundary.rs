@@ -10,8 +10,10 @@ const SCRIPT: &str = "val x = 1\n";
 
 /// An empty directory for test `name`, by its real path.
 fn empty_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("project_boundary")
+    // Invalid/symlink fixtures must not sit below the repository: capability
+    // glob/walk tests traverse it, even when their pattern only names examples.
+    let dir = std::env::temp_dir()
+        .join(format!("hiko-project-boundary-{}", std::process::id()))
         .join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
@@ -386,5 +388,229 @@ fn build_vm_lock_must_name_a_file() {
             message.contains("--lock must name a lockfile, not a directory"),
             "{lock}: {message}"
         );
+    }
+}
+
+#[test]
+fn outside_cwd_requires_explicit_policy_authority() {
+    let dir = empty_dir("policy-outside-cwd");
+    let scripts = project_in(&dir.join("scripts"), "");
+    let other = project_in(&dir.join("other"), "");
+    let script = scripts.join("a.hml");
+    let config = other.join("hiko.toml");
+    for command in ["run", "check"] {
+        let output = hiko(&other, &[command, script.to_str().unwrap()]);
+        assert!(!output.status.success());
+        let message = stderr(&output);
+        assert!(message.contains("outside script project"), "{message}");
+        assert!(message.contains("--config"), "{message}");
+        let output = hiko(
+            &other,
+            &[
+                command,
+                "--config",
+                config.to_str().unwrap(),
+                script.to_str().unwrap(),
+            ],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_script_symlink_keeps_its_targets_project_identity() {
+    let dir = empty_dir("policy-script-symlink");
+    let scripts = project_in(&dir.join("scripts"), "");
+    let aliases = project_in(&dir.join("aliases"), "");
+    std::os::unix::fs::symlink(scripts.join("a.hml"), aliases.join("alias.hml")).unwrap();
+    for command in ["run", "check"] {
+        let output = hiko(&aliases, &[command, "alias.hml"]);
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("outside script project"),
+            "{}",
+            stderr(&output)
+        );
+    }
+    std::os::unix::fs::symlink(&scripts, dir.join("project-link")).unwrap();
+    let output = hiko(&dir.join("project-link"), &["run", "a.hml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
+fn policy_discovery_uses_the_scripts_project_inside_a_nested_cwd() {
+    let dir = empty_dir("policy-nested-cwd");
+    let scripts = project_in(&dir, "");
+    let nested = project_in(&scripts.join("nested"), "");
+    fs::write(nested.join("p.toml"), NOT_TOML).unwrap();
+    let output = hiko(&nested, &["run", scripts.join("a.hml").to_str().unwrap()]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains(&scripts.join("p.toml").display().to_string()));
+}
+
+#[test]
+fn a_configured_entry_in_another_project_requires_explicit_config() {
+    let dir = empty_dir("policy-entry-project");
+    let project = project_in(&dir, "");
+    let nested = project_in(&project.join("nested"), "");
+    fs::write(
+        project.join("p.toml"),
+        format!("entry = {:?}\n", nested.join("a.hml")),
+    )
+    .unwrap();
+    let output = hiko(&project, &["run"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--config"), "{}", stderr(&output));
+    let output = hiko(&project, &["run", "--config", "hiko.toml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    // Conversely, cwd can be inside the entry's parent project while auto
+    // selection initially chose a nested manifest. That also needs --config.
+    fs::write(
+        nested.join("p.toml"),
+        format!("entry = {:?}\n", project.join("a.hml")),
+    )
+    .unwrap();
+    let output = hiko(&nested, &["run"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("different project"),
+        "{}",
+        stderr(&output)
+    );
+    let output = hiko(&nested, &["run", "--config", "hiko.toml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
+fn run_requires_policy_but_check_stays_non_executing() {
+    let dir = empty_dir("no-policy");
+    fs::write(dir.join("a.hml"), "val _ = panic \"must not execute\"\n").unwrap();
+    let output = hiko(&dir, &["run", "a.hml"]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.contains("run requires a runtime policy"),
+        "{message}"
+    );
+    assert!(
+        message.contains("--config") && message.contains("--policy core"),
+        "{message}"
+    );
+    assert!(!message.contains("must not execute"), "{message}");
+    let output = hiko(&dir, &["check", "a.hml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn set_policy_path(project: &Path, path: &str) {
+    fs::write(
+        project.join("hiko.toml"),
+        format!("[defaults]\npolicy = \"p\"\n[policies.p]\npath = {path:?}\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn policy_paths_outside_the_manifest_directory_are_rejected() {
+    let dir = empty_dir("policy-path-bound");
+    let project = project_in(&dir, "");
+    let outside = dir.join("outside.toml");
+    fs::write(&outside, "").unwrap();
+    for path in [
+        "../outside.toml",
+        "new/../../outside.toml",
+        outside.to_str().unwrap(),
+    ] {
+        set_policy_path(&project, path);
+        for command in ["run", "check"] {
+            let output = hiko(&project, &[command, "a.hml"]);
+            assert!(!output.status.success());
+            let message = stderr(&output);
+            assert!(
+                message.contains("policy path") && message.contains("outside its directory"),
+                "{message}"
+            );
+        }
+    }
+    set_policy_path(&project, project.join("p.toml").to_str().unwrap());
+    let output = hiko(&project, &["run", "a.hml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[cfg(unix)]
+#[test]
+fn policy_symlinks_cannot_escape_the_manifest_directory() {
+    use std::os::unix::fs::symlink;
+    let dir = empty_dir("policy-path-symlink");
+    let project = project_in(&dir, "");
+    fs::write(dir.join("outside.toml"), "").unwrap();
+    symlink("../outside.toml", project.join("link.toml")).unwrap();
+    symlink("..", project.join("outside-dir")).unwrap();
+    symlink("missing.toml", project.join("dangling.toml")).unwrap();
+    for path in ["link.toml", "outside-dir/outside.toml", "dangling.toml"] {
+        set_policy_path(&project, path);
+        let output = hiko(&project, &["run", "a.hml"]);
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("policy path"),
+            "{}",
+            stderr(&output)
+        );
+    }
+    symlink("p.toml", project.join("inside.toml")).unwrap();
+    set_policy_path(&project, "inside.toml");
+    let output = hiko(&project, &["run", "a.hml"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
+fn a_policy_that_does_not_parse_prints_no_source_line() {
+    let dir = empty_dir("policy-parse");
+    let project = project_in(&dir, "");
+    let policy = project.join("p.toml");
+    fs::write(&policy, NOT_TOML).unwrap();
+    for command in ["run", "check"] {
+        let output = hiko(&project, &[command, "a.hml"]);
+        assert!(!output.status.success());
+        assert_position_and_no_source_line(&output, &policy, command);
+    }
+}
+
+#[test]
+fn explicit_policy_keeps_the_scripts_lockfile_and_cache() {
+    use hiko_compile::compiler::store_cached_module;
+    let dir = empty_dir("policy-import-lockfile");
+    let scripts = project_in(&dir.join("scripts"), "lib_cache = \"cache\"");
+    let authority = project_in(&dir.join("authority"), "");
+    fs::write(authority.join("hiko.lock.toml"), "not a lockfile").unwrap();
+    let source = "structure Value = struct val answer = 42 end\n";
+    let hash = hiko_common::blake3_hex(source.as_bytes());
+    store_cached_module(
+        &scripts.join("cache"),
+        "http://127.0.0.1:1/Demo-v0.1.0/modules/Value.hml",
+        &hash,
+        source,
+    )
+    .unwrap();
+    fs::write(scripts.join("hiko.lock.toml"), format!(
+        "schema_version = 1\n[packages.Demo]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:1/Demo-v0.1.0\"\n[packages.Demo.modules]\nValue = \"blake3:{hash}\"\n"
+    )).unwrap();
+    fs::write(
+        scripts.join("a.hml"),
+        "import Demo.Value\nval _ = if Value.answer = 42 then () else panic \"wrong project\"\n",
+    )
+    .unwrap();
+    for command in ["run", "check"] {
+        let output = hiko(
+            &authority,
+            &[
+                command,
+                "--config",
+                "hiko.toml",
+                scripts.join("a.hml").to_str().unwrap(),
+            ],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
     }
 }
