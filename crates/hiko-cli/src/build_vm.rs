@@ -723,6 +723,65 @@ mod tests {
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
+    fn sealing_keeps_package_identity_for_the_future_catalog() {
+        use hiko_compile::package::{
+            ModuleCatalog, ModuleSources, PackageDefinition, PackageOwner, PinnedSource,
+        };
+        let options = BuildVmOptions {
+            lock: Some(repo().join("hiko.lock.toml")),
+            local_package_root: Some(repo().join("libraries")),
+            cache_dir: Some(temp_dir("catalog-cache").join("not-created")),
+            ..BuildVmOptions::default()
+        };
+        let sealed = collect_sealed(&options, &[]).unwrap();
+        let owner = sealed
+            .modules
+            .iter()
+            .find(|m| m.import_name == "Std.Option")
+            .unwrap()
+            .owner
+            .clone();
+        assert_eq!(owner.name(), "Std");
+        assert_ne!(owner, PackageOwner::project(&repo()).unwrap());
+        let modules: Vec<_> = sealed.modules.iter().filter(|m| m.owner == owner).collect();
+        let hashes = modules
+            .iter()
+            .map(|m| {
+                (
+                    m.import_name.strip_prefix("Std.").unwrap().to_string(),
+                    m.blake3.clone(),
+                )
+            })
+            .collect();
+        let sources = modules
+            .iter()
+            .map(|m| {
+                (
+                    m.import_name.strip_prefix("Std.").unwrap().to_string(),
+                    m.source.clone(),
+                )
+            })
+            .collect();
+        let catalog = ModuleCatalog::new(vec![PackageDefinition {
+            owner: owner.clone(),
+            dependencies: Default::default(),
+            sources: ModuleSources::Pinned {
+                hashes,
+                source: PinnedSource::Embedded(sources),
+            },
+        }])
+        .unwrap();
+        let module = catalog.resolve(Some(&owner), "Proj.Option").unwrap();
+        assert_eq!(module.identity().owner(), &owner);
+        assert_eq!(
+            module.read_source().unwrap(),
+            read(repo().join("libraries/Std-v0.1.0/modules/Option.hml"))
+        );
+        assert!(!options.cache_dir.unwrap().exists());
+    }
+
+    #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
+    #[test]
     fn sealed_script_must_compile_with_only_the_embedded_sources() {
         let dir = temp_dir("missing-module");
         // No --lock: Std.Option is not embedded, so build-vm refuses.

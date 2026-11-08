@@ -564,6 +564,40 @@ mod tests {
     }
 
     #[test]
+    fn installed_pins_supply_the_owner_relative_catalog_without_changing_the_format() {
+        use hiko_compile::package::{
+            ModuleCatalog, ModuleSources, PackageDefinition, PackageOwner, PinnedSource,
+        };
+        let source = "val answer = 42";
+        let (project, _) = setup("owner-catalog", &[("A", source)]);
+        install(&project.join("hiko.toml"), false).unwrap();
+        let path = project.join("hiko.lock.toml");
+        let before = fs::read_to_string(&path).unwrap();
+        let lock = load_module_lockfile(&path).unwrap();
+        assert_eq!(lock.schema_version, 1);
+        let pinned = &lock.packages["Pkg"];
+        let owner = PackageOwner::locked("Pkg", &pinned.version, &pinned.base_url);
+        let catalog = ModuleCatalog::new(vec![PackageDefinition {
+            owner: owner.clone(),
+            dependencies: Default::default(),
+            sources: ModuleSources::Pinned {
+                hashes: pinned.modules.clone(),
+                source: PinnedSource::Cache(project.join("cache")),
+            },
+        }])
+        .unwrap();
+        assert_eq!(
+            catalog
+                .resolve(Some(&owner), "Proj.A")
+                .unwrap()
+                .read_source()
+                .unwrap(),
+            source
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), before);
+    }
+
+    #[test]
     fn a_package_manifest_for_another_package_is_refused() {
         let (project, package) = setup("wrong-name", &[("A", "val a = 1\n")]);
         let text = fs::read_to_string(package.join("package.toml")).unwrap();

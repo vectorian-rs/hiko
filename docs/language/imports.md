@@ -400,3 +400,86 @@ module theory:
 - make `local_package_root` (used by `build-vm` and tests) exclusive: today a
   module missing from it falls through to the installed cache
 - embed only the modules a `--script` program imports, not the whole lockfile
+
+## Approved Package Contract — Not Yet Active
+
+[#210 rev 5](https://github.com/vectorian-rs/hiko/issues/210) prepares the owner
+metadata and resolver interfaces below. The current syntax, manifest/lockfile
+formats, and loading rules above stay in force until
+[#186](https://github.com/vectorian-rs/hiko/issues/186) activates this contract
+and migrates the repository in one change.
+
+### Names And Ownership
+
+```sml
+import Proj.Util
+import Proj.Net.Client (connect)
+import Acme.Net.Client
+```
+
+Each segment is an upper-case identifier. `Proj` means the package that owns
+the importing source: a project file uses that project's `src/`, a library uses
+its own `modules/`, and an extension uses its own supplied modules. A library
+can never use `Proj` to reach the consuming project's files.
+
+- `Proj.Net.Client` in a project maps to `src/Net/Client.hml`.
+- The same import in library `Acme` maps to `modules/Net/Client.hml` in `Acme`.
+- `Acme.Net.Client` names that published package, with lock key `"Net.Client"`.
+- A library's published name and `Proj` select the same owner and module identity.
+- The local project's display name is not an import prefix.
+
+`Proj` is reserved only as an import prefix; a constructor or structure can
+still be named `Proj`. Published/dependency/extension packages cannot claim
+`Proj` or `__Builtin`, and package/extension names cannot collide. `__Builtin`
+continues to identify compiler-owned modules; metadata cannot confer their
+private datatype or builtin authority.
+
+### Dependencies And Sources
+
+Each published `package.toml` declares its dependency package names, including
+extensions it needs. Installation records each owner's allowlist in the
+reviewed lockfile. The root project's `hiko.toml` explicitly pins all installed
+versions and registries; this adds no transitive version solver. A library may
+import itself, its declared dependencies and compiler-owned modules. Extension
+library imports still have to satisfy the extension's exact `requires` list.
+
+Ownership comes from the canonical project root or validated package identity,
+not from a source file's cache location, contents or claimed name. Both compiler
+passes and cached imported programs retain it. Identical local module names in
+two packages remain distinct. Entry scripts participate in cycle detection;
+repeated imports execute a module once.
+
+New filesystem resolution requires exact spelling and refuses symlinks below
+the owner's source root. Missing modules name the owner and expected path;
+undeclared imports name the dependency to declare. Compilation remains offline
+and hash-checks locked sources. Sealed builds snapshot reached project modules
+with build-time hashes and never fall back to disk; ordinary local runs still
+read mutable project source without package pins.
+
+### Public Cutover And Acceptance Matrix
+
+#186 makes imports top-level and before the first declaration. Imports evaluate
+in source order. `use` remains a reserved word and reports removal guidance;
+there is no compatibility inclusion path. Parser, EBNF, tree-sitter, formatter,
+metadata writers, sealed artifacts, programs and hashes migrate together there.
+
+| Preparation evidence in #210 | Public integration evidence in #186 |
+| --- | --- |
+| Project and two libraries resolve equal and nested names within their own owners | Run/check accept the new grammar and resolve the same programs |
+| Dependency allowlists, collisions and reserved package names are validated | Install writes the approved metadata; missing/invalid metadata fails explicitly |
+| Exact paths, symlink refusal, entry cycles and once-only identity are tested | CLI errors and parser/tree-sitter/formatter behavior agree |
+| Cache, local-package, embedded and extension fixtures retain identity/integrity | Sealed programs use only embedded sources; denied capabilities remain denied |
+| Existing source syntax/formats and workspace checks pass unchanged | One inventory migrates imports, builtins, policy keys, fixtures, docs and hashes |
+
+New diagnostic contracts include:
+
+```text
+module <import> is missing from package <owner>: expected <path>
+package <owner> cannot import <import>: declare <package> as its dependency
+import must come before the first declaration; move it to the top of the file
+use was removed; use import Proj.<Module> for local modules under src/
+import Proj.<Module> requires an owning package; create hiko.toml
+```
+
+Existing hash/install/cycle diagnostics and parser spans are preserved. #210
+does not add a general resolver-span redesign or activate these public errors.

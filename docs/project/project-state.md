@@ -50,9 +50,19 @@ Its verified head `40cb170` passed 1,190 default and 1,268 all-features workspac
 tests, lint, four mutation checks, selected reviews and all five CI jobs.
 The issue is complete and its claim is released.
 
-Next, settle the package/import contract and preparatory internals in
-[#210](https://github.com/vectorian-rs/hiko/issues/210);
-[#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.
+[PR #231](https://github.com/vectorian-rs/hiko/pull/231) implements
+[#210 rev 5](https://github.com/vectorian-rs/hiko/issues/210): package provenance
+travels through both compiler passes, import caches and sealing inputs. The
+typed catalog supplies owner-relative `Proj`, nested-name and dependency
+fixtures for the future cutover. Current public syntax and metadata formats
+stay unchanged; [#186](https://github.com/vectorian-rs/hiko/issues/186) owns
+their activation and the repository migration.
+Implementation head `6344538` passed 1,206 default and 1,284 all-features
+workspace tests, lint, five mutation checks and all five CI jobs.
+
+Next are [#185's builtin/module map](https://github.com/vectorian-rs/hiko/issues/185)
+and [#198's measurement gate](https://github.com/vectorian-rs/hiko/issues/198),
+both prerequisites of the public cutover in #186.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
 
