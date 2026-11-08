@@ -41,9 +41,15 @@ Each PR passed acceptance checks, workspace tests with default/all features, lin
 selected reviews and all five CI jobs at its verified implementation head.
 The three issues are complete and their claims are released.
 
-Next is [#187 rev 3](https://github.com/vectorian-rs/hiko/issues/187): offline
-compilation and explicit installation, awaiting plan approval. Package/import
-contract and preparatory internals belong to
+[PR #229](https://github.com/vectorian-rs/hiko/pull/229) completed
+[#187 rev 3](https://github.com/vectorian-rs/hiko/issues/187) at `82278ea`:
+compilation reads verified sources without network access or cache writes;
+explicit installation populates and repairs the cache without repinning.
+Its verified head `40cb170` passed 1,190 default and 1,268 all-features workspace
+tests, lint, four mutation checks, selected reviews and all five CI jobs.
+The issue is complete and its claim is released.
+
+Next, settle the package/import contract and preparatory internals in
 [#210](https://github.com/vectorian-rs/hiko/issues/210);
 [#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
