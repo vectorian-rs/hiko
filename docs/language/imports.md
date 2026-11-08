@@ -267,8 +267,8 @@ may hold only letters, digits, `.`, `-` and `+`, since both become part of the
 package URL.
 
 A module already in the cache is not downloaded again if it still matches its
-hash; a cached copy that does not match is downloaded again, as the loader
-does.
+hash. Only `hiko install` downloads a missing or corrupt cached copy. With an
+unchanged registry manifest, repairing the cache leaves the lockfile pins unchanged.
 
 `--check` is for CI: it reads only the package manifests, compares the
 lockfile they give with the one on disk, writes nothing, and exits nonzero if
@@ -277,6 +277,13 @@ they differ. `hiko lock verify` checks the modules themselves.
 ### Cache Model
 
 Remote modules are cached locally for reuse.
+
+Compilation is offline and reads the cache without changing it. `run`, `check`,
+and `build-vm` never fetch modules, create cache directories, remove corrupt
+entries or populate the cache. A missing or corrupt entry reports the module,
+cache path and `hiko install` recovery. Run that explicit command before compiling.
+Script HTTP/filesystem permissions do not authorize compiler network access or
+cache writes. Sealed artifacts read only their embedded verified sources.
 
 Default cache location:
 
@@ -307,10 +314,10 @@ being `{blake3(url)}-{hash}.hml`:
 
 ### Verification Model
 
-The loader must verify integrity twice:
+Integrity is checked at both boundaries:
 
-1. when a module is fetched over HTTP
-2. again when a cached module is loaded later
+1. install verifies bytes fetched over HTTP before storing them
+2. compilation verifies every cached or local package module it reads
 
 That means cached content is not trusted just because it already exists locally.
 
@@ -327,10 +334,10 @@ cannot make a later named import reuse that unverified program.
 
 Failure behavior should be explicit:
 
-- network down + valid cache hit -> proceed
-- network down + no cache entry -> fail
-- fetched bytes do not match locked BLAKE3 -> fail hard
-- cached bytes do not match locked BLAKE3 -> discard and refetch
+- valid cache hit, registry stopped -> proceed
+- missing cache entry -> fail with `hiko install` guidance; no network or writes
+- fetched bytes do not match their pin -> install fails before storing them
+- corrupt cache entry -> compilation fails and preserves it; install repairs it explicitly
 
 There should be no silent lockfile update or automatic hash rewrite on mismatch.
 
