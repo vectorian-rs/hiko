@@ -17,12 +17,21 @@ cargo build --release -p hiko-cli --features builtin-all
 
 `tools/run_all.hml` runs every example except the ones that must fail. Those
 are checked by `crates/hiko-cli/tests/examples.rs`. Examples that import named
-modules (`import Std.List`) fetch them from the registry in `hiko.toml`; serve
-it locally with:
+modules (`import Std.List`) need modules installed from the registry in
+`hiko.toml`. Serve it locally with:
 
 ```sh
 python3 -m http.server 8000 -d libraries --bind 127.0.0.1
 ```
+
+From another terminal in the repository root, populate the module cache:
+
+```sh
+hiko install
+```
+
+Compilation then reads verified installed modules offline. Run `hiko install`
+again to restore missing or corrupt cache entries.
 
 ## Language
 

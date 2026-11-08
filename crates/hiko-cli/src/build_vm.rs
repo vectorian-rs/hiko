@@ -36,7 +36,7 @@ pub struct BuildVmOptions {
     /// Depend on the hiko crates in this checkout instead of crates.io.
     pub hiko_path: Option<PathBuf>,
     pub out_dir: Option<PathBuf>,
-    /// Where `--lock` reads modules from before the cache and the network
+    /// Where `--lock` reads verified local modules before the installed cache
     /// (`ModuleLoaderOptions`); tests point these at the repository.
     pub local_package_root: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,

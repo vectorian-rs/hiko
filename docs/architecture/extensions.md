@@ -107,17 +107,16 @@ lockfile. A library module's own imports are not checked against
 - a `[dependencies]` entry naming an undefined registry: the existing cause,
   then `; add [registries.<name>] to hiko.toml (see
   docs/language/imports.md), then run 'hiko install'`;
-- a pinned module that fails its hash: `module Aws.S3 of extension 'aws'
+- a local package module that fails its hash: `module Aws.S3 of extension 'aws'
   needs Std.Result: <cause>; the source differs from the lockfile's pin, so
   find out why at the registry before 'hiko install' replaces the pin`;
-- a pinned module that does not fetch: `module Aws.S3 of extension 'aws'
-  needs Std.Result: <cause>; check that the registry in hiko.toml is
-  reachable`;
+- a pinned module missing from the cache: the module and cache path, followed
+  by `run 'hiko install' to populate or repair the module cache`;
 - a module file that does not read: `module Aws.S3 of extension 'aws' needs
   Std.Result: <cause>; repair or remove that file`;
-- a module cache that cannot be written: `module Aws.S3 of extension 'aws'
-  needs Std.Result: <cause>; repair that path: the module cache must be a
-  directory this user can write`;
+- a corrupt cached module: the BLAKE3 failure and cache path, followed by
+  `run 'hiko install' to populate or repair the module cache`; compilation
+  leaves that entry unchanged;
 - an embedded module that fails its hash: `module Aws.S3 of extension 'aws'
   needs Std.Result: <cause>; the artifact's source differs from its pin, so
   rebuild it with build-vm --lock`;
@@ -142,9 +141,10 @@ stays complete. It finds direct imports, including those in `let` bodies,
 and reports a `use` as `<module> uses <path>; an extension module cannot use
 a file`.
 
-A policy governs the running program, not loading. Until #187 lands, the
-loader can fetch from a registry the script-side manifest names; the bytes
-are still checked against the lockfile.
+A policy governs the running program. Compilation loads only verified local,
+cached or embedded modules and cannot fetch from registries or write the cache.
+Use explicit `hiko install` to populate or repair it; a denied HTTP/filesystem
+script policy cannot trigger compiler networking or cache writes.
 
 ## What the core provides
 

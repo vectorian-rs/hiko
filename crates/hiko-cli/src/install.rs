@@ -462,11 +462,50 @@ mod tests {
     }
 
     #[test]
+    fn install_repairs_missing_and_corrupt_cache_without_changing_pins() {
+        let source = "val a = 42\n";
+        let (project, _) = setup("repair", &[("A", source)]);
+        let manifest = project.join("hiko.toml");
+        install(&manifest, false).unwrap();
+        let lockfile = project.join("hiko.lock.toml");
+        let pins = fs::read(&lockfile).unwrap();
+        let cached = fs::read_dir(project.join("cache"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+
+        fs::remove_file(&cached).unwrap();
+        install(&manifest, false).unwrap();
+        assert_eq!(fs::read_to_string(&cached).unwrap(), source);
+        assert_eq!(fs::read(&lockfile).unwrap(), pins);
+
+        fs::write(&cached, "tampered").unwrap();
+        install(&manifest, true).unwrap();
+        assert_eq!(fs::read_to_string(&cached).unwrap(), "tampered");
+        assert_eq!(fs::read(&lockfile).unwrap(), pins);
+        install(&manifest, false).unwrap();
+        assert_eq!(fs::read_to_string(&cached).unwrap(), source);
+        assert_eq!(fs::read(&lockfile).unwrap(), pins);
+    }
+
+    #[test]
     fn a_module_that_does_not_match_its_hash_writes_nothing() {
         let (project, package) = setup("tampered", &[("A", "val a = 1\n")]);
         fs::write(package.join("modules/A.hml"), "val a = 2\n").unwrap();
         let err = install(&project.join("hiko.toml"), false).unwrap_err();
         assert!(err.contains("Pkg.A") && err.contains("BLAKE3"), "{err}");
+        assert!(!project.join("hiko.lock.toml").exists());
+        assert!(!project.join("cache").exists());
+    }
+
+    #[test]
+    fn an_oversized_download_writes_neither_cache_nor_pins() {
+        let source = "x".repeat(usize::try_from(LOCK_VERIFY_MAX_BYTES).unwrap() + 1);
+        let (project, _) = setup("oversized", &[("A", &source)]);
+        let err = install(&project.join("hiko.toml"), false).unwrap_err();
+        assert!(err.contains("larger than request limit"), "{err}");
         assert!(!project.join("hiko.lock.toml").exists());
         assert!(!project.join("cache").exists());
     }
