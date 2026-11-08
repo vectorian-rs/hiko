@@ -38,7 +38,7 @@ use register::RegisterCode;
 pub mod register_check;
 mod runtime_bridge;
 
-pub use host::{OutputSink, StderrOutputSink, StdoutOutputSink};
+pub use host::{ExecJob, OutputSink, StderrOutputSink, StdoutOutputSink};
 pub use runtime_bridge::{RunResult, RuntimeRequest};
 
 /// Default hard limit on the VM value stack, measured in `Value` slots.

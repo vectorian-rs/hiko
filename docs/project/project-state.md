@@ -19,8 +19,15 @@ reaped-pid diagnostic limits remain.
 head passed 1,154 default and 1,232 all-features tests, lint, CLI/mutation checks
 and CI. JSON converters now use the protected runtime-owned datatype.
 
-Next is [#209 rev 2](https://github.com/vectorian-rs/hiko/issues/209): exported
-functions with private captures, approved and in implementation. Package/import
+[#209](https://github.com/vectorian-rs/hiko/issues/209) merged in
+[PR #223](https://github.com/vectorian-rs/hiko/pull/223) at `4c90f65`.
+Shared Pi/Codex review skills merged in
+[PR #224](https://github.com/vectorian-rs/hiko/pull/224) at `7f6ae6c`.
+The research snapshots in PRs #195/#200 also merged.
+
+Next is [#214 rev 1](https://github.com/vectorian-rs/hiko/issues/214): cancellable
+exec, approved and in implementation. Plans #196 rev 2 and #204 rev 2 are also
+approved, queued for separate PRs. Package/import
 contract and preparatory internals belong to
 [#210](https://github.com/vectorian-rs/hiko/issues/210);
 [#186](https://github.com/vectorian-rs/hiko/issues/186) owns the public migration.

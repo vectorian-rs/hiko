@@ -144,6 +144,20 @@ The same source code works in both runtimes:
 
 No function coloring. No `perform`. No effect declarations for I/O.
 
+`exec` follows the same split. The VM resolves and authorizes the executable
+and arguments before suspending. A threaded runtime submits the owned,
+pinned command to its I/O backend; it never runs the command on a VM worker.
+The exec deadline includes time queued in the backend. Cancellation before
+start prevents spawning; cancellation during execution kills the command's
+process group, reaps its direct child and joins its output readers before
+returning. Timeout, output overflow and backend shutdown use the same cleanup.
+Late results cannot resume a cancelled process. Output limits, executable
+identity checks, argument rules and cumulative I/O accounting remain enforced.
+
+The synchronous `VM::run` and `Runtime` embedding paths use the same command
+runner inline. They block the calling thread and do not promise cancellation
+or timer progress while an exec is running.
+
 ### Testing
 
 Use a mock I/O backend (`MockIoBackend`) for deterministic testing. The backend is pluggable at the runtime level, not at the language level.
@@ -364,7 +378,8 @@ it is a safety net against bookkeeping bugs.
 
 `run_to_completion` returns once every process is terminal; workers are joined
 before it returns. Dropping a `ThreadPoolIoBackend` cancels every pending
-timer and does not wait for a request that is inside a blocking call (an HTTP
+timer and kills/reaps running exec jobs, joining their output readers. It does
+not wait for other requests inside a blocking call (an HTTP
 request or a file read): such a worker thread is detached and its result
 discarded. `ThreadPoolIoBackend::shutdown` joins every thread instead.
 
