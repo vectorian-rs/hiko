@@ -1292,13 +1292,7 @@ impl Compiler {
         let base_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let canonical =
             std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
-        Self::compile_with_ctx(
-            program,
-            base_dir,
-            Some(canonical),
-            HashSet::new(),
-            loader_options,
-        )
+        Self::compile_with_ctx(program, base_dir, Some(canonical), loader_options)
     }
 
     /// The lockfile that named imports in the project of `entry_file` use:
@@ -1327,7 +1321,6 @@ impl Compiler {
         let mut c = Compiler::new(
             base_dir,
             Some(canonical),
-            HashSet::new(),
             loader_options,
             StringInterner::default(),
         );
@@ -1365,7 +1358,7 @@ impl Compiler {
         program: Program,
         options: ModuleLoaderOptions,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        Self::compile_with_ctx(program, PathBuf::new(), None, HashSet::new(), options)
+        Self::compile_with_ctx(program, PathBuf::new(), None, options)
     }
 
     /// Compile a program without a file context (e.g., from a string).
@@ -1376,7 +1369,6 @@ impl Compiler {
             program,
             PathBuf::from("."),
             None,
-            HashSet::new(),
             ModuleLoaderOptions::default(),
         )
     }
@@ -1386,19 +1378,12 @@ impl Compiler {
         program: Program,
         loader_options: ModuleLoaderOptions,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
-        Self::compile_with_ctx(
-            program,
-            PathBuf::from("."),
-            None,
-            HashSet::new(),
-            loader_options,
-        )
+        Self::compile_with_ctx(program, PathBuf::from("."), None, loader_options)
     }
 
     fn new(
         base_dir: PathBuf,
         entry_file: Option<PathBuf>,
-        loading_imports: HashSet<ImportKey>,
         loader_options: ModuleLoaderOptions,
         interner: StringInterner,
     ) -> Compiler {
@@ -1414,7 +1399,7 @@ impl Compiler {
             base_dir,
             source_owner,
             entry_file,
-            loading_imports,
+            loading_imports: HashSet::new(),
             importing_extension: None,
             compiling_builtin: None,
             inferred_imports: HashSet::new(),
@@ -1444,7 +1429,6 @@ impl Compiler {
         program: Program,
         base_dir: PathBuf,
         entry_file: Option<PathBuf>,
-        loading_imports: HashSet<ImportKey>,
         loader_options: ModuleLoaderOptions,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         // Desugar and constant-fold
@@ -1453,13 +1437,7 @@ impl Compiler {
         let interner = program.interner;
         let desugared = program.decls;
 
-        let mut c = Compiler::new(
-            base_dir,
-            entry_file,
-            loading_imports,
-            loader_options,
-            interner,
-        );
+        let mut c = Compiler::new(base_dir, entry_file, loader_options, interner);
         if let Some(entry) = &c.entry_file {
             c.loading_imports.insert(ImportKey {
                 owner: c.source_owner.clone(),
@@ -3987,7 +3965,6 @@ mod tests {
                 let mut compiler = Compiler::new(
                     PathBuf::new(),
                     None,
-                    HashSet::new(),
                     ModuleLoaderOptions::default(),
                     StringInterner::default(),
                 );
@@ -5706,13 +5683,7 @@ Answer = "blake3:deadbeef"
             sources[0].owner, expected,
             "sealing retains locked provenance"
         );
-        let mut compiler = Compiler::new(
-            root.clone(),
-            Some(entry),
-            HashSet::new(),
-            options,
-            program.interner,
-        );
+        let mut compiler = Compiler::new(root.clone(), Some(entry), options, program.interner);
         let project = compiler.source_owner.clone();
         assert_eq!(project.as_ref().unwrap().name(), "Proj");
         for decl in &program.decls {
@@ -5745,7 +5716,6 @@ Answer = "blake3:deadbeef"
         let mut compiler = Compiler::new(
             root.clone(),
             Some(entry),
-            HashSet::new(),
             ModuleLoaderOptions {
                 local_package_root: Some(root.join("libraries")),
                 ..Default::default()
@@ -5832,7 +5802,6 @@ Answer = "blake3:deadbeef"
         let mut compiler = Compiler::new(
             project_dir.clone(),
             None,
-            HashSet::new(),
             ModuleLoaderOptions::default(),
             StringInterner::default(),
         );
