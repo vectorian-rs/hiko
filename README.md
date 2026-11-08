@@ -341,6 +341,8 @@ Each run config (policy file) defines a capability boundary.
   `policies/core.policy.toml`; other named policies grant their listed capabilities.
   Policy paths must stay inside their manifest directory, including symlinks.
   `check` can type-check without a policy and never executes the program.
+  Named imports read the verified installed cache offline. Run `hiko install`
+  to populate or repair that cache before compiling a program that needs it.
 - `hiko build-vm <run-config.toml>` bakes one run config into a generated binary, so disallowed builtins are not compiled into that artifact. With `--lock <hiko.lock.toml>` it also seals the locked modules into the binary, and with `--script <entry.hml>` the program itself (see [imports](docs/language/imports.md#generated-artifacts)).
 
 Path rules:
