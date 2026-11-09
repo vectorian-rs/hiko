@@ -1,6 +1,8 @@
 //! Source → type check, under a small work limit. A program that type
 //! checks (and imports nothing) is then compiled; the compiler's output must
 //! pass the verifier, and running it must not panic.
+//! Bounded regression seeds: `seeds/fuzz_typecheck` (relative to this fuzz crate);
+//! pass that directory to cargo-fuzz as its initial corpus.
 #![no_main]
 use hiko_compile::compiler::Compiler;
 use hiko_syntax::ast::Program;

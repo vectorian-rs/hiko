@@ -3941,6 +3941,97 @@ mod tests {
         Parser::new(tokens).parse_program().expect("parse")
     }
 
+    fn import_budget_source(prefix: &str) -> String {
+        let mut source = format!("type 'a {prefix}dup = 'a * 'a\ntype {prefix}a0 = int\n");
+        for i in 1..=8 {
+            source.push_str(&format!(
+                "type {prefix}a{i} = {prefix}a{} {prefix}dup\n",
+                i - 1
+            ));
+        }
+        source
+    }
+
+    fn assert_cumulative_import_budget(
+        root: &Path,
+        entry: &Path,
+        source: &str,
+        options: ModuleLoaderOptions,
+    ) {
+        let run = |limit| {
+            let program = parse_program(source);
+            let mut compiler = Compiler::new(
+                root.to_path_buf(),
+                Some(entry.to_path_buf()),
+                options.clone(),
+                program.interner,
+            );
+            compiler.infer_ctx.set_max_type_work(limit);
+            let initial = compiler.infer_ctx.type_work();
+            let mut after = Vec::new();
+            for decl in &program.decls {
+                if let Err(error) = compiler.infer_decl_pass(decl) {
+                    return (initial, after, compiler.infer_ctx.type_work(), Some(error));
+                }
+                after.push(compiler.infer_ctx.type_work());
+            }
+            (initial, after, compiler.infer_ctx.type_work(), None)
+        };
+        let (initial, after, exact, error) = run(u64::MAX);
+        assert!(error.is_none(), "{error:?}");
+        assert!(
+            after.windows(2).all(|pair| pair[1] > pair[0]),
+            "imports and caller share monotonically increasing work: {after:?}"
+        );
+        assert!(after[0] > initial);
+        assert!(run(exact).3.is_none());
+        let (_, completed, used, error) = run(exact - 1);
+        assert_eq!(
+            completed.len(),
+            after.len() - 1,
+            "must reach last import, not reset or fail early"
+        );
+        assert!(used < exact);
+        let Some(CompileError::Type(error)) = error else {
+            panic!("expected typed budget error: {error:?}");
+        };
+        assert!(error.message.contains("type alias expansion"), "{error:?}");
+        assert!(error.span.start > 0 && error.span.end > error.span.start);
+        assert!(!error.message.contains("unknown type"));
+        assert!(!error.message.contains("non-exhaustive"));
+    }
+
+    #[test]
+    fn local_uses_share_the_callers_type_work_budget() {
+        let root = unique_temp_dir("cumulative-use-budget");
+        let entry = root.join("main.hml");
+        write_file(&root.join("one.hml"), &import_budget_source("one"));
+        write_file(&root.join("two.hml"), &import_budget_source("two"));
+        let source = "val before = 1\nuse \"./one.hml\"\nuse \"./two.hml\"";
+        write_file(&entry, source);
+        assert_cumulative_import_budget(&root, &entry, source, ModuleLoaderOptions::default());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn named_import_shares_the_callers_type_work_budget() {
+        let module = import_budget_source("module");
+        let (root, entry) = write_local_package_project(&module, &blake3_hex(module.as_bytes()));
+        let source = "val before = 1\nimport Test.Answer";
+        let options = ModuleLoaderOptions {
+            local_package_root: Some(root.join("libraries")),
+            cache_dir: Some(root.join("unused-cache")),
+            ..Default::default()
+        };
+        assert_cumulative_import_budget(&root, &entry, source, options);
+        assert!(
+            !root.join("unused-cache").exists(),
+            "hermetic local package must not fetch"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn lexical_global_bindings_allow_70000_unread_rebindings() {
         let source = "val x = 1\n".repeat(70_000);
