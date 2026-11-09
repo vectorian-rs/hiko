@@ -259,6 +259,49 @@ const DATE_SOURCE: &str = r#"structure BuiltinDate = struct
 end
 "#;
 
+// New forwarders are lazy: importing a noun must not resolve unused policy
+// leaves. Keep the existing eager module sources above unchanged.
+const INT_SOURCE: &str = r#"structure BuiltinInt = struct
+  fun of_string_raw text = string_to_int text
+  fun to_string_raw value = int_to_string value
+end
+"#;
+
+const FLOAT_SOURCE: &str = r#"structure BuiltinFloat = struct
+  fun of_int_raw value = int_to_float value
+  fun to_string_raw value = float_to_string value
+end
+"#;
+
+const CHAR_SOURCE: &str = r#"structure BuiltinChar = struct
+  fun of_int_raw value = int_to_char value
+  fun to_int_raw value = char_to_int value
+end
+"#;
+
+const WORD_SOURCE: &str = r#"structure BuiltinWord = struct
+  fun of_int_raw value = int_to_word value
+  fun to_int_raw value = word_to_int value
+  fun of_string_raw text = string_to_word text
+  fun to_string_raw value = word_to_string value
+end
+"#;
+
+const PATH_JOIN_SOURCE: &str = r#"structure BuiltinPathJoin = struct
+  fun join_raw parts = path_join parts
+end
+"#;
+
+const SYSTEM_EXIT_SOURCE: &str = r#"structure BuiltinSystemExit = struct
+  fun exit_raw code = exit code
+end
+"#;
+
+const SYSTEM_PANIC_SOURCE: &str = r#"structure BuiltinSystemPanic = struct
+  fun panic_raw text = panic text
+end
+"#;
+
 /// Declares an internal module whose import path and enabled flag are derived
 /// from its leaf name and Cargo feature, so they cannot drift apart.
 macro_rules! module {
@@ -292,6 +335,13 @@ const MODULES: &[InternalBuiltinModule] = &[
     module!("Time", "builtin-time", TIME_SOURCE),
     module!("Numeric", "builtin-convert", NUMERIC_SOURCE),
     module!("Date", "builtin-date", DATE_SOURCE),
+    module!("Int", "builtin-convert", INT_SOURCE),
+    module!("Float", "builtin-convert", FLOAT_SOURCE),
+    module!("Char", "builtin-convert", CHAR_SOURCE),
+    module!("Word", "builtin-convert", WORD_SOURCE),
+    module!("PathJoin", "builtin-path", PATH_JOIN_SOURCE),
+    module!("SystemExit", "builtin-system", SYSTEM_EXIT_SOURCE),
+    module!("SystemPanic", "builtin-testing", SYSTEM_PANIC_SOURCE),
 ];
 
 pub fn is_internal_builtin_package(package_name: &str) -> bool {
@@ -316,8 +366,8 @@ mod tests {
         }
     }
 
-    /// Every `val x_raw = builtin` alias in an enabled module must name a
-    /// builtin that is declared under the same feature set.
+    /// Both eager aliases and lazy forwarders in enabled modules must name a
+    /// builtin declared under the same feature set.
     #[test]
     fn enabled_module_sources_alias_declared_builtins() {
         for module in MODULES.iter().filter(|module| module.enabled) {
@@ -325,10 +375,12 @@ mod tests {
                 let Some((_, rhs)) = line
                     .trim()
                     .strip_prefix("val ")
+                    .or_else(|| line.trim().strip_prefix("fun "))
                     .and_then(|rest| rest.split_once(" = "))
                 else {
                     continue;
                 };
+                let rhs = rhs.split_whitespace().next().unwrap();
                 assert!(
                     crate::builtin_meta(rhs).is_some(),
                     "{} aliases undeclared builtin {rhs}",

@@ -1,0 +1,9 @@
+import __Builtin.Int
+
+(* Primitive integer conversions. Non-strict calls require only the invoked
+   convert leaf; --strict checks both imported function bodies. *)
+structure Int = struct
+  fun of_string text = BuiltinInt.of_string_raw text
+
+  fun to_string value = BuiltinInt.to_string_raw value
+end

@@ -1,0 +1,9 @@
+import __Builtin.Float
+
+(* Primitive float conversions; formatting and rounding follow the raw APIs.
+   Non-strict grants are per call; --strict checks both imported bodies. *)
+structure Float = struct
+  fun of_int value = BuiltinFloat.of_int_raw value
+
+  fun to_string value = BuiltinFloat.to_string_raw value
+end

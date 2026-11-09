@@ -10,22 +10,22 @@ one row per name across **all** families, even disabled optional features.
 Public names use semantic nouns and module-owned `of_x`/`to_x` conversions.
 The module column is the intended owner, not a claim that every wrapper exists:
 math members, Testing.assert/assert_eq, Fiber.wait_any and Time.epoch remain
-proposed; no extra primitive
-or wrapper is authorized by an inventory row. Primitive means the existing Rust
+proposed; no extra primitive or wrapper is authorized by an inventory row. Primitive means the existing Rust
 or runtime operation is retained; wrappers may reorder arguments, handle effects
 or compose cleanup. A new primitive requires irreducible behavior or measured
 justification; no new primitive is introduced here.
 
 #185 adds only Int/Float/Char/Word/Path/System thin modules. Other modules and
-raw APIs keep their behavior. New conversion and System forwarders defer lookup
+raw APIs keep their behavior. All six new modules defer builtin lookup
 until invocation in non-strict runs: importing alone grants no capability.
 `--strict` checks all imported bodies, including unused functions of the noun.
 System requires both `builtin-system` and `builtin-testing`; strict use requires
 both exit/panic leaves, but non-strict calls require only their own leaf. Existing
 eager embedded modules (including Numeric, Time and Stdio) stay unchanged.
 
-Current keys are exact runtime policy leaves; `-` means an unrestricted runtime
-alias with no leaf. Runtime aliases are internal, not new public raw APIs.
+Current keys are exact runtime policy leaves; `-` means an internal operation
+without a policy leaf. Module-only names and runtime aliases are not new public
+raw APIs.
 Proposed keys are **inactive audit data** for #186, not accepted policy aliases;
 #186 alone activates the final naming/import/key migration. An existing leaf may
 control a runtime-only companion (await_process_result), not a separate grant.
