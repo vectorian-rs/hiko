@@ -104,6 +104,20 @@ cargo test -p tree-sitter-hiko
 - Formatter output should remain parseable by `tree-sitter-hiko`; for valid Hiko source, it should also remain compatible with the compiler parser unless explicitly documented.
 - Preserve comments intentionally, not as an afterthought.
 
+## Builtin and module naming
+
+- Name public modules after semantic nouns; conversions belong to their owning
+  module as `of_x` / `to_x`, not a catch-all conversion module.
+- Keep the [builtin audit](../builtins/builtin-audit.md) in sync with metadata,
+  including disabled optional families and runtime-only aliases. The audit is
+  checked mapping data, never a second runtime registry.
+- Prefer thin wrappers over new primitives. A primitive needs irreducible host,
+  runtime or representation behavior, or measured justification for composition.
+- Availability is not permission. New thin conversion/System wrappers defer
+  non-strict lookup until invocation; `--strict` checks all imported bodies.
+  Never grant unused peer capabilities implicitly or change existing raw APIs
+  as a side effect of adding a module. Proposed future keys are not active keys.
+
 ## Compiler and typechecker standards
 
 - Keep source-of-truth metadata centralized where possible.
