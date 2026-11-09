@@ -1,3 +1,6 @@
+(* List sequencing uses bounded VM call stack and local reversed accumulators,
+   without importing List. Temporary lists need extra GC objects/estimated
+   heap bytes; low-limit success and exact fuel thresholds can change. *)
 structure Result = struct
   datatype ('a, 'e) result =
       Ok of 'a
@@ -89,32 +92,29 @@ structure Result = struct
   (* Run two Result-producing functions on the same input and pair their Ok values. *)
   fun fanout f g value = both (f value) (g value)
 
-  (* Convert a list of Results into a Result of a list. Stops at the first Err. *)
-  fun all results =
-    case results of
-        [] => Ok []
-      | result :: rest =>
-        case result of
-            Err err => Err err
-          | Ok value =>
-            case all rest of
-                Ok values => Ok (value :: values)
-              | Err err => Err err
+  (* Map once per element, left-to-right, stopping at the first Err. *)
+  fun traverse f xs =
+    let
+      fun rev_onto (rest, acc) =
+        case rest of
+            [] => acc
+          | value :: tail => rev_onto (tail, value :: acc)
+      fun loop (rest, acc) =
+        case rest of
+            [] => Ok (rev_onto (acc, []))
+          | x :: tail =>
+            case f x of
+                Err err => Err err
+              | Ok value => loop (tail, value :: acc)
+    in
+      loop (xs, [])
+    end
+
+  (* Convert a list of Results, stopping at the first Err. *)
+  fun all results = traverse (fn result => result) results
 
   (* Alias for all, matching common sequence/traverse terminology. *)
   fun sequence results = all results
-
-  (* Map a Result-producing function over a list. Stops at the first Err. *)
-  fun traverse f xs =
-    case xs of
-        [] => Ok []
-      | x :: rest =>
-        case f x of
-            Err err => Err err
-          | Ok value =>
-            case traverse f rest of
-                Ok values => Ok (value :: values)
-              | Err err => Err err
 
   (* 7. Validation helpers. These accumulate all errors in input order. *)
 
@@ -132,27 +132,33 @@ structure Result = struct
   (* Run two Result-producing functions on one input, accumulating errors from both. *)
   fun validate_fanout f g value = validate_both (f value) (g value)
 
-  (* Convert a list of Results into a Result of a list, accumulating all errors. *)
-  fun validate_all results =
-    case results of
-        [] => Ok []
-      | result :: rest =>
-        case (result, validate_all rest) of
-            (Ok value, Ok values) => Ok (value :: values)
-          | (Ok _, Err errs) => Err errs
-          | (Err err, Ok _) => Err [err]
-          | (Err err, Err errs) => Err (err :: errs)
-
-  (* Map a Result-producing function over a list, accumulating all errors. *)
+  (* Map once per element, left-to-right; keep every error in input order.
+     Once an error occurs, successful values can no longer be returned. *)
   fun validate_traverse f xs =
-    case xs of
-        [] => Ok []
-      | x :: rest =>
-        case (f x, validate_traverse f rest) of
-            (Ok value, Ok values) => Ok (value :: values)
-          | (Ok _, Err errs) => Err errs
-          | (Err err, Ok _) => Err [err]
-          | (Err err, Err errs) => Err (err :: errs)
+    let
+      fun rev_onto (rest, acc) =
+        case rest of
+            [] => acc
+          | value :: tail => rev_onto (tail, value :: acc)
+      fun loop (rest, values, errors) =
+        case rest of
+            [] =>
+            (case errors of
+                [] => Ok (rev_onto (values, []))
+              | _ => Err (rev_onto (errors, [])))
+          | x :: tail =>
+            case f x of
+                Err err => loop (tail, [], err :: errors)
+              | Ok value =>
+                case errors of
+                    [] => loop (tail, value :: values, [])
+                  | _ => loop (tail, [], errors)
+    in
+      loop (xs, [], [])
+    end
+
+  (* Convert a list of Results, accumulating all errors in input order. *)
+  fun validate_all results = validate_traverse (fn result => result) results
 
   (* Applicative combination over error lists. A Result whose errors are a
      list feeds straight into another, so validations nest:

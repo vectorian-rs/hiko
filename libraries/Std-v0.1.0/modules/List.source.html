@@ -1,35 +1,51 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.List source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.List</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">List</span></code></pre><p class="meta">Narrative docs: <a href="./List.html">List.html</a><br>Raw source: <a href="./List.hml">List.hml</a><br>BLAKE3: <code title="blake3:4e5e53fbd502ffbd5ecd01b45c4c183a7feac8859ff2c12a6a900c3d77921e93">blake3:4e5e53fb...77921e93</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>fun</code> <strong>map</strong></li><li><code>fun</code> <strong>filter</strong></li><li><code>fun</code> <strong>foldl</strong></li><li><code>fun</code> <strong>foldr</strong></li><li><code>fun</code> <strong>length</strong></li><li><code>fun</code> <strong>reverse</strong></li><li><code>fun</code> <strong>append</strong></li><li><code>fun</code> <strong>nth</strong></li><li><code>fun</code> <strong>last</strong></li><li><code>fun</code> <strong>take</strong></li><li><code>fun</code> <strong>drop</strong></li><li><code>fun</code> <strong>zip</strong></li><li><code>fun</code> <strong>all</strong></li><li><code>fun</code> <strong>any</strong></li><li><code>fun</code> <strong>find</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-keyword">structure</span> <span class="tok-module">List</span> = <span class="tok-keyword">struct</span>
-  <span class="tok-keyword">fun</span> <span class="tok-function">map</span> <span class="tok-variable">f</span> <span class="tok-variable">xs</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
-        [] =&gt; []
-      | <span class="tok-variable">x</span> :: <span class="tok-variable">xs</span> =&gt; <span class="tok-variable">f</span> <span class="tok-variable">x</span> :: <span class="tok-variable">map</span> <span class="tok-variable">f</span> <span class="tok-variable">xs</span>
-
-  <span class="tok-keyword">fun</span> <span class="tok-function">filter</span> <span class="tok-variable">p</span> <span class="tok-variable">xs</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
-        [] =&gt; []
-      | <span class="tok-variable">x</span> :: <span class="tok-variable">xs</span> =&gt; <span class="tok-keyword">if</span> <span class="tok-variable">p</span> <span class="tok-variable">x</span> <span class="tok-keyword">then</span> <span class="tok-variable">x</span> :: <span class="tok-variable">filter</span> <span class="tok-variable">p</span> <span class="tok-variable">xs</span> <span class="tok-keyword">else</span> <span class="tok-variable">filter</span> <span class="tok-variable">p</span> <span class="tok-variable">xs</span>
-
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Std.List source</title><link rel="stylesheet" href="../../_assets/docgen.css"></head><body><main><div class="eyebrow"><a href="./index.html">Std modules</a></div><h1>Std.List</h1><p>Syntax-highlighted source generated from <code>tree-sitter-hiko</code>.</p><section class="panel"><h2>Use</h2><pre class="code-block"><code><span class="tok-keyword">import</span> <span class="tok-namespace">Std</span>.<span class="tok-module">List</span></code></pre><p class="meta">Narrative docs: <a href="./List.html">List.html</a><br>Raw source: <a href="./List.hml">List.hml</a><br>BLAKE3: <code title="blake3:d2e728cf278e2fe7baefa989d608d291aa09b963aac95e16763de687f9ef4ab0">blake3:d2e728cf...f9ef4ab0</code></p></section><section class="panel"><h2>Detected exports</h2><ul class="siglist"><li><code>fun</code> <strong>foldl</strong></li><li><code>fun</code> <strong>reverse</strong></li><li><code>fun</code> <strong>map</strong></li><li><code>fun</code> <strong>filter</strong></li><li><code>fun</code> <strong>foldr</strong></li><li><code>fun</code> <strong>length</strong></li><li><code>fun</code> <strong>append</strong></li><li><code>fun</code> <strong>nth</strong></li><li><code>fun</code> <strong>last</strong></li><li><code>fun</code> <strong>take</strong></li><li><code>fun</code> <strong>drop</strong></li><li><code>fun</code> <strong>zip</strong></li><li><code>fun</code> <strong>all</strong></li><li><code>fun</code> <strong>any</strong></li><li><code>fun</code> <strong>find</strong></li></ul></section><section class="panel"><h2>Source</h2><pre class="code-block"><code><span class="tok-comment">(* List traversals use bounded VM call stack. Output-producing helpers build
+   a reversed accumulator and reverse it; foldr reverses its input first.
+   These temporary lists consume GC objects/estimated heap bytes: constant
+   stack does not mean constant heap or unchanged low-limit success. *)</span>
+<span class="tok-keyword">structure</span> <span class="tok-module">List</span> = <span class="tok-keyword">struct</span>
   <span class="tok-keyword">fun</span> <span class="tok-function">foldl</span> <span class="tok-variable">f</span> <span class="tok-variable">acc</span> <span class="tok-variable">xs</span> =
     <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
         [] =&gt; <span class="tok-variable">acc</span>
       | <span class="tok-variable">x</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">foldl</span> <span class="tok-variable">f</span> (<span class="tok-variable">f</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>)) <span class="tok-variable">rest</span>
 
-  <span class="tok-keyword">fun</span> <span class="tok-function">foldr</span> <span class="tok-variable">f</span> <span class="tok-variable">init</span> <span class="tok-variable">xs</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
-        [] =&gt; <span class="tok-variable">init</span>
-      | <span class="tok-variable">x</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">f</span> (<span class="tok-variable">x</span>, <span class="tok-variable">foldr</span> <span class="tok-variable">f</span> <span class="tok-variable">init</span> <span class="tok-variable">rest</span>)
-
-  <span class="tok-keyword">fun</span> <span class="tok-function">length</span> <span class="tok-variable">xs</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
-        [] =&gt; <span class="tok-number">0</span>
-      | _ :: <span class="tok-variable">xs</span> =&gt; <span class="tok-number">1</span> + <span class="tok-variable">length</span> <span class="tok-variable">xs</span>
-
   <span class="tok-keyword">fun</span> <span class="tok-function">reverse</span> <span class="tok-variable">xs</span> = <span class="tok-variable">foldl</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>) [] <span class="tok-variable">xs</span>
 
-  <span class="tok-keyword">fun</span> <span class="tok-function">append</span> <span class="tok-variable">xs</span> <span class="tok-variable">ys</span> =
-    <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
-        [] =&gt; <span class="tok-variable">ys</span>
-      | <span class="tok-variable">x</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">x</span> :: <span class="tok-variable">append</span> <span class="tok-variable">rest</span> <span class="tok-variable">ys</span>
+  <span class="tok-comment">(* Calls f once per element, left-to-right. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">map</span> <span class="tok-variable">f</span> <span class="tok-variable">xs</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">fun</span> <span class="tok-function">loop</span> (<span class="tok-variable">rest</span>, <span class="tok-variable">acc</span>) =
+        <span class="tok-keyword">case</span> <span class="tok-variable">rest</span> <span class="tok-keyword">of</span>
+            [] =&gt; <span class="tok-variable">reverse</span> <span class="tok-variable">acc</span>
+          | <span class="tok-variable">x</span> :: <span class="tok-variable">tail</span> =&gt; <span class="tok-variable">loop</span> (<span class="tok-variable">tail</span>, <span class="tok-variable">f</span> <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">loop</span> (<span class="tok-variable">xs</span>, [])
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-comment">(* Calls p once per element, left-to-right. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">filter</span> <span class="tok-variable">p</span> <span class="tok-variable">xs</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">fun</span> <span class="tok-function">loop</span> (<span class="tok-variable">rest</span>, <span class="tok-variable">acc</span>) =
+        <span class="tok-keyword">case</span> <span class="tok-variable">rest</span> <span class="tok-keyword">of</span>
+            [] =&gt; <span class="tok-variable">reverse</span> <span class="tok-variable">acc</span>
+          | <span class="tok-variable">x</span> :: <span class="tok-variable">tail</span> =&gt; <span class="tok-keyword">if</span> <span class="tok-variable">p</span> <span class="tok-variable">x</span> <span class="tok-keyword">then</span> <span class="tok-variable">loop</span> (<span class="tok-variable">tail</span>, <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>) <span class="tok-keyword">else</span> <span class="tok-variable">loop</span> (<span class="tok-variable">tail</span>, <span class="tok-variable">acc</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">loop</span> (<span class="tok-variable">xs</span>, [])
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-comment">(* Calls f right-to-left, preserving the right fold&#39;s result and effects. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">foldr</span> <span class="tok-variable">f</span> <span class="tok-variable">init</span> <span class="tok-variable">xs</span> = <span class="tok-variable">foldl</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">f</span> (<span class="tok-variable">x</span>, <span class="tok-variable">acc</span>)) <span class="tok-variable">init</span> (<span class="tok-variable">reverse</span> <span class="tok-variable">xs</span>)
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">length</span> <span class="tok-variable">xs</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">fun</span> <span class="tok-function">loop</span> (<span class="tok-variable">rest</span>, <span class="tok-variable">count</span>) =
+        <span class="tok-keyword">case</span> <span class="tok-variable">rest</span> <span class="tok-keyword">of</span>
+            [] =&gt; <span class="tok-variable">count</span>
+          | _ :: <span class="tok-variable">tail</span> =&gt; <span class="tok-variable">loop</span> (<span class="tok-variable">tail</span>, <span class="tok-variable">count</span> + <span class="tok-number">1</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">loop</span> (<span class="tok-variable">xs</span>, <span class="tok-number">0</span>)
+    <span class="tok-keyword">end</span>
+
+  <span class="tok-keyword">fun</span> <span class="tok-function">append</span> <span class="tok-variable">xs</span> <span class="tok-variable">ys</span> = <span class="tok-variable">foldl</span> (<span class="tok-keyword">fn</span> (<span class="tok-variable">acc</span>, <span class="tok-variable">x</span>) =&gt; <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>) <span class="tok-variable">ys</span> (<span class="tok-variable">reverse</span> <span class="tok-variable">xs</span>)
 
   <span class="tok-keyword">fun</span> <span class="tok-function">nth</span> <span class="tok-variable">xs</span> <span class="tok-variable">n</span> =
     <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
@@ -42,19 +58,34 @@
       | _ :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">last</span> <span class="tok-variable">rest</span>
       | [] =&gt; <span class="tok-variable">panic</span> <span class="tok-string">&quot;last: empty list&quot;</span>
 
-  <span class="tok-keyword">fun</span> <span class="tok-function">take</span> <span class="tok-variable">n</span> <span class="tok-variable">xs</span> = <span class="tok-keyword">if</span> <span class="tok-variable">n</span> = <span class="tok-number">0</span> <span class="tok-keyword">then</span> [] <span class="tok-keyword">else</span> <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
-        [] =&gt; []
-      | <span class="tok-variable">x</span> :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">x</span> :: <span class="tok-variable">take</span> (<span class="tok-variable">n</span> - <span class="tok-number">1</span>) <span class="tok-variable">rest</span>
+  <span class="tok-comment">(* A negative count consumes the whole finite input, as before. *)</span>
+  <span class="tok-keyword">fun</span> <span class="tok-function">take</span> <span class="tok-variable">n</span> <span class="tok-variable">xs</span> =
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">fun</span> <span class="tok-function">loop</span> (<span class="tok-variable">count</span>, <span class="tok-variable">rest</span>, <span class="tok-variable">acc</span>) =
+        <span class="tok-keyword">if</span> <span class="tok-variable">count</span> = <span class="tok-number">0</span> <span class="tok-keyword">then</span> <span class="tok-variable">reverse</span> <span class="tok-variable">acc</span> <span class="tok-keyword">else</span>
+          <span class="tok-keyword">case</span> <span class="tok-variable">rest</span> <span class="tok-keyword">of</span>
+              [] =&gt; <span class="tok-variable">reverse</span> <span class="tok-variable">acc</span>
+            | <span class="tok-variable">x</span> :: <span class="tok-variable">tail</span> =&gt; <span class="tok-variable">loop</span> (<span class="tok-variable">count</span> - <span class="tok-number">1</span>, <span class="tok-variable">tail</span>, <span class="tok-variable">x</span> :: <span class="tok-variable">acc</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">loop</span> (<span class="tok-variable">n</span>, <span class="tok-variable">xs</span>, [])
+    <span class="tok-keyword">end</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">drop</span> <span class="tok-variable">n</span> <span class="tok-variable">xs</span> = <span class="tok-keyword">if</span> <span class="tok-variable">n</span> = <span class="tok-number">0</span> <span class="tok-keyword">then</span> <span class="tok-variable">xs</span> <span class="tok-keyword">else</span> <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
         [] =&gt; []
       | _ :: <span class="tok-variable">rest</span> =&gt; <span class="tok-variable">drop</span> (<span class="tok-variable">n</span> - <span class="tok-number">1</span>) <span class="tok-variable">rest</span>
 
+  <span class="tok-comment">(* Stops at the shorter input. *)</span>
   <span class="tok-keyword">fun</span> <span class="tok-function">zip</span> <span class="tok-variable">xs</span> <span class="tok-variable">ys</span> =
-    <span class="tok-keyword">case</span> (<span class="tok-variable">xs</span>, <span class="tok-variable">ys</span>) <span class="tok-keyword">of</span>
-        ([], _) =&gt; []
-      | (_, []) =&gt; []
-      | (<span class="tok-variable">x</span> :: <span class="tok-variable">xs</span>, <span class="tok-variable">y</span> :: <span class="tok-variable">ys</span>) =&gt; (<span class="tok-variable">x</span>, <span class="tok-variable">y</span>) :: <span class="tok-variable">zip</span> <span class="tok-variable">xs</span> <span class="tok-variable">ys</span>
+    <span class="tok-keyword">let</span>
+      <span class="tok-keyword">fun</span> <span class="tok-function">loop</span> (<span class="tok-variable">left</span>, <span class="tok-variable">right</span>, <span class="tok-variable">acc</span>) =
+        <span class="tok-keyword">case</span> (<span class="tok-variable">left</span>, <span class="tok-variable">right</span>) <span class="tok-keyword">of</span>
+            ([], _) =&gt; <span class="tok-variable">reverse</span> <span class="tok-variable">acc</span>
+          | (_, []) =&gt; <span class="tok-variable">reverse</span> <span class="tok-variable">acc</span>
+          | (<span class="tok-variable">x</span> :: <span class="tok-variable">left_tail</span>, <span class="tok-variable">y</span> :: <span class="tok-variable">right_tail</span>) =&gt;
+            <span class="tok-variable">loop</span> (<span class="tok-variable">left_tail</span>, <span class="tok-variable">right_tail</span>, (<span class="tok-variable">x</span>, <span class="tok-variable">y</span>) :: <span class="tok-variable">acc</span>)
+    <span class="tok-keyword">in</span>
+      <span class="tok-variable">loop</span> (<span class="tok-variable">xs</span>, <span class="tok-variable">ys</span>, [])
+    <span class="tok-keyword">end</span>
 
   <span class="tok-keyword">fun</span> <span class="tok-function">all</span> <span class="tok-variable">p</span> <span class="tok-variable">xs</span> =
     <span class="tok-keyword">case</span> <span class="tok-variable">xs</span> <span class="tok-keyword">of</span>
