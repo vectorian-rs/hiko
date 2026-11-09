@@ -1,6 +1,6 @@
 //! Budget regressions run in a kill-and-reap subprocess: a broken checker must
 //! not hang the test runner or turn an in-process timer into false evidence.
-use hiko_syntax::{lexer::Lexer, parser::Parser};
+use hiko_syntax::{lexer::Lexer, parser::Parser, span::Span};
 use hiko_types::infer::{InferCtx, TypeError};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -71,12 +71,23 @@ fn budget_child() {
             assert!(used <= 20_000);
             assert!(error.message.contains("type alias expansion"), "{error:?}");
             assert_eq!(error.span.file_id, 17);
-            let failed = &source[error.span.start as usize..error.span.end as usize];
-            assert!(
-                failed.starts_with('t') || failed.contains("dup"),
-                "wrong enclosing span: {failed:?}"
+            // Exact location is asserted independently below, not inferred from
+            // the diagnostic's text or a slice selected by its own span.
+        }
+        "exact-span" => {
+            let source = "structure Outer = struct\ntype pair = int * int\nval value = let\n  type localpair = pair\nin () end\nend\n";
+            // The first expanded copy is this alias use. Budget zero refuses
+            // its root, then the error crosses type/let/val/structure cleanup.
+            let start = source.find("= pair\n").unwrap() as u32 + 2;
+            let expected = Span::new(17, start, start + 4);
+            let (used, result, _) = check(source, 0);
+            let error = result.expect_err("first alias copy must be refused");
+            assert_eq!(used, 0);
+            assert!(error.message.contains("type alias expansion"), "{error:?}");
+            assert_eq!(
+                error.span, expected,
+                "must retain the alias token, not its declaration or enclosing scopes"
             );
-            assert!(!failed.contains("structure"));
         }
         "boundaries" => {
             let source = "type 'a dup = 'a * 'a\ntype t = int dup\nval x : t = (1, 2)";
@@ -147,6 +158,7 @@ fn budget_cases_have_a_hard_deadline() {
         "wide",
         "nullary",
         "parameterized",
+        "exact-span",
         "boundaries",
         "semantics",
         "seeds",
