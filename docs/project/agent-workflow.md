@@ -23,9 +23,9 @@ Other tools can be instructed to read the root `AGENTS.md` explicitly.
 
 ## PR skills
 
-Every PR follows Implement → simplify/fix → verify → code-review → fix/reverify
-before Present. Both skills live in `.agents/skills/`, which Codex and Pi discover
-directly. Claude uses its native commands when available.
+Use the [lifecycle's review policy](delivery.md#lenses) for required ordering,
+passes, independence and evidence. Codex and Pi discover `.agents/skills/`
+directly; Claude uses its native commands when available.
 
 | Host | Cleanup | Correctness review |
 | --- | --- | --- |
@@ -40,32 +40,13 @@ reports without editing or posting by default. Pass `--fix` to request fixes or
 applies behavior-preserving cleanup. Use Pi's `/reload` after skill edits; restart
 Codex if a change does not appear. No provider-specific copy is needed.
 
-The [simplify port](../../.agents/skills/simplify/SKILL.md) follows Claude's
-current four cleanup passes: reuse, simplification, efficiency and abstraction
-level, then consolidation and fixes. The
-[code-review port](../../.agents/skills/code-review/SKILL.md) follows Anthropic's
-plugin: two instruction auditors, two bug auditors, separate finding validation
-and optional PR comments. It also accepts the local command's fix, depth and
-finding-limit options; depth is an instruction, not a host model setting.
-
-These adapt Claude's workflows; they are not extracted bundled prompts or its
-cloud service. Sources checked 2026-11-07:
-[Claude commands](https://code.claude.com/docs/en/commands),
-[review plugin](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/code-review/commands/code-review.md),
-[local review](https://code.claude.com/docs/en/code-review-local),
-[Codex skills](https://learn.chatgpt.com/docs/build-skills), and
-[Pi skills](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md).
-
-Tool APIs and model selection belong to the host. Use delegated reviewers when
-available and permitted; otherwise run the same passes sequentially and label
-them self-review. Pi needs a delegation-capable extension for separate reviewers.
-Sequential passes do not satisfy a required independent review. Hiko's all-PR
-rule replaces the plugin's draft/trivial/already-commented skip conditions.
-
-Record scope, actual passes, reviewer mode, findings/fixes and the resulting
-head in PR evidence. Generic `simplicity: none` or `correctness: none` lines
-without running the passes do not supply this evidence. This is a workflow
-requirement; it does not install a CI service or grant merge approval.
+Read the [simplify](../../.agents/skills/simplify/SKILL.md) and
+[code-review](../../.agents/skills/code-review/SKILL.md) ports for their actual
+passes and options; depth is an instruction, not a host model setting. They
+adapt Claude's workflows, not its cloud service or extracted bundled prompts.
+Tool APIs and model selection belong to the host; Pi needs a delegation-capable
+extension for separate reviewers. These commands install no CI service and
+grant no approval or merge authority.
 
 ## Run or resume an issue
 
@@ -78,16 +59,11 @@ codex "Use docs/prompts/issue-cycle.md for issue #191; resume its checkpoint."
 claude "Use docs/prompts/issue-cycle.md for issue #191; resume its checkpoint."
 ```
 
-A roadmap invocation selects one eligible implementation issue at a time.
-It keeps the issue's existing PR and approved scope through routine fixes and
-verification retries. Material plan changes need a new revision; the maintainer
-approves reviewed revisions and merges ready PRs. Reviewed issue/revision pairs
-can be approved in a batch and recorded separately.
-
-The issue holds the phase/role/claim, approval, branch/PR/head, acceptance results,
-review findings, CI, and next action. A new session reads that checkpoint before
-continuing. One assigned session may coordinate and implement sequentially;
-required independent reviews still need an independent reviewer.
+Resume the issue's [verification checkpoint](delivery.md#verification-checkpoint),
+not a fresh coordination thread. Follow the lifecycle's [authority and ownership
+rules](delivery.md#roles) and [communication policy](delivery.md#messages);
+invoking a role or command does not grant task permissions or an implementation
+claim.
 
 ## Choosing a role
 

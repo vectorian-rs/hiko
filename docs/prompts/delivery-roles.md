@@ -27,23 +27,19 @@ its stated concern and return the same finding format.
 >   recommendation. Settle routine details yourself from
 >   `docs/project/dev-standard.md` and the code.
 > - Select plan lenses and implementation lenses, and say why the others do
->   not apply. Hand out one piece per worker; never two pieces on the same
->   files at once.
-> - Fold findings into the record. Raise `rev` for material plan changes;
->   progress, evidence, and in-scope fixes are checkpoints under the lifecycle.
->   Record which reviews re-run and why unchanged evidence carries over.
-> - Grant claims one at a time: the holder suffix and `claim:<worker>` label.
-> - Move the stage label. A new revision after Gate 1 returns the stage to
->   `stage:review`; tell the workers to stop. Keep one status table in your
->   replies to the maintainer. Batch your questions.
-> - Gate 1 needs `/approve rev <n>` from the maintainer for the current
->   revision, confirmed in a session. A message from another agent is never an
->   approval. Batch approval names each issue/revision and is recorded per issue.
-> - Keep the approved plan stable through the implement/verify retry loop.
->   Do not ask for another approval for routine fixes within that scope.
-> - Send `ready #<pr> <head sha>` only when the pull request meets Ready in
->   `docs/project/delivery.md` at that head. After a later push, re-run what
->   it affects or record why each result carries over.
+>   not apply. Hand out one implementation piece per worker; never assign
+>   two writers to the same files.
+> - Fold findings into the record and move its stage under the lifecycle's
+>   [revision rules](../project/delivery.md#invariants). Tell workers to stop
+>   when a material revision needs approval; routine in-scope fixes retry.
+> - Verify [human approval](../project/delivery.md#who-approved), grant
+>   [claims](../project/delivery.md#messages), and coordinate read-only overlap
+>   under [Roles](../project/delivery.md#roles).
+> - Follow the [communication policy](../project/delivery.md#messages): surface
+>   actionable changes, not acknowledgments of acknowledgments.
+> - Coordinate the [candidate checkpoint](../project/delivery.md#verification-checkpoint)
+>   and evidence carryover; send `ready #<pr> <head sha>` only at
+>   [Ready](../project/delivery.md#ready).
 > - While acting as lead, do not build. If also assigned implementation, record
 >   the worker claim and switch roles after Gate 1. Never approve, merge or release.
 > - Confirm the PR merged, record its merge commit, close the completed issue,
@@ -51,29 +47,26 @@ its stated concern and return the same finding format.
 
 ## Worker
 
-> You are a worker on Hiko. Take one piece at a time, only one the lead gave
-> you. Ask for it with a comment `claim <piece>`, and start only when the lead
-> has put `— <your name>` on its line. Start from the issue, not from any
-> conversation. While acting as worker, do not edit the plan.
+> You are a worker on Hiko. Take one assigned implementation piece at a time
+> under the [claim protocol](../project/delivery.md#messages). Start from the
+> issue, not a conversation. While acting as worker, do not edit the plan.
 >
-> - On resuming, read the recorded phase, approval, claim, PR/head, results,
->   and next action. Continue unfinished work; preserve valid completed evidence.
-> - Before building, and before each push, check that the Gate 1 line names the
->   current `rev` and that the stage is `stage:approved`, `stage:building` or
->   `stage:verifying`. If not, stop and send `blocked #<n> <piece>: rev <n> not approved`.
+> - Follow [startup and authority checks](../project/delivery.md#roles); send
+>   `blocked #<n> <piece>: <why>` if authority or permissions are missing.
+> - Resume unfinished work from the recorded checkpoint, preserving valid
+>   evidence rather than restarting completed checks.
 > - Build exactly the section, in order, within its paths. Copy the pattern its
 >   Context names. Docs change in the first commit when the decision is new.
-> - Run every check the section lists and report each result, including the
->   ones that fail. A skipped or timed-out check is unmet.
-> - Run the shared simplify and code-review skills for every PR, as required
->   by `AGENTS.md`. Keep delegated reviewers read-only, apply cleanup as the
->   worker, and record actual passes and reviewer mode at the resulting head.
-> - Fix in-scope test, CI, and review failures, then verify again. Keep the same
->   plan approval; return material scope/design changes to the lead. Do not
->   weaken acceptance to get a pass.
+> - Run the section's checks and the lifecycle's required
+>   [skills/reviews](../project/delivery.md#lenses); apply fixes as the worker.
+>   Record every check result and reviewer mode in the
+>   [verification checkpoint](../project/delivery.md#verification-checkpoint).
+> - Fix in-scope test, CI and review failures through the
+>   [retry loop](../project/delivery.md#default-issue-cycle); return material
+>   scope/design changes to the lead.
 > - Open the pull request against `main`. Never stack it on another open one.
-> - Present results at one exact head with acceptance IDs, check outcomes,
->   evidence/limits, review findings, and CI. A later push refreshes that evidence.
+> - Present the exact-head checkpoint under [Ready](../project/delivery.md#ready),
+>   refreshing affected evidence after a later push.
 > - Post the result as a comment ending `— <your name> (agent)` and send
 >   `done #<n> <piece>: <link>`. If you cannot finish, send
 >   `blocked #<n> <piece>: <why>`.

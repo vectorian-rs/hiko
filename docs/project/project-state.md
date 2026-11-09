@@ -8,6 +8,8 @@ inventory and triage, not a plan that has been executed. Nothing listed as
 
 ## Delivery checkpoint (2026-11-08)
 
+Merge status refreshed 2026-11-09; the inventory below keeps its snapshot date.
+
 [PR #221](https://github.com/vectorian-rs/hiko/pull/221) completed
 [#183](https://github.com/vectorian-rs/hiko/issues/183) and merged at `e980d88`.
 Its verified head passed 1,150 default and 1,217 all-features workspace tests,
@@ -50,19 +52,27 @@ Its verified head `40cb170` passed 1,190 default and 1,268 all-features workspac
 tests, lint, four mutation checks, selected reviews and all five CI jobs.
 The issue is complete and its claim is released.
 
-[PR #231](https://github.com/vectorian-rs/hiko/pull/231) implements
-[#210 rev 5](https://github.com/vectorian-rs/hiko/issues/210): package provenance
-travels through both compiler passes, import caches and sealing inputs. The
-typed catalog supplies owner-relative `Proj`, nested-name and dependency
+[PR #231](https://github.com/vectorian-rs/hiko/pull/231) completed
+[#210 rev 5](https://github.com/vectorian-rs/hiko/issues/210) and merged at `9dc93cd`:
+package provenance travels through both compiler passes, import caches and
+sealing inputs. The typed catalog supplies owner-relative `Proj`, nested-name and dependency
 fixtures for the future cutover. Current public syntax and metadata formats
 stay unchanged; [#186](https://github.com/vectorian-rs/hiko/issues/186) owns
 their activation and the repository migration.
-Implementation head `6344538` passed 1,206 default and 1,284 all-features
-workspace tests, lint, five mutation checks and all five CI jobs.
+Its verified head `69a5609` passed acceptance/mutation checks, default/all-features
+workspace tests, lint, selected reviews and all five CI jobs. The issue is closed.
 
-Next are [#185's builtin/module map](https://github.com/vectorian-rs/hiko/issues/185)
-and [#198's measurement gate](https://github.com/vectorian-rs/hiko/issues/198),
-both prerequisites of the public cutover in #186.
+[PR #233](https://github.com/vectorian-rs/hiko/pull/233) completed
+[#185 rev 4](https://github.com/vectorian-rs/hiko/issues/185) and merged at `66f243a`:
+a checked builtin/module inventory and thin Int/Float/Char/Word/Path/System
+modules preserve current raw APIs and policy keys. Proposed keys remain inactive
+for #186. Verified head `e66646e` passed acceptance, feature/register-VM matrices,
+audit mutations, hash/pin/link checks, default/all-features workspace tests, lint,
+selected independent reviews and all five CI jobs. The issue is complete and its
+claim is released.
+
+[#198's measurement gate](https://github.com/vectorian-rs/hiko/issues/198)
+remains a prerequisite of the public cutover in #186.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
 
