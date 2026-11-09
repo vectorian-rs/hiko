@@ -9,7 +9,7 @@ one row per name across **all** families, even disabled optional features.
 
 Public names use semantic nouns and module-owned `of_x`/`to_x` conversions.
 The module column is the intended owner, not a claim that every wrapper exists:
-math members, Testing.assert/assert_eq, Fiber.wait_any and Time.epoch remain
+math members, Fiber.wait_any and Time.epoch remain
 proposed; no extra primitive or wrapper is authorized by an inventory row. Primitive means the existing Rust
 or runtime operation is retained; wrappers may reorder arguments, handle effects
 or compose cleanup. A new primitive requires irreducible behavior or measured
@@ -37,8 +37,8 @@ Features are unchanged; availability never implies runtime permission.
 | --- | --- | --- | --- | --- | --- |
 | abs_float | builtin-math | capabilities.math.abs_float | Std.Float.abs | capabilities.float.abs | primitive: existing scalar/codec operation |
 | abs_int | builtin-math | capabilities.math.abs_int | Std.Int.abs | capabilities.int.abs | primitive: existing scalar/codec operation |
-| assert | builtin-testing | capabilities.testing.assert | Std.Testing.assert | capabilities.testing.assert | primitive: failure/assertion boundary |
-| assert_eq | builtin-testing | capabilities.testing.assert_eq | Std.Testing.assert_eq | capabilities.testing.assert_eq | primitive: failure/assertion boundary |
+| assert | builtin-testing | capabilities.testing.assert | Std.Testing.check | capabilities.testing.check | primitive: failure/assertion boundary |
+| assert_eq | builtin-testing | capabilities.testing.assert_eq | Std.Testing.equal | capabilities.testing.equal | primitive: failure/assertion boundary |
 | await_process | builtin-process | capabilities.process.await_process | Std.Fiber.join_or_fail | capabilities.fiber.join_or_fail | primitive: runtime lifecycle; wrappers compose cleanup |
 | await_process_result | builtin-process | capabilities.process.await_process | Std.Fiber.join | capabilities.fiber.join | primitive: runtime lifecycle; wrappers compose cleanup |
 | blake3 | builtin-hash | capabilities.hash.blake3 | Hash.Blake3.hash | capabilities.hash.blake3.hash | primitive: existing scalar/codec operation |
