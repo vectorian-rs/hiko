@@ -156,6 +156,8 @@ fn thin_conversion_errors_match_raw_errors() {
             "Word.of_string \"18446744073709551616\"",
             "string_to_word \"18446744073709551616\"",
         ),
+        ("Word", "Word.of_string \"   \"", "string_to_word \"   \""),
+        ("Int", "Int.of_string \"   \"", "string_to_int \"   \""),
         (
             "Int",
             "Int.of_string \"invalid\"",
