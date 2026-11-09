@@ -126,8 +126,20 @@ fn copy_constructor(c: &Constructor, charge: Charge<'_>) -> Checked<Constructor>
     Ok(c.clone())
 }
 fn copy_patterns(patterns: &[SPat], charge: Charge<'_>) -> Checked<Vec<SPat>> {
+    let mut copied = Vec::new();
+    copy_patterns_into(patterns, &mut copied, charge)?;
+    Ok(copied)
+}
+
+/// The destination is local to the caller and must be discarded on error:
+/// a refused deep copy may leave a partially appended tail.
+fn copy_patterns_into(
+    patterns: &[SPat],
+    copied: &mut Vec<SPat>,
+    charge: Charge<'_>,
+) -> Checked<()> {
     pay(charge, patterns.len())?;
-    let mut copied = Vec::with_capacity(patterns.len());
+    copied.reserve_exact(patterns.len());
     for p in patterns {
         charge()?;
         copied.push(match p {
@@ -137,7 +149,7 @@ fn copy_patterns(patterns: &[SPat], charge: Charge<'_>) -> Checked<Vec<SPat>> {
             }
         });
     }
-    Ok(copied)
+    Ok(())
 }
 fn wildcards(arity: usize, charge: Charge<'_>) -> Checked<Vec<SPat>> {
     pay(charge, arity)?;
@@ -340,7 +352,7 @@ fn is_useful_specialized(
     charge()?;
     let arity = sub.len();
     let matrix = specialize_matrix(matrix, c, arity, charge)?;
-    sub.extend(copy_patterns(&q[1..], charge)?);
+    copy_patterns_into(&q[1..], &mut sub, charge)?;
     pay(charge, arity + types.len().saturating_sub(1))?;
     let mut specialized = Vec::with_capacity(arity + types.len().saturating_sub(1));
     for i in 0..arity {
@@ -434,7 +446,7 @@ fn specialize_matrix(
             SPat::Con(_, _) => continue,
             SPat::Wild => wildcards(arity, charge)?,
         };
-        copied.extend(copy_patterns(&row[1..], charge)?);
+        copy_patterns_into(&row[1..], &mut copied, charge)?;
         charge()?;
         result.push(copied);
     }
@@ -471,6 +483,62 @@ mod tests {
             Ok(())
         }
     }
+    #[test]
+    fn appended_nonempty_tail_preserves_shape_and_exact_charges() {
+        let tail = [
+            SPat::Con(
+                Constructor::Tuple(2),
+                vec![
+                    SPat::Wild,
+                    SPat::Con(Constructor::StringLit("xy".into()), vec![]),
+                ],
+            ),
+            SPat::Wild,
+        ];
+        // 2 outer slots + 2 outer nodes + tuple constructor + 2 child slots
+        // + 2 child nodes + string constructor + 2 string bytes = 12.
+        for limit in [0, 11, 12] {
+            let copied_work = Cell::new(0);
+            let copied = copy_patterns(&tail, &meter(&copied_work, limit));
+            let appended_work = Cell::new(0);
+            let mut destination = vec![SPat::Con(Constructor::Unit, vec![])];
+            let result = copy_patterns_into(&tail, &mut destination, &meter(&appended_work, limit));
+            assert_eq!(copied_work.get(), limit);
+            assert_eq!(appended_work.get(), limit);
+            assert_eq!(copied.is_ok(), limit == 12);
+            assert_eq!(result.is_ok(), limit == 12);
+            if let Err(error) = result {
+                assert_eq!(error.message, "test work limit");
+                assert_eq!(error.span, Span::dummy());
+                // Partial appends are private: production callers return Err
+                // immediately and discard their entire destination vector.
+                continue;
+            }
+            let [
+                SPat::Con(Constructor::Unit, prefix),
+                SPat::Con(Constructor::Tuple(2), children),
+                SPat::Wild,
+            ] = destination.as_slice()
+            else {
+                panic!("wrong appended shape: {destination:?}");
+            };
+            assert!(prefix.is_empty());
+            let [
+                SPat::Wild,
+                SPat::Con(Constructor::StringLit(value), payload),
+            ] = children.as_slice()
+            else {
+                panic!("wrong child shape: {children:?}");
+            };
+            assert_eq!(value, "xy");
+            assert!(payload.is_empty());
+            assert_eq!(
+                format!("{:?}", copied.unwrap()),
+                format!("{:?}", &destination[1..])
+            );
+        }
+    }
+
     #[test]
     fn whole_wildcard_row_stops_before_boolean_specialization() {
         let width = 80;
