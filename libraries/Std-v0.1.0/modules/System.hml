@@ -1,0 +1,13 @@
+import __Builtin.SystemExit
+import __Builtin.SystemPanic
+
+(* Requires both builtin-system and builtin-testing Cargo features. In a
+   non-strict run, exit needs only capabilities.system.exit and panic only
+   capabilities.testing.panic. --strict checks both bodies, even when unused.
+   No import grants permission. Exit terminates the host process: test or
+   invoke it only in a subprocess when the embedding host must survive. *)
+structure System = struct
+  fun exit code = BuiltinSystemExit.exit_raw code
+
+  fun panic text = BuiltinSystemPanic.panic_raw text
+end

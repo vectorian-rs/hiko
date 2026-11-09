@@ -1,0 +1,7 @@
+import __Builtin.PathJoin
+
+(* Join a pair of platform path strings without filesystem access.
+   Importing alone grants nothing; join requires capabilities.path.path_join. *)
+structure Path = struct
+  fun join parts = BuiltinPathJoin.join_raw parts
+end

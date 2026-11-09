@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod audit_tests;
+
 mod bytes;
 mod convert;
 mod date;

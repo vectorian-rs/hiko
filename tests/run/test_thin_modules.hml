@@ -1,0 +1,40 @@
+import Std.Int
+import Std.Float
+import Std.Char
+import Std.Word
+import Std.Path
+import Std.System
+
+val int_of_string : string -> int = Int.of_string
+val int_to_text : int -> string = Int.to_string
+val float_of_int : int -> float = Float.of_int
+val float_to_text : float -> string = Float.to_string
+val char_of_int : int -> char = Char.of_int
+val char_to_int : char -> int = Char.to_int
+val word_of_int : int -> word = Word.of_int
+val word_to_int : word -> int = Word.to_int
+val word_of_string : string -> word = Word.of_string
+val word_to_text : word -> string = Word.to_string
+val path_join_pair : string * string -> string = Path.join
+val exit_unit : int -> unit = System.exit
+val panic_int : string -> int = System.panic
+val panic_bool : string -> bool = System.panic
+
+val _ = assert_eq (Int.of_string " 42 ", string_to_int " 42 ", "Int.of_string")
+val _ = assert_eq (Int.to_string (~42), int_to_string (~42), "Int.to_string")
+val _ = assert_eq (Float.of_int 42, int_to_float 42, "Float.of_int")
+val _ = assert_eq (Float.to_string 2.75, float_to_string 2.75, "Float.to_string")
+val _ = assert_eq (Char.of_int 128512, int_to_char 128512, "Char.of_int")
+val _ = assert_eq (Char.to_int (Char.of_int 65), 65, "Char round trip")
+val _ = assert_eq (Word.to_int (Word.of_int 42), 42, "Word round trip")
+val _ = assert_eq (Word.of_string "42", string_to_word "42", "Word.of_string")
+val _ = assert_eq (Word.of_string "  42  ", string_to_word "  42  ", "Word whitespace")
+val _ = assert_eq (Word.to_string (Word.of_int 42), word_to_string (int_to_word 42), "Word.to_string")
+val _ = assert_eq (Path.join ("a", "b"), path_join ("a", "b"), "Path.join")
+val _ = assert_eq (Int.of_string "-9223372036854775808", string_to_int "-9223372036854775808", "Int minimum")
+val _ = assert_eq (Int.of_string "9223372036854775807", string_to_int "9223372036854775807", "Int maximum")
+val _ = assert_eq (Word.of_string "18446744073709551615", string_to_word "18446744073709551615", "Word maximum")
+val _ = assert_eq (Char.of_int 1114111, int_to_char 1114111, "Unicode maximum")
+val _ = assert_eq (Float.of_int 9223372036854775807, int_to_float 9223372036854775807, "Float rounding")
+val _ = assert_eq (Float.to_string (~0.0), float_to_string (~0.0), "Float negative zero")
+val _ = println "thin module tests passed"
