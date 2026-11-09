@@ -71,6 +71,15 @@ audit mutations, hash/pin/link checks, default/all-features workspace tests, lin
 selected independent reviews and all five CI jobs. The issue is complete and its
 claim is released.
 
+[PR #236](https://github.com/vectorian-rs/hiko/pull/236) completed
+[#203 rev 3](https://github.com/vectorian-rs/hiko/issues/203) at `4e0bcd6`:
+List, Result and Log traversals use bounded call stack with preserved callback
+and error ordering. Verified head `aed242e` passed 100k scale, charged-work
+growth, explicitly separate 1k quota observations, mutations, default/all-features
+workspace tests, lint, selected reviews and all five CI jobs. Heap observations
+are estimated retained bytes, not RSS or proven minimum limits. The issue is
+complete and its claim is released.
+
 [#198's measurement gate](https://github.com/vectorian-rs/hiko/issues/198)
 remains a prerequisite of the public cutover in #186.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current

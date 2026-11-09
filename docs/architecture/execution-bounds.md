@@ -308,6 +308,13 @@ Type inference counts every type node it visits (substituting, instantiating,
 running the occurs check) against `max_type_work`, 10,000,000 per compilation
 by default (`hiko_types::infer::DEFAULT_MAX_TYPE_WORK`). Going over the limit
 fails the compilation with "type checking exceeded its work limit".
+Pattern simplification, usefulness matrices (including scans, copies and
+specialization), and expanded alias copies share this cumulative budget.
+Charges precede the work or allocation; exhaustion is latched without integer
+wraparound and retains the first construct's source span through nested
+declarations and imports. An entirely wildcard covering row stops further
+specialization; a wildcard in just one column does not prove coverage.
+This does not claim that every other compiler pass is work-budgeted.
 
 The limit exists because types can grow exponentially in the size of the
 source. Each line here doubles the type:
