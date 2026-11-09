@@ -161,7 +161,7 @@ mod thin_modules {
                 "System.panic \"sentinel\"",
                 "[capabilities.testing.panic]\nenabled = true",
                 None,
-                "sentinel",
+                "error: sentinel",
             ),
             (
                 "denied-panic",
