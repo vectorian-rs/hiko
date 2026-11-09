@@ -378,7 +378,9 @@ fn validate(vm: &VM, profile: &Profile, size: usize) {
         let bytes = text(vm, &value).as_bytes();
         assert_eq!(bytes.len(), 1 + size * 4);
         assert_eq!(bytes[0], b'm');
-        assert!(bytes[1..].chunks_exact(4).all(|chunk| chunk == b" k=v"));
+        let (chunks, remainder) = bytes[1..].as_chunks::<4>();
+        assert!(remainder.is_empty());
+        assert!(chunks.iter().all(|chunk| chunk == b" k=v"));
         return;
     }
     let mut tail = value;
