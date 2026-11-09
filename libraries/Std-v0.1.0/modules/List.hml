@@ -1,35 +1,51 @@
+(* List traversals use bounded VM call stack. Output-producing helpers build
+   a reversed accumulator and reverse it; foldr reverses its input first.
+   These temporary lists consume GC objects/estimated heap bytes: constant
+   stack does not mean constant heap or unchanged low-limit success. *)
 structure List = struct
-  fun map f xs =
-    case xs of
-        [] => []
-      | x :: xs => f x :: map f xs
-
-  fun filter p xs =
-    case xs of
-        [] => []
-      | x :: xs => if p x then x :: filter p xs else filter p xs
-
   fun foldl f acc xs =
     case xs of
         [] => acc
       | x :: rest => foldl f (f (acc, x)) rest
 
-  fun foldr f init xs =
-    case xs of
-        [] => init
-      | x :: rest => f (x, foldr f init rest)
-
-  fun length xs =
-    case xs of
-        [] => 0
-      | _ :: xs => 1 + length xs
-
   fun reverse xs = foldl (fn (acc, x) => x :: acc) [] xs
 
-  fun append xs ys =
-    case xs of
-        [] => ys
-      | x :: rest => x :: append rest ys
+  (* Calls f once per element, left-to-right. *)
+  fun map f xs =
+    let
+      fun loop (rest, acc) =
+        case rest of
+            [] => reverse acc
+          | x :: tail => loop (tail, f x :: acc)
+    in
+      loop (xs, [])
+    end
+
+  (* Calls p once per element, left-to-right. *)
+  fun filter p xs =
+    let
+      fun loop (rest, acc) =
+        case rest of
+            [] => reverse acc
+          | x :: tail => if p x then loop (tail, x :: acc) else loop (tail, acc)
+    in
+      loop (xs, [])
+    end
+
+  (* Calls f right-to-left, preserving the right fold's result and effects. *)
+  fun foldr f init xs = foldl (fn (acc, x) => f (x, acc)) init (reverse xs)
+
+  fun length xs =
+    let
+      fun loop (rest, count) =
+        case rest of
+            [] => count
+          | _ :: tail => loop (tail, count + 1)
+    in
+      loop (xs, 0)
+    end
+
+  fun append xs ys = foldl (fn (acc, x) => x :: acc) ys (reverse xs)
 
   fun nth xs n =
     case xs of
@@ -42,19 +58,34 @@ structure List = struct
       | _ :: rest => last rest
       | [] => panic "last: empty list"
 
-  fun take n xs = if n = 0 then [] else case xs of
-        [] => []
-      | x :: rest => x :: take (n - 1) rest
+  (* A negative count consumes the whole finite input, as before. *)
+  fun take n xs =
+    let
+      fun loop (count, rest, acc) =
+        if count = 0 then reverse acc else
+          case rest of
+              [] => reverse acc
+            | x :: tail => loop (count - 1, tail, x :: acc)
+    in
+      loop (n, xs, [])
+    end
 
   fun drop n xs = if n = 0 then xs else case xs of
         [] => []
       | _ :: rest => drop (n - 1) rest
 
+  (* Stops at the shorter input. *)
   fun zip xs ys =
-    case (xs, ys) of
-        ([], _) => []
-      | (_, []) => []
-      | (x :: xs, y :: ys) => (x, y) :: zip xs ys
+    let
+      fun loop (left, right, acc) =
+        case (left, right) of
+            ([], _) => reverse acc
+          | (_, []) => reverse acc
+          | (x :: left_tail, y :: right_tail) =>
+            loop (left_tail, right_tail, (x, y) :: acc)
+    in
+      loop (xs, ys, [])
+    end
 
   fun all p xs =
     case xs of

@@ -4,12 +4,17 @@ fn run_hiko_file(path: &str) {
     let compiled = common::compile_file_hermetic(path);
     let mut vm = hiko_vm::vm::VM::new(compiled);
     vm.run()
-        .unwrap_or_else(|_| panic!("runtime error in {path}"));
+        .unwrap_or_else(|error| panic!("runtime error in {path}: {error:?}"));
 }
 
 #[test]
 fn test_stdlib_list() {
     run_hiko_file("../../tests/run/test_list.hml");
+}
+
+#[test]
+fn test_stdlib_stack_safe() {
+    run_hiko_file("../../tests/run/test_stdlib_stack_safe.hml");
 }
 
 #[test]

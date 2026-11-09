@@ -98,10 +98,22 @@ structure Log = struct
   fun format_line (ms, level, target, message) =
     concat [timestamp ms, " ", pad_right 5 (level_name level), " ", target, ": ", message]
 
+  (* Bounded call stack; keep each field's space/key/equals/value grouping.
+     A reversed accumulator adds temporary list objects/estimated heap bytes;
+     kv also allocates its joined string. This is not a constant-heap bound. *)
   fun field_parts fields =
-    case fields of
-        [] => []
-      | (key, value) :: rest => " " :: key :: "=" :: value :: field_parts rest
+    let
+      fun rev_onto (rest, acc) =
+        case rest of
+            [] => acc
+          | part :: tail => rev_onto (tail, part :: acc)
+      fun loop (rest, acc) =
+        case rest of
+            [] => rev_onto (acc, [])
+          | (key, value) :: tail => loop (tail, value :: "=" :: key :: " " :: acc)
+    in
+      loop (fields, [])
+    end
 
   (* `message k1=v1 k2=v2` *)
   fun kv message fields = concat (message :: field_parts fields)
