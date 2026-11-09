@@ -186,6 +186,12 @@ pub struct Heap {
     memory_budget: Option<Arc<SharedBudget>>,
     current_bytes: usize,
     peak_bytes: usize,
+    /// Committed allocations across collections; absent from production builds.
+    #[cfg(test)]
+    successful_allocations: u64,
+    /// Independent test window; never resets the lifetime high-water mark.
+    #[cfg(test)]
+    phase_peak_bytes: Option<usize>,
     host_resources: HashMap<HostHandleId, HostResource>,
     next_host_handle_id: u64,
     io_bytes_used: u64,
@@ -274,6 +280,10 @@ impl Heap {
             memory_budget: None,
             current_bytes: 0,
             peak_bytes: 0,
+            #[cfg(test)]
+            successful_allocations: 0,
+            #[cfg(test)]
+            phase_peak_bytes: None,
             host_resources: HashMap::new(),
             next_host_handle_id: 1,
             io_bytes_used: 0,
@@ -612,6 +622,21 @@ impl Heap {
 
     pub fn peak_bytes(&self) -> usize {
         self.peak_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn successful_allocations(&self) -> u64 {
+        self.successful_allocations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_test_phase(&mut self) {
+        self.phase_peak_bytes = Some(self.current_bytes);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn end_test_phase(&mut self) -> usize {
+        self.phase_peak_bytes.take().expect("active test phase")
     }
 
     pub fn set_max_io_bytes(&mut self, max: u64) {
@@ -1040,6 +1065,13 @@ impl Heap {
         };
         self.current_bytes = self.current_bytes.saturating_add(object_bytes);
         self.peak_bytes = self.peak_bytes.max(self.current_bytes);
+        #[cfg(test)]
+        {
+            self.successful_allocations = self.successful_allocations.checked_add(1).unwrap();
+            if let Some(peak) = &mut self.phase_peak_bytes {
+                *peak = (*peak).max(self.current_bytes);
+            }
+        }
         Ok(GcRef(idx))
     }
 
@@ -1585,6 +1617,45 @@ mod tests {
         // Per-process peaks are unchanged by the tree budget.
         assert_eq!(child.host_resource_peak_count(), 1);
         assert_eq!(parent.host_resource_peak_count(), 1);
+    }
+
+    #[test]
+    fn test_phase_counts_commits_not_refusals_and_preserves_lifetime_peak() {
+        let mut heap = Heap::new();
+        let object = || HeapObject::String("payload".into());
+        let bytes = object().estimated_bytes();
+        heap.alloc(object()).unwrap();
+        heap.alloc(object()).unwrap();
+        assert_eq!(heap.successful_allocations(), 2);
+        assert_eq!(heap.peak_bytes(), 2 * bytes);
+        heap.collect(std::iter::empty());
+        assert_eq!(heap.successful_allocations(), 2);
+        assert_eq!(heap.live_bytes(), 0);
+        heap.begin_test_phase();
+        heap.alloc(object()).unwrap();
+        heap.set_max_objects(1);
+        assert!(matches!(
+            heap.alloc(object()),
+            Err(HeapLimitExceeded::Objects { .. })
+        ));
+        assert_eq!(heap.successful_allocations(), 3);
+        assert_eq!(heap.end_test_phase(), bytes);
+        assert_eq!(heap.peak_bytes(), 2 * bytes);
+        // The phase starts at retained bytes, not zero, even without allocations.
+        heap.begin_test_phase();
+        heap.set_max_objects(2);
+        heap.set_max_bytes(bytes);
+        assert!(matches!(
+            heap.alloc(object()),
+            Err(HeapLimitExceeded::Bytes { .. })
+        ));
+        assert_eq!(heap.successful_allocations(), 3);
+        assert_eq!(heap.end_test_phase(), bytes);
+        assert_eq!(heap.peak_bytes(), 2 * bytes);
+        heap.collect(std::iter::empty());
+        heap.alloc(object()).unwrap();
+        assert_eq!(heap.successful_allocations(), 4);
+        assert_eq!(heap.peak_bytes(), 2 * bytes);
     }
 
     #[test]

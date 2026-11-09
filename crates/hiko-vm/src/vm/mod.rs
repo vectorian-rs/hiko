@@ -37,6 +37,8 @@ use register::RegisterCode;
 #[doc(hidden)]
 pub mod register_check;
 mod runtime_bridge;
+#[cfg(test)]
+mod stdlib_growth_tests;
 
 pub use host::{ExecJob, OutputSink, StderrOutputSink, StdoutOutputSink};
 pub use runtime_bridge::{RunResult, RuntimeRequest};
