@@ -313,6 +313,59 @@ registration, covering cancellation before the backend knew the request token.
 - `join`/`await_process` block until completion
 - result is delivered exactly once
 
+### Owned bulk joins
+
+`Fiber.all` and `Fiber.join_all` use one owned runtime group, rather than
+repeated `wait_any` scans and individual joins. Results retain input order;
+`Fiber.both` retains its two result types through `Either` wrappers. An empty
+group succeeds, subject to the ordinary aggregate-envelope, host-work and heap
+limits. The sequential runtime has the same outcomes, but inline I/O still
+provides no threaded fail-fast latency guarantee.
+
+Admission checks the entire bounded input before observing ready failures.
+Duplicates and reaped pids produce `AlreadyJoined`; that means **result
+unavailable/reaped; ownership no longer known**, not proof of a previous join.
+Known live or unconsumed foreign processes produce a typed "not a child" error;
+unknown pids produce a typed unknown-pid error. Input-order admission invalidity
+precedes child failures. After valid admission, the leftmost initially ready
+failure wins; thereafter the first observed failure wins.
+
+A group-local typed error cancels and reaps only distinct, positively owned
+children named in the bounded input. Foreign outcomes are never consumed.
+Cleanup preserves its selected cause and uses reserved slots and wakeups even
+when ordinary admission/host-work quota is spent. The parent resumes only after
+accepted members terminate and their exec/backend-reader cleanup completes.
+This does **not** change parent scope exit: cancellation or failure of the
+parent still cancels **all** its children, including children outside the group.
+
+The independent `limits.max_join_group_bytes` policy defaults to 64 MiB and is
+shared across the process tree. Freeze it before execution; changing policy
+must not reset live usage. Groups reserve logical weights of 512 bytes per
+group plus 256 bytes per input entry and accept at most 10,000 entries,
+including duplicates and reaped pids. These bounds account for group metadata
+and retained serialized results/errors, not exact RSS or all runtime tombstones.
+Each adopted completion spends its checked serialized footprint. Incremental
+aggregate list/protected-result envelope accounting also enforces the parent's
+`max_message_bytes`, independently of each child's message limit. Credits stay
+held through transfer and are refunded exactly once when ownership is released.
+Quota, host-work and transfer-allocation failures fail the parent after cleanup;
+they are not recoverable typed quota errors. Partial result construction remains
+rooted and is never published as a successful partial list.
+
+`capabilities.fiber.fiber_await_all` is a default-off bulk capability under
+`builtin-process`. It grants await/cancel/reap authority only over accepted
+children; spawn requires its own grant. Individual await/cancel/wait-any leaves
+may remain denied. Protected process wrappers resolve each leaf lazily, so a
+non-strict bulk-only import does not request denied peers. Strict compilation
+continues to check references in unused bodies; no permission is auto-granted.
+
+Runtime bookkeeping uses a pid-to-input-index table, one initial ready pass and
+one final ordered pass: expected O(n) member work plus O(B) transferred payload
+work, not a full member scan for each completion. Register/park/recheck and group
+identity prevent lost wakes, double moves and double resumption; callbacks never
+run while registration locks are held. Parent teardown drains registrations and
+releases group ownership.
+
 ### Process lifecycle
 
 A process is live until it becomes terminal: done, failed, or cancelled.
