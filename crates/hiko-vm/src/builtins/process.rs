@@ -5,6 +5,7 @@ pub(crate) fn entries() -> &'static [(&'static str, BuiltinFn)] {
         ("spawn", spawn_placeholder as BuiltinFn),
         ("await_process", await_placeholder),
         ("await_process_result", await_result_placeholder),
+        ("fiber_await_all", await_all_placeholder),
         ("cancel", cancel_placeholder),
         ("wait_any", wait_any_placeholder),
     ]
@@ -20,6 +21,10 @@ pub(super) fn await_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Val
 
 pub(super) fn await_result_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
     Err("await_process_result: must be called within a runtime".into())
+}
+
+pub(super) fn await_all_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {
+    Err("fiber_await_all: must be called within a runtime".into())
 }
 
 pub(super) fn cancel_placeholder(_args: &[Value], _heap: &mut Heap) -> Result<Value, String> {

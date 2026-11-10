@@ -38,6 +38,8 @@ pub enum RunResult {
     Await(u64),
     /// Process requested to await a child result as a `Result` value.
     AwaitResult(u64),
+    /// Bounded bulk request owning its metadata reservation.
+    AwaitAll(crate::runtime_ops::GroupAdmission),
     /// Process requested to cooperatively cancel a child.
     Cancel(u64),
     /// Process requested to wait for any child in the set to complete.
@@ -61,6 +63,7 @@ pub enum RuntimeRequest {
     },
     Await(u64),
     AwaitResult(u64),
+    AwaitAll(crate::runtime_ops::GroupAdmission),
     Cancel(u64),
     WaitAny(Vec<u64>),
     Io(crate::io_backend::IoRequest),
@@ -285,6 +288,7 @@ impl VM {
                 },
                 RuntimeRequest::Await(pid) => RunResult::Await(pid),
                 RuntimeRequest::AwaitResult(pid) => RunResult::AwaitResult(pid),
+                RuntimeRequest::AwaitAll(group) => RunResult::AwaitAll(group),
                 RuntimeRequest::Cancel(pid) => RunResult::Cancel(pid),
                 RuntimeRequest::WaitAny(pids) => RunResult::WaitAny(pids),
                 RuntimeRequest::Io(req) => RunResult::Io(req),

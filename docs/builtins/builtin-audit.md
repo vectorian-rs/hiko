@@ -41,6 +41,7 @@ Features are unchanged; availability never implies runtime permission.
 | assert_eq | builtin-testing | capabilities.testing.assert_eq | Std.Testing.equal | capabilities.testing.equal | primitive: failure/assertion boundary |
 | await_process | builtin-process | capabilities.process.await_process | Std.Fiber.join_or_fail | capabilities.fiber.join_or_fail | primitive: runtime lifecycle; wrappers compose cleanup |
 | await_process_result | builtin-process | capabilities.process.await_process | Std.Fiber.join | capabilities.fiber.join | primitive: runtime lifecycle; wrappers compose cleanup |
+| fiber_await_all | builtin-process | capabilities.fiber.fiber_await_all | Std.Fiber.join_all / all / both | capabilities.fiber.fiber_await_all | primitive: bounded owned group, indexed completion and cleanup |
 | blake3 | builtin-hash | capabilities.hash.blake3 | Hash.Blake3.hash | capabilities.hash.blake3.hash | primitive: existing scalar/codec operation |
 | bytes_get | builtin-bytes | capabilities.bytes.bytes_get | Std.Bytes.get | capabilities.bytes.get | primitive: existing scalar/codec operation |
 | bytes_length | builtin-bytes | capabilities.bytes.bytes_length | Std.Bytes.length | capabilities.bytes.length | primitive: existing scalar/codec operation |

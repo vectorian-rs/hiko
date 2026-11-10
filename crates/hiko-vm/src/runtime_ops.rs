@@ -1,5 +1,9 @@
 //! Shared process operation logic used by both single-threaded and multi-threaded runtimes.
 
+mod join_group;
+pub use join_group::GroupAdmission;
+pub(crate) use join_group::{GroupInbox, JoinGroup};
+
 use std::sync::Arc;
 
 use smallvec::smallvec;

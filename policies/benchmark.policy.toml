@@ -65,6 +65,10 @@ enabled = true
 [capabilities.process.wait_any]
 enabled = true
 
+# Owned bulk joins have independent authority; no individual leaf is implied.
+[capabilities.fiber.fiber_await_all]
+enabled = true
+
 [capabilities.filesystem.read_file]
 enabled = true
 folders = ["."]

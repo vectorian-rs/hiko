@@ -64,6 +64,8 @@ struct ProcessTable {
     waiters: DashMap<Pid, Vec<Pid>>,
     /// child pid -> processes blocked in `wait_any` on a list containing it.
     any_waiters: DashMap<Pid, Vec<Pid>>,
+    /// One wake registration per positively-owned group/cleanup member.
+    group_waiters: DashMap<Pid, Arc<crate::runtime_ops::GroupInbox>>,
     /// I/O token -> process blocked on it.
     io_waiters: DashMap<IoToken, Pid>,
     #[allow(dead_code)] // scaffolding for structured concurrency
@@ -83,6 +85,7 @@ impl ProcessTable {
             pending_cancels: DashSet::new(),
             waiters: DashMap::new(),
             any_waiters: DashMap::new(),
+            group_waiters: DashMap::new(),
             io_waiters: DashMap::new(),
             scopes: DashMap::new(),
             next_pid: AtomicU64::new(1),
@@ -202,6 +205,7 @@ impl ProcessTable {
                     e.status,
                     ProcessStatus::Blocked(BlockReason::Await { .. })
                         | ProcessStatus::Blocked(BlockReason::WaitAny(_))
+                        | ProcessStatus::Blocked(BlockReason::JoinGroup(_))
                 )
             })
             .map(|e| *e.key())
@@ -496,6 +500,7 @@ impl ThreadedRuntime {
         note("pending_cancels", table.pending_cancels.len());
         note("waiters", table.waiters.len());
         note("any_waiters", table.any_waiters.len());
+        note("group_waiters", table.group_waiters.len());
         note("io_waiters", table.io_waiters.len());
         if let Err(message) = table.check_invariants() {
             leftovers.push(message);
@@ -521,7 +526,10 @@ fn fail_deadlocked(cx: Ctx<'_>, stuck: &[Pid]) {
     let mut terminations = Terminations::new();
     for &pid in stuck {
         let Some(process) = cx.table.take_blocked(pid, |reason| {
-            matches!(reason, BlockReason::Await { .. } | BlockReason::WaitAny(_))
+            matches!(
+                reason,
+                BlockReason::Await { .. } | BlockReason::WaitAny(_) | BlockReason::JoinGroup(_)
+            )
         }) else {
             continue;
         };
@@ -591,6 +599,11 @@ fn finish_process(
 ) {
     let pid = process.pid;
     let children = std::mem::take(&mut process.children);
+    if let Some(group) = process.join_group.take() {
+        for child in group.pending_pids() {
+            cx.table.group_waiters.remove(&child);
+        }
+    }
     cx.scheduler.remove(pid);
 
     match process.parent {
@@ -631,6 +644,7 @@ fn finish_process(
         cx.table.tombstones.remove(&child);
     }
 
+    notify_group(cx, pid, terminations);
     wake_any_waiters(cx, pid, terminations);
     wake_join_waiters(cx, pid, terminations);
 }
@@ -686,6 +700,13 @@ fn clear_blocked_registration(cx: Ctx<'_>, process: &Process) {
         BlockReason::Await { child, .. } => remove_waiter(&cx.table.waiters, *child, pid),
         BlockReason::WaitAny(child_pids) => {
             remove_any_waiter_registration(cx.table, pid, child_pids)
+        }
+        BlockReason::JoinGroup(_) => {
+            if let Some(group) = &process.join_group {
+                for child in group.pending_pids() {
+                    cx.table.group_waiters.remove(&child);
+                }
+            }
         }
         BlockReason::Io(token) => {
             cx.table.io_waiters.remove(token);
@@ -786,6 +807,7 @@ fn handle_slice_result(
         RunResult::AwaitResult(child_pid_val) => {
             handle_await(cx, process, Pid(child_pid_val), AwaitKind::Result);
         }
+        RunResult::AwaitAll(admission) => handle_await_all(cx, process, admission),
         RunResult::Cancel(child_pid_val) => {
             handle_cancel(cx, process, Pid(child_pid_val));
         }
@@ -1043,6 +1065,141 @@ fn handle_cancel(cx: Ctx<'_>, mut parent: Process, child_pid: Pid) {
                 ChildOutcome::Err(ProcessFailure::runtime(message)),
             );
         }
+    }
+}
+
+fn handle_await_all(
+    cx: Ctx<'_>,
+    mut parent: Process,
+    admission: crate::runtime_ops::GroupAdmission,
+) {
+    let Some(id) = parent.join_generation.checked_add(1) else {
+        terminate_process(
+            cx,
+            parent,
+            ChildOutcome::Err(ProcessFailure::runtime(
+                "fiber_await_all: group generation exhausted",
+            )),
+        );
+        return;
+    };
+    parent.join_generation = id;
+    let group = crate::runtime_ops::JoinGroup::admit(
+        admission,
+        parent.pid,
+        id,
+        parent.vm.heap.max_message_bytes(),
+        |pid| cx.table.classify_child(&parent, pid),
+    );
+    let mut group = match group {
+        Ok(group) => group,
+        Err(failure) => {
+            terminate_process(cx, parent, ChildOutcome::Err(failure));
+            return;
+        }
+    };
+    // Admission invalidity wins. Otherwise scan once for the leftmost ready
+    // failure, without first charging/retaining successful peers.
+    if group.cause.is_none() {
+        let failed = group.inbox.members.iter().copied().find(|pid| {
+            !cx.table.live.contains(pid)
+                && cx
+                    .table
+                    .tombstones
+                    .get(pid)
+                    .is_some_and(|record| matches!(record.outcome, ChildOutcome::Err(_)))
+        });
+        if let Some(pid) = failed
+            && let Some((_, record)) = cx.table.tombstones.remove(&pid)
+        {
+            parent.children.remove(&pid);
+            group.complete(pid, record.outcome, &mut parent.vm.heap);
+        }
+    }
+    let inbox = group.inbox.clone();
+    for pid in group.pending_pids() {
+        cx.table.group_waiters.insert(pid, inbox.clone());
+    }
+    parent.status = ProcessStatus::Blocked(BlockReason::JoinGroup(id));
+    parent.join_group = Some(group);
+    let mut terminations = Terminations::new();
+    park(cx, parent, &mut terminations);
+    // Exactly one full recheck after registration. Concurrent notifications
+    // queue while the parent is owned; later parks recheck only the inbox.
+    for &pid in &inbox.members {
+        if !cx.table.live.contains(&pid) {
+            notify_group(cx, pid, &mut terminations);
+        }
+    }
+    advance_group(cx, inbox, &mut terminations);
+    drain_terminations(cx, &mut terminations);
+}
+
+fn notify_group(cx: Ctx<'_>, child: Pid, terminations: &mut Terminations) {
+    let Some((_, inbox)) = cx.table.group_waiters.remove(&child) else {
+        return;
+    };
+    inbox.publish(child);
+    advance_group(cx, inbox, terminations);
+}
+
+fn advance_group(
+    cx: Ctx<'_>,
+    inbox: Arc<crate::runtime_ops::GroupInbox>,
+    terminations: &mut Terminations,
+) {
+    loop {
+        let mut parent = match cx.table.take_waiter(
+            inbox.parent,
+            |reason| matches!(reason, BlockReason::JoinGroup(id) if *id == inbox.id),
+        ) {
+            Ok(parent) => parent,
+            // In-flight notifications remain in the reserved queue. Its owner
+            // rechecks after parking, rather than rescanning all member pids.
+            Err(_) => return,
+        };
+        let Some(mut group) = parent.join_group.take() else {
+            terminations.push((
+                parent,
+                ChildOutcome::Err(ProcessFailure::runtime("fiber_await_all: missing group")),
+            ));
+            return;
+        };
+        while let Some(child) = inbox.pop() {
+            if !group.is_pending(child) {
+                continue;
+            }
+            let outcome = cx
+                .table
+                .tombstones
+                .remove(&child)
+                .map(|(_, r)| r.outcome)
+                .unwrap_or_else(|| {
+                    ChildOutcome::Err(ProcessFailure::runtime(
+                        "fiber_await_all: missing completion",
+                    ))
+                });
+            parent.children.remove(&child);
+            group.complete(child, outcome, &mut parent.vm.heap);
+        }
+        if group.begin_cleanup() {
+            for child in group.pending_pids() {
+                cancel_pid(cx, child, terminations);
+            }
+        }
+        if group.ready() {
+            match group.deliver(&mut parent.vm) {
+                Ok(()) => resume(cx, parent),
+                Err(failure) => terminations.push((parent, ChildOutcome::Err(failure))),
+            }
+        } else {
+            parent.join_group = Some(group);
+            park(cx, parent, terminations);
+            if inbox.has_events() {
+                continue;
+            }
+        }
+        return;
     }
 }
 
@@ -1322,6 +1479,110 @@ mod tests {
         let mut terminations = Terminations::new();
         f(cx, &mut terminations);
         drain_terminations(cx, &mut terminations);
+    }
+
+    fn group_parent() -> (
+        Process,
+        Arc<crate::runtime_ops::GroupInbox>,
+        Arc<crate::budget::SharedBudget>,
+    ) {
+        let mut vm = VM::new(compile("val x = 0"));
+        let mut list = Value::Heap(
+            vm.heap
+                .alloc(crate::value::HeapObject::Data {
+                    tag: crate::vm::TAG_NIL,
+                    fields: smallvec::smallvec![],
+                })
+                .unwrap(),
+        );
+        for pid in [12, 11] {
+            list = Value::Heap(
+                vm.heap
+                    .alloc(crate::value::HeapObject::Data {
+                        tag: crate::vm::TAG_CONS,
+                        fields: smallvec::smallvec![Value::Pid(pid), list],
+                    })
+                    .unwrap(),
+            );
+        }
+        let admission = crate::runtime_ops::GroupAdmission::read(&mut vm, list).unwrap();
+        let group = crate::runtime_ops::JoinGroup::admit(
+            admission,
+            Pid(10),
+            1,
+            vm.heap.max_message_bytes(),
+            |_| ChildState::Live,
+        )
+        .unwrap();
+        let inbox = group.inbox.clone();
+        let budget = vm.join_group_budget().clone();
+        vm.stack.push(Value::Unit);
+        let mut parent = Process::new(Pid(10), vm, None);
+        parent.children.extend([Pid(11), Pid(12)]);
+        parent.status = ProcessStatus::Blocked(BlockReason::JoinGroup(1));
+        parent.join_group = Some(group);
+        (parent, inbox, budget)
+    }
+
+    #[test]
+    fn bulk_group_notifications_before_and_after_park_resume_exactly_once() {
+        for early in 0..=2 {
+            let table = ProcessTable::new();
+            let (parent, inbox, budget) = group_parent();
+            table.live.insert(parent.pid); // owned/in flight, not parked yet
+            for &child in &inbox.members {
+                table.tombstones.insert(child, ready_unit_child(parent.pid));
+                table.group_waiters.insert(child, inbox.clone());
+            }
+            with_ctx(&table, |cx, terminations| {
+                for &child in &inbox.members[..early] {
+                    notify_group(cx, child, terminations);
+                    notify_group(cx, child, terminations); // duplicate terminal notice
+                }
+                park(cx, parent, terminations);
+                advance_group(cx, inbox.clone(), terminations); // owner's recheck
+                for &child in &inbox.members[early..] {
+                    notify_group(cx, child, terminations);
+                }
+                let parent = table.processes.get(&Pid(10)).unwrap();
+                assert!(parent.is_runnable());
+                assert!(parent.join_group.is_none());
+                assert!(parent.children.is_empty());
+                drop(parent);
+                assert_eq!(cx.scheduler.try_dequeue(), Some(Pid(10)));
+                advance_group(cx, inbox.clone(), terminations); // stale generation/inbox wake
+                assert_eq!(cx.scheduler.try_dequeue(), None);
+            });
+            assert!(table.group_waiters.is_empty());
+            assert!(table.tombstones.is_empty());
+            assert_eq!(budget.used(), 0);
+        }
+    }
+
+    #[test]
+    fn bulk_group_cancellation_between_registration_and_park_releases_everything() {
+        let table = ProcessTable::new();
+        let (parent, inbox, budget) = group_parent();
+        table.live.insert(parent.pid);
+        table.pending_cancels.insert(parent.pid);
+        for &child in &inbox.members {
+            table.tombstones.insert(child, ready_unit_child(parent.pid));
+            table.group_waiters.insert(child, inbox.clone());
+        }
+        with_ctx(&table, |cx, terminations| {
+            park(cx, parent, terminations);
+        });
+        with_ctx(&table, |cx, terminations| {
+            advance_group(cx, inbox, terminations);
+        });
+        assert!(matches!(
+            table.processes.get(&Pid(10)).unwrap().status,
+            ProcessStatus::Failed(ProcessFailure::Cancelled)
+        ));
+        assert!(table.group_waiters.is_empty());
+        assert!(table.tombstones.is_empty());
+        assert!(table.live.is_empty());
+        assert_eq!(budget.used(), 0);
     }
 
     #[test]

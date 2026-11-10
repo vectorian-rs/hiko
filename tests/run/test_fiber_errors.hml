@@ -26,7 +26,7 @@ val first_join_status =
     | Err _ => 0
     | _ => 0
 
-val second_join_status = is_error_message "fiber already joined" (Fiber.join joined_twice)
+val second_join_status = is_error_message "result unavailable/reaped; ownership no longer known" (Fiber.join joined_twice)
 
 val _ = assert_eq (first_join_status, 1, "first join ok")
 

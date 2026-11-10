@@ -28,6 +28,8 @@ pub enum BlockReason {
     Await { child: Pid, kind: AwaitKind },
     /// Waiting for any child in the set to complete.
     WaitAny(Vec<Pid>),
+    /// One owned group (or its reserved typed-error cleanup), by generation.
+    JoinGroup(u64),
     /// Waiting for an I/O operation to complete.
     Io(crate::io_backend::IoToken),
 }
@@ -92,7 +94,9 @@ impl fmt::Display for FiberJoinError {
             }
             Self::FuelExhausted => f.write_str("fuel exhausted (max_fuel limit reached)"),
             Self::Cancelled => f.write_str("cancelled"),
-            Self::AlreadyJoined => f.write_str("fiber already joined"),
+            Self::AlreadyJoined => {
+                f.write_str("result unavailable/reaped; ownership no longer known")
+            }
         }
     }
 }
@@ -171,6 +175,8 @@ pub struct Process {
     /// owns this process mutates it, so it needs no synchronisation. It is
     /// the authority for "is `pid` a child of this process".
     pub(crate) children: HashSet<Pid>,
+    pub(crate) join_group: Option<crate::runtime_ops::JoinGroup>,
+    pub(crate) join_generation: u64,
 }
 
 impl Process {
@@ -183,6 +189,8 @@ impl Process {
             root: pid,
             scope_id: None,
             children: HashSet::new(),
+            join_group: None,
+            join_generation: 0,
         }
     }
 
@@ -195,6 +203,8 @@ impl Process {
             root: pid,
             scope_id: Some(scope_id),
             children: HashSet::new(),
+            join_group: None,
+            join_generation: 0,
         }
     }
 

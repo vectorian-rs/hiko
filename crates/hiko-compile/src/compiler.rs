@@ -5009,6 +5009,29 @@ mod tests {
 
     #[cfg(feature = "builtin-process")]
     #[test]
+    fn bulk_join_signature_preserves_pid_payloads_and_protected_result_type() {
+        let source = "import __Builtin.Process\n\
+            fun bulk (pids : 'a pid list) = fiber_await_all pids\n\
+            val ints : int list BuiltinProcess.await_result = bulk [spawn (fn () => 1)]\n\
+            val strings : string list BuiltinProcess.await_result = bulk [spawn (fn () => \"text\")]\n\
+            val empty : int list BuiltinProcess.await_result = bulk []\n";
+        Compiler::compile(parse_program(source)).unwrap();
+        for source in [
+            "val bad = fiber_await_all [spawn (fn () => 1), spawn (fn () => \"text\")]",
+            "val bad : string list BuiltinProcess.await_result = fiber_await_all [spawn (fn () => 1)]",
+        ] {
+            assert!(
+                matches!(
+                    Compiler::compile(parse_program(source)),
+                    Err(CompileError::Type(_))
+                ),
+                "mixed/coerced pid payload accepted: {source}"
+            );
+        }
+    }
+
+    #[cfg(feature = "builtin-process")]
+    #[test]
     fn compile_does_not_trust_extension_source_named_builtin_process() {
         let options = ModuleLoaderOptions {
             extensions: ExtensionSurface {

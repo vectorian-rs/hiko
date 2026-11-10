@@ -207,6 +207,14 @@ impl VM {
             }
         }
 
+        if kind == BuiltinKind::AwaitAll {
+            let list = self.stack[callee_pos + 1];
+            let admission = crate::runtime_ops::GroupAdmission::read(self, list)
+                .map_err(|message| RuntimeError { message })?;
+            return self
+                .suspend_for_runtime_request(RuntimeRequest::AwaitAll(admission), callee_pos);
+        }
+
         if kind == BuiltinKind::WaitAny {
             let pids = crate::builtins::extract_pid_list_arg(
                 &self.stack[callee_pos + 1..callee_pos + 1 + arity],

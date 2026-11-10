@@ -204,6 +204,10 @@ enabled = true
 [capabilities.process.spawn]
 enabled = true
 
+# Bulk joins grant only accepted-child await/cancel/reap authority.
+[capabilities.fiber.fiber_await_all]
+enabled = true
+
 [capabilities.process.await_process]
 enabled = true
 

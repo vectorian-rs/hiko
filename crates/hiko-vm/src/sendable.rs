@@ -156,6 +156,25 @@ impl SendableValue {
         total
     }
 
+    /// Checked group-retention size, paying before each visited node. One
+    /// bounded traversal accounts for scalars, containers and shared leaves.
+    pub(crate) fn checked_footprint(&self, heap: &mut Heap) -> Result<u64, String> {
+        let mut total = 0u64;
+        let mut stack = vec![self];
+        while let Some(value) = stack.pop() {
+            heap.charge_host_work(1)?;
+            total = total
+                .checked_add(MESSAGE_NODE_BYTES)
+                .and_then(|n| n.checked_add(value.own_bytes() as u64))
+                .ok_or_else(|| "fiber_await_all: footprint overflow".to_string())?;
+            stack
+                .try_reserve(value.children().len())
+                .map_err(|e| format!("fiber_await_all: footprint allocation: {e}"))?;
+            stack.extend(value.children());
+        }
+        Ok(total)
+    }
+
     /// Copy a leaf. Strings, bytes and host configs share their `Arc`.
     fn clone_leaf(&self) -> Self {
         match self {

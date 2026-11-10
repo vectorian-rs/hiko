@@ -9,7 +9,7 @@ val pending = Fiber.spawn (fn () => 0)
 val _ = Fiber.cancel pending
 val _ = Fiber.join pending
 
-(* Fiber.all uses wait_any internally and returns values in input order. *)
+(* Fiber.all uses one owned bulk request and returns values in input order. *)
 val values =
   case Fiber.all [fn () => 1, fn () => 2, fn () => 3] of
       Result.Ok result => result

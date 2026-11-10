@@ -61,6 +61,7 @@
         <li><code>spawn : (unit -&gt; 'a) -&gt; 'a Fiber.t</code></li>
         <li><code>join : 'a Fiber.t -&gt; ('a, Fiber.error) Result.result</code></li>
         <li><code>join_or_fail : 'a Fiber.t -&gt; 'a</code></li>
+        <li><code>join_all : 'a Fiber.t list -&gt; ('a list, Fiber.error) Result.result</code></li>
         <li><code>cancel : 'a Fiber.t -&gt; unit</code></li>
         <li><code>render_error : Fiber.error -&gt; string</code></li>
         <li><code>both : ((unit -&gt; 'a) * (unit -&gt; 'b)) -&gt; (('a * 'b), Fiber.error) Result.result</code></li>
@@ -74,6 +75,8 @@
       <h2>Semantics</h2>
       <p><code>Std.Fiber</code> is the user-facing layer for real concurrent work. Algebraic effects remain local control-flow tools; runtime scheduling, suspension, and capability checks still belong to the VM/runtime layer.</p>
       <p class="meta"><code>join</code> is <code>Result</code>-typed. Child/runtime failure is returned as a value rather than propagating failure to the parent process.</p>
+      <p><code>all</code>, <code>join_all</code> and <code>both</code> use one owned bulk group: input-order results, admission invalidity before ready failures, then first-observed failure with accepted-member cancellation/reaping. An empty list succeeds subject to the aggregate envelope and ordinary host/heap limits. Duplicates and reaped pids report <code>AlreadyJoined</code>: result unavailable/reaped; ownership no longer known. Foreign outcomes are never consumed. A group-local error protects unlisted children only while their parent remains live; parent scope exit still cancels all children.</p>
+      <p>Grant <code>capabilities.fiber.fiber_await_all</code> explicitly; <code>all</code>/<code>both</code> also need spawn. Other process leaves may remain denied in non-strict mode; strict mode checks unused bodies too. At most 10,000 entries are admitted. Tree-shared <code>limits.max_join_group_bytes</code> defaults to 64 MiB: 512/group + 256/entry plus retained serialized results/errors, independent of heap and message policies. Aggregate transfer obeys the parent message limit, including an empty envelope. These are logical bounds, not RSS. Quota/transfer failures fail the parent after cleanup. Sequential inline I/O has no threaded fail-fast latency guarantee.</p>
     </section>
 
     <section class="panel">

@@ -10,6 +10,12 @@ pub const BUILTINS: &[BuiltinMeta] = &[
         in_core_default: true,
         surface: BuiltinSurface::RuntimeOnly,
     },
+    BuiltinMeta {
+        name: "fiber_await_all",
+        capability_path: Some("capabilities.fiber.fiber_await_all"),
+        in_core_default: true,
+        surface: BuiltinSurface::RuntimeOnly,
+    },
     BuiltinMeta::core("cancel", "capabilities.process.cancel"),
     BuiltinMeta::core("wait_any", "capabilities.process.wait_any"),
 ];

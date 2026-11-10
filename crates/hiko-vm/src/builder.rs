@@ -76,6 +76,7 @@ pub struct VMBuilder {
     max_live_processes: Option<u64>,
     max_spawns: Option<u64>,
     max_message_bytes: Option<u64>,
+    max_join_group_bytes: Option<u64>,
     extensions: Vec<(&'static Extension, ExtensionState)>,
 }
 
@@ -108,6 +109,7 @@ impl VMBuilder {
             max_live_processes: None,
             max_spawns: None,
             max_message_bytes: None,
+            max_join_group_bytes: None,
             extensions: Vec::new(),
         }
     }
@@ -373,6 +375,14 @@ impl VMBuilder {
         self
     }
 
+    /// Set the finite logical storage budget shared by all bulk join groups
+    /// in the process tree. Defaults to 64 MiB; independent of heap/messages.
+    /// Construction-only: live usage is never reset by policy changes.
+    pub fn max_join_group_bytes(mut self, bytes: u64) -> Self {
+        self.max_join_group_bytes = Some(bytes);
+        self
+    }
+
     /// Set maximum total host resources.
     pub fn max_host_resources(mut self, count: usize) -> Self {
         self.max_host_resources = Some(count);
@@ -438,6 +448,9 @@ impl VMBuilder {
         }
         if let Some(bytes) = self.max_message_bytes {
             vm.set_max_message_bytes(bytes);
+        }
+        if let Some(bytes) = self.max_join_group_bytes {
+            vm.configure_join_group_bytes(bytes);
         }
 
         vm
