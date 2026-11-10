@@ -8,9 +8,9 @@
 //! (builtins, prelude) is subtracted first, so a fixed cost cannot hide a
 //! quadratic term.
 //!
-//! `type_work` counts nodes visited by apply, unify and the occurs check.
-//! Work outside them (scope lookups, exhaustiveness checking) is not
-//! counted, so this test can miss a pass that is quadratic only there.
+//! `type_work` counts inference walks, pattern usefulness/matrix work and
+//! expanded alias copying. Other passes (for example scope lookups) remain
+//! outside this counter; this is not proof that every compiler pass is linear.
 
 use hiko_syntax::lexer::Lexer;
 use hiko_syntax::parser::Parser;
@@ -88,6 +88,28 @@ fn many_constructors_and_matches() {
             s.push_str(&format!("fun g{i} v = case v of C{i} x => x | _ => 0\n"));
         }
         s
+    });
+}
+
+#[test]
+fn many_nullary_alias_copies() {
+    assert_linear("nullary alias copies", |n| {
+        let mut source = String::from("type atom = int * int\n");
+        for i in 0..n {
+            source.push_str(&format!("type a{i} = atom\n"));
+        }
+        source
+    });
+}
+
+#[test]
+fn many_parameterized_alias_copies() {
+    assert_linear("parameterized alias copies", |n| {
+        let mut source = String::from("type 'a dup = 'a * 'a\n");
+        for i in 0..n {
+            source.push_str(&format!("type a{i} = int dup\n"));
+        }
+        source
     });
 }
 

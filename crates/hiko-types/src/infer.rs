@@ -16,6 +16,19 @@ pub struct TypeError {
     pub span: Span,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum WorkConstruct {
+    Inference,
+    Pattern,
+    Alias,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WorkContext {
+    construct: WorkConstruct,
+    span: Span,
+}
+
 // ── Warnings ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -66,13 +79,18 @@ pub struct InferCtx {
     decl_depth: u32,
     /// String interner for resolving symbols in the AST.
     pub interner: StringInterner,
-    /// Type nodes visited so far. See [`DEFAULT_MAX_TYPE_WORK`].
+    /// Successfully reserved work units. See [`DEFAULT_MAX_TYPE_WORK`].
     work: Cell<u64>,
     max_work: u64,
+    work_exhausted: Cell<bool>,
+    work_context: Cell<Option<WorkContext>>,
+    first_work_failure: Cell<Option<WorkContext>>,
 }
 
-/// Default for the number of type nodes inference may visit while checking
-/// one compilation. Type sizes can grow exponentially in program size
+/// Default cumulative work limit for one compilation: inference/type-copy
+/// nodes, pattern/matrix visits and slots, and copied names/labels' bytes.
+/// Refused reservations do not increment the counter; exhaustion is sticky.
+/// Type sizes can grow exponentially in program size
 /// (`val x1 = (x0, x0) val x2 = (x1, x1) ...`), so without a bound a small
 /// source file can stall the compiler.
 pub const DEFAULT_MAX_TYPE_WORK: u64 = 10_000_000;
@@ -363,6 +381,9 @@ impl InferCtx {
             interner: StringInterner::new(),
             work: Cell::new(0),
             max_work: DEFAULT_MAX_TYPE_WORK,
+            work_exhausted: Cell::new(false),
+            work_context: Cell::new(None),
+            first_work_failure: Cell::new(None),
         };
         ctx.type_arities.insert("list".into(), 1);
         ctx.type_arities.insert("pid".into(), 1);
@@ -542,17 +563,102 @@ impl InferCtx {
     }
 
     fn work_exhausted(&self) -> bool {
-        self.work.get() > self.max_work
+        self.work_exhausted.get()
     }
 
-    /// Count one visited type node. Returns false once the limit is passed;
-    /// callers then stop walking and return a placeholder. `infer_decl`
-    /// turns the exhausted budget into an error, so a placeholder never
-    /// reaches a successful result.
+    /// Reserve before visiting/copying. Refusal is sticky even at u64::MAX.
+    fn charge_amount(&self, amount: u64) -> bool {
+        if self.work_exhausted() {
+            return false;
+        }
+        if let Some(used) = self.work.get().checked_add(amount)
+            && used <= self.max_work
+        {
+            self.work.set(used);
+            return true;
+        }
+        self.work_exhausted.set(true);
+        self.first_work_failure.set(self.work_context.get());
+        false
+    }
+
+    /// Legacy walkers use placeholders; infer_decl still always rejects them.
     fn charge(&self) -> bool {
-        let used = self.work.get() + 1;
-        self.work.set(used);
-        used <= self.max_work
+        self.charge_amount(1)
+    }
+
+    fn budget_error(&self, fallback: Span) -> TypeError {
+        let context = self.first_work_failure.get().unwrap_or(WorkContext {
+            construct: WorkConstruct::Inference,
+            span: fallback,
+        });
+        let construct = match context.construct {
+            WorkConstruct::Inference => "type inference",
+            WorkConstruct::Pattern => "pattern matching",
+            WorkConstruct::Alias => "type alias expansion",
+        };
+        self.err(
+            &format!(
+                "type checking exceeded its work limit: max_type_work ({}); \
+             the types in this declaration are too large ({construct})",
+                self.max_work
+            ),
+            context.span,
+        )
+    }
+
+    fn charge_at(&self, context: WorkContext, amount: usize) -> Result<(), TypeError> {
+        let previous = self.work_context.replace(Some(context));
+        let paid = self.charge_amount(u64::try_from(amount).unwrap_or(u64::MAX));
+        self.work_context.set(previous);
+        if paid {
+            Ok(())
+        } else {
+            Err(self.budget_error(context.span))
+        }
+    }
+
+    /// Checked deep copying, including dynamic buffers, before allocation.
+    fn copy_type(&self, ty: &Type, context: WorkContext) -> Result<Type, TypeError> {
+        self.charge_at(context, 1)?;
+        let copy = |ty| self.copy_type(ty, context);
+        Ok(match ty {
+            Type::Var(v) => Type::Var(*v),
+            Type::Con(name) => {
+                self.charge_at(context, name.len())?;
+                Type::Con(name.clone())
+            }
+            Type::App(name, args) => {
+                self.charge_at(context, name.len())?;
+                Type::App(
+                    name.clone(),
+                    args.iter().map(copy).collect::<Result<_, _>>()?,
+                )
+            }
+            Type::Arrow(a, b, row) => Type::arrow(copy(a)?, copy(b)?, copy(row)?),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(copy).collect::<Result<_, _>>()?),
+            Type::Row(labels, tail) => {
+                let labels = labels
+                    .iter()
+                    .map(|label| {
+                        self.charge_at(context, 1 + label.len())?;
+                        Ok(label.clone())
+                    })
+                    .collect::<Result<_, TypeError>>()?;
+                Type::Row(labels, tail.as_deref().map(copy).transpose()?.map(Box::new))
+            }
+        })
+    }
+
+    fn alias_definition(&self, name: &str, span: Span) -> Option<(Vec<u32>, Option<u32>, Type)> {
+        let (params, row, body) = self.type_aliases.get(name)?;
+        let context = WorkContext {
+            construct: WorkConstruct::Alias,
+            span,
+        };
+        self.charge_at(context, params.len()).ok()?;
+        let body = self.copy_type(body, context).ok()?;
+        Some((params.clone(), *row, body))
     }
 
     // ── Substitution ─────────────────────────────────────────────────
@@ -586,33 +692,45 @@ impl InferCtx {
 
     /// Replace type variables according to `mapping`, leaving others untouched.
     fn substitute_vars(&self, ty: &Type, mapping: &HashMap<u32, Type>) -> Type {
-        if !self.charge() {
-            return Type::unit();
-        }
-        match ty {
-            Type::Var(v) => mapping.get(v).cloned().unwrap_or_else(|| ty.clone()),
-            Type::Arrow(a, b, row) => Type::arrow(
-                self.substitute_vars(a, mapping),
-                self.substitute_vars(b, mapping),
-                self.substitute_vars(row, mapping),
-            ),
-            Type::Row(labels, tail) => match tail {
-                None => ty.clone(),
-                Some(tail) => extend_row(labels, self.substitute_vars(tail, mapping)),
-            },
-            Type::Tuple(ts) => Type::Tuple(
-                ts.iter()
-                    .map(|t| self.substitute_vars(t, mapping))
-                    .collect(),
-            ),
-            Type::App(n, args) => Type::App(
-                n.clone(),
-                args.iter()
-                    .map(|t| self.substitute_vars(t, mapping))
-                    .collect(),
-            ),
-            Type::Con(_) => ty.clone(),
-        }
+        self.substitute_vars_checked(ty, mapping)
+            .unwrap_or_else(|_| Type::unit())
+    }
+
+    fn substitute_vars_checked(
+        &self,
+        ty: &Type,
+        mapping: &HashMap<u32, Type>,
+    ) -> Result<Type, TypeError> {
+        let context = self.work_context.get().unwrap_or(WorkContext {
+            construct: WorkConstruct::Inference,
+            span: Span::dummy(),
+        });
+        self.charge_at(context, 1)?;
+        let substitute = |ty| self.substitute_vars_checked(ty, mapping);
+        Ok(match ty {
+            Type::Var(v) => self.copy_type(mapping.get(v).unwrap_or(ty), context)?,
+            Type::Arrow(a, b, row) => Type::arrow(substitute(a)?, substitute(b)?, substitute(row)?),
+            Type::Row(labels, Some(tail)) => {
+                let tail = substitute(tail)?;
+                // extend_row copies labels from BOTH rows, not just the row node.
+                for label in labels.iter().chain(match &tail {
+                    Type::Row(more, _) => more.iter(),
+                    _ => [].iter(),
+                }) {
+                    self.charge_at(context, 1 + label.len())?;
+                }
+                extend_row(labels, tail)
+            }
+            Type::Row(_, None) | Type::Con(_) => self.copy_type(ty, context)?,
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(substitute).collect::<Result<_, _>>()?),
+            Type::App(name, args) => {
+                self.charge_at(context, name.len())?;
+                Type::App(
+                    name.clone(),
+                    args.iter().map(substitute).collect::<Result<_, _>>()?,
+                )
+            }
+        })
     }
 
     fn apply_scheme(&self, scheme: &Scheme) -> Scheme {
@@ -954,7 +1072,14 @@ impl InferCtx {
     }
 
     pub fn infer_decl(&mut self, decl: &Decl) -> Result<(), TypeError> {
+        if self.work_exhausted() {
+            return Err(self.budget_error(decl.span));
+        }
         let scopes = self.scopes.len();
+        let previous = self.work_context.replace(Some(WorkContext {
+            construct: WorkConstruct::Inference,
+            span: decl.span,
+        }));
         self.begin_declaration();
         let result = self.infer_decl_inner(decl);
         if result.is_err() {
@@ -965,15 +1090,9 @@ impl InferCtx {
         }
         let ended = self.end_declaration(result.is_ok());
         let result = result.and(ended);
+        self.work_context.set(previous);
         if self.work_exhausted() {
-            return Err(self.err(
-                &format!(
-                    "type checking exceeded its work limit: max_type_work ({}); \
-                     the types in this declaration are too large",
-                    self.max_work
-                ),
-                decl.span,
-            ));
+            return Err(self.budget_error(decl.span));
         }
         result
     }
@@ -1161,16 +1280,34 @@ impl InferCtx {
             self.pop_scope();
         }
 
+        // Prepay row/reference construction before allocating it.
+        self.charge_at(
+            WorkContext {
+                construct: WorkConstruct::Pattern,
+                span: binding.span,
+            },
+            binding.clauses.len(),
+        )?;
         // Exhaustiveness and redundancy checking for clausal function
         if arity == 1 {
             let resolved = self.apply(&arg_vars[0]);
-            let type_info = self.type_info_for(&resolved);
             let pats: Vec<&Pat> = binding.clauses.iter().map(|c| &c.pats[0]).collect();
-            self.check_exhaustiveness(&pats, &type_info, binding.span)?;
+            self.check_exhaustiveness(&pats, &resolved, binding.span)?;
         } else {
             // Multi-arg: check as tuple patterns
             let tuple_ty = Type::Tuple(arg_vars.iter().map(|v| self.apply(v)).collect());
-            let type_info = self.type_info_for(&tuple_ty);
+            for clause in &binding.clauses {
+                self.charge_at(
+                    WorkContext {
+                        construct: WorkConstruct::Pattern,
+                        span: binding.span,
+                    },
+                    clause.pats.len() + 1,
+                )?;
+                for pat in &clause.pats {
+                    self.charge_pattern_copy(pat, binding.span)?;
+                }
+            }
             let tuple_pats: Vec<Pat> = binding
                 .clauses
                 .iter()
@@ -1179,8 +1316,15 @@ impl InferCtx {
                     span: c.span,
                 })
                 .collect();
+            self.charge_at(
+                WorkContext {
+                    construct: WorkConstruct::Pattern,
+                    span: binding.span,
+                },
+                tuple_pats.len(),
+            )?;
             let pat_refs: Vec<&Pat> = tuple_pats.iter().collect();
-            self.check_exhaustiveness(&pat_refs, &type_info, binding.span)?;
+            self.check_exhaustiveness(&pat_refs, &tuple_ty, binding.span)?;
         }
 
         // Build the curried function type: arg1 -> arg2 -> ... -> result
@@ -1361,7 +1505,9 @@ impl InferCtx {
         // type mentioning a rigid variable means the value is not polymorphic
         // in it (for example, a weak type variable).
         let (unified, escaped) = self.at_inner_level(|this| {
-            let revealed = this.reveal_abstract_types(spec_ty, spec);
+            let revealed = this
+                .reveal_abstract_types(spec_ty, spec, span)
+                .unwrap_or_else(|_| Type::unit());
             let expected = this.substitute_vars(&revealed, &rigid);
             let actual = this.instantiate(scheme);
             let mut outer_vars = actual.free_vars();
@@ -1403,41 +1549,59 @@ impl InferCtx {
     /// Replace abstract types introduced by signature ascription with their
     /// implementation types. An implementation that is an alias takes the
     /// row of the annotation `ann`, as a use of the alias would.
-    fn reveal_abstract_types(&mut self, ty: &Type, ann: &mut Annotation) -> Type {
-        match ty {
+    fn reveal_abstract_types(
+        &mut self,
+        ty: &Type,
+        ann: &mut Annotation,
+        span: Span,
+    ) -> Result<Type, TypeError> {
+        let context = WorkContext {
+            construct: WorkConstruct::Alias,
+            span,
+        };
+        self.charge_at(context, 1)?;
+        Ok(match ty {
             Type::Con(name) => match self.abstract_impls.get(name).cloned() {
-                Some(impl_name) => self.named_type(&impl_name, vec![], ann),
-                None => ty.clone(),
+                Some(impl_name) => self.named_type(&impl_name, vec![], ann, span),
+                None => self.copy_type(ty, context)?,
             },
             Type::App(name, args) => {
                 let args = args
                     .iter()
-                    .map(|a| self.reveal_abstract_types(a, ann))
-                    .collect();
+                    .map(|a| self.reveal_abstract_types(a, ann, span))
+                    .collect::<Result<_, _>>()?;
                 match self.abstract_impls.get(name).cloned() {
-                    Some(impl_name) => self.named_type(&impl_name, args, ann),
-                    None => Type::App(name.clone(), args),
+                    Some(impl_name) => self.named_type(&impl_name, args, ann, span),
+                    None => {
+                        self.charge_at(context, name.len())?;
+                        Type::App(name.clone(), args)
+                    }
                 }
             }
             Type::Arrow(a, b, row) => {
-                let a = self.reveal_abstract_types(a, ann);
-                let b = self.reveal_abstract_types(b, ann);
-                Type::arrow(a, b, (**row).clone())
+                let a = self.reveal_abstract_types(a, ann, span)?;
+                let b = self.reveal_abstract_types(b, ann, span)?;
+                Type::arrow(a, b, self.copy_type(row, context)?)
             }
-            Type::Row(..) => ty.clone(),
             Type::Tuple(ts) => Type::Tuple(
                 ts.iter()
-                    .map(|t| self.reveal_abstract_types(t, ann))
-                    .collect(),
+                    .map(|t| self.reveal_abstract_types(t, ann, span))
+                    .collect::<Result<_, _>>()?,
             ),
-            Type::Var(_) => ty.clone(),
-        }
+            Type::Row(..) | Type::Var(_) => self.copy_type(ty, context)?,
+        })
     }
 
     /// The type named `name` applied to `args`, expanding type aliases.
-    fn named_type(&mut self, name: &str, args: Vec<Type>, ann: &mut Annotation) -> Type {
-        if let Some((params, row, body)) = self.type_aliases.get(name).cloned() {
-            self.instantiate_alias(&body, &params, row, &args, ann)
+    fn named_type(
+        &mut self,
+        name: &str,
+        args: Vec<Type>,
+        ann: &mut Annotation,
+        span: Span,
+    ) -> Type {
+        if let Some((params, row, body)) = self.alias_definition(name, span) {
+            self.instantiate_alias(&body, &params, row, &args, ann, span)
         } else if args.is_empty() {
             Type::Con(name.to_string())
         } else {
@@ -1534,8 +1698,7 @@ impl InferCtx {
                 self.pop_scope();
                 // Check exhaustiveness for the fn pattern
                 let resolved = self.apply(&param_ty);
-                let type_info = self.type_info_for(&resolved);
-                self.check_exhaustiveness(&[pat], &type_info, expr.span)?;
+                self.check_exhaustiveness(&[pat], &resolved, expr.span)?;
                 Ok(self.arrow(param_ty, body_ty))
             }
 
@@ -1574,9 +1737,15 @@ impl InferCtx {
                 }
                 // Exhaustiveness and redundancy checking
                 let resolved = self.apply(&scrut_ty);
-                let type_info = self.type_info_for(&resolved);
+                self.charge_at(
+                    WorkContext {
+                        construct: WorkConstruct::Pattern,
+                        span: expr.span,
+                    },
+                    branches.len(),
+                )?;
                 let pats: Vec<&Pat> = branches.iter().map(|(p, _)| p).collect();
-                self.check_exhaustiveness(&pats, &type_info, expr.span)?;
+                self.check_exhaustiveness(&pats, &resolved, expr.span)?;
                 Ok(result_var)
             }
 
@@ -1886,16 +2055,35 @@ impl InferCtx {
         row: Option<u32>,
         args: &[Type],
         ann: &mut Annotation,
+        span: Span,
     ) -> Type {
-        let mut mapping: HashMap<u32, Type> =
-            params.iter().copied().zip(args.iter().cloned()).collect();
-        if let Some(row) = row {
-            mapping.insert(row, Type::Var(self.annotation_row(ann)));
-        }
-        if mapping.is_empty() {
-            return body.clone();
-        }
-        self.substitute_vars(body, &mapping)
+        let context = WorkContext {
+            construct: WorkConstruct::Alias,
+            span,
+        };
+        let previous = self.work_context.replace(Some(context));
+        let result = (|| {
+            let mut mapping: HashMap<u32, Type> = params
+                .iter()
+                .copied()
+                .zip(args)
+                .map(|(param, arg)| {
+                    self.charge_at(context, 1)?;
+                    Ok((param, self.copy_type(arg, context)?))
+                })
+                .collect::<Result<_, TypeError>>()?;
+            if let Some(row) = row {
+                self.charge_at(context, 1)?;
+                mapping.insert(row, Type::Var(self.annotation_row(ann)));
+            }
+            if mapping.is_empty() {
+                self.copy_type(body, context)
+            } else {
+                self.substitute_vars_checked(body, &mapping)
+            }
+        })();
+        self.work_context.set(previous);
+        result.unwrap_or_else(|_| Type::unit())
     }
 
     fn resolve_type_expr_strict(
@@ -1935,9 +2123,9 @@ impl InferCtx {
                     ));
                 }
                 // Check type aliases (0-arg)
-                if let Some((params, row, body)) = self.type_aliases.get(name).cloned() {
+                if let Some((params, row, body)) = self.alias_definition(name, ty_expr.span) {
                     if params.is_empty() {
-                        return Ok(self.instantiate_alias(&body, &[], row, &[], ann));
+                        return Ok(self.instantiate_alias(&body, &[], row, &[], ann, ty_expr.span));
                     }
                     return Err(self.err(
                         &format!("type {name} expects {} argument(s)", params.len()),
@@ -1982,7 +2170,7 @@ impl InferCtx {
                     .map(|a| self.resolve_type_expr_inner(a, ann, strict_tyvars))
                     .collect::<Result<_, _>>()?;
                 // Check alias
-                if let Some((param_vars, row, body)) = self.type_aliases.get(&name).cloned() {
+                if let Some((param_vars, row, body)) = self.alias_definition(&name, ty_expr.span) {
                     if param_vars.len() != resolved_args.len() {
                         return Err(self.err(
                             &format!(
@@ -1999,6 +2187,7 @@ impl InferCtx {
                         row,
                         &resolved_args,
                         ann,
+                        ty_expr.span,
                     ));
                 }
                 // Check type constructor
@@ -2035,7 +2224,56 @@ impl InferCtx {
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    fn type_info_for(&self, ty: &Type) -> TypeInfo {
+    fn charge_pattern_copy(&self, pat: &Pat, span: Span) -> Result<(), TypeError> {
+        let context = WorkContext {
+            construct: WorkConstruct::Pattern,
+            span,
+        };
+        self.charge_at(context, 1)?;
+        match &pat.kind {
+            PatKind::StringLit(s) => self.charge_at(context, s.len())?,
+            PatKind::Tuple(ps) | PatKind::List(ps) => {
+                self.charge_at(context, ps.len())?;
+                for p in ps {
+                    self.charge_pattern_copy(p, span)?;
+                }
+            }
+            PatKind::Cons(a, b) => {
+                self.charge_pattern_copy(a, span)?;
+                self.charge_pattern_copy(b, span)?;
+            }
+            PatKind::Constructor(_, Some(p)) | PatKind::As(_, p) | PatKind::Paren(p) => {
+                self.charge_pattern_copy(p, span)?
+            }
+            PatKind::Ann(p, ty) => {
+                self.charge_pattern_copy(p, span)?;
+                self.charge_type_expr_copy(ty, context)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn charge_type_expr_copy(&self, ty: &TypeExpr, context: WorkContext) -> Result<(), TypeError> {
+        self.charge_at(context, 1)?;
+        match &ty.kind {
+            TypeExprKind::App(_, ts) | TypeExprKind::Tuple(ts) => {
+                self.charge_at(context, ts.len())?;
+                for t in ts {
+                    self.charge_type_expr_copy(t, context)?;
+                }
+            }
+            TypeExprKind::Arrow(a, b) => {
+                self.charge_type_expr_copy(a, context)?;
+                self.charge_type_expr_copy(b, context)?;
+            }
+            TypeExprKind::Paren(t) => self.charge_type_expr_copy(t, context)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn type_info_for(&self, ty: &Type) -> TypeInfo<'_> {
         match ty {
             Type::Con(name) => match name.as_str() {
                 "Bool" => TypeInfo::bool_type(),
@@ -2067,17 +2305,24 @@ impl InferCtx {
     fn check_exhaustiveness(
         &mut self,
         pats: &[&Pat],
-        type_info: &TypeInfo,
+        ty: &Type,
         span: Span,
     ) -> Result<(), TypeError> {
+        let context = WorkContext {
+            construct: WorkConstruct::Pattern,
+            span,
+        };
+        self.charge_at(context, 3)?;
+        let type_info = self.type_info_for(ty);
         let result = exhaustive::check_match(
             pats,
-            type_info,
+            &type_info,
             &self.constructor_tags,
             &self.constructor_aliases,
             &self.datatype_constructors,
             &self.interner,
-        );
+            &|| self.charge_at(context, 1),
+        )?;
         if !result.exhaustive {
             return Err(self.err("non-exhaustive match", span));
         }
@@ -3851,6 +4096,97 @@ mod tests {
         );
         let msg = infer_err("val b = (fn (x : int) => x) = (fn x => x)");
         assert!(msg.contains("= and <> require equality types"), "{msg}");
+    }
+
+    #[test]
+    fn budget_counter_refuses_overflow_and_keeps_first_context() {
+        let mut ctx = InferCtx::new();
+        ctx.work.set(u64::MAX - 1);
+        ctx.set_max_type_work(u64::MAX);
+        let first = WorkContext {
+            construct: WorkConstruct::Alias,
+            span: Span::new(17, 4, 9),
+        };
+        ctx.charge_at(first, 1).unwrap();
+        assert_eq!(ctx.type_work(), u64::MAX);
+        let error = ctx.charge_at(first, 1).unwrap_err();
+        assert_eq!(error.span, first.span);
+        assert!(error.message.contains("type alias expansion"));
+        let outer = WorkContext {
+            construct: WorkConstruct::Pattern,
+            span: Span::new(17, 0, 100),
+        };
+        assert_eq!(ctx.charge_at(outer, 0).unwrap_err().span, first.span);
+        assert_eq!(ctx.type_work(), u64::MAX);
+        assert!(ctx.work_exhausted());
+    }
+
+    #[test]
+    fn alias_definition_is_not_cloned_after_refusal() {
+        let mut ctx = InferCtx::new();
+        ctx.type_aliases.insert(
+            "large".into(),
+            (vec![], None, Type::Tuple(vec![Type::int(); 100])),
+        );
+        ctx.work.set(0);
+        ctx.set_max_type_work(0);
+        let span = Span::new(3, 10, 15);
+        assert!(ctx.alias_definition("large", span).is_none());
+        assert!(ctx.work_exhausted());
+        assert_eq!(ctx.budget_error(Span::dummy()).span, span);
+    }
+
+    #[test]
+    fn unused_alias_arguments_and_mapped_subtrees_are_still_paid() {
+        let span = Span::new(3, 10, 15);
+        let big = Type::Tuple(vec![Type::int(); 100]);
+        let mut ctx = InferCtx::new();
+        ctx.work.set(0);
+        ctx.set_max_type_work(10);
+        // Even an unused parameter would otherwise hide a deep arg clone.
+        ctx.instantiate_alias(
+            &Type::unit(),
+            &[0],
+            None,
+            std::slice::from_ref(&big),
+            &mut Annotation::default(),
+            span,
+        );
+        assert!(ctx.work_exhausted());
+        assert_eq!(ctx.budget_error(Span::dummy()).span, span);
+        let mut ctx = InferCtx::new();
+        ctx.work.set(0);
+        ctx.set_max_type_work(1);
+        ctx.work_context.set(Some(WorkContext {
+            construct: WorkConstruct::Alias,
+            span,
+        }));
+        let mapping = HashMap::from([(0, big)]);
+        let error = ctx
+            .substitute_vars_checked(&Type::Var(0), &mapping)
+            .unwrap_err();
+        assert_eq!(error.span, span);
+        assert!(error.message.contains("type alias expansion"));
+    }
+
+    #[test]
+    fn copied_type_nodes_and_buffers_are_prepaid_exactly() {
+        let context = WorkContext {
+            construct: WorkConstruct::Alias,
+            span: Span::new(1, 3, 8),
+        };
+        for limit in [0, 4, 5] {
+            let mut ctx = InferCtx::new();
+            ctx.work.set(0);
+            ctx.set_max_type_work(limit);
+            let result = ctx.copy_type(&Type::bool(), context);
+            assert!(ctx.type_work() <= limit);
+            if limit == 5 {
+                assert_eq!(result.unwrap(), Type::bool());
+            } else {
+                assert_eq!(result.unwrap_err().span, context.span);
+            }
+        }
     }
 
     #[test]

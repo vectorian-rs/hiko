@@ -1,27 +1,22 @@
-//! Maranget-style exhaustiveness and usefulness checking for pattern matching.
-//!
-//! Based on "Warnings for pattern matching" (Maranget, JFP 2007).
-//!
-//! The algorithm works on a pattern matrix: each row is a pattern vector
-//! from a case branch. A pattern vector is "useful" with respect to the
-//! matrix if there exists some value matched by the vector but not by any
-//! existing row.
-//!
-//! - A match is exhaustive iff the wildcard vector is NOT useful.
-//! - A clause is redundant iff its row is NOT useful against preceding rows.
+//! Maranget-style exhaustiveness/usefulness checking, sharing inference's budget.
+//! Every visit and expanded copy is charged before work/allocation. A whole
+//! wildcard row covers the query; a wildcard in only one column does not.
 
-use std::collections::{HashMap, HashSet};
-
+use crate::infer::TypeError;
 use hiko_syntax::ast::{Pat, PatKind};
 use hiko_syntax::intern::StringInterner;
+use std::collections::{HashMap, HashSet};
 
-/// A simplified pattern for the exhaustiveness algorithm.
-#[derive(Debug, Clone)]
+type Checked<T> = Result<T, TypeError>;
+type Charge<'a> = &'a dyn Fn() -> Checked<()>;
+type DtMap = HashMap<String, Vec<(String, usize)>>;
+type PatternMatrix = Vec<Vec<SPat>>;
+
+#[derive(Debug)]
 enum SPat {
     Wild,
     Con(Constructor, Vec<SPat>),
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Constructor {
     Adt(String, u16),
@@ -31,347 +26,575 @@ enum Constructor {
     Nil,
     Cons,
     Tuple(usize),
-    /// Distinct literal value. Each unique value is a separate constructor,
-    /// treated as an open (infinite) domain requiring a wildcard fallback.
     IntLit(i64),
-    FloatBits(u64), // use bits for Eq/Hash
+    FloatBits(u64),
     WordLit(u64),
     StringLit(String),
     CharLit(char),
 }
 
-/// Information about a type's constructors for exhaustiveness checking.
-#[derive(Debug, Clone)]
-pub struct TypeInfo {
-    /// All constructors of this type, with their arities.
+/// ADT metadata is borrowed, not deep-copied for every match. Constructor
+/// names are copied (and charged) only when specialization actually needs them.
+#[derive(Debug)]
+pub struct TypeInfo<'a> {
     constructors: Vec<(Constructor, usize)>,
-    /// Whether the type has a finite set of constructors.
+    adt: Option<&'a [(String, usize)]>,
     is_finite: bool,
 }
-
-impl TypeInfo {
+impl<'a> TypeInfo<'a> {
+    fn known(constructors: Vec<(Constructor, usize)>) -> Self {
+        Self {
+            constructors,
+            adt: None,
+            is_finite: true,
+        }
+    }
     pub fn bool_type() -> Self {
-        TypeInfo {
-            constructors: vec![(Constructor::BoolTrue, 0), (Constructor::BoolFalse, 0)],
-            is_finite: true,
-        }
+        Self::known(vec![
+            (Constructor::BoolTrue, 0),
+            (Constructor::BoolFalse, 0),
+        ])
     }
-
     pub fn unit_type() -> Self {
-        TypeInfo {
-            constructors: vec![(Constructor::Unit, 0)],
-            is_finite: true,
-        }
+        Self::known(vec![(Constructor::Unit, 0)])
     }
-
     pub fn list_type() -> Self {
-        TypeInfo {
-            constructors: vec![(Constructor::Nil, 0), (Constructor::Cons, 2)],
-            is_finite: true,
-        }
+        Self::known(vec![(Constructor::Nil, 0), (Constructor::Cons, 2)])
     }
-
     pub fn tuple_type(arity: usize) -> Self {
-        TypeInfo {
-            constructors: vec![(Constructor::Tuple(arity), arity)],
+        Self::known(vec![(Constructor::Tuple(arity), arity)])
+    }
+    pub fn adt_type(_type_name: &str, constructors: &'a [(String, usize)]) -> Self {
+        Self {
+            constructors: Vec::new(),
+            adt: Some(constructors),
             is_finite: true,
         }
     }
-
-    pub fn adt_type(_type_name: &str, constructors: &[(String, usize)]) -> Self {
-        TypeInfo {
-            constructors: constructors
-                .iter()
-                .enumerate()
-                .map(|(i, (name, arity))| (Constructor::Adt(name.clone(), i as u16), *arity))
-                .collect(),
-            is_finite: true,
-        }
-    }
-
-    /// Infinite domain: Int, Float, String, Char.
     pub fn infinite() -> Self {
-        TypeInfo {
-            constructors: vec![],
+        Self {
+            constructors: Vec::new(),
+            adt: None,
             is_finite: false,
         }
     }
-}
-
-/// Result of checking a case expression.
-pub struct CheckResult {
-    /// True if the match is exhaustive.
-    pub exhaustive: bool,
-    /// Indices of redundant clauses (0-based).
-    pub redundant_clauses: Vec<usize>,
-}
-
-/// Convert a surface pattern to a simplified pattern.
-fn simplify_pat(
-    pat: &Pat,
-    con_tags: &HashMap<String, u16>,
-    con_aliases: &HashMap<String, String>,
-    interner: &StringInterner,
-) -> SPat {
-    match &pat.kind {
-        PatKind::Wildcard | PatKind::Var(_) => SPat::Wild,
-
-        PatKind::BoolLit(true) => SPat::Con(Constructor::BoolTrue, vec![]),
-        PatKind::BoolLit(false) => SPat::Con(Constructor::BoolFalse, vec![]),
-        PatKind::Unit => SPat::Con(Constructor::Unit, vec![]),
-
-        PatKind::IntLit(n) => SPat::Con(Constructor::IntLit(*n), vec![]),
-        PatKind::WordLit(w) => SPat::Con(Constructor::WordLit(*w), vec![]),
-        PatKind::FloatLit(f) => SPat::Con(Constructor::FloatBits(f.to_bits()), vec![]),
-        PatKind::StringLit(s) => SPat::Con(Constructor::StringLit(s.clone()), vec![]),
-        PatKind::CharLit(c) => SPat::Con(Constructor::CharLit(*c), vec![]),
-
-        PatKind::Constructor(sym, payload) => {
-            let name = interner.resolve(*sym);
-            // Import aliases are matched as the constructor they name, which
-            // is the name listed in the datatype's constructor table.
-            let canonical = con_aliases.get(name).map_or(name, String::as_str);
-            let tag = con_tags.get(canonical).copied().unwrap_or(0);
-            let sub_pats = match payload {
-                Some(p) => vec![simplify_pat(p, con_tags, con_aliases, interner)],
-                None => vec![],
-            };
-            SPat::Con(Constructor::Adt(canonical.to_string(), tag), sub_pats)
+    fn len(&self) -> usize {
+        self.adt.map_or(self.constructors.len(), <[_]>::len)
+    }
+    fn constructor(&self, index: usize, charge: Charge<'_>) -> Checked<(Constructor, usize)> {
+        charge()?;
+        if let Some(adt) = self.adt {
+            let (name, arity) = &adt[index];
+            pay(charge, name.len())?;
+            Ok((Constructor::Adt(name.clone(), index as u16), *arity))
+        } else {
+            let (constructor, arity) = &self.constructors[index];
+            Ok((copy_constructor(constructor, charge)?, *arity))
         }
-
-        PatKind::Tuple(pats) => {
-            let sub = pats
-                .iter()
-                .map(|p| simplify_pat(p, con_tags, con_aliases, interner))
-                .collect();
-            SPat::Con(Constructor::Tuple(pats.len()), sub)
+    }
+    fn copy(&self, charge: Charge<'_>) -> Checked<Self> {
+        charge()?;
+        pay(charge, self.constructors.len())?;
+        let mut constructors = Vec::with_capacity(self.constructors.len());
+        for (c, arity) in &self.constructors {
+            constructors.push((copy_constructor(c, charge)?, *arity));
         }
-
-        PatKind::Cons(hd, tl) => {
-            let sub = vec![
-                simplify_pat(hd, con_tags, con_aliases, interner),
-                simplify_pat(tl, con_tags, con_aliases, interner),
-            ];
-            SPat::Con(Constructor::Cons, sub)
-        }
-
-        PatKind::List(pats) => {
-            if pats.is_empty() {
-                SPat::Con(Constructor::Nil, vec![])
-            } else {
-                // [p1, p2, ...] = p1 :: p2 :: ... :: []
-                let mut result = SPat::Con(Constructor::Nil, vec![]);
-                for p in pats.iter().rev() {
-                    result = SPat::Con(
-                        Constructor::Cons,
-                        vec![simplify_pat(p, con_tags, con_aliases, interner), result],
-                    );
-                }
-                result
-            }
-        }
-
-        PatKind::As(_, p) => simplify_pat(p, con_tags, con_aliases, interner),
-        PatKind::Paren(p) | PatKind::Ann(p, _) => simplify_pat(p, con_tags, con_aliases, interner),
+        Ok(Self {
+            constructors,
+            adt: self.adt,
+            is_finite: self.is_finite,
+        })
     }
 }
 
-type PatternMatrix = Vec<Vec<SPat>>;
+pub struct CheckResult {
+    pub exhaustive: bool,
+    pub redundant_clauses: Vec<usize>,
+}
 
-/// Check exhaustiveness and redundancy of a pattern match.
-///
-/// `type_info` describes the constructors of the scrutinee's type.
-/// `con_tags` maps constructor names to their tags.
-/// `con_aliases` maps import aliases to the constructor names they stand for.
-/// `dt_constructors` maps type names to their full constructor lists.
+fn pay(charge: Charge<'_>, count: usize) -> Checked<()> {
+    for _ in 0..count {
+        charge()?;
+    }
+    Ok(())
+}
+fn copy_constructor(c: &Constructor, charge: Charge<'_>) -> Checked<Constructor> {
+    charge()?;
+    if let Constructor::Adt(name, _) | Constructor::StringLit(name) = c {
+        pay(charge, name.len())?;
+    }
+    Ok(c.clone())
+}
+fn copy_patterns(patterns: &[SPat], charge: Charge<'_>) -> Checked<Vec<SPat>> {
+    let mut copied = Vec::new();
+    copy_patterns_into(patterns, &mut copied, charge)?;
+    Ok(copied)
+}
+
+/// The destination is local to the caller and must be discarded on error:
+/// a refused deep copy may leave a partially appended tail.
+fn copy_patterns_into(
+    patterns: &[SPat],
+    copied: &mut Vec<SPat>,
+    charge: Charge<'_>,
+) -> Checked<()> {
+    pay(charge, patterns.len())?;
+    copied.reserve_exact(patterns.len());
+    for p in patterns {
+        charge()?;
+        copied.push(match p {
+            SPat::Wild => SPat::Wild,
+            SPat::Con(c, sub) => {
+                SPat::Con(copy_constructor(c, charge)?, copy_patterns(sub, charge)?)
+            }
+        });
+    }
+    Ok(())
+}
+fn wildcards(arity: usize, charge: Charge<'_>) -> Checked<Vec<SPat>> {
+    pay(charge, arity)?;
+    Ok((0..arity).map(|_| SPat::Wild).collect())
+}
+fn simplify_pat(
+    pat: &Pat,
+    tags: &HashMap<String, u16>,
+    aliases: &HashMap<String, String>,
+    interner: &StringInterner,
+    charge: Charge<'_>,
+) -> Checked<SPat> {
+    charge()?;
+    Ok(match &pat.kind {
+        PatKind::Wildcard | PatKind::Var(_) => SPat::Wild,
+        PatKind::BoolLit(true) => SPat::Con(Constructor::BoolTrue, vec![]),
+        PatKind::BoolLit(false) => SPat::Con(Constructor::BoolFalse, vec![]),
+        PatKind::Unit => SPat::Con(Constructor::Unit, vec![]),
+        PatKind::IntLit(n) => SPat::Con(Constructor::IntLit(*n), vec![]),
+        PatKind::WordLit(n) => SPat::Con(Constructor::WordLit(*n), vec![]),
+        PatKind::FloatLit(n) => SPat::Con(Constructor::FloatBits(n.to_bits()), vec![]),
+        PatKind::StringLit(s) => {
+            pay(charge, s.len())?;
+            SPat::Con(Constructor::StringLit(s.clone()), vec![])
+        }
+        PatKind::CharLit(c) => SPat::Con(Constructor::CharLit(*c), vec![]),
+        PatKind::Constructor(sym, payload) => {
+            let name = interner.resolve(*sym);
+            let canonical = aliases.get(name).map_or(name, String::as_str);
+            pay(charge, canonical.len())?;
+            let tag = tags.get(canonical).copied().unwrap_or(0);
+            let sub = if let Some(p) = payload {
+                charge()?;
+                vec![simplify_pat(p, tags, aliases, interner, charge)?]
+            } else {
+                vec![]
+            };
+            SPat::Con(Constructor::Adt(canonical.to_string(), tag), sub)
+        }
+        PatKind::Tuple(pats) => {
+            pay(charge, pats.len())?;
+            let mut sub = Vec::with_capacity(pats.len());
+            for p in pats {
+                sub.push(simplify_pat(p, tags, aliases, interner, charge)?);
+            }
+            SPat::Con(Constructor::Tuple(pats.len()), sub)
+        }
+        PatKind::Cons(head, tail) => {
+            pay(charge, 2)?;
+            SPat::Con(
+                Constructor::Cons,
+                vec![
+                    simplify_pat(head, tags, aliases, interner, charge)?,
+                    simplify_pat(tail, tags, aliases, interner, charge)?,
+                ],
+            )
+        }
+        PatKind::List(pats) => {
+            charge()?;
+            let mut result = SPat::Con(Constructor::Nil, vec![]);
+            for p in pats.iter().rev() {
+                pay(charge, 3)?;
+                result = SPat::Con(
+                    Constructor::Cons,
+                    vec![simplify_pat(p, tags, aliases, interner, charge)?, result],
+                );
+            }
+            result
+        }
+        PatKind::As(_, p) | PatKind::Paren(p) | PatKind::Ann(p, _) => {
+            simplify_pat(p, tags, aliases, interner, charge)?
+        }
+    })
+}
+
 pub fn check_match(
     patterns: &[&Pat],
-    type_info: &TypeInfo,
-    con_tags: &HashMap<String, u16>,
-    con_aliases: &HashMap<String, String>,
-    dt_constructors: &DtMap,
+    type_info: &TypeInfo<'_>,
+    tags: &HashMap<String, u16>,
+    aliases: &HashMap<String, String>,
+    dt: &DtMap,
     interner: &StringInterner,
-) -> CheckResult {
-    let matrix: PatternMatrix = patterns
-        .iter()
-        .map(|p| vec![simplify_pat(p, con_tags, con_aliases, interner)])
-        .collect();
-
-    let wildcard = vec![SPat::Wild];
+    charge: Charge<'_>,
+) -> Checked<CheckResult> {
+    pay(charge, patterns.len())?;
+    let mut matrix = Vec::with_capacity(patterns.len());
+    for p in patterns {
+        charge()?;
+        matrix.push(vec![simplify_pat(p, tags, aliases, interner, charge)?]);
+    }
+    charge()?;
     let exhaustive = !is_useful(
         &matrix,
-        &wildcard,
+        &[SPat::Wild],
         std::slice::from_ref(type_info),
-        dt_constructors,
-    );
-
+        dt,
+        charge,
+    )?;
     let mut redundant_clauses = Vec::new();
     for i in 0..matrix.len() {
+        charge()?;
         if !is_useful(
             &matrix[..i],
             &matrix[i],
             std::slice::from_ref(type_info),
-            dt_constructors,
-        ) {
+            dt,
+            charge,
+        )? {
+            charge()?;
             redundant_clauses.push(i);
         }
     }
-
-    CheckResult {
+    Ok(CheckResult {
         exhaustive,
         redundant_clauses,
-    }
+    })
 }
 
-/// Type name -> its constructors with their arities.
-type DtMap = HashMap<String, Vec<(String, usize)>>;
-
-/// Is the pattern vector `q` useful with respect to the matrix?
-/// Returns true if there exists a value matched by `q` but not by any row.
-fn is_useful(matrix: &[Vec<SPat>], q: &[SPat], type_infos: &[TypeInfo], dt: &DtMap) -> bool {
+fn is_useful(
+    matrix: &[Vec<SPat>],
+    q: &[SPat],
+    types: &[TypeInfo<'_>],
+    dt: &DtMap,
+    charge: Charge<'_>,
+) -> Checked<bool> {
+    charge()?;
     let Some(head) = q.first() else {
-        return matrix.is_empty();
+        return Ok(matrix.is_empty());
     };
-
-    match head {
-        SPat::Con(c, sub_pats) => {
-            is_useful_specialized(matrix, c, sub_pats.clone(), q, type_infos, dt)
+    for row in matrix {
+        charge()?;
+        let mut all_wild = true;
+        for p in row {
+            charge()?;
+            if !matches!(p, SPat::Wild) {
+                all_wild = false;
+                break;
+            }
         }
-
+        if all_wild {
+            return Ok(false);
+        }
+    }
+    match head {
+        SPat::Con(c, sub) => {
+            is_useful_specialized(matrix, c, copy_patterns(sub, charge)?, q, types, dt, charge)
+        }
         SPat::Wild => {
-            let ti = &type_infos[0];
-            let head_cons = collect_head_constructors(matrix);
-            let all_covered =
-                ti.is_finite && ti.constructors.iter().all(|(c, _)| head_cons.contains(c));
-
-            if all_covered {
-                ti.constructors.iter().any(|(c, arity)| {
-                    is_useful_specialized(matrix, c, vec![SPat::Wild; *arity], q, type_infos, dt)
-                })
+            let ti = &types[0];
+            let heads = collect_head_constructors(matrix, charge)?;
+            // Cardinality can disprove complete coverage without copying/scanning
+            // a large ADT catalog for each single-constructor-plus-wildcard match.
+            let mut covered = ti.is_finite && heads.len() >= ti.len();
+            if covered {
+                for index in 0..ti.len() {
+                    let (c, _) = ti.constructor(index, charge)?;
+                    if !heads.contains(&c) {
+                        covered = false;
+                        break;
+                    }
+                }
+            }
+            if covered {
+                for index in 0..ti.len() {
+                    let (c, arity) = ti.constructor(index, charge)?;
+                    if is_useful_specialized(
+                        matrix,
+                        &c,
+                        wildcards(arity, charge)?,
+                        q,
+                        types,
+                        dt,
+                        charge,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             } else {
-                // A constructor is missing from the column, or the domain is
-                // infinite: the wildcard is useful iff the default matrix says so.
-                is_useful(&default_matrix(matrix), &q[1..], &type_infos[1..], dt)
+                is_useful(
+                    &default_matrix(matrix, charge)?,
+                    &q[1..],
+                    &types[1..],
+                    dt,
+                    charge,
+                )
             }
         }
     }
 }
-
-/// Usefulness of `q` after specializing the matrix on head constructor `c`;
-/// `sub_pats` replaces the head of `q`.
 fn is_useful_specialized(
     matrix: &[Vec<SPat>],
     c: &Constructor,
-    mut sub_pats: Vec<SPat>,
+    mut sub: Vec<SPat>,
     q: &[SPat],
-    type_infos: &[TypeInfo],
+    types: &[TypeInfo<'_>],
     dt: &DtMap,
-) -> bool {
-    let arity = sub_pats.len();
-    let s_matrix = specialize_matrix(matrix, c, arity);
-    sub_pats.extend_from_slice(&q[1..]);
-
-    let mut s_types: Vec<TypeInfo> = (0..arity)
-        .map(|i| infer_type_info_from_column(&s_matrix, i, dt))
-        .collect();
-    s_types.extend_from_slice(&type_infos[1..]);
-
-    is_useful(&s_matrix, &sub_pats, &s_types, dt)
+    charge: Charge<'_>,
+) -> Checked<bool> {
+    charge()?;
+    let arity = sub.len();
+    let matrix = specialize_matrix(matrix, c, arity, charge)?;
+    copy_patterns_into(&q[1..], &mut sub, charge)?;
+    pay(charge, arity + types.len().saturating_sub(1))?;
+    let mut specialized = Vec::with_capacity(arity + types.len().saturating_sub(1));
+    for i in 0..arity {
+        specialized.push(infer_type_info_from_column(&matrix, i, dt, charge)?);
+    }
+    for ty in &types[1..] {
+        specialized.push(ty.copy(charge)?);
+    }
+    is_useful(&matrix, &sub, &specialized, dt, charge)
 }
-
-/// Infer TypeInfo for a column, using the datatype map for full constructor lists.
-fn infer_type_info_from_column(matrix: &[Vec<SPat>], col: usize, dt: &DtMap) -> TypeInfo {
+fn infer_type_info_from_column<'a>(
+    matrix: &[Vec<SPat>],
+    col: usize,
+    dt: &'a DtMap,
+    charge: Charge<'_>,
+) -> Checked<TypeInfo<'a>> {
     for row in matrix {
+        charge()?;
         if let Some(SPat::Con(c, _)) = row.get(col) {
+            pay(charge, 2)?;
             match c {
-                Constructor::BoolTrue | Constructor::BoolFalse => return TypeInfo::bool_type(),
-                Constructor::Unit => return TypeInfo::unit_type(),
-                Constructor::Nil | Constructor::Cons => return TypeInfo::list_type(),
-                Constructor::Tuple(n) => return TypeInfo::tuple_type(*n),
+                Constructor::BoolTrue | Constructor::BoolFalse => return Ok(TypeInfo::bool_type()),
+                Constructor::Unit => return Ok(TypeInfo::unit_type()),
+                Constructor::Nil | Constructor::Cons => return Ok(TypeInfo::list_type()),
+                Constructor::Tuple(n) => return Ok(TypeInfo::tuple_type(*n)),
                 Constructor::IntLit(_)
                 | Constructor::WordLit(_)
                 | Constructor::FloatBits(_)
                 | Constructor::StringLit(_)
-                | Constructor::CharLit(_) => return TypeInfo::infinite(),
-                Constructor::Adt(con_name, _) => {
-                    // Look up the parent type in the datatype map
+                | Constructor::CharLit(_) => return Ok(TypeInfo::infinite()),
+                Constructor::Adt(name, _) => {
                     for cons in dt.values() {
-                        if cons.iter().any(|(n, _)| n == con_name) {
-                            return TypeInfo::adt_type("", cons);
+                        charge()?;
+                        for (candidate, _) in cons {
+                            charge()?;
+                            if candidate == name {
+                                return Ok(TypeInfo::adt_type("", cons));
+                            }
                         }
                     }
-                    // Fallback: collect from matrix only
-                    let mut adt_cons = Vec::new();
+                    let mut constructors = Vec::new();
                     for r in matrix {
-                        if let Some(SPat::Con(Constructor::Adt(name, tag), sub)) = r.get(col)
-                            && !adt_cons
-                                .iter()
-                                .any(|(n, t, _): &(String, u16, usize)| n == name && *t == *tag)
-                        {
-                            adt_cons.push((name.clone(), *tag, sub.len()));
+                        charge()?;
+                        if let Some(SPat::Con(c @ Constructor::Adt(_, _), sub)) = r.get(col) {
+                            let mut seen = false;
+                            for (prior, _) in &constructors {
+                                charge()?;
+                                if prior == c {
+                                    seen = true;
+                                    break;
+                                }
+                            }
+                            if !seen {
+                                constructors.push((copy_constructor(c, charge)?, sub.len()));
+                            }
                         }
                     }
-                    if !adt_cons.is_empty() {
-                        return TypeInfo {
-                            constructors: adt_cons
-                                .into_iter()
-                                .map(|(name, tag, arity)| (Constructor::Adt(name, tag), arity))
-                                .collect(),
-                            is_finite: true,
-                        };
+                    if !constructors.is_empty() {
+                        return Ok(TypeInfo::known(constructors));
                     }
                 }
             }
         }
     }
-    TypeInfo::infinite()
+    Ok(TypeInfo::infinite())
 }
-
-/// Collect all constructors that appear as heads of rows in the matrix.
-fn collect_head_constructors(matrix: &[Vec<SPat>]) -> HashSet<Constructor> {
+fn collect_head_constructors(
+    matrix: &[Vec<SPat>],
+    charge: Charge<'_>,
+) -> Checked<HashSet<Constructor>> {
     let mut result = HashSet::new();
     for row in matrix {
+        charge()?;
         if let SPat::Con(c, _) = &row[0] {
-            result.insert(c.clone());
+            result.insert(copy_constructor(c, charge)?);
         }
     }
-    result
+    Ok(result)
 }
-
-/// Specialize the matrix for constructor `c` with given arity.
-/// For each row:
-///   - If head is Con(c, sub_pats): replace head with sub_pats
-///   - If head is Con(c', _) where c' != c: drop the row
-///   - If head is Wild: replace head with `arity` wildcards
-fn specialize_matrix(matrix: &[Vec<SPat>], c: &Constructor, arity: usize) -> PatternMatrix {
+fn specialize_matrix(
+    matrix: &[Vec<SPat>],
+    c: &Constructor,
+    arity: usize,
+    charge: Charge<'_>,
+) -> Checked<PatternMatrix> {
     let mut result = Vec::new();
     for row in matrix {
-        match &row[0] {
-            SPat::Con(rc, sub_pats) if rc == c => {
-                let mut new_row: Vec<SPat> = sub_pats.clone();
-                new_row.extend_from_slice(&row[1..]);
-                result.push(new_row);
-            }
-            SPat::Con(_, _) => {
-                // Different constructor, skip this row
-            }
-            SPat::Wild => {
-                let mut new_row: Vec<SPat> = vec![SPat::Wild; arity];
-                new_row.extend_from_slice(&row[1..]);
-                result.push(new_row);
-            }
-        }
+        charge()?;
+        let mut copied = match &row[0] {
+            SPat::Con(rc, sub) if rc == c => copy_patterns(sub, charge)?,
+            SPat::Con(_, _) => continue,
+            SPat::Wild => wildcards(arity, charge)?,
+        };
+        copy_patterns_into(&row[1..], &mut copied, charge)?;
+        charge()?;
+        result.push(copied);
     }
-    result
+    Ok(result)
 }
-
-/// Default matrix: rows whose head is a wildcard, with the head removed.
-fn default_matrix(matrix: &[Vec<SPat>]) -> PatternMatrix {
+fn default_matrix(matrix: &[Vec<SPat>], charge: Charge<'_>) -> Checked<PatternMatrix> {
     let mut result = Vec::new();
     for row in matrix {
+        charge()?;
         if matches!(&row[0], SPat::Wild) {
-            result.push(row[1..].to_vec());
+            let copied = copy_patterns(&row[1..], charge)?;
+            charge()?;
+            result.push(copied);
         }
     }
-    result
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hiko_syntax::span::Span;
+    use std::cell::Cell;
+
+    fn meter(used: &Cell<u64>, limit: u64) -> impl Fn() -> Checked<()> + '_ {
+        move || {
+            if used.get() == limit {
+                return Err(TypeError {
+                    message: "test work limit".into(),
+                    span: Span::dummy(),
+                });
+            }
+            used.set(used.get() + 1);
+            Ok(())
+        }
+    }
+    #[test]
+    fn appended_nonempty_tail_preserves_shape_and_exact_charges() {
+        let tail = [
+            SPat::Con(
+                Constructor::Tuple(2),
+                vec![
+                    SPat::Wild,
+                    SPat::Con(Constructor::StringLit("xy".into()), vec![]),
+                ],
+            ),
+            SPat::Wild,
+        ];
+        // 2 outer slots + 2 outer nodes + tuple constructor + 2 child slots
+        // + 2 child nodes + string constructor + 2 string bytes = 12.
+        for limit in [0, 11, 12] {
+            let copied_work = Cell::new(0);
+            let copied = copy_patterns(&tail, &meter(&copied_work, limit));
+            let appended_work = Cell::new(0);
+            let mut destination = vec![SPat::Con(Constructor::Unit, vec![])];
+            let result = copy_patterns_into(&tail, &mut destination, &meter(&appended_work, limit));
+            assert_eq!(copied_work.get(), limit);
+            assert_eq!(appended_work.get(), limit);
+            assert_eq!(copied.is_ok(), limit == 12);
+            assert_eq!(result.is_ok(), limit == 12);
+            if let Err(error) = result {
+                assert_eq!(error.message, "test work limit");
+                assert_eq!(error.span, Span::dummy());
+                // Partial appends are private: production callers return Err
+                // immediately and discard their entire destination vector.
+                continue;
+            }
+            let [
+                SPat::Con(Constructor::Unit, prefix),
+                SPat::Con(Constructor::Tuple(2), children),
+                SPat::Wild,
+            ] = destination.as_slice()
+            else {
+                panic!("wrong appended shape: {destination:?}");
+            };
+            assert!(prefix.is_empty());
+            let [
+                SPat::Wild,
+                SPat::Con(Constructor::StringLit(value), payload),
+            ] = children.as_slice()
+            else {
+                panic!("wrong child shape: {children:?}");
+            };
+            assert_eq!(value, "xy");
+            assert!(payload.is_empty());
+            assert_eq!(
+                format!("{:?}", copied.unwrap()),
+                format!("{:?}", &destination[1..])
+            );
+        }
+    }
+
+    #[test]
+    fn whole_wildcard_row_stops_before_boolean_specialization() {
+        let width = 80;
+        let mut matrix = vec![(0..width).map(|_| SPat::Wild).collect::<Vec<_>>()];
+        for col in 0..width {
+            for c in [Constructor::BoolTrue, Constructor::BoolFalse] {
+                let mut row: Vec<_> = (0..width).map(|_| SPat::Wild).collect();
+                row[col] = SPat::Con(c, vec![]);
+                matrix.push(row);
+            }
+        }
+        let q: Vec<_> = (0..width).map(|_| SPat::Wild).collect();
+        let types: Vec<_> = (0..width).map(|_| TypeInfo::bool_type()).collect();
+        let used = Cell::new(0);
+        assert!(!is_useful(&matrix, &q, &types, &DtMap::new(), &meter(&used, 100)).unwrap());
+        assert_eq!(used.get(), 82);
+    }
+    #[test]
+    fn one_wildcard_column_does_not_cover_the_entire_row() {
+        let matrix = vec![vec![SPat::Wild, SPat::Con(Constructor::BoolTrue, vec![])]];
+        let query = [SPat::Wild, SPat::Wild];
+        let types = [TypeInfo::bool_type(), TypeInfo::bool_type()];
+        let used = Cell::new(0);
+        assert!(
+            is_useful(
+                &matrix,
+                &query,
+                &types,
+                &DtMap::new(),
+                &meter(&used, 10_000)
+            )
+            .unwrap()
+        );
+    }
+    #[test]
+    fn specialization_has_zero_exact_and_one_short_limits() {
+        let matrix = vec![vec![SPat::Con(Constructor::BoolTrue, vec![])]];
+        let query = [SPat::Wild];
+        let types = [TypeInfo::bool_type()];
+        let used = Cell::new(0);
+        assert!(
+            is_useful(
+                &matrix,
+                &query,
+                &types,
+                &DtMap::new(),
+                &meter(&used, 10_000)
+            )
+            .unwrap()
+        );
+        let exact = used.get();
+        for limit in [0, exact - 1, exact] {
+            let used = Cell::new(0);
+            let result = is_useful(&matrix, &query, &types, &DtMap::new(), &meter(&used, limit));
+            assert_eq!(result.is_ok(), limit == exact);
+            assert!(used.get() <= limit);
+        }
+    }
 }
