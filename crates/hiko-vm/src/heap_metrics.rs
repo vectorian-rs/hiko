@@ -284,7 +284,8 @@ impl Collection {
         }
         // Remove old evidence BEFORE script execution, including exit(0).
         match fs::symlink_metadata(&config.path) {
-            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            // symlink_metadata never follows, so is_file() is false for symlinks.
+            Ok(metadata) if metadata.is_file() => {
                 fs::remove_file(&config.path)
                     .map_err(|e| format!("heap-metrics: cannot remove stale artifact: {e}"))?;
             }
@@ -375,6 +376,14 @@ fn publish_with(
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
+    // The rename itself must survive power loss before exit 0 counts as
+    // evidence; directory fsync is only available on Unix.
+    #[cfg(unix)]
+    let result = result.and_then(|()| {
+        fs::File::open(parent(path))
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| format!("cannot sync destination directory: {e}"))
+    });
     result.map_err(|e| format!("heap-metrics: export failed: {e}"))
 }
 

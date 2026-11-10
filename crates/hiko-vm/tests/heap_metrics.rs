@@ -9,10 +9,22 @@ use hiko_vm::{runtime::Runtime, threaded::ThreadedRuntime};
 
 mod common;
 
+/// Removed on drop, so a failed assertion does not leak the tree.
+struct TempRoot(std::path::PathBuf);
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn single_and_threaded_runtime_lifecycle_summaries_include_every_heap() {
-    let root = std::env::temp_dir().join(format!("hiko-metrics-runtime-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let guard =
+        TempRoot(std::env::temp_dir().join(format!("hiko-metrics-runtime-{}", std::process::id())));
+    let root = &guard.0;
+    // A killed prior run with a reused pid may have left a stale tree.
+    let _ = std::fs::remove_dir_all(root);
+    std::fs::create_dir_all(root).unwrap();
     let fixtures = [
         (
             "val p = spawn (fn () => (1, 2))\nval _ = await_process p",
@@ -94,5 +106,4 @@ fn single_and_threaded_runtime_lifecycle_summaries_include_every_heap() {
     assert!(!path.exists());
     drop(heap);
     assert!(!path.exists());
-    std::fs::remove_dir_all(root).unwrap();
 }
