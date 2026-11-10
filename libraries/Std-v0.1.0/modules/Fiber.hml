@@ -10,19 +10,12 @@ structure FiberInternal = struct
 
   fun spawn_all fs =
     let
-      fun check remaining count =
-        case remaining of
-            [] => ()
-          | _ :: rest =>
-            if count = 10000 then panic "Fiber.all: at most 10000 entries allowed"
-            else check rest (count + 1)
       fun spawn remaining acc =
         case remaining of
             [] => reverse_into acc []
           | f :: rest =>
             let val child = BuiltinProcess.spawn_raw f
             in spawn rest (child :: acc) end
-      val _ = check fs 0
     in
       spawn fs []
     end
@@ -102,7 +95,19 @@ structure Fiber = struct
         | Err err => Err err
     end
 
-  fun all fs = Fiber.join_all (FiberInternal.spawn_all fs)
+  (* Bulk-only input policy: any/first keep their existing process limits. *)
+  fun all fs =
+    let
+      fun check remaining count =
+        case remaining of
+            [] => ()
+          | _ :: rest =>
+            if count = 10000 then panic "Fiber.all: at most 10000 entries allowed"
+            else check rest (count + 1)
+      val _ = check fs 0
+    in
+      Fiber.join_all (FiberInternal.spawn_all fs)
+    end
 
   fun first (f, g) =
     let

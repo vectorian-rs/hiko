@@ -430,6 +430,76 @@ mod thin_modules {
         }
     }
 
+    #[cfg(all(feature = "builtin-process", feature = "builtin-testing"))]
+    #[test]
+    fn bulk_ceiling_does_not_change_any_and_all_checks_before_first_spawn() {
+        let limits = "[limits]\nmax_fuel = 1000000000\nmax_heap = 2000000\nmax_host_work = 100000000\nmax_live_processes = 20000\nmax_spawns = 10001\nmax_join_group_bytes = 0\n";
+        let leaves = "[capabilities.process.spawn]\nenabled = true\n[capabilities.process.await_process]\nenabled = true\n[capabilities.process.cancel]\nenabled = true\n[capabilities.process.wait_any]\nenabled = true\n[capabilities.testing.panic]\nenabled = true\n";
+        let build = "import Std.Fiber\nfun build n acc = if n = 0 then acc else build (n - 1) ((fn () => 1) :: acc)\n";
+        // No bulk grant, and zero group bytes: any retains its old policy.
+        let project = Project::new(
+            "fiber-any-10001",
+            &["Fiber", "Either", "Result"],
+            &format!(
+                "{build}val result = case Fiber.any (build 10001 []) of Result.Ok 1 => 42 | _ => panic \"any failed\"\n"
+            ),
+            &format!("{limits}{leaves}"),
+        );
+        let output = hiko_bounded(&project, &["run", "--workers", "1", "main.hml"]);
+        assert!(
+            output.status.success(),
+            "any must not inherit bulk ceiling: {}",
+            stderr(&output)
+        );
+        // Even with zero spawn allowance, oversized all fails on the bulk
+        // input precheck before invoking spawn or reserving a group.
+        let project = Project::new(
+            "fiber-all-10001",
+            &["Fiber", "Either", "Result"],
+            &format!("{build}val result = Fiber.all (build 10001 [])\n"),
+            &format!(
+                "{}{}[capabilities.fiber.fiber_await_all]\nenabled = true\n",
+                limits.replace("max_spawns = 10001", "max_spawns = 0"),
+                leaves
+            ),
+        );
+        let output = hiko_bounded(&project, &["run", "--workers", "1", "main.hml"]);
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("Fiber.all: at most 10000 entries allowed"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(
+            !stderr(&output).contains("max_spawns"),
+            "spawn occurred before all precheck: {}",
+            stderr(&output)
+        );
+        // The exact boundary is accepted when the independent group policy
+        // and existing spawn/work/heap policies all permit it.
+        let project = Project::new(
+            "fiber-all-10000",
+            &["Fiber", "Either", "Result"],
+            &format!(
+                "{build}fun count xs n = case xs of [] => n | _ :: rest => count rest (n + 1)\nval result = case Fiber.all (build 10000 []) of Result.Ok values => if count values 0 = 10000 then 42 else panic \"length\" | _ => panic \"all failed\"\n"
+            ),
+            &format!(
+                "{}{}[capabilities.fiber.fiber_await_all]\nenabled = true\n",
+                limits.replace(
+                    "max_join_group_bytes = 0",
+                    "max_join_group_bytes = 67108864"
+                ),
+                leaves
+            ),
+        );
+        let output = hiko_bounded(&project, &["run", "--workers", "1", "main.hml"]);
+        assert!(
+            output.status.success(),
+            "exact bulk boundary rejected: {}",
+            stderr(&output)
+        );
+    }
+
     #[cfg(all(
         feature = "builtin-process",
         feature = "builtin-testing",
