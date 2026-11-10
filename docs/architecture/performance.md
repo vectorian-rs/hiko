@@ -622,6 +622,22 @@ accounting caveats and completeness are defined by the
 `opcode-stats` is separate instrumentation, not heap metrics or completion
 proof.
 
+### Arena spike/churn cadence (#201)
+
+Completed sweeps rebuild every vacant slot once. Unguarded heaps amortize a
+retained arena with `max(legacy, arena.len / 2)` allocation cadence and
+`max(256, effective / 4)` boundary cadence. Any shared-byte or total/per-kind
+host-resource budget present selects legacy cadence dynamically, even with no
+local handles; guarded profiles have no spike-amortization timing guarantee.
+See the [GC contract](execution-bounds.md#garbage-collection-behavior).
+
+Limit-forced GC prepays abstract work against persistent opcode fuel; ordinary
+and boundary GC remain unmetered. Units are conservative work/envelope charges,
+not CPU timing, and failed blocks are not completed-work counters. This is not a
+moving/resumable collector or a native allocator retry. Performance comparisons
+must pair current-baseline libraries/toolchain/profiles, omit setup, and keep
+counter-free release timings separate from quota/fuel outcome tests.
+
 ### What the VM executes (opcode counts, #152)
 
 Counted with the `opcode-stats` feature (`HIKO_OPCODE_STATS=<path>`) on

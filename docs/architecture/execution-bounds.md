@@ -118,7 +118,18 @@ Each VM owns one heap. Each process owns one VM. Therefore GC is process-local:
   which copies shape and shares immutable leaves where possible.
 
 The collector is mark-and-sweep with free-list reuse. It is non-compacting: a
-`GcRef` remains an arena index while the object is live.
+`GcRef` remains an arena index while the object is live. Every completed sweep
+rebuilds all vacant slots exactly once, including vacancies from earlier sweeps;
+live objects equal arena length minus free-list length.
+
+The legacy allocation cadence is `max(1024, 2 * live)` after a completed sweep.
+With no shared-byte, total-host-resource or per-kind-host-resource budget present,
+the effective threshold is `max(legacy, arena.len / 2)` to amortize retained arena
+spikes. With ANY such budget present, use legacy cadence, even with zero local
+handles or budget usage only in siblings. Presence is reevaluated dynamically
+after setters and tree-budget sharing. Boundary cadence is
+`max(256, effective / 4)`. Guarded runs do not inherit unguarded spike/churn timing
+claims; this does not add native-allocation retry or change byte accounting.
 
 ### GC trigger points
 
@@ -153,6 +164,31 @@ thread running that process is occupied for the duration of the collection.
 Heap limits reduce worst-case GC work by limiting live heap size. Boundary GC
 reduces accumulation of request-local garbage across slices, but it is still a
 cooperative collection point, not a preemptive collector.
+
+Object/byte-limit-forced collection (also when cadence is due) prepays abstract
+GC work from the same persistent opcode-fuel budget. Ordinary and boundary GC
+remain unmetered. A run-entry credit lease spends reserved local credit first,
+charges only a deficit atomically BEFORE consuming that credit, and refunds
+unspent reservations once, including unwinding with a surviving VM. Unbounded
+runs stay unbounded; a quantum alone can be synchronously overrun, never inventing
+a persistent fuel failure. Reservations can temporarily starve siblings.
+
+Paid blocks cover arena passes, root containers and raw slots (including scalar
+and None slots), GcRef attempts including duplicates, work-item pops and outgoing
+raw slots. Pending-object slots are paid before constructing extra roots. Before
+commit, prepay `2 * arena.len + sent.capacity + sent_bytes + 1`; `sent_bytes` is
+cached `footprint()` including scalar nodes, not payload byte estimates. Reserve
+free-list scratch capacity before commit. Abort may leave scratch marks, but
+never reclaims, clears the sent cache, refunds memory/resources or publishes
+counts/cadence. Already-paid work stays spent; the next collection clears marks.
+
+Every checked collector failure is terminal for that VM, including ordinary or
+boundary scratch failure. The first cause precedes later entry, cancellation,
+requests, yielded/done delivery and set_fuel; it is not a resumable yield. Settle
+entry credit before boundary handling and check boundary failure immediately.
+No new Done collection is added. Work units and conservative commit envelopes
+are NOT exact CPU/completed-work counts, allocator/destructor safety or a
+wall-clock guarantee. Collection remains synchronous/nonmoving.
 
 ## Resource limits and what they bound
 
