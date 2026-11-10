@@ -615,15 +615,12 @@ against the one before.
 ### Untimed heap estimates (#232)
 
 Use the default-off `heap-metrics` feature only in separate untimed samples.
-The [heap-metrics contract](execution-bounds.md#untimed-heap-metrics) defines
-explicit output/nonce/profile configuration, schema validation and teardown
-completeness. Sum cumulative successful GC-object allocations; report the
-maximum of per-heap estimated retained-byte peaks, never RSS/allocator bytes or
-a simultaneous process-tree peak. Shared Arc payloads can count multiple times,
-and closure capture accounting is incomplete. Validate normal CLI success and a
-fresh complete artifact; unsupported historical commits and failed/aborted runs
-do not acquire fabricated zero metrics. `opcode-stats` is separate instrumentation;
-its instruction counts and per-VM dump are not heap metrics or completion proof.
+Sum cumulative successful GC-object allocations and report the maximum of
+per-heap estimated retained-byte peaks; configuration, schema, validation,
+accounting caveats and completeness are defined by the
+[heap-metrics contract](execution-bounds.md#untimed-heap-metrics).
+`opcode-stats` is separate instrumentation, not heap metrics or completion
+proof.
 
 ### What the VM executes (opcode counts, #152)
 

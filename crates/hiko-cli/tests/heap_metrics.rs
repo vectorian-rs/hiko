@@ -150,36 +150,20 @@ mod enabled {
         assert!(read_artifact(&project.artifact(), "fresh-test-232", "wrong-profile").is_err());
     }
     const PROCESS: &str = "[capabilities.process.spawn]\nenabled=true\n[capabilities.process.await_process]\nenabled=true\n[capabilities.process.cancel]\nenabled=true\n[capabilities.testing.panic]\nenabled=true\n";
+    // Per-fixture heap accounting lives in the hiko-vm integration test; this
+    // proves the CLI reaps an abandoned child before exporting balanced evidence.
     #[test]
-    fn threaded_children_reaped_cancelled_failed_and_parent_exit_are_all_counted() {
+    fn threaded_run_reaps_abandoned_child_and_exports_balanced_evidence() {
         for workers in [1, 2] {
-            for (source, heaps) in [
-                (
-                    "fun go n = if n = 0 then () else let val p = spawn (fn () => (1, 2)) val _ = await_process p in go (n - 1) end\nval _ = go 20",
-                    21,
-                ),
-                (
-                    "fun loop n = loop (n + 1)\nval p = spawn (fn () => loop 0)\nval _ = cancel p",
-                    2,
-                ),
-                (
-                    "fun loop n = loop (n + 1)\nval p = spawn (fn () => loop 0)",
-                    2,
-                ),
-                (
-                    "val p = spawn (fn () => panic \"child\")\nval _ = await_process_result p",
-                    2,
-                ),
-            ] {
-                let project = Project::new(source, PROCESS);
-                let mut command = project.command(true);
-                command.args(["--workers", &workers.to_string()]);
-                success(&run(command));
-                let metrics = artifact(&project);
-                assert_eq!(metrics.heaps_created, heaps, "{source}");
-                assert_eq!(metrics.heaps_dropped, heaps);
-                assert_eq!(metrics.heaps_active, 0);
-            }
+            let source = "fun loop n = loop (n + 1)\nval p = spawn (fn () => loop 0)";
+            let project = Project::new(source, PROCESS);
+            let mut command = project.command(true);
+            command.args(["--workers", &workers.to_string()]);
+            success(&run(command));
+            let metrics = artifact(&project);
+            assert_eq!(metrics.heaps_created, 2, "{source}");
+            assert_eq!(metrics.heaps_dropped, 2);
+            assert_eq!(metrics.heaps_active, 0);
         }
     }
     #[test]

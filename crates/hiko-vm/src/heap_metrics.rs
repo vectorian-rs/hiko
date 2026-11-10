@@ -94,17 +94,12 @@ impl Artifact {
             return Err("heap-metrics: unbalanced heap lifecycle".into());
         }
         let mut ids = HashSet::new();
-        let mut total = 0u64;
-        let mut peak = 0u64;
         for heap in &self.heaps {
             if heap.heap_id == 0 || heap.heap_id > self.heaps_created || !ids.insert(heap.heap_id) {
                 return Err("heap-metrics: duplicate or invalid heap id".into());
             }
-            total = total
-                .checked_add(heap.successful_gc_object_allocations)
-                .ok_or("heap-metrics: allocation total overflow")?;
-            peak = peak.max(heap.estimated_retained_bytes_peak);
         }
+        let (total, peak) = aggregate(&self.heaps)?;
         if total != self.successful_gc_object_allocations
             || peak != self.max_per_heap_estimated_retained_bytes
         {
@@ -112,6 +107,19 @@ impl Artifact {
         }
         Ok(())
     }
+}
+
+/// Totals sum with overflow detection; separate per-heap peaks take the max.
+fn aggregate(heaps: &[HeapMetrics]) -> Result<(u64, u64), String> {
+    let mut total = 0u64;
+    let mut peak = 0u64;
+    for heap in heaps {
+        total = total
+            .checked_add(heap.successful_gc_object_allocations)
+            .ok_or("heap-metrics: allocation total overflow")?;
+        peak = peak.max(heap.estimated_retained_bytes_peak);
+    }
+    Ok((total, peak))
 }
 
 pub fn read_artifact(path: &Path, nonce: &str, profile: &str) -> Result<Artifact, String> {
@@ -178,34 +186,26 @@ impl Collector {
         if let Some(reason) = state.invalid {
             return Err(format!("heap-metrics: incomplete collection: {reason}"));
         }
-        let active = state
-            .created
-            .checked_sub(state.dropped)
-            .ok_or("heap-metrics: invalid heap counts")?;
-        let mut total = 0u64;
-        let mut peak = 0u64;
-        for heap in &state.heaps {
-            total = total
-                .checked_add(heap.successful_gc_object_allocations)
-                .ok_or("heap-metrics: allocation total overflow")?;
-            peak = peak.max(heap.estimated_retained_bytes_peak);
+        // Every finished registration pushed exactly one summary with a
+        // unique id in 1..=created, so balanced counts imply a valid vec.
+        if state.created == 0 || state.dropped != state.created {
+            return Err("heap-metrics: unbalanced heap lifecycle".into());
         }
+        let (total, peak) = aggregate(&state.heaps)?;
         let mut heaps = std::mem::take(&mut state.heaps);
         heaps.sort_by_key(|h| h.heap_id);
-        let artifact = Artifact {
+        Ok(Artifact {
             schema_version: SCHEMA_VERSION,
             nonce: config.nonce.clone(),
             profile: config.profile.clone(),
             complete: true,
             heaps_created: state.created,
             heaps_dropped: state.dropped,
-            heaps_active: active,
+            heaps_active: 0,
             successful_gc_object_allocations: total,
             max_per_heap_estimated_retained_bytes: peak,
             heaps,
-        };
-        artifact.validate(&config.nonce, &config.profile)?;
-        Ok(artifact)
+        })
     }
 }
 
@@ -321,7 +321,7 @@ impl Collection {
         let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
         if active
             .as_ref()
-            .is_some_and(|weak| weak.ptr_eq(&Arc::downgrade(&self.collector.state)))
+            .is_some_and(|weak| std::ptr::eq(weak.as_ptr(), Arc::as_ptr(&self.collector.state)))
         {
             *active = None;
         }

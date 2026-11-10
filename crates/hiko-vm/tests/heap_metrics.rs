@@ -4,10 +4,10 @@
     feature = "builtin-process",
     feature = "builtin-testing"
 ))]
-use hiko_compile::compiler::Compiler;
-use hiko_syntax::{lexer::Lexer, parser::Parser};
 use hiko_vm::heap_metrics::{Collection, ExportConfig, read_artifact};
 use hiko_vm::{runtime::Runtime, threaded::ThreadedRuntime};
+
+mod common;
 
 #[test]
 fn single_and_threaded_runtime_lifecycle_summaries_include_every_heap() {
@@ -36,9 +36,7 @@ fn single_and_threaded_runtime_lifecycle_summaries_include_every_heap() {
         ),
     ];
     for (case, (source, heaps)) in fixtures.iter().enumerate() {
-        let tokens = Lexer::new(source, 0).tokenize().unwrap();
-        let parsed = Parser::new(tokens).parse_program().unwrap();
-        let (program, _) = Compiler::compile(parsed).unwrap();
+        let program = common::compile_source(source);
         for workers in 0..=2 {
             let path = root.join(format!("{case}-{workers}.json"));
             let collection = Collection::start(ExportConfig {

@@ -189,7 +189,7 @@ pub struct Heap {
     /// Committed allocations across collections; test/untimed metrics only.
     #[cfg(any(test, feature = "heap-metrics"))]
     successful_allocations: u64,
-    #[cfg(feature = "heap-metrics")]
+    #[cfg(any(test, feature = "heap-metrics"))]
     metrics_overflow: bool,
     #[cfg(feature = "heap-metrics")]
     metrics_registration: Option<crate::heap_metrics::HeapRegistration>,
@@ -294,7 +294,7 @@ impl Heap {
             peak_bytes: 0,
             #[cfg(any(test, feature = "heap-metrics"))]
             successful_allocations: 0,
-            #[cfg(feature = "heap-metrics")]
+            #[cfg(any(test, feature = "heap-metrics"))]
             metrics_overflow: false,
             #[cfg(feature = "heap-metrics")]
             metrics_registration: crate::heap_metrics::register_heap(),
@@ -1084,14 +1084,7 @@ impl Heap {
         #[cfg(any(test, feature = "heap-metrics"))]
         match self.successful_allocations.checked_add(1) {
             Some(count) => self.successful_allocations = count,
-            None => {
-                #[cfg(feature = "heap-metrics")]
-                {
-                    self.metrics_overflow = true;
-                }
-                #[cfg(not(feature = "heap-metrics"))]
-                panic!("test allocation counter overflow");
-            }
+            None => self.metrics_overflow = true,
         }
         #[cfg(test)]
         if let Some(peak) = &mut self.phase_peak_bytes {
@@ -1681,6 +1674,7 @@ mod tests {
         heap.alloc(object()).unwrap();
         assert_eq!(heap.successful_allocations(), 4);
         assert_eq!(heap.peak_bytes(), 2 * bytes);
+        assert!(!heap.metrics_overflow);
     }
 
     #[cfg(feature = "heap-metrics")]
