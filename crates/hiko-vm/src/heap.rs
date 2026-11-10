@@ -186,9 +186,13 @@ pub struct Heap {
     memory_budget: Option<Arc<SharedBudget>>,
     current_bytes: usize,
     peak_bytes: usize,
-    /// Committed allocations across collections; absent from production builds.
-    #[cfg(test)]
+    /// Committed allocations across collections; test/untimed metrics only.
+    #[cfg(any(test, feature = "heap-metrics"))]
     successful_allocations: u64,
+    #[cfg(feature = "heap-metrics")]
+    metrics_overflow: bool,
+    #[cfg(feature = "heap-metrics")]
+    metrics_registration: Option<crate::heap_metrics::HeapRegistration>,
     /// Independent test window; never resets the lifetime high-water mark.
     #[cfg(test)]
     phase_peak_bytes: Option<usize>,
@@ -245,6 +249,14 @@ const SENT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 impl Drop for Heap {
     fn drop(&mut self) {
+        #[cfg(feature = "heap-metrics")]
+        if let Some(registration) = self.metrics_registration.take() {
+            registration.finish(
+                self.successful_allocations,
+                self.peak_bytes,
+                self.metrics_overflow,
+            );
+        }
         // A finished process stops counting against its tree's memory, and
         // its host resources, dropped with it, against the tree's limits.
         if let Some(budget) = &self.memory_budget {
@@ -280,8 +292,12 @@ impl Heap {
             memory_budget: None,
             current_bytes: 0,
             peak_bytes: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "heap-metrics"))]
             successful_allocations: 0,
+            #[cfg(feature = "heap-metrics")]
+            metrics_overflow: false,
+            #[cfg(feature = "heap-metrics")]
+            metrics_registration: crate::heap_metrics::register_heap(),
             #[cfg(test)]
             phase_peak_bytes: None,
             host_resources: HashMap::new(),
@@ -1065,12 +1081,21 @@ impl Heap {
         };
         self.current_bytes = self.current_bytes.saturating_add(object_bytes);
         self.peak_bytes = self.peak_bytes.max(self.current_bytes);
-        #[cfg(test)]
-        {
-            self.successful_allocations = self.successful_allocations.checked_add(1).unwrap();
-            if let Some(peak) = &mut self.phase_peak_bytes {
-                *peak = (*peak).max(self.current_bytes);
+        #[cfg(any(test, feature = "heap-metrics"))]
+        match self.successful_allocations.checked_add(1) {
+            Some(count) => self.successful_allocations = count,
+            None => {
+                #[cfg(feature = "heap-metrics")]
+                {
+                    self.metrics_overflow = true;
+                }
+                #[cfg(not(feature = "heap-metrics"))]
+                panic!("test allocation counter overflow");
             }
+        }
+        #[cfg(test)]
+        if let Some(peak) = &mut self.phase_peak_bytes {
+            *peak = (*peak).max(self.current_bytes);
         }
         Ok(GcRef(idx))
     }
@@ -1656,6 +1681,72 @@ mod tests {
         heap.alloc(object()).unwrap();
         assert_eq!(heap.successful_allocations(), 4);
         assert_eq!(heap.peak_bytes(), 2 * bytes);
+    }
+
+    #[cfg(feature = "heap-metrics")]
+    #[test]
+    fn exported_counter_survives_gc_excludes_refusals_and_keeps_lifetime_peak() {
+        use crate::heap_metrics::{Collector, ExportConfig};
+        let collector = Collector::default();
+        let mut heap = Heap::new();
+        heap.metrics_registration = Some(collector.register());
+        let object = || HeapObject::String("payload".into());
+        let bytes = object().estimated_bytes();
+        heap.alloc(object()).unwrap();
+        heap.alloc(object()).unwrap();
+        heap.collect(std::iter::empty());
+        heap.begin_test_phase();
+        heap.alloc(object()).unwrap();
+        heap.set_max_objects(1);
+        assert!(heap.alloc(object()).is_err());
+        heap.set_max_objects(2);
+        heap.set_max_bytes(bytes);
+        assert!(heap.alloc(object()).is_err());
+        assert_eq!(heap.end_test_phase(), bytes);
+        drop(heap);
+        let mut empty = Heap::new();
+        empty.metrics_registration = Some(collector.register());
+        drop(empty);
+        let artifact = collector
+            .snapshot(&ExportConfig {
+                path: "unused.json".into(),
+                nonce: "heap-test".into(),
+                profile: "untimed".into(),
+            })
+            .unwrap();
+        assert_eq!(artifact.successful_gc_object_allocations, 3);
+        assert_eq!(
+            artifact.max_per_heap_estimated_retained_bytes,
+            (2 * bytes) as u64
+        );
+        assert_eq!(artifact.heaps[0].successful_gc_object_allocations, 3);
+        assert_eq!(artifact.heaps[1].successful_gc_object_allocations, 0);
+        assert_eq!(artifact.heaps[1].estimated_retained_bytes_peak, 0);
+    }
+
+    #[cfg(feature = "heap-metrics")]
+    #[test]
+    fn allocation_counter_overflow_latches_incomplete_without_refusing_allocation() {
+        use crate::heap_metrics::{Collector, ExportConfig};
+        let collector = Collector::default();
+        let mut heap = Heap::new();
+        heap.metrics_registration = Some(collector.register());
+        heap.successful_allocations = u64::MAX;
+        heap.alloc(HeapObject::String("still commits".into()))
+            .unwrap();
+        assert_eq!(heap.successful_allocations, u64::MAX);
+        assert!(heap.metrics_overflow);
+        assert_eq!(heap.live_count(), 1);
+        drop(heap);
+        assert!(
+            collector
+                .snapshot(&ExportConfig {
+                    path: "unused.json".into(),
+                    nonce: "overflow".into(),
+                    profile: "untimed".into()
+                })
+                .is_err()
+        );
     }
 
     #[test]

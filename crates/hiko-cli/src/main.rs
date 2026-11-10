@@ -67,7 +67,21 @@ fn main() {
     match args[1].as_str() {
         "run" => {
             let options = parse_run_args(&args[2..]);
+            #[cfg(feature = "heap-metrics")]
+            let metrics = hiko_vm::heap_metrics::Collection::from_env().unwrap_or_else(|error| {
+                eprintln!("{error}");
+                process::exit(1);
+            });
             run_file(&options);
+            // run_file's VM/runtime (including retained threaded root and joined
+            // workers) must be dropped before validating heap completeness.
+            #[cfg(feature = "heap-metrics")]
+            if let Some(metrics) = metrics {
+                metrics.finish().unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    process::exit(1);
+                });
+            }
         }
         "check" => {
             let options = parse_check_args(&args[2..]);

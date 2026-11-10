@@ -8,6 +8,7 @@ repository = "https://github.com/vectorian-rs/hiko"
 
 [features]
 opcode-stats = ["hiko-vm/opcode-stats"]
+heap-metrics = ["hiko-vm/heap-metrics"]
 register-vm = ["hiko-vm/register-vm"]
 default = ["builtin-default", "loader-all", "cli-hash", "cli-lock"]
 # The default build leaves out regex, JSON and dates; see PR #141.
