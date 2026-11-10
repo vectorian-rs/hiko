@@ -8,7 +8,7 @@ inventory and triage, not a plan that has been executed. Nothing listed as
 
 ## Delivery checkpoint (2026-11-08)
 
-Merge status refreshed 2026-11-09; the inventory below keeps its snapshot date.
+Merge status refreshed 2026-11-10; the inventory below keeps its snapshot date.
 
 [PR #221](https://github.com/vectorian-rs/hiko/pull/221) completed
 [#183](https://github.com/vectorian-rs/hiko/issues/183) and merged at `e980d88`.
@@ -79,6 +79,21 @@ growth, explicitly separate 1k quota observations, mutations, default/all-featur
 workspace tests, lint, selected reviews and all five CI jobs. Heap observations
 are estimated retained bytes, not RSS or proven minimum limits. The issue is
 complete and its claim is released.
+
+[PR #237](https://github.com/vectorian-rs/hiko/pull/237) completed
+[#202 rev 2](https://github.com/vectorian-rs/hiko/issues/202) at `2a9c753`:
+pattern usefulness and expanded alias copies share the cumulative type-work
+budget, with a whole-row wildcard cutoff and first construct/span preservation.
+Verified head `2813f72` passed all five hosted CI jobs: default/all-features
+workspace tests and lint. Local full-workspace checks were at `945dfa5`;
+later exact-span/paid-append changes received focused checks and independent
+delta reviews. Final cleanup checks covered full type-checker tests in default
+and check-generalization modes, filtered compiler import controls, clippy and
+formatting, not new full local workspace or compiler suites. The cleanup preserves
+work charges, source spans and APIs, with nonempty-tail zero/one-short/exact
+charge and shape controls. Work units are not CPU/RSS bounds
+or coverage of every compiler pass; [#205](https://github.com/vectorian-rs/hiko/issues/205)
+retains the other-pass inventory. The issue is complete and its claim is released.
 
 [#198's measurement gate](https://github.com/vectorian-rs/hiko/issues/198)
 remains a prerequisite of the public cutover in #186.
