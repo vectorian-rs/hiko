@@ -118,15 +118,23 @@ cap expired, and the explicitly requested
 on an unfrozen interim snapshot failed one of twelve A2 cells against the 1.10
 limit, under elevated load and with register stack fallback as recorded limits.
 The maintainer then authorized merging the implementation with A2 deferred:
-the still-open [PR #243](https://github.com/vectorian-rs/hiko/pull/243)
-carries the rebased work and review record (not yet on `main`), and
-[#242](https://github.com/vectorian-rs/hiko/issues/242) tracks closing the
-sliced-boundary overhead gap with a load-bounded final measurement.
+[PR #243](https://github.com/vectorian-rs/hiko/pull/243) subsequently merged
+at `a9501fe` on 2026-11-11, with final head `bf2c5ee`. Its rebased work and
+review record are on `main`; the earlier interim measurements are not
+relabeled as final-head results. [#242](https://github.com/vectorian-rs/hiko/issues/242)
+tracks the remaining sliced-boundary overhead measurement.
 
-[#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198) is on hold: its
-implementation window expired on 2026-11-11 without a freeze or PR, and
-resuming needs a new grant.
-Its measurement gate remains a prerequisite of the public cutover in #186.
+An earlier [#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198)
+implementation window expired without a freeze or PR. A separately authorized
+recovery produced [PR #244](https://github.com/vectorian-rs/hiko/pull/244),
+which the maintainer merged at `986cff1` on 2026-11-11, with final head
+`1382b24`. The exact-commit measurement gate is now implemented on `main`.
+The real supported/self/slowdown attempts recorded in that recovery were
+refused or incomplete under load and an AC-to-battery transition, not
+successful performance acceptance. Earlier workspace checks and the timeout
+fix review were at earlier heads; they are not relabeled as full final-head
+verification. Implementation merge does not turn those refusals into positive
+measurement evidence for the public cutover in #186.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
 
