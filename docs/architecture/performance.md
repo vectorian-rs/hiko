@@ -48,9 +48,11 @@ bun scripts/vm-gate.ts <base-ref> <candidate-ref> [--history path] [--pairs 11]
 
 This separate gate does not change `compare.ts`. It resolves both refs once,
 then builds counter-free release binaries with default features and with
-`register-vm` in unique detached worktrees and targets. `HIKO_BIN`, injected
+`register-vm` from one detached worktree per commit into a unique target per
+profile. `HIKO_BIN`, injected
 Cargo target/features/flags, and power overrides are refused, not fallbacks.
-The pinned Rust1.99.1 toolchain, tool paths, build argv, environment and source
+The repository's pinned Rust toolchain (`scripts/common.ts`), tool paths,
+build argv, environment and source
 hashes are retained. Builds are locked/offline, use one Cargo job and an isolated
 Cargo home sharing downloaded source caches, not ambient configuration or
 credentials. Compiler artifact messages verify effective VM features, not just
@@ -66,13 +68,13 @@ bytes. Stderr is drained and retained separately, never joined to stdout.
 The initial supported host is macOS. Successful recognized `pmset` AC proof is
 required before builds and around every sample. One-minute load must be finite,
 nonnegative and strictly below `min(4, max(1, CPU-count / 2))`. Before and after
-builds, load may settle for at most60 monotonic seconds at a recorded fixed
+builds, load may settle for at most 60 monotonic seconds at a recorded fixed
 interval. Probes have deadlines and timed-out subprocesses are killed and
 reaped. Unsupported OS, unavailable/unknown power, invalid load, battery power,
 timeout or sample contamination is unmet evidence, with no bypass. Boundary
 observations do not prove uninterrupted AC or low load between probes.
 
-At least11 complete AB/BA pairs are timed per benchmark/profile. Durations are
+At least 11 complete AB/BA pairs are timed per benchmark/profile. Durations are
 positive integer monotonic nanoseconds. A regression is the exact comparison
 `100 * median(candidate) > 101 * median(base)`; equality is allowed. Only a
 valid measured regression gets one fresh complete recheck for that cell. Both
@@ -81,7 +83,7 @@ regression fails. Errors/refusals/output mismatches never trigger a performance
 retry; no pooling, dropped samples or third attempt is permitted.
 
 Separate untimed default/register profiles add only `heap-metrics`. They
-require successful exit and a fresh schema1 artifact with matching nonce and
+require successful exit and a fresh schema 1 artifact with matching nonce and
 profile, complete balanced heap lifecycle and checked safe-integer totals.
 See the [metric contract](execution-bounds.md#untimed-heap-metrics): allocation
 counts and maximum per-heap estimated peaks are not RSS or simultaneous tree
@@ -94,9 +96,8 @@ write failures exit nonzero and preserve recovery files. Choose a fresh history
 path; an existing destination is refused rather than overwritten. Large compiler
 transcripts are retained once as base64 sidecars under `<history>.artifacts`,
 with paths and byte hashes in the history. Preserve those sidecars with the JSON.
-The gate changes no
-runtime semantics, does not gate CI wall-clock time, and does not supply other
-required workspace checks or reviews.
+The gate changes no runtime semantics, does not gate CI wall-clock time, and
+does not supply other required workspace checks or reviews.
 
 ## Baseline (2026-10-31)
 

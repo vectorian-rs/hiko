@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { comparisonRow, lastLine } from "./compare.ts";
-import { acPower, loadLimit, validLoad, median, regresses, validateMetrics, gate, execute, corpus, type GateIO } from "./vm-gate.ts";
+import { acPower, loadLimit, validLoad, median, regresses, validateMetrics, gate, execute, frozenInputs, type GateIO } from "./vm-gate.ts";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -251,7 +251,7 @@ async function gateFixture(options: GateFixtureOptions = {}) {
   temporary.push(directory);
   const repo = join(directory, "repo with spaces");
   const history = join(directory, "report.json");
-  const files = [...corpus, "hiko.toml", "hiko.lock.toml", "policies/benchmark.policy.toml"];
+  const files = frozenInputs;
   for (const file of files) {
     await mkdir(dirname(join(repo, file)), { recursive: true });
     await writeFile(join(repo, file), "frozen fixture\n");
@@ -290,7 +290,7 @@ async function gateFixture(options: GateFixtureOptions = {}) {
         if (options.badFeatures) features.push("opcode-stats");
         stdout = JSON.stringify({ reason: "compiler-artifact", target: { name: "hiko_vm" }, features });
         if (options.largeTranscript) stderr = "x".repeat(70_000);
-        if (options.buildFailure && invocation.cwd.endsWith("base.default.metrics")) status = 37;
+        if (options.buildFailure && target.endsWith("base.default.metrics")) status = 37;
       } else {
         sampleCalls++;
         const name = invocation.argv[0]!.includes("/candidate.") ? "candidate" : "base";
@@ -321,11 +321,12 @@ test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics 
   expect(report.builds).toHaveLength(8); expect(report.comparisons).toHaveLength(8);
   expect(report.metrics).toHaveLength(16);
   expect(report.inputs).toHaveLength(7);
-  for (const row of report.comparisons as { base: string[]; candidate: string[] }[]) {
+  for (const row of report.comparisons) {
     expect(row.base).toHaveLength(11); expect(row.candidate).toHaveLength(11);
   }
   const builds = f.calls.filter(c => c.argv[0] === "fixture-cargo");
-  expect(new Set(builds.map(c => c.cwd)).size).toBe(8);
+  // Profiles of one commit share a checkout; targets stay unique per profile.
+  expect(new Set(builds.map(c => c.cwd)).size).toBe(2);
   expect(new Set(builds.map(c => c.argv[c.argv.indexOf("--target-dir") + 1])).size).toBe(8);
   expect(builds.every(c => c.argv.includes("--locked") && c.argv.includes("--offline"))).toBe(true);
   expect(builds.filter(c => c.argv.some(a => a.includes("heap-metrics")))).toHaveLength(4);
@@ -333,7 +334,7 @@ test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics 
   expect(samples.slice(2, 6).map(c => c.argv[0]!.includes("/candidate."))).toEqual([false, true, true, false]);
   expect(samples.every(c => c.argv[c.argv.indexOf("--config") + 1]!.endsWith("/inputs/hiko.toml"))).toBe(true);
   expect(samples.every(c => c.argv[c.argv.indexOf("--policy") + 1] === "benchmark")).toBe(true);
-  expect(f.calls.filter(c => c.argv.includes("remove"))).toHaveLength(8);
+  expect(f.calls.filter(c => c.argv.includes("remove"))).toHaveLength(2);
   expect(JSON.parse(await readFile(f.history, "utf8")).verdict).toBe("pass");
 });
 
@@ -341,7 +342,7 @@ test("VM gate permits exactly one complete recheck only for valid measured regre
   const once = await gateFixture({ regression: "once" }); const passed = await once.run();
   expect(passed.verdict).toBe("pass");
   expect(passed.comparisons).toHaveLength(16);
-  expect((passed.comparisons[1] as { verdict: string }).verdict).toBe("pass-with-recheck");
+  expect(passed.comparisons[1]!.verdict).toBe("pass-with-recheck");
   const always = await gateFixture({ regression: "always" }); const failed = await always.run();
   expect(failed.verdict).toBe("fail"); expect(failed.comparisons).toHaveLength(16);
   expect(failed.errors.filter(e => e.includes("persists"))).toHaveLength(8);
@@ -371,7 +372,7 @@ test("VM gate invalidates mid-attempt power/load contamination without selective
   for (const options of [{ powerSwitch: true }, { loadSwitch: true }]) {
     const f = await gateFixture(options); const report = await f.run();
     expect(report.verdict).toBe("fail"); expect(report.comparisons).toHaveLength(1);
-    expect((report.comparisons[0] as { verdict: string }).verdict).toBe("incomplete");
+    expect(report.comparisons[0]!.verdict).toBe("incomplete");
     expect(f.calls.filter(c => c.argv[0]!.endsWith("hiko-cli"))).toHaveLength(4);
     expect(report.errors.join()).toMatch(/changed|load exceeds/);
   }

@@ -3,9 +3,10 @@ import { cpus, loadavg, platform, release, arch, homedir, tmpdir } from "node:os
 import { mkdir, mkdtemp, lstat, readFile, symlink, open, rename, rm } from "node:fs/promises";
 import { resolve, join, dirname, basename, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { root } from "./common.ts";
+import { main, requireTools, root, toolchain } from "./common.ts";
 
 export const corpus = ["benchmarks/compare/fib.hml", "benchmarks/compare/tak.hml", "benchmarks/local_rec.hml", "benchmarks/string_concat.hml"];
+export const frozenInputs = [...corpus, "hiko.toml", "hiko.lock.toml", "policies/benchmark.policy.toml"];
 export interface Invocation {
   argv: string[]; cwd: string; env: Record<string, string>; timeoutMs: number;
 }
@@ -48,17 +49,21 @@ export async function execute(invocation: Invocation): Promise<Execution> {
   } finally { clearTimeout(timer); }
 }
 export function systemIO(): GateIO {
-  const tool = (name: string) => Bun.which(name) || name;
+  // pmset is required only where it is ever invoked; on other platforms
+  // probe() refuses before the placeholder path could be executed.
+  requireTools(["git", "cargo", "rustc", ...(platform() === "darwin" ? ["pmset"] : [])], "vm-gate.ts");
+  const tool = (name: string) => Bun.which(name) ?? name;
   return { platform: platform(), cpuCount: cpus().length, machine: `${release()} ${arch()} ${cpus()[0]?.model || "unknown"}`,
     now: () => process.hrtime.bigint(), load: () => loadavg()[0]!, pause: ms => Bun.sleep(ms), exec: execute,
     writeHistory: atomicHistory, tools: { git: tool("git"), cargo: tool("cargo"), rustc: tool("rustc"), pmset: tool("pmset") } };
 }
+export function nanos(value: string): bigint {
+  if (!/^[1-9][0-9]*$/.test(value)) throw Error("duration must be positive integer nanoseconds");
+  return BigInt(value);
+}
 export function median(values: string[]): bigint {
   if (!values.length || values.length % 2 === 0) throw Error("need an odd, nonempty sample count");
-  const ordered = values.map(value => {
-    if (!/^[1-9][0-9]*$/.test(value)) throw Error("duration must be positive integer nanoseconds");
-    return BigInt(value);
-  }).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const ordered = values.map(nanos).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   return ordered[Math.floor(ordered.length / 2)]!;
 }
 export function regresses(base: string[], candidate: string[]) {
@@ -78,7 +83,7 @@ export function validLoad(value: number, cpuCount: number) {
 const digest = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 const decoded = (value: string) => Buffer.from(value, "base64").toString("utf8");
 function keys(value: unknown, expected: string[]): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== expected.sort().join()) throw Error("heap-metrics: unexpected schema fields");
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== [...expected].sort().join()) throw Error("heap-metrics: unexpected schema fields");
 }
 function uint(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw Error("heap-metrics: unsafe unsigned integer");
@@ -139,6 +144,10 @@ export interface GateOptions {
 }
 interface Build { binary: string; }
 interface Transcript { stdoutArtifact?: string; stderrArtifact?: string; stdoutSha256?: string; stderrSha256?: string; }
+interface CallRecord extends Invocation, Partial<Execution>, Transcript { error?: string; }
+interface BuildRecord { key: string; sha: string; features: string[]; effectiveVmFeatures: string[]; binary: string; sha256: string; }
+interface Comparison { mode: string; input: string; attempt: number; base: string[]; candidate: string[]; verdict: string; }
+interface MetricRecord { name: string; mode: string; input: string; artifact: Record<string, unknown>; raw: string; }
 export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   const pairs = options.pairs ?? 11;
   if (!Number.isSafeInteger(pairs) || pairs < 11 || pairs % 2 === 0) {
@@ -159,13 +168,12 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     platform: io.platform, cpus: io.cpuCount, pairs, recovery,
     refs: {} as Record<string, string>, inputs: [] as { path: string; sha256: string }[],
     tools: io.tools, toolchain: "", gateSha256: digest(await readFile(import.meta.path)),
-    calls: [] as (Invocation & Partial<Execution> & Transcript & { error?: string })[],
+    calls: [] as CallRecord[],
     probes: [] as { atNs: string; power: string; load: number }[],
-    builds: [] as object[], comparisons: [] as object[], metrics: [] as object[],
+    builds: [] as BuildRecord[], comparisons: [] as Comparison[], metrics: [] as MetricRecord[],
     errors: [] as string[], verdict: "incomplete", completed: "",
   };
   const worktrees: string[] = [];
-  let persisted = false;
   const sourceEnv = options.environment ?? process.env;
   const home = join(workspace, "home");
   const cargoHome = join(workspace, "cargo-home");
@@ -176,15 +184,23 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   };
   async function save() {
     // Keep recoverable evidence even if the requested destination is unwritable.
-    persisted = false;
     const text = JSON.stringify(history, null, 2) + "\n";
     await atomicHistory(recovery, text);
     await io.writeHistory(destination, text);
-    persisted = true;
+  }
+  async function publish(label: string) {
+    history.completed = new Date().toISOString();
+    try { await save(); return true; }
+    catch (error) {
+      history.errors.push(`${label} failed: ${String(error)}; evidence retained at ${recovery}`);
+      history.verdict = "fail";
+      await atomicHistory(recovery, JSON.stringify(history, null, 2) + "\n");
+      return false;
+    }
   }
   async function invoke(argv: string[], cwd: string, extra: Record<string, string> = {}, timeoutMs = 300_000) {
     const invocation = { argv, cwd, env: { ...env, ...extra }, timeoutMs };
-    const entry: Invocation & Partial<Execution> & Transcript & { error?: string } = { ...invocation };
+    const entry: CallRecord = { ...invocation };
     history.calls.push(entry);
     let result: Execution;
     try { result = await io.exec(invocation); }
@@ -230,7 +246,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     for (;;) {
       if (await probe(deadline)) return;
       const remaining = Number((deadline - io.now()) / 1_000_000n);
-      if (remaining <= 0) throw Error("load did not settle within60s");
+      if (remaining <= 0) throw Error("load did not settle within 60s");
       await io.pause(Math.min(1_000, remaining));
     }
   }
@@ -241,7 +257,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
       "--policy", "benchmark", "--workers", "1", join(workspace, "inputs", input),
     ], join(workspace, "inputs"), extra, 60_000);
     if (!await probe()) throw Error("load exceeds bound; attempt invalid");
-    median([result.durationNs]);
+    nanos(result.durationNs);
     return result;
   }
   try {
@@ -259,7 +275,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
       try { await lstat(source); } catch { continue; }
       await symlink(source, join(cargoHome, cache), "dir");
     }
-    history.toolchain = decoded((await invoke([io.tools.rustc, "+1.99.1", "--version"], repo)).stdout);
+    history.toolchain = decoded((await invoke([io.tools.rustc, `+${toolchain}`, "--version"], repo)).stdout);
     for (const [name, ref] of [["base", options.base], ["candidate", options.candidate]]) {
       const result = await invoke([io.tools.git, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], repo);
       const sha = decoded(result.stdout).trim();
@@ -277,8 +293,32 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
       await Bun.write(output, bytes);
       history.inputs.push({ path, sha256: digest(bytes) });
     }
-    for (const required of [...corpus, "hiko.toml", "hiko.lock.toml", "policies/benchmark.policy.toml"]) {
+    for (const required of frozenInputs) {
       if (!files.includes(required)) throw Error(`missing frozen input ${required}`);
+    }
+    // Cargo reads configuration from the cwd's ancestors: the shared workspace
+    // chain is proven clean once, each fresh checkout's own tree at creation.
+    for (let directory = workspace;; directory = dirname(directory)) {
+      for (const config of [".cargo/config", ".cargo/config.toml"]) {
+        if (await Bun.file(join(directory, config)).exists()) throw Error(`uncontrolled Cargo config: ${join(directory, config)}`);
+      }
+      if (dirname(directory) === directory) break;
+    }
+    // Profiles of the same commit share one checkout; isolation comes from the
+    // per-profile target directory and verified effective features.
+    const sources = new Map<string, string>();
+    for (const name of ["base", "candidate"]) {
+      await phase(`worktree ${name}`, async () => {
+        await settle();
+        const cwd = join(workspace, name);
+        // Register before checkout so partial failures are also cleaned safely.
+        worktrees.push(cwd);
+        await invoke([io.tools.git, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", cwd, history.refs[name]!], repo);
+        for (const config of [".cargo/config", ".cargo/config.toml"]) {
+          if (await Bun.file(join(cwd, config)).exists()) throw Error(`uncontrolled Cargo config: ${join(cwd, config)}`);
+        }
+        sources.set(name, cwd);
+      });
     }
     const builds = new Map<string, Build>();
     for (const name of ["base", "candidate"]) for (const mode of ["default", "register"]) {
@@ -286,20 +326,12 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
         const profile = `${mode}${metrics ? ".metrics" : ""}`;
         const key = `${name}.${profile}`;
         await phase(`build ${key}`, async () => {
+          const cwd = sources.get(name);
+          if (!cwd) throw Error("source worktree unavailable");
           await settle();
-          const cwd = join(workspace, key);
-          // Register before checkout so partial failures are also cleaned safely.
-          worktrees.push(cwd);
-          await invoke([io.tools.git, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", cwd, history.refs[name]!], repo);
-          for (let directory = cwd;; directory = dirname(directory)) {
-            for (const config of [".cargo/config", ".cargo/config.toml"]) {
-              if (await Bun.file(join(directory, config)).exists()) throw Error(`uncontrolled Cargo config: ${join(directory, config)}`);
-            }
-            if (dirname(directory) === directory) break;
-          }
           const target = join(workspace, "targets", key);
           const features = [...(mode === "register" ? ["register-vm"] : []), ...(metrics ? ["heap-metrics"] : [])];
-          const argv = [io.tools.cargo, "+1.99.1", "build", "--release", "--locked", "--offline", "--message-format=json", "-p", "hiko-cli", "--target-dir", target];
+          const argv = [io.tools.cargo, `+${toolchain}`, "build", "--release", "--locked", "--offline", "--message-format=json", "-p", "hiko-cli", "--target-dir", target];
           if (features.length) argv.push("--features", features.join(","));
           const compiled = await invoke(argv, cwd);
           const artifacts = decoded(compiled.stdout).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
@@ -311,7 +343,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
           }
           const binary = join(target, "release/hiko-cli");
           const sha256 = digest(await readFile(binary));
-          history.builds.push({ key, sha: history.refs[name], features, effectiveVmFeatures: vm.features, binary, sha256 });
+          history.builds.push({ key, sha: history.refs[name]!, features, effectiveVmFeatures: vm.features, binary, sha256 });
           builds.set(key, { binary });
           await settle();
         });
@@ -327,12 +359,12 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
         expected = preflight.stdout;
         if ((await sample(candidate, input)).stdout !== expected) throw Error("full stdout mismatch at preflight");
         for (let attempt = 0; attempt < 2; attempt++) {
-          const row = { mode, input, attempt: attempt + 1, base: [] as string[], candidate: [] as string[], verdict: "incomplete" };
+          const row: Comparison = { mode, input, attempt: attempt + 1, base: [], candidate: [], verdict: "incomplete" };
           history.comparisons.push(row);
           for (let pair = 0; pair < pairs; pair++) {
             for (const name of pair % 2 ? ["candidate", "base"] : ["base", "candidate"]) {
               const result = await sample(name === "base" ? base : candidate, input);
-              if (result.stdout !== expected) throw Error(`full stdout mismatch in attempt${attempt + 1}/pair${pair}/${name}`);
+              if (result.stdout !== expected) throw Error(`full stdout mismatch in attempt ${attempt + 1}, pair ${pair}, ${name}`);
               (name === "base" ? row.base : row.candidate).push(result.durationNs);
               await save();
             }
@@ -364,15 +396,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     history.errors.push(String(error));
     history.verdict = "fail";
   } finally {
-    history.completed = new Date().toISOString();
-    try { await save(); }
-    catch (error) {
-      history.errors.push(`history publication failed: ${String(error)}; evidence retained at${recovery}`);
-      history.verdict = "fail";
-      await atomicHistory(recovery, JSON.stringify(history, null, 2) + "\n");
-      persisted = false;
-    }
-    if (persisted) {
+    if (await publish("history publication")) {
       let cleaned = true;
       for (const cwd of worktrees.reverse()) {
         try { await invoke([io.tools.git, "worktree", "remove", "--force", cwd], repo); }
@@ -382,42 +406,33 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
           cleaned = false;
         }
       }
-      history.completed = new Date().toISOString();
-      try { await save(); }
-      catch (error) {
-        history.errors.push(`final history publication failed: ${String(error)}; evidence retained at${recovery}`);
-        history.verdict = "fail";
-        await atomicHistory(recovery, JSON.stringify(history, null, 2) + "\n");
-        cleaned = false;
-      }
+      if (!await publish("final history publication")) cleaned = false;
       if (cleaned) await rm(workspace, { recursive: true, force: true });
     }
   }
   return history;
 }
 
-if (import.meta.main) {
-  try {
-    const args = process.argv.slice(2);
-    if (args.length < 2 || args[0]!.startsWith("-") || args[1]!.startsWith("-")) {
-      throw Error("Usage: bun scripts/vm-gate.ts <base> <candidate> [--history path] [--pairs 11]");
-    }
-    const options: GateOptions = { repo: root, base: args[0]!, candidate: args[1]!, history: join(root, "target/vm-gate-history", randomUUID() + ".json") };
-    const seen = new Set<string>();
-    for (let i = 2; i < args.length; i += 2) {
-      const flag = args[i]!;
-      if (seen.has(flag) || args[i + 1] === undefined) throw Error("duplicate/missing VM gate option");
-      seen.add(flag);
-      if (flag === "--history") options.history = args[i + 1]!;
-      else if (flag === "--pairs") options.pairs = Number(args[i + 1]);
-      else throw Error(`unknown VM gate option ${flag}`);
-    }
-    const report = await gate(options);
-    console.log(`${report.verdict.toUpperCase()}: ${resolve(options.history)}`);
-    if (report.verdict !== "pass") {
-      for (const error of report.errors) console.error(error);
-      if (await Bun.file(report.recovery).exists()) console.error(`Recovery evidence: ${report.recovery}`);
-      process.exitCode = 1;
-    }
-  } catch (error) { console.error(String(error)); process.exitCode = 1; }
-}
+if (import.meta.main) await main(async () => {
+  const args = process.argv.slice(2);
+  if (args.length < 2 || args[0]!.startsWith("-") || args[1]!.startsWith("-")) {
+    throw Error("Usage: bun scripts/vm-gate.ts <base> <candidate> [--history path] [--pairs 11]");
+  }
+  const options: GateOptions = { repo: root, base: args[0]!, candidate: args[1]!, history: join(root, "target/vm-gate-history", randomUUID() + ".json") };
+  const seen = new Set<string>();
+  for (let i = 2; i < args.length; i += 2) {
+    const flag = args[i]!;
+    if (seen.has(flag) || args[i + 1] === undefined) throw Error("duplicate/missing VM gate option");
+    seen.add(flag);
+    if (flag === "--history") options.history = args[i + 1]!;
+    else if (flag === "--pairs") options.pairs = Number(args[i + 1]);
+    else throw Error(`unknown VM gate option ${flag}`);
+  }
+  const report = await gate(options);
+  console.log(`${report.verdict.toUpperCase()}: ${resolve(options.history)}`);
+  if (report.verdict !== "pass") {
+    for (const error of report.errors) console.error(error);
+    if (await Bun.file(report.recovery).exists()) console.error(`Recovery evidence: ${report.recovery}`);
+    process.exitCode = 1;
+  }
+});

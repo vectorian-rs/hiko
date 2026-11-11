@@ -1,9 +1,10 @@
 // Usage: bun scripts/lint.ts
-// RUST_TOOLCHAIN overrides 1.99.1. Explicit +toolchain avoids mise cargo-fmt recursion.
-import { main, run } from "./common.ts";
+// RUST_TOOLCHAIN overrides the pinned toolchain. Explicit +toolchain avoids
+// mise cargo-fmt recursion.
+import { main, run, toolchain } from "./common.ts";
 
-export function lintCommands(toolchain = process.env.RUST_TOOLCHAIN || "1.99.1") {
-  const cargo = ["cargo", `+${toolchain}`];
+export function lintCommands(selected = process.env.RUST_TOOLCHAIN || toolchain) {
+  const cargo = ["cargo", `+${selected}`];
   return [
     [...cargo, "fmt", "--all", "--", "--check"],
     [...cargo, "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
