@@ -33,6 +33,8 @@ mod host;
 mod register;
 #[cfg(feature = "register-vm")]
 use register::RegisterCode;
+#[cfg(test)]
+mod gc_tests;
 #[cfg(feature = "register-vm")]
 #[doc(hidden)]
 pub mod register_check;
@@ -298,6 +300,74 @@ struct BuiltinTable {
     async_fns: Vec<crate::extension::AsyncBuiltinFn>,
 }
 
+/// Reserved entry credit belongs to its granting Arc, not a later VM budget.
+struct FuelLease {
+    remaining: Option<u64>,
+    grant: Option<Arc<crate::budget::SharedBudget>>,
+}
+
+impl FuelLease {
+    fn debit_gc(&mut self, cost: Option<u64>) -> Result<(), &'static str> {
+        if let Some(grant) = &self.grant {
+            // FuelEntry always pairs a grant with a concrete reservation; an
+            // unlimited-remaining lease with a grant is unconstructible.
+            debug_assert!(self.remaining.is_some());
+            let cost = cost.ok_or(crate::process::FUEL_EXHAUSTED_MESSAGE)?;
+            let available = self.remaining.unwrap_or(0);
+            let local = available.min(cost);
+            // Charge the deficit FIRST: a refusal leaves local credit refundable.
+            let deficit = cost - local;
+            if deficit != 0 {
+                grant
+                    .try_charge(deficit)
+                    .map_err(|_| crate::process::FUEL_EXHAUSTED_MESSAGE)?;
+            }
+            self.remaining = Some(available - local);
+        } else if let Some(remaining) = &mut self.remaining {
+            // A quantum is not a persistent cap. Finish this synchronous block,
+            // then the next dispatch observes zero and yields normally.
+            *remaining = remaining.saturating_sub(cost.unwrap_or(u64::MAX));
+        }
+        Ok(())
+    }
+}
+impl Drop for FuelLease {
+    fn drop(&mut self) {
+        if let Some(grant) = &self.grant {
+            grant.refund(self.remaining.unwrap_or(0));
+        }
+    }
+}
+
+/// Borrowing the VM through an entry guard permits a safe, unwind-proof refund
+/// without raw pointers, shared per-opcode atomics, or making VM !Send.
+struct FuelEntry<'a> {
+    vm: &'a mut VM,
+}
+impl<'a> FuelEntry<'a> {
+    fn new(vm: &'a mut VM, quantum: Option<u64>) -> Result<Self, RuntimeError> {
+        let grant = vm.fuel_budget.clone();
+        let remaining = if let Some(budget) = &grant {
+            let reserved = budget.reserve_up_to(quantum.unwrap_or(u64::MAX));
+            if reserved == 0 {
+                return Err(RuntimeError {
+                    message: crate::process::FUEL_EXHAUSTED_MESSAGE.into(),
+                });
+            }
+            Some(reserved)
+        } else {
+            quantum
+        };
+        vm.fuel_lease = Some(FuelLease { remaining, grant });
+        Ok(Self { vm })
+    }
+}
+impl Drop for FuelEntry<'_> {
+    fn drop(&mut self) {
+        self.vm.fuel_lease.take();
+    }
+}
+
 pub struct VM {
     /// The previous opcode executed, for `opcode_stats`.
     #[cfg(feature = "opcode-stats")]
@@ -343,7 +413,13 @@ pub struct VM {
     /// This value is intentionally transient. `run_slice` installs it from the
     /// scheduler's reduction grant, and `create_child` does not copy it into
     /// child VMs.
-    fuel: Option<u64>,
+    fuel_lease: Option<FuelLease>,
+    /// First checked GC failure is terminal, even after cancellation/set_fuel.
+    gc_failure: Option<String>,
+    #[cfg(test)]
+    gc_test_fault: Option<crate::heap::GcStage>,
+    #[cfg(test)]
+    gc_test_trace: Option<Vec<(crate::heap::GcStage, Option<u64>)>>,
     /// Persistent total fuel budget from `VMBuilder::max_fuel` / `set_fuel`.
     ///
     /// Unlike `fuel`, this carries across scheduling slices. Child VMs share
@@ -522,7 +598,12 @@ impl VM {
             #[cfg(feature = "opcode-stats")]
             last_op: crate::opcode_stats::START,
             concat_buf: String::new(),
-            fuel: None,
+            fuel_lease: None,
+            gc_failure: None,
+            #[cfg(test)]
+            gc_test_fault: None,
+            #[cfg(test)]
+            gc_test_trace: None,
             fuel_budget: None,
             live_process_slot: None,
             process_budgets: Default::default(),
@@ -594,7 +675,7 @@ impl VM {
     /// Set the fuel limit (max opcode executions).
     /// This remains as a compatibility alias for `set_max_work`.
     pub fn set_fuel(&mut self, fuel: u64) {
-        self.fuel = Some(fuel);
+        self.fuel_lease.take();
         self.fuel_budget = Some(crate::budget::SharedBudget::new(fuel));
     }
 
@@ -858,7 +939,7 @@ mod tests {
         vm
     }
 
-    fn compile_vm(input: &str) -> VM {
+    pub(super) fn compile_vm(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
@@ -2381,11 +2462,14 @@ mod tests {
     fn test_create_child_inherits_persistent_fuel_not_slice_fuel() {
         let mut vm = compile_vm("val x = 1");
         vm.set_fuel(42);
-        vm.fuel = Some(3);
+        vm.fuel_lease = Some(FuelLease {
+            remaining: Some(3),
+            grant: None,
+        });
 
         let child = vm.create_child();
 
-        assert_eq!(child.fuel, None);
+        assert!(child.fuel_lease.is_none());
         assert!(Arc::ptr_eq(
             vm.fuel_budget.as_ref().unwrap(),
             child.fuel_budget.as_ref().unwrap()

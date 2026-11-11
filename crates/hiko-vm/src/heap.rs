@@ -244,6 +244,37 @@ pub struct Heap {
     sent_bytes: usize,
 }
 
+/// Private block labels also let regression tests refuse an exact stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GcStage {
+    PendingObject,
+    Stack,
+    Globals,
+    Frames,
+    Captures,
+    Handlers,
+    HiddenHandlers,
+    Cache,
+    ExtraRoots,
+    ClearMarks,
+    Reference,
+    WorkItem,
+    Outgoing,
+    Commit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GcError(pub(crate) &'static str);
+impl GcError {
+    pub(crate) const SCRATCH: GcError = GcError("GC scratch allocation failed");
+    pub(crate) fn message(self) -> &'static str {
+        self.0
+    }
+}
+pub(crate) fn gc_units(amount: usize) -> Option<u64> {
+    u64::try_from(amount).ok()
+}
+
 /// Host memory the cache of sent values may hold before it is cleared.
 const SENT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
@@ -857,7 +888,7 @@ impl Heap {
 
     pub(crate) fn allocation_would_exceed_limits(&self, object_bytes: usize) -> bool {
         if let Some(max) = self.max_objects {
-            let live = self.objects.len() - self.free_list.len();
+            let live = self.live_count();
             if live >= max {
                 return true;
             }
@@ -1053,7 +1084,7 @@ impl Heap {
     pub fn alloc(&mut self, obj: HeapObject) -> Result<GcRef, HeapLimitExceeded> {
         let object_bytes = obj.estimated_bytes();
         if let Some(max) = self.max_objects {
-            let live = self.objects.len() - self.free_list.len();
+            let live = self.live_count();
             if live >= max {
                 return Err(HeapLimitExceeded::Objects { live, limit: max });
             }
@@ -1122,8 +1153,25 @@ impl Heap {
         Ok(())
     }
 
+    /// Any shared-byte or host-resource guard; PRESENCE, not current usage.
+    /// Keep in sync with the budget fields this consults.
+    fn has_resource_guards(&self) -> bool {
+        self.memory_budget.is_some()
+            || self.host_resource_budget.is_some()
+            || !self.host_resource_kind_budgets.is_empty()
+    }
+
+    /// Resource guard presence preserves legacy cadence.
+    fn effective_gc_threshold(&self) -> usize {
+        if self.has_resource_guards() {
+            self.gc_threshold
+        } else {
+            self.gc_threshold.max(self.objects.len() / 2)
+        }
+    }
+
     pub fn should_collect(&self) -> bool {
-        self.alloc_since_gc >= self.gc_threshold
+        self.alloc_since_gc >= self.effective_gc_threshold()
     }
 
     /// Suspension-boundary collection for long-lived processes.
@@ -1133,7 +1181,7 @@ impl Heap {
     /// can reclaim it before the next allocation burst. Keep the floor high
     /// enough to avoid collecting on every tiny boundary.
     pub fn should_collect_at_boundary(&self) -> bool {
-        let boundary_threshold = (self.gc_threshold / 4).max(256);
+        let boundary_threshold = (self.effective_gc_threshold() / 4).max(256);
         self.alloc_since_gc >= boundary_threshold
     }
 
@@ -1147,36 +1195,72 @@ impl Heap {
         true
     }
 
-    /// Run mark-and-sweep. `roots` is an iterator of all root GcRefs.
+    /// Legacy infallible heap-only API. Like the former Vec allocations, an
+    /// allocation failure aborts; VM paths use try_collect and report it.
     pub fn collect(&mut self, roots: impl Iterator<Item = GcRef>) {
-        // Freed slots are reused, so cached serializations may go stale.
-        self.forget_sent();
-        for m in self.marks.iter_mut() {
-            *m = false;
+        if self.try_collect(roots, |_, _| Ok(())).is_err() {
+            std::alloc::handle_alloc_error(std::alloc::Layout::new::<GcRef>());
         }
+    }
 
-        // Worklist avoids stack overflow on deep object graphs
-        let mut worklist: Vec<GcRef> = Vec::with_capacity(self.objects.len() / 4);
-        let mut children: Vec<GcRef> = Vec::with_capacity(8);
-
+    /// Mark in scratch state, then prepay and reserve the complete commit.
+    /// An Err changes only scratch marks/capacities, never logical heap state.
+    pub(crate) fn try_collect(
+        &mut self,
+        roots: impl Iterator<Item = GcRef>,
+        mut debit: impl FnMut(GcStage, Option<u64>) -> Result<(), GcError>,
+    ) -> Result<(), GcError> {
+        debit(GcStage::ClearMarks, gc_units(self.objects.len()))?;
+        self.marks.fill(false);
+        let mut worklist: Vec<GcRef> = Vec::new();
+        worklist
+            .try_reserve(self.objects.len() / 4)
+            .map_err(|_| GcError::SCRATCH)?;
+        let mut children: Vec<GcRef> = Vec::new();
         for r in roots {
+            debit(GcStage::Reference, Some(1))?;
             if self.mark(r) {
+                worklist.try_reserve(1).map_err(|_| GcError::SCRATCH)?;
                 worklist.push(r);
             }
         }
-
         while let Some(r) = worklist.pop() {
+            // Popping owned scratch is free; the debit precedes all item work.
+            debit(GcStage::WorkItem, Some(1))?;
             children.clear();
             if let Some(obj) = self.objects[r.0 as usize].as_ref() {
+                let slots = obj.raw_gc_slots();
+                debit(GcStage::Outgoing, gc_units(slots))?;
+                children.try_reserve(slots).map_err(|_| GcError::SCRATCH)?;
                 obj.for_each_gc_ref(|c| children.push(c));
             }
+            worklist
+                .try_reserve(children.len())
+                .map_err(|_| GcError::SCRATCH)?;
             for &child in &children {
+                debit(GcStage::Reference, Some(1))?;
                 if self.mark(child) {
                     worklist.push(child);
                 }
             }
         }
-
+        // sent_bytes is cached SendableValue::footprint(), including scalar
+        // nodes. The capacity term pays for empty-but-reserved cache scans.
+        let commit = self
+            .objects
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(self.sent.capacity()))
+            .and_then(|n| n.checked_add(self.sent_bytes))
+            .and_then(|n| n.checked_add(1))
+            .and_then(gc_units);
+        debit(GcStage::Commit, commit)?;
+        self.free_list
+            .try_reserve(self.objects.len().saturating_sub(self.free_list.len()))
+            .map_err(|_| GcError::SCRATCH)?;
+        // No checked failure below this boundary. Allocation/destructor panic
+        // safety is deliberately not promised by the budget transaction.
+        self.forget_sent();
         self.free_list.clear();
         let bytes_before = self.current_bytes;
         for i in 0..self.objects.len() {
@@ -1195,6 +1279,9 @@ impl Heap {
                 self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);
                 self.objects[i] = None;
                 self.object_bytes[i] = 0;
+            }
+            // Include vacancies from EVERY earlier sweep, exactly once.
+            if self.objects[i].is_none() {
                 self.free_list.push(i as u32);
             }
         }
@@ -1203,12 +1290,13 @@ impl Heap {
             budget.refund((bytes_before - self.current_bytes) as u64);
         }
         self.alloc_since_gc = 0;
-        let live_count = self.objects.len() - self.free_list.len();
-        self.gc_threshold = (live_count * 2).max(1024);
+        let live_count = self.live_count();
+        self.gc_threshold = live_count.saturating_mul(2).max(1024);
+        Ok(())
     }
 
     pub fn live_count(&self) -> usize {
-        self.objects.iter().filter(|o| o.is_some()).count()
+        self.objects.len() - self.free_list.len()
     }
 
     /// Number of heap slots, live or unreachable but not yet swept, whose
@@ -1635,6 +1723,155 @@ mod tests {
         // Per-process peaks are unchanged by the tree budget.
         assert_eq!(child.host_resource_peak_count(), 1);
         assert_eq!(parent.host_resource_peak_count(), 1);
+    }
+
+    #[test]
+    fn repeated_sweep_keeps_every_vacancy_and_allows_the_next_limited_allocation() {
+        let mut heap = Heap::new();
+        heap.set_max_objects(2);
+        let retained = heap.alloc(HeapObject::String("retained".into())).unwrap();
+        heap.alloc(HeapObject::String("garbage".into())).unwrap();
+        heap.collect(std::iter::once(retained));
+        heap.collect(std::iter::once(retained));
+        heap.alloc(HeapObject::String("replacement".into()))
+            .expect("the pre-existing vacant slot must remain reusable");
+        assert_eq!(heap.live_count(), 2);
+        assert!(heap.free_list.is_empty());
+    }
+
+    #[test]
+    fn repeated_sweeps_rebuild_complete_unique_free_slots_for_varied_arenas() {
+        for size in [0, 1, 2, 17, 100] {
+            let mut heap = Heap::new();
+            let refs: Vec<_> = (0..size)
+                .map(|_| heap.alloc(HeapObject::String("cell".into())).unwrap())
+                .collect();
+            let roots: Vec<_> = refs.iter().step_by(3).copied().collect();
+            for _ in 0..5 {
+                heap.collect(roots.iter().copied());
+                let vacancies: std::collections::HashSet<_> = heap
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, object)| object.is_none().then_some(i as u32))
+                    .collect();
+                assert_eq!(heap.free_list.len(), vacancies.len());
+                assert_eq!(
+                    heap.free_list
+                        .iter()
+                        .copied()
+                        .collect::<std::collections::HashSet<_>>(),
+                    vacancies
+                );
+                assert_eq!(heap.live_count(), roots.len());
+                heap.alloc(HeapObject::String("temporary".into())).unwrap();
+            }
+            for _ in 0..3 {
+                heap.collect(std::iter::empty());
+                assert_eq!(heap.live_count(), 0);
+                assert_eq!(heap.free_list.len(), heap.objects.len());
+            }
+        }
+    }
+
+    fn spike_heap() -> Heap {
+        let mut heap = Heap::new();
+        for _ in 0..16_384 {
+            heap.alloc(HeapObject::String("spike".into())).unwrap();
+        }
+        heap.collect(std::iter::empty());
+        assert_eq!(heap.gc_threshold, 1024);
+        heap
+    }
+
+    #[test]
+    fn unguarded_spike_cadence_and_boundary_share_the_arena_floor() {
+        let mut heap = spike_heap();
+        assert_eq!(heap.effective_gc_threshold(), 8192);
+        heap.alloc_since_gc = 1024;
+        assert!(!heap.should_collect());
+        assert!(!heap.should_collect_at_boundary());
+        heap.alloc_since_gc = 2048;
+        assert!(!heap.should_collect());
+        assert!(heap.should_collect_at_boundary());
+        heap.alloc_since_gc = 8192;
+        assert!(heap.should_collect());
+    }
+
+    #[test]
+    fn guard_presence_is_dynamic_including_empty_kinds_later_sharing_and_siblings() {
+        let mut heap = spike_heap();
+        heap.alloc_since_gc = 1024;
+        heap.set_max_objects(1);
+        heap.set_max_io_bytes(1);
+        heap.set_max_host_work(1);
+        assert!(
+            !heap.should_collect(),
+            "unrelated limits do not disable amortization"
+        );
+        heap.set_host_resource_limits(HashMap::from([("unused-kind".into(), 0)]));
+        assert_eq!(heap.host_resource_count(), 0);
+        assert!(
+            heap.should_collect(),
+            "presence, not local use or matching kind"
+        );
+        heap.set_host_resource_limits(HashMap::new());
+        assert!(!heap.should_collect());
+        heap.set_max_host_resources(0);
+        assert!(heap.should_collect());
+        heap.share_tree_budgets(&Heap::new());
+        assert!(!heap.should_collect());
+        heap.set_max_bytes(0);
+        assert!(heap.should_collect());
+        assert!(heap.should_collect_at_boundary());
+        let mut parent = Heap::new();
+        parent.set_max_host_resources(1);
+        parent.alloc_host_resource(test_resource()).unwrap();
+        heap.share_tree_budgets(&parent);
+        assert_eq!(heap.host_resource_count(), 0);
+        assert_eq!(heap.host_resource_budget.as_ref().unwrap().used(), 1);
+        assert!(heap.should_collect());
+        drop(parent);
+        assert_eq!(heap.host_resource_budget.as_ref().unwrap().used(), 0);
+        assert!(heap.should_collect(), "refund does not remove a guard");
+        heap.share_tree_budgets(&Heap::new());
+        assert!(!heap.should_collect());
+    }
+
+    #[test]
+    fn raw_gc_slot_sizing_counts_scalars_and_duplicate_edges_before_filtering() {
+        let mut heap = Heap::new();
+        let reference = heap.alloc(HeapObject::String("leaf".into())).unwrap();
+        let fields: crate::value::Fields = [
+            Value::Int(1),
+            Value::Unit,
+            Value::Heap(reference),
+            Value::Heap(reference),
+        ]
+        .into_iter()
+        .collect();
+        let tuple = HeapObject::Tuple(fields.clone());
+        assert_eq!(tuple.raw_gc_slots(), 4);
+        let mut edges = 0;
+        tuple.for_each_gc_ref(|_| edges += 1);
+        assert_eq!(edges, 2);
+        assert_eq!(
+            HeapObject::Data {
+                tag: 0,
+                fields: fields.clone()
+            }
+            .raw_gc_slots(),
+            4
+        );
+        assert_eq!(
+            HeapObject::Closure {
+                proto_idx: 0,
+                captures: fields.to_vec().into()
+            }
+            .raw_gc_slots(),
+            4
+        );
+        assert_eq!(HeapObject::String("scalar".into()).raw_gc_slots(), 0);
     }
 
     #[test]

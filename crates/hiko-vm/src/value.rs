@@ -148,6 +148,16 @@ impl HeapObject {
         }
     }
 
+    /// O(1) count of raw outgoing value slots, including scalar values.
+    /// Used to prepay a scan before filtering it into GcRef edges.
+    pub(crate) fn raw_gc_slots(&self) -> usize {
+        match self {
+            Self::Tuple(fields) | Self::Data { fields, .. } => fields.len(),
+            Self::Closure { captures, .. } => captures.len(),
+            _ => 0,
+        }
+    }
+
     /// Visit all GcRefs directly contained in this object.
     pub fn for_each_gc_ref(&self, mut f: impl FnMut(GcRef)) {
         let visit = |values: &[Value], f: &mut dyn FnMut(GcRef)| {

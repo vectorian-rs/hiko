@@ -269,7 +269,7 @@ struct Outcome {
 
 fn run(program: &CompiledProgram, code: &Arc<RegisterCode>, fuel: u64) -> Outcome {
     let mut vm = vm(program, code);
-    vm.fuel = Some(fuel);
+    vm.set_fuel(fuel);
     let error = vm.run().err();
     let span = match &error {
         Some(e) if !e.is_fuel_exhausted() => vm.error_span(),

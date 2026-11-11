@@ -92,7 +92,7 @@ impl fmt::Display for FiberJoinError {
             Self::HeapObjectLimitExceeded { limit, live } => {
                 write!(f, "heap limit exceeded: {live} objects (max {limit})")
             }
-            Self::FuelExhausted => f.write_str("fuel exhausted (max_fuel limit reached)"),
+            Self::FuelExhausted => f.write_str(FUEL_EXHAUSTED_MESSAGE),
             Self::Cancelled => f.write_str("cancelled"),
             Self::AlreadyJoined => {
                 f.write_str("result unavailable/reaped; ownership no longer known")
@@ -120,13 +120,17 @@ pub struct ChildRecord {
     pub outcome: ChildOutcome,
 }
 
+/// Canonical fuel-exhaustion text; `from_runtime_message` classifies by exact
+/// equality, so every producer must use this constant.
+pub(crate) const FUEL_EXHAUSTED_MESSAGE: &str = "fuel exhausted (max_fuel limit reached)";
+
 impl ProcessFailure {
     pub fn runtime(message: impl Into<String>) -> Self {
         Self::RuntimeError(message.into())
     }
 
     pub fn from_runtime_message(message: String) -> Self {
-        if message == "fuel exhausted (max_fuel limit reached)" {
+        if message == FUEL_EXHAUSTED_MESSAGE {
             return Self::FuelExhausted;
         }
 
@@ -145,7 +149,7 @@ impl fmt::Display for ProcessFailure {
             Self::HeapObjectLimitExceeded { limit, live } => {
                 write!(f, "heap limit exceeded: {live} objects (max {limit})")
             }
-            Self::FuelExhausted => f.write_str("fuel exhausted (max_fuel limit reached)"),
+            Self::FuelExhausted => f.write_str(FUEL_EXHAUSTED_MESSAGE),
             Self::Cancelled => f.write_str("cancelled"),
             Self::ChildProcessFailed(cause) => write!(f, "child process failed: {cause}"),
         }
