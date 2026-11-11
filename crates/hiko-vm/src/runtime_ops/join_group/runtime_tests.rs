@@ -31,6 +31,21 @@ pub(super) fn in_bounded_subprocess(name: &str) -> bool {
     }
 }
 
+/// First statement of a bounded test: re-exec the enclosing test in a child
+/// and return in the parent. Deriving the probe name from the enclosing
+/// function keeps the `--exact` filter from drifting and silently passing.
+macro_rules! bounded {
+    () => {
+        fn probe() {}
+        let name = std::any::type_name_of_val(&probe);
+        let name = name.strip_suffix("::probe").unwrap();
+        if !crate::runtime_ops::join_group::runtime_tests::in_bounded_subprocess(name) {
+            return;
+        }
+    };
+}
+pub(super) use bounded;
+
 fn assert_report(report: crate::lifecycle_tests::Report, expected: &str) {
     assert_eq!(report.status, expected, "{report:?}");
     assert!(report.leftovers.is_empty(), "{report:?}");
@@ -60,12 +75,7 @@ fn assert_runtimes(source: &str) {
 
 #[test]
 fn group_local_invalidity_preserves_unlisted_children_and_reaps_named_members() {
-    if !in_bounded_subprocess(concat!(
-        module_path!(),
-        "::group_local_invalidity_preserves_unlisted_children_and_reaps_named_members"
-    )) {
-        return;
-    }
+    bounded!();
     assert_runtimes(
         r#"
         import __Builtin.Process
@@ -87,12 +97,7 @@ fn group_local_invalidity_preserves_unlisted_children_and_reaps_named_members() 
 
 #[test]
 fn foreign_outcomes_remain_with_their_parent_and_reaped_grandchildren_are_truthful() {
-    if !in_bounded_subprocess(concat!(
-        module_path!(),
-        "::foreign_outcomes_remain_with_their_parent_and_reaped_grandchildren_are_truthful"
-    )) {
-        return;
-    }
+    bounded!();
     assert_runtimes(
         r#"
         import __Builtin.Process
@@ -118,12 +123,7 @@ fn foreign_outcomes_remain_with_their_parent_and_reaped_grandchildren_are_truthf
 
 #[test]
 fn admission_quota_parent_failure_cancels_all_children_including_unlisted() {
-    if !in_bounded_subprocess(concat!(
-        module_path!(),
-        "::admission_quota_parent_failure_cancels_all_children_including_unlisted"
-    )) {
-        return;
-    }
+    bounded!();
     let program = crate::test_support::compile_source_hermetic(
         r#"
         fun forever n = forever (n + 1)
@@ -271,12 +271,7 @@ mod exec_barrier {
 
     #[test]
     fn group_failure_waits_for_real_exec_backend_cleanup_before_parent_resumes() {
-        if !in_bounded_subprocess(concat!(
-            module_path!(),
-            "::group_failure_waits_for_real_exec_backend_cleanup_before_parent_resumes"
-        )) {
-            return;
-        }
+        bounded!();
         let program = crate::test_support::compile_source_hermetic(
             r#"
             import __Builtin.Process
@@ -316,12 +311,7 @@ mod exec_barrier {
 
 #[test]
 fn parent_cancellation_drains_active_group_and_unlisted_children() {
-    if !in_bounded_subprocess(concat!(
-        module_path!(),
-        "::parent_cancellation_drains_active_group_and_unlisted_children"
-    )) {
-        return;
-    }
+    bounded!();
     let program = crate::test_support::compile_source_hermetic(
         r#"
         import __Builtin.Process

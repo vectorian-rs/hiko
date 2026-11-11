@@ -10,17 +10,8 @@ fn vm() -> VM {
 }
 
 fn list(vm: &mut VM, pids: &[u64]) -> Value {
-    let mut result =
-        super::super::alloc_data_value(&mut vm.heap, TAG_NIL, smallvec::smallvec![]).unwrap();
-    for &pid in pids.iter().rev() {
-        result = super::super::alloc_data_value(
-            &mut vm.heap,
-            TAG_CONS,
-            smallvec::smallvec![Value::Pid(pid), result],
-        )
-        .unwrap();
-    }
-    result
+    let elems = pids.iter().map(|&pid| Value::Pid(pid)).collect();
+    crate::builtins::support::alloc_list(&mut vm.heap, elems).unwrap()
 }
 
 fn admit(vm: &mut VM, pids: &[u64], classify: impl FnMut(Pid) -> ChildState) -> JoinGroup {
@@ -358,12 +349,7 @@ fn fixed_payload_member_growth_and_separate_byte_growth_report_logical_costs() {
 #[cfg(feature = "builtin-process")]
 #[test]
 fn real_runtimes_bulk_order_duplicates_failures_and_no_bookkeeping_leaks() {
-    if !super::runtime_tests::in_bounded_subprocess(concat!(
-        module_path!(),
-        "::real_runtimes_bulk_order_duplicates_failures_and_no_bookkeeping_leaks"
-    )) {
-        return;
-    }
+    super::runtime_tests::bounded!();
     let source = r#"
         import __Builtin.Process
         val left = spawn (fn () => 10)

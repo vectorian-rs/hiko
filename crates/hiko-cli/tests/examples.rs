@@ -391,29 +391,33 @@ mod thin_modules {
             "{}",
             stderr(&output)
         );
-        for (name, call, expected) in [
-            ("no-bulk", "Fiber.all [fn () => 10]", "fiber_await_all"),
+        let spawn_only = "[capabilities.process.spawn]\nenabled = true\n";
+        for (name, call, expected, policy) in [
+            (
+                "no-bulk",
+                "Fiber.all [fn () => 10]",
+                "fiber_await_all",
+                spawn_only,
+            ),
             (
                 "no-await",
                 "Fiber.join (Fiber.spawn (fn () => 10))",
                 "await_process_result",
+                policy,
             ),
             (
                 "no-cancel",
                 "Fiber.cancel (Fiber.spawn (fn () => 10))",
                 "cancel",
+                policy,
             ),
             (
                 "no-wait",
                 "Fiber.first (fn () => 10, fn () => 20)",
                 "wait_any",
+                policy,
             ),
         ] {
-            let policy = if name == "no-bulk" {
-                "[capabilities.process.spawn]\nenabled = true\n"
-            } else {
-                policy
-            };
             let project = Project::new(
                 name,
                 &["Fiber", "Either", "Result"],

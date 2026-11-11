@@ -1124,11 +1124,14 @@ fn handle_await_all(
     parent.join_group = Some(group);
     let mut terminations = Terminations::new();
     park(cx, parent, &mut terminations);
-    // Exactly one full recheck after registration. Concurrent notifications
-    // queue while the parent is owned; later parks recheck only the inbox.
+    // Exactly one full recheck after registration, published as a batch and
+    // advanced once below. Concurrent notifications queue while the parent is
+    // owned; later parks recheck only the inbox.
     for &pid in &inbox.members {
-        if !cx.table.live.contains(&pid) {
-            notify_group(cx, pid, &mut terminations);
+        if !cx.table.live.contains(&pid)
+            && let Some((_, waiter)) = cx.table.group_waiters.remove(&pid)
+        {
+            waiter.publish(pid);
         }
     }
     advance_group(cx, inbox, &mut terminations);
@@ -1487,24 +1490,11 @@ mod tests {
         Arc<crate::budget::SharedBudget>,
     ) {
         let mut vm = VM::new(compile("val x = 0"));
-        let mut list = Value::Heap(
-            vm.heap
-                .alloc(crate::value::HeapObject::Data {
-                    tag: crate::vm::TAG_NIL,
-                    fields: smallvec::smallvec![],
-                })
-                .unwrap(),
-        );
-        for pid in [12, 11] {
-            list = Value::Heap(
-                vm.heap
-                    .alloc(crate::value::HeapObject::Data {
-                        tag: crate::vm::TAG_CONS,
-                        fields: smallvec::smallvec![Value::Pid(pid), list],
-                    })
-                    .unwrap(),
-            );
-        }
+        let list = crate::builtins::support::alloc_list(
+            &mut vm.heap,
+            vec![Value::Pid(11), Value::Pid(12)],
+        )
+        .unwrap();
         let admission = crate::runtime_ops::GroupAdmission::read(&mut vm, list).unwrap();
         let group = crate::runtime_ops::JoinGroup::admit(
             admission,

@@ -506,11 +506,13 @@ impl Runtime {
         parent.status = ProcessStatus::Blocked(BlockReason::JoinGroup(id));
         parent.join_group = Some(group);
         let mut terminations = Terminations::new();
-        // One initial recheck. Subsequent completions drain an inbox, never a
-        // repeated member scan, including reverse completion order.
+        // One initial recheck, published as a batch and advanced once below.
+        // Subsequent completions drain an inbox, never a repeated member scan.
         for &pid in &inbox.members {
-            if !self.is_live(pid) {
-                self.notify_group(pid, &mut terminations);
+            if !self.is_live(pid)
+                && let Some(waiter) = self.group_waiters.remove(&pid)
+            {
+                waiter.publish(pid);
             }
         }
         self.advance_group(parent_pid, id, &mut terminations);

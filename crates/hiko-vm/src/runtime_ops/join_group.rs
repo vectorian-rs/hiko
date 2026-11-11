@@ -75,7 +75,9 @@ impl GroupAdmission {
         let mut cursor = list;
         while let Some((pid, tail)) = next_pid(vm, cursor)? {
             if pids.len() == MAX_JOIN_GROUP_ENTRIES {
-                return Err("fiber_await_all: at most 10000 entries allowed".into());
+                return Err(format!(
+                    "fiber_await_all: at most {MAX_JOIN_GROUP_ENTRIES} entries allowed"
+                ));
             }
             if pids.is_empty() {
                 credits.add(GROUP_BYTES)?;
@@ -143,9 +145,9 @@ impl GroupInbox {
     }
 }
 
+/// Per-member slot; its pid lives once in `inbox.members`, at the same index.
 #[derive(Debug)]
 struct Member {
-    pid: Pid,
     done: bool,
     value: Option<SendableValue>,
     bytes: u64,
@@ -209,7 +211,6 @@ impl JoinGroup {
                     index.insert(pid, members.len());
                     named.push(pid);
                     members.push(Member {
-                        pid,
                         done: false,
                         value: None,
                         bytes: 0,
@@ -260,15 +261,17 @@ impl JoinGroup {
     }
 
     pub fn pending_pids(&self) -> impl Iterator<Item = Pid> + '_ {
-        self.members
+        self.inbox
+            .members
             .iter()
-            .filter(|m| {
+            .zip(&self.members)
+            .filter(|(_, m)| {
                 #[cfg(test)]
                 self.member_work
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 !m.done
             })
-            .map(|m| m.pid)
+            .map(|(&pid, _)| pid)
     }
 
     #[cfg(test)]
@@ -383,31 +386,23 @@ impl JoinGroup {
                     }
                     let list =
                         super::alloc_data_value(&mut vm.heap, TAG_NIL, smallvec::smallvec![])?;
+                    let root = vm.stack.len();
                     vm.push_value(list);
-                    for i in (base..base + self.members.len()).rev() {
+                    for i in (base..root).rev() {
                         vm.heap
                             .charge_host_work(1)
                             .map_err(ProcessFailure::runtime)?;
                         let list = super::alloc_data_value(
                             &mut vm.heap,
                             TAG_CONS,
-                            smallvec::smallvec![
-                                vm.stack[i],
-                                *vm.stack.last().ok_or_else(|| ProcessFailure::runtime(
-                                    "fiber_await_all: missing list root"
-                                ))?
-                            ],
+                            smallvec::smallvec![vm.stack[i], vm.stack[root]],
                         )?;
-                        *vm.stack.last_mut().ok_or_else(|| {
-                            ProcessFailure::runtime("fiber_await_all: missing list root")
-                        })? = list;
+                        vm.stack[root] = list;
                     }
                     super::alloc_data_value(
                         &mut vm.heap,
                         hiko_builtin_meta::PROCESS_AWAIT_RESULT_OK_TAG,
-                        smallvec::smallvec![*vm.stack.last().ok_or_else(|| {
-                            ProcessFailure::runtime("fiber_await_all: missing list root")
-                        })?],
+                        smallvec::smallvec![vm.stack[root]],
                     )
                 })();
                 vm.stack.truncate(base);
