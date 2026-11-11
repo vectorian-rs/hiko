@@ -4,6 +4,8 @@ pub mod builtins;
 pub mod config;
 pub mod extension;
 pub mod heap;
+#[cfg(feature = "heap-metrics")]
+pub mod heap_metrics;
 pub mod io_backend;
 pub mod io_limits;
 #[cfg(test)]

@@ -302,6 +302,40 @@ Module fetching (`import` of remote modules and `hiko lock verify`) does not
 follow redirects, and accepts plain `http://` only for loopback hosts
 (`localhost`, `127.0.0.0/8`, `::1`). Other hosts must use `https://`.
 
+## Untimed heap metrics
+
+The default-off VM/CLI `heap-metrics` feature exports VM estimates, not allocator
+or RSS measurements. For `hiko run`, explicitly supply all three environment
+variables: `HIKO_HEAP_METRICS` (destination file), `HIKO_HEAP_METRICS_NONCE`
+(fresh run identifier), and `HIKO_HEAP_METRICS_PROFILE` (caller-supplied profile
+label). Nonce/profile must be 1–128 ASCII letters, digits, dots, underscores or
+hyphens. A feature-enabled run with none of these variables collects nothing;
+partial/invalid configuration fails. The destination's parent must already exist.
+An old regular destination is removed before execution; symlink/directory
+outputs are rejected. These host-selected settings grant no script capability.
+
+A successful normal return publishes one JSON artifact by same-directory
+create-new temporary file and atomic rename, after direct VM or threaded runtime
+teardown. Schema version 1 includes nonce/profile, `complete: true`, per-heap
+`successful_gc_object_allocations` and `estimated_retained_bytes_peak`,
+`heaps_created`, `heaps_dropped`, `heaps_active`, total successful allocations,
+and `max_per_heap_estimated_retained_bytes`. Created and dropped counts must
+match, active must be zero, and every heap must have reported exactly once.
+Allocation counters survive GC and exclude refused allocations. The peak is the
+existing estimated retained-byte high-water mark, including retained garbage;
+shared Arc string/byte payloads count in each heap, while closure captures are
+not fully accounted. The maximum of separate heap peaks is NOT a simultaneous
+process-tree peak. Profile labels do not prove register translation coverage.
+
+Collection is untimed-only: exclude it from performance timing samples. Validate
+successful CLI status AND schema, fresh nonce/profile, complete marker, balanced
+lifecycle and per-heap/totals consistency (`heap_metrics::read_artifact`). Early
+`exit` (even status zero), signals, timeout, runtime/compile failure, malformed or
+partial files, and write/rename failures are not complete evidence. Drop only
+submits in-memory summaries; it never writes an artifact. Export errors are
+nonzero/actionable. Older commits without this feature have unsupported metrics,
+not zero measurements; there is no historical-commit patching fallback.
+
 ## Type checking
 
 Type inference counts every type node it visits (substituting, instantiating,

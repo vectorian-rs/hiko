@@ -612,6 +612,16 @@ against the one before.
   and reserving in chunks would let one process take budget its siblings
   could use near the limit.
 
+### Untimed heap estimates (#232)
+
+Use the default-off `heap-metrics` feature only in separate untimed samples.
+Sum cumulative successful GC-object allocations and report the maximum of
+per-heap estimated retained-byte peaks; configuration, schema, validation,
+accounting caveats and completeness are defined by the
+[heap-metrics contract](execution-bounds.md#untimed-heap-metrics).
+`opcode-stats` is separate instrumentation, not heap metrics or completion
+proof.
+
 ### What the VM executes (opcode counts, #152)
 
 Counted with the `opcode-stats` feature (`HIKO_OPCODE_STATS=<path>`) on
