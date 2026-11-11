@@ -418,13 +418,18 @@ test("VM gate preserves recoverable provenance when history publication fails", 
 });
 
 test("VM gate retains earlier successful phases and raw evidence after a later history-write failure", async () => {
-  const f = await gateFixture({ historyAfter: 90 }); const report = await f.run();
+  // Snapshots publish at phase boundaries; the sixth publication lands inside
+  // the build phases, after the worktrees and the first builds succeeded.
+  const f = await gateFixture({ historyAfter: 5 }); const report = await f.run();
   expect(report.verdict).toBe("fail"); expect(existsSync(report.recovery)).toBe(true);
   const published = JSON.parse(await readFile(f.history, "utf8"));
   const recovered = JSON.parse(await readFile(report.recovery, "utf8"));
   expect(published.calls.length).toBeGreaterThan(5);
   expect(recovered.calls.length).toBeGreaterThanOrEqual(published.calls.length);
   expect(recovered.errors.join()).toContain("history publication failed");
+  const journal = (await readFile(recovered.journal, "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line));
+  expect(journal.filter(line => line.kind === "call").length).toBeGreaterThanOrEqual(recovered.calls.length - 1);
+  expect(journal.some(line => line.kind === "probe")).toBe(true);
 });
 
 test("VM gate subprocess execution preserves separate bytes and kills/reaps a timeout", async () => {

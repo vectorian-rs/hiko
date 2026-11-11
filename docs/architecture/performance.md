@@ -91,8 +91,11 @@ peaks. Historical commits without the exporter remain explicitly incomplete;
 no source patching or zero-filled metrics may produce an overall PASS.
 
 Schema-versioned history retains all samples/order, probes, attempts, metrics,
-failures and provenance before owned worktrees/targets are removed. History
-write failures exit nonzero and preserve recovery files. Choose a fresh history
+failures and provenance before owned worktrees/targets are removed. Calls and
+probes are appended once to a write-once journal as they complete; the full
+snapshot is published at phase boundaries and termination, keeping history I/O
+linear over a run. History write failures exit nonzero and preserve the
+recovery snapshot and journal. Choose a fresh history
 path; an existing destination is refused rather than overwritten. Large compiler
 transcripts are retained once as base64 sidecars under `<history>.artifacts`,
 with paths and byte hashes in the history. Preserve those sidecars with the JSON.

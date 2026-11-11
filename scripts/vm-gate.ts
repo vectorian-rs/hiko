@@ -163,9 +163,11 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   }
   const workspace = await mkdtemp(join(tmpdir(), "hiko-vm-gate-"));
   const recovery = join(workspace, "history.json");
+  const journalPath = join(workspace, "journal.jsonl");
+  const journal = await open(journalPath, "wx", 0o600);
   const history = {
     schema_version: 1, started: new Date().toISOString(), machine: io.machine,
-    platform: io.platform, cpus: io.cpuCount, pairs, recovery,
+    platform: io.platform, cpus: io.cpuCount, pairs, recovery, journal: journalPath,
     refs: {} as Record<string, string>, inputsRef: "",
     inputs: [] as { path: string; sha256: string }[],
     tools: io.tools, toolchain: "", gateSha256: digest(await readFile(import.meta.path)),
@@ -185,8 +187,15 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     RUSTUP_HOME: sourceEnv.RUSTUP_HOME || join(homedir(), ".rustup"), CARGO_BUILD_JOBS: "1",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C", TZ: "UTC",
   };
+  // Each call/probe is appended to the write-once journal as it completes;
+  // the full snapshot is published only at phase boundaries and termination,
+  // so a run's total history I/O stays linear in the number of calls.
+  async function record(kind: "call" | "probe", data: unknown) {
+    await journal.write(JSON.stringify({ kind, data }) + "\n");
+  }
   async function save() {
     // Keep recoverable evidence even if the requested destination is unwritable.
+    await journal.sync();
     const text = JSON.stringify(history, null, 2) + "\n";
     await atomicHistory(recovery, text);
     await io.writeHistory(destination, text);
@@ -207,7 +216,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     history.calls.push(entry);
     let result: Execution;
     try { result = await io.exec(invocation); }
-    catch (error) { entry.error = String(error); await save(); throw error; }
+    catch (error) { entry.error = String(error); await record("call", entry); throw error; }
     Object.assign(entry, result);
     // Large compiler transcripts are immutable sidecars, not rewritten at every probe.
     for (const stream of ["stdout", "stderr"] as const) {
@@ -219,7 +228,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
         entry[stream] = "";
       }
     }
-    await save();
+    await record("call", entry);
     if (result.timedOut || result.status !== 0) {
       // The complete transcript is already in the call record or its sidecar;
       // the error carries a bounded excerpt so history.errors stays small.
@@ -242,8 +251,9 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     const result = await invoke([io.tools.pmset, "-g", "batt"], repo, {}, Math.min(5_000, remaining));
     const power = decoded(result.stdout);
     const load = io.load();
-    history.probes.push({ atNs: io.now().toString(), power, load });
-    await save();
+    const observation = { atNs: io.now().toString(), power, load };
+    history.probes.push(observation);
+    await record("probe", observation);
     if (deadline !== undefined && io.now() > deadline) throw Error("AC/load settling deadline exceeded");
     if (!acPower(power)) throw Error("AC power unproven or changed; attempt invalid");
     if (!Number.isFinite(load) || load < 0) throw Error("invalid load probe");
@@ -389,7 +399,6 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
               const result = await sample(name === "base" ? base : candidate, input);
               if (result.stdout !== expected) throw Error(`full stdout mismatch in attempt ${attempt + 1}, pair ${pair}, ${name}`);
               (name === "base" ? row.base : row.candidate).push(result.durationNs);
-              await save();
             }
           }
           const regression = regresses(row.base, row.candidate);
@@ -419,8 +428,9 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     history.errors.push(String(error));
     history.verdict = "fail";
   } finally {
+    let cleaned = false;
     if (await publish("history publication")) {
-      let cleaned = true;
+      cleaned = true;
       for (const cwd of worktrees.reverse()) {
         try { await invoke([io.tools.git, "worktree", "remove", "--force", cwd], repo); }
         catch (error) {
@@ -430,8 +440,9 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
         }
       }
       if (!await publish("final history publication")) cleaned = false;
-      if (cleaned) await rm(workspace, { recursive: true, force: true });
     }
+    await journal.close();
+    if (cleaned) await rm(workspace, { recursive: true, force: true });
   }
   return history;
 }
