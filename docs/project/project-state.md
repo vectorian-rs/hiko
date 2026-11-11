@@ -98,37 +98,33 @@ retains the other-pass inventory. The issue is complete and its claim is release
 [PR #239](https://github.com/vectorian-rs/hiko/pull/239) completed
 [#232 rev 1](https://github.com/vectorian-rs/hiko/issues/232) and merged at
 `84f6709` on 2026-11-11. The default-off `heap-metrics` feature exports untimed
-successful GC-object allocation counts and the maximum of per-heap estimated
-retained-byte peaks, with fresh run identity and complete heap-lifecycle checks.
-These are estimates, not RSS or a simultaneous process-tree peak; see the
+per-heap allocation and retained-byte estimates under the
 [heap-metrics contract](../architecture/execution-bounds.md#untimed-heap-metrics).
-Final head `55637d6` passed all five hosted CI jobs after review cleanups.
-The earlier full local workspace checks and independent PM review were at
-`163b6fd`; they are not new executions or a fresh PM review at `55637d6`.
-The issue is complete and its claim is released.
 
 [PR #240](https://github.com/vectorian-rs/hiko/pull/240) completed
 [#215 rev 2](https://github.com/vectorian-rs/hiko/issues/215) and merged at
 `ede82e7` on 2026-11-11. Owned bulk Fiber joins use bounded admission/storage,
-indexed completion and ordered results, with independent bulk authority and
-owned-child cleanup. Parent failure/cancellation still cleans up all children;
-see [owned bulk joins](../architecture/runtime.md#owned-bulk-joins).
-Final head `ca52667` passed all five hosted CI jobs after review cleanups.
-The earlier full local workspace checks and independent PM review were at
-`ab0915f`; they are not new executions or a fresh PM review at `ca52667`.
-The issue is complete and its claim is released.
+indexed completion and ordered results; semantics are defined by
+[owned bulk joins](../architecture/runtime.md#owned-bulk-joins).
 
-[#201 rev 4](https://github.com/vectorian-rs/hiko/issues/201) remains paused,
-not Ready: its implementation cap expired, and the explicitly requested
+For both PRs the final heads (`55637d6`, `ca52667`) passed all five hosted CI
+jobs after review cleanups; the full local workspace checks and independent PM
+reviews were at the earlier heads (`163b6fd`, `ab0915f`), not re-run at the
+final heads. Both issues are complete and their claims are released.
+
+[#201 rev 4](https://github.com/vectorian-rs/hiko/issues/201)'s implementation
+cap expired, and the explicitly requested
 [AC measurement](https://github.com/vectorian-rs/hiko/issues/201#issuecomment-6794278131)
-on an unfrozen interim source snapshot still failed A2. One of twelve candidate
-cells exceeded the 1.10 limit: register-feature/sliced, two million churn,
-232/210 = 1.104761905. Elevated load and stack fallback remain explicit limits;
-AC alone is not low-noise proof. No final-head acceptance or continuation grant
-is implied by that measurement.
+on an unfrozen interim snapshot failed one of twelve A2 cells against the 1.10
+limit, under elevated load and with register stack fallback as recorded limits.
+The maintainer then authorized merging the implementation with A2 deferred:
+[PR #243](https://github.com/vectorian-rs/hiko/pull/243) carries the rebased
+work and review record, and
+[#242](https://github.com/vectorian-rs/hiko/issues/242) tracks closing the
+sliced-boundary overhead gap with a load-bounded final measurement.
 
 [#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198) is in progress
-following plan approval and the #232 merge; it is not complete.
+following plan approval and the #232 merge.
 Its measurement gate remains a prerequisite of the public cutover in #186.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
