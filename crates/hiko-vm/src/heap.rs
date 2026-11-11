@@ -264,16 +264,11 @@ pub(crate) enum GcStage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GcError {
-    Work(&'static str),
-    Scratch,
-}
+pub(crate) struct GcError(pub(crate) &'static str);
 impl GcError {
+    pub(crate) const SCRATCH: GcError = GcError("GC scratch allocation failed");
     pub(crate) fn message(self) -> &'static str {
-        match self {
-            Self::Work(message) => message,
-            Self::Scratch => "GC scratch allocation failed",
-        }
+        self.0
     }
 }
 pub(crate) fn gc_units(amount: usize) -> Option<u64> {
@@ -1158,12 +1153,17 @@ impl Heap {
         Ok(())
     }
 
-    /// Resource guard PRESENCE, not current usage, preserves legacy cadence.
-    fn effective_gc_threshold(&self) -> usize {
-        if self.memory_budget.is_some()
+    /// Any shared-byte or host-resource guard; PRESENCE, not current usage.
+    /// Keep in sync with the budget fields this consults.
+    fn has_resource_guards(&self) -> bool {
+        self.memory_budget.is_some()
             || self.host_resource_budget.is_some()
             || !self.host_resource_kind_budgets.is_empty()
-        {
+    }
+
+    /// Resource guard presence preserves legacy cadence.
+    fn effective_gc_threshold(&self) -> usize {
+        if self.has_resource_guards() {
             self.gc_threshold
         } else {
             self.gc_threshold.max(self.objects.len() / 2)
@@ -1213,29 +1213,33 @@ impl Heap {
         debit(GcStage::ClearMarks, gc_units(self.objects.len()))?;
         self.marks.fill(false);
         let mut worklist: Vec<GcRef> = Vec::new();
+        worklist
+            .try_reserve(self.objects.len() / 4)
+            .map_err(|_| GcError::SCRATCH)?;
         let mut children: Vec<GcRef> = Vec::new();
         for r in roots {
             debit(GcStage::Reference, Some(1))?;
             if self.mark(r) {
-                worklist.try_reserve(1).map_err(|_| GcError::Scratch)?;
+                worklist.try_reserve(1).map_err(|_| GcError::SCRATCH)?;
                 worklist.push(r);
             }
         }
-        while !worklist.is_empty() {
+        while let Some(r) = worklist.pop() {
+            // Popping owned scratch is free; the debit precedes all item work.
             debit(GcStage::WorkItem, Some(1))?;
-            // The emptiness test above establishes a successful pop.
-            let r = worklist.pop().ok_or(GcError::Scratch)?;
             children.clear();
             if let Some(obj) = self.objects[r.0 as usize].as_ref() {
                 let slots = obj.raw_gc_slots();
                 debit(GcStage::Outgoing, gc_units(slots))?;
-                children.try_reserve(slots).map_err(|_| GcError::Scratch)?;
+                children.try_reserve(slots).map_err(|_| GcError::SCRATCH)?;
                 obj.for_each_gc_ref(|c| children.push(c));
             }
+            worklist
+                .try_reserve(children.len())
+                .map_err(|_| GcError::SCRATCH)?;
             for &child in &children {
                 debit(GcStage::Reference, Some(1))?;
                 if self.mark(child) {
-                    worklist.try_reserve(1).map_err(|_| GcError::Scratch)?;
                     worklist.push(child);
                 }
             }
@@ -1253,7 +1257,7 @@ impl Heap {
         debit(GcStage::Commit, commit)?;
         self.free_list
             .try_reserve(self.objects.len().saturating_sub(self.free_list.len()))
-            .map_err(|_| GcError::Scratch)?;
+            .map_err(|_| GcError::SCRATCH)?;
         // No checked failure below this boundary. Allocation/destructor panic
         // safety is deliberately not promised by the budget transaction.
         self.forget_sent();

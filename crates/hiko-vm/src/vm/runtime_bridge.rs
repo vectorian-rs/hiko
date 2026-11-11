@@ -210,11 +210,7 @@ impl VM {
     /// reduction boundary and can run indefinitely for non-terminating programs. Embedders that
     /// need bounded execution or scheduler fairness should call [`VM::run_slice`] instead.
     pub fn run(&mut self) -> Result<(), RuntimeError> {
-        if let Some(message) = &self.gc_failure {
-            return Err(RuntimeError {
-                message: message.clone(),
-            });
-        }
+        self.gc_failed()?;
         if let Some(message) = self.startup_error.as_ref() {
             return Err(RuntimeError {
                 message: format!("program verification failed: {message}"),

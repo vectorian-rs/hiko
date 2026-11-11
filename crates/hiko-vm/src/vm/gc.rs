@@ -23,17 +23,18 @@ impl GcDebit<'_> {
             }
             if *self.fault == Some(stage) {
                 self.fault.take();
-                return Err(GcError::Scratch);
+                return Err(GcError::SCRATCH);
             }
         }
         if self.forced {
             if let Some(lease) = self.lease {
-                lease.debit_gc(units).map_err(GcError::Work)?;
+                lease.debit_gc(units).map_err(GcError)?;
             } else if let Some(budget) = self.budget {
-                let cost = units.ok_or(GcError::Work("fuel exhausted (max_fuel limit reached)"))?;
-                budget
-                    .try_charge(cost)
-                    .map_err(|_| GcError::Work("fuel exhausted (max_fuel limit reached)"))?;
+                // Dispatch always holds an entry lease; only direct collection
+                // calls without one (tests) charge the grant here.
+                let message = crate::process::FUEL_EXHAUSTED_MESSAGE;
+                let cost = units.ok_or(GcError(message))?;
+                budget.try_charge(cost).map_err(|_| GcError(message))?;
             }
         }
         Ok(())
@@ -49,7 +50,18 @@ impl VM {
             .get(r)
             .map_err(|e| RuntimeError { message: e.into() })
     }
+    /// The first checked GC failure is terminal for this VM (D5).
+    pub(super) fn gc_failed(&self) -> Result<(), RuntimeError> {
+        match &self.gc_failure {
+            Some(message) => Err(RuntimeError {
+                message: message.clone(),
+            }),
+            None => Ok(()),
+        }
+    }
     fn latch_gc_error(&mut self, error: GcError) -> RuntimeError {
+        // A terminal cause also invalidates any not-yet-delivered request.
+        self.pending_runtime_request = None;
         let message = self
             .gc_failure
             .get_or_insert_with(|| error.message().into());
@@ -58,34 +70,13 @@ impl VM {
         }
     }
     pub(super) fn alloc(&mut self, obj: HeapObject) -> Result<Value, RuntimeError> {
-        if let Some(message) = &self.gc_failure {
-            return Err(RuntimeError {
-                message: message.clone(),
-            });
-        }
+        self.gc_failed()?;
         // Limit pressure wins classification even when the schedule is also due.
         let forced = self
             .heap
             .allocation_would_exceed_limits(obj.estimated_bytes());
         if forced || self.heap.should_collect() {
-            let slots = obj.raw_gc_slots();
-            let prepaid = GcDebit {
-                forced,
-                lease: &mut self.fuel_lease,
-                budget: &self.fuel_budget,
-                #[cfg(test)]
-                fault: &mut self.gc_test_fault,
-                #[cfg(test)]
-                trace: &mut self.gc_test_trace,
-            }
-            .container(GcStage::PendingObject, slots);
-            prepaid.map_err(|e| self.latch_gc_error(e))?;
-            let mut extra_roots = Vec::new();
-            extra_roots
-                .try_reserve(slots)
-                .map_err(|_| self.latch_gc_error(GcError::Scratch))?;
-            obj.for_each_gc_ref(|r| extra_roots.push(r));
-            self.gc_collect_checked(&extra_roots, forced)?;
+            self.gc_collect_checked(Some(&obj), &[], forced)?;
         }
         self.heap
             .alloc(obj)
@@ -123,16 +114,15 @@ impl VM {
     }
 
     /// Prepay each container and raw length before inspecting/filtering it.
+    /// `pending` is a not-yet-allocated object whose slots are paid and whose
+    /// references are rooted alongside `extra_roots`.
     pub(super) fn gc_collect_checked(
         &mut self,
+        pending: Option<&HeapObject>,
         extra_roots: &[GcRef],
         forced: bool,
     ) -> Result<(), RuntimeError> {
-        if let Some(message) = &self.gc_failure {
-            return Err(RuntimeError {
-                message: message.clone(),
-            });
-        }
+        self.gc_failed()?;
         let result = (|| {
             let mut debit = GcDebit {
                 forced,
@@ -143,28 +133,49 @@ impl VM {
                 #[cfg(test)]
                 trace: &mut self.gc_test_trace,
             };
-            debit.container(GcStage::Stack, self.stack.len())?;
-            debit.container(GcStage::Globals, self.globals.len())?;
-            debit.container(GcStage::Frames, self.frames.len())?;
-            for frame in &self.frames {
-                debit.container(GcStage::Captures, frame.captures.len())?;
+            // Ordinary/boundary GC is unmetered: in release builds every
+            // charge below would be a no-op, so skip the whole prologue and
+            // hand try_collect a free debit. Test builds keep the full path
+            // for the fault/trace seams.
+            let metered = forced || cfg!(test);
+            let mut pending_roots = Vec::new();
+            if let Some(obj) = pending {
+                let slots = obj.raw_gc_slots();
+                if metered {
+                    debit.container(GcStage::PendingObject, slots)?;
+                }
+                pending_roots
+                    .try_reserve(slots)
+                    .map_err(|_| GcError::SCRATCH)?;
+                obj.for_each_gc_ref(|r| pending_roots.push(r));
             }
-            debit.container(GcStage::Handlers, self.handlers.len())?;
-            for handler in &self.handlers {
-                debit.container(GcStage::Captures, handler.captures.len())?;
-            }
-            debit.container(GcStage::HiddenHandlers, self.hidden_handlers.len())?;
-            for hidden in &self.hidden_handlers {
-                debit.container(GcStage::Handlers, hidden.handlers.len())?;
-                for handler in &hidden.handlers {
+            if metered {
+                // Keep this prepay list in sync with the roots chain below: a
+                // container missing here under-charges, one missing there
+                // leaks live objects.
+                debit.container(GcStage::Stack, self.stack.len())?;
+                debit.container(GcStage::Globals, self.globals.len())?;
+                debit.container(GcStage::Frames, self.frames.len())?;
+                for frame in &self.frames {
+                    debit.container(GcStage::Captures, frame.captures.len())?;
+                }
+                debit.container(GcStage::Handlers, self.handlers.len())?;
+                for handler in &self.handlers {
                     debit.container(GcStage::Captures, handler.captures.len())?;
                 }
+                debit.container(GcStage::HiddenHandlers, self.hidden_handlers.len())?;
+                for hidden in &self.hidden_handlers {
+                    debit.container(GcStage::Handlers, hidden.handlers.len())?;
+                    for handler in &hidden.handlers {
+                        debit.container(GcStage::Captures, handler.captures.len())?;
+                    }
+                }
+                debit.container(GcStage::Cache, self.string_cache.rows.len())?;
+                for row in &self.string_cache.rows {
+                    debit.container(GcStage::Cache, row.len())?;
+                }
+                debit.container(GcStage::ExtraRoots, pending_roots.len() + extra_roots.len())?;
             }
-            debit.container(GcStage::Cache, self.string_cache.rows.len())?;
-            for row in &self.string_cache.rows {
-                debit.container(GcStage::Cache, row.len())?;
-            }
-            debit.container(GcStage::ExtraRoots, extra_roots.len())?;
             let roots = self
                 .stack
                 .iter()
@@ -185,31 +196,30 @@ impl VM {
                     }
                 })
                 .chain(self.string_cache.values())
+                .chain(pending_roots.iter().copied())
                 .chain(extra_roots.iter().copied());
-            self.heap
-                .try_collect(roots, |stage, units| debit.charge(stage, units))
+            if metered {
+                self.heap
+                    .try_collect(roots, |stage, units| debit.charge(stage, units))
+            } else {
+                self.heap.try_collect(roots, |_, _| Ok(()))
+            }
         })();
         result.map_err(|e| self.latch_gc_error(e))
     }
 
-    /// Existing expected-success test seam, with checked scratch propagation.
+    /// Existing expected-success test seam.
     #[cfg(test)]
     pub(super) fn gc_collect_with_extra_roots(
         &mut self,
         roots: impl IntoIterator<Item = GcRef>,
     ) -> Result<(), RuntimeError> {
-        let mut extra = Vec::new();
-        for root in roots {
-            extra
-                .try_reserve(1)
-                .map_err(|_| self.latch_gc_error(GcError::Scratch))?;
-            extra.push(root);
-        }
-        self.gc_collect_checked(&extra, false)
+        let extra: Vec<GcRef> = roots.into_iter().collect();
+        self.gc_collect_checked(None, &extra, false)
     }
     pub(super) fn gc_collect_at_boundary_if_needed(&mut self) -> Result<(), RuntimeError> {
         if self.heap.should_collect_at_boundary() {
-            self.gc_collect_checked(&[], false)?;
+            self.gc_collect_checked(None, &[], false)?;
         }
         Ok(())
     }

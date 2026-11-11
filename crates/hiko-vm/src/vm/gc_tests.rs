@@ -1,15 +1,8 @@
 //! Abstract-work, transaction and entry-lifetime regressions for #201.
+use super::tests::compile_vm as machine;
 use super::*;
 use crate::heap::GcStage;
-use hiko_compile::compiler::Compiler;
-use hiko_syntax::{lexer::Lexer, parser::Parser};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-fn machine(source: &str) -> VM {
-    let parsed = Parser::new(Lexer::new(source, 0).tokenize().unwrap())
-        .parse_program()
-        .unwrap();
-    VM::new(Compiler::compile(parsed).unwrap().0)
-}
 fn garbage(vm: &mut VM, count: usize) {
     for _ in 0..count {
         vm.heap.alloc(HeapObject::String("garbage".into())).unwrap();
@@ -186,7 +179,7 @@ fn raw_root_containers_scalar_none_duplicate_edges_and_scalar_cached_nodes_are_p
     let (mut vm, root, _) = root_fixture();
     vm.gc_test_trace = Some(Vec::new());
     vm.set_fuel(100_000);
-    vm.gc_collect_checked(&[root, root], true).unwrap();
+    vm.gc_collect_checked(None, &[root, root], true).unwrap();
     let trace = vm.gc_test_trace.as_ref().unwrap();
     assert!(trace.contains(&(GcStage::Stack, Some(5))));
     assert!(trace.contains(&(GcStage::Globals, Some(4))));
@@ -265,7 +258,7 @@ fn every_checked_scan_fault_is_atomic_and_first_cause_terminal() {
         );
         vm.set_fuel(100_000);
         vm.gc_test_fault = Some(stage);
-        let error = vm.gc_collect_checked(&[root], true).unwrap_err();
+        let error = vm.gc_collect_checked(None, &[root], true).unwrap_err();
         assert_eq!(error.message, "GC scratch allocation failed", "{stage:?}");
         assert_eq!(
             before,

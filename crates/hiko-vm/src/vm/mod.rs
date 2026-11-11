@@ -309,7 +309,7 @@ struct FuelLease {
 impl FuelLease {
     fn debit_gc(&mut self, cost: Option<u64>) -> Result<(), &'static str> {
         if let Some(grant) = &self.grant {
-            let cost = cost.ok_or("fuel exhausted (max_fuel limit reached)")?;
+            let cost = cost.ok_or(crate::process::FUEL_EXHAUSTED_MESSAGE)?;
             let available = self.remaining.unwrap_or(0);
             let local = available.min(cost);
             // Charge the deficit FIRST: a refusal leaves local credit refundable.
@@ -317,7 +317,7 @@ impl FuelLease {
             if deficit != 0 {
                 grant
                     .try_charge(deficit)
-                    .map_err(|_| "fuel exhausted (max_fuel limit reached)")?;
+                    .map_err(|_| crate::process::FUEL_EXHAUSTED_MESSAGE)?;
             }
             self.remaining = Some(available - local);
         } else if let Some(remaining) = &mut self.remaining {
@@ -348,7 +348,7 @@ impl<'a> FuelEntry<'a> {
             let reserved = budget.reserve_up_to(quantum.unwrap_or(u64::MAX));
             if reserved == 0 {
                 return Err(RuntimeError {
-                    message: "fuel exhausted (max_fuel limit reached)".into(),
+                    message: crate::process::FUEL_EXHAUSTED_MESSAGE.into(),
                 });
             }
             Some(reserved)
@@ -936,7 +936,7 @@ mod tests {
         vm
     }
 
-    fn compile_vm(input: &str) -> VM {
+    pub(super) fn compile_vm(input: &str) -> VM {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let (compiled, _warnings) = Compiler::compile(program).expect("compile error");
