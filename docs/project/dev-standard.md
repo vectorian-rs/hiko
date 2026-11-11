@@ -84,6 +84,17 @@ Add or update tests for:
 - compiler/typechecker/runtime boundary behavior
 - regression-prone ABI or encoding assumptions
 
+### Concurrent runtime fixtures
+
+Use a deterministic blocking backend or an explicit handshake when a test
+requires a child to remain blocked until cancellation. `MockIoBackend`
+completes sleep requests immediately, regardless of the requested duration;
+a long mock sleep is not a scheduling barrier.
+
+When checking a threaded root's output, first assert or report
+`runtime.failure(pid)`. `run_to_completion()` returning `Ok` does not by
+itself establish that the root process succeeded.
+
 ## Parser and formatter standards
 
 - Keep the handwritten parser/typechecker pipeline separate from source-preserving formatting concerns.
