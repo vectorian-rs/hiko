@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { comparisonRow, lastLine } from "./compare.ts";
+import { acPower, loadLimit, validLoad, median, regresses, validateMetrics, gate, execute, corpus, type GateIO } from "./vm-gate.ts";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -198,4 +199,204 @@ test("last-line checks retain whitespace and trailing blank lines", () => {
   expect(lastLine("42")).toBe("42");
   expect(lastLine("")).toBe("");
   expect(() => comparisonRow("bad", [0, 1, 2])).toThrow("invalid hyperfine results");
+});
+
+test("VM gate uses exact positive integer medians and strict one-percent comparison", () => {
+  expect(median(["999", "100", "101"])).toBe(101n);
+  expect(regresses(Array(11).fill("100"), Array(11).fill("101"))).toBe(false);
+  expect(regresses(Array(11).fill("10000"), Array(11).fill("10101"))).toBe(true);
+  expect(regresses(Array(11).fill("900719925474099300"), Array(11).fill("909727124728840293"))).toBe(false);
+  for (const invalid of ["0", "-1", "NaN", "1.5", "1e3"]) expect(() => median([invalid])).toThrow();
+  expect(() => median(["1", "2"])).toThrow();
+});
+
+test("VM gate fails closed on unrecognized AC and invalid/equal load", () => {
+  expect(acPower("Now drawing from 'AC Power'\n -InternalBattery-0\n")).toBe(true);
+  for (const invalid of ["", "AC Power", "Now drawing from 'Battery Power'\n", "garbage AC Power\n"]) expect(acPower(invalid)).toBe(false);
+  expect(loadLimit(2)).toBe(1); expect(loadLimit(10)).toBe(4);
+  for (const invalid of [NaN, Infinity, -1, 4]) expect(validLoad(invalid, 10)).toBe(false);
+  expect(validLoad(3.999, 10)).toBe(true); expect(() => loadLimit(0)).toThrow();
+});
+
+function metricFixture() {
+  return { schema_version: 1, nonce: "fresh", profile: "default.metrics", complete: true,
+    heaps_created: 1, heaps_dropped: 1, heaps_active: 0, successful_gc_object_allocations: 3,
+    max_per_heap_estimated_retained_bytes: 64,
+    heaps: [{ heap_id: 1, successful_gc_object_allocations: 3, estimated_retained_bytes_peak: 64 }] };
+}
+test("VM gate validates exporter schema, identity, lifecycle and lossless safe integer totals", () => {
+  const artifact = metricFixture();
+  expect(validateMetrics(JSON.stringify(artifact), "fresh", "default.metrics")).toEqual(artifact);
+  const corrupt = [ { ...artifact, complete: false }, { ...artifact, nonce: "stale" },
+    { ...artifact, schema_version: 2 }, { ...artifact, heaps_active: 1 }, { ...artifact, heaps_dropped: 0 },
+    { ...artifact, successful_gc_object_allocations: 4 }, { ...artifact, max_per_heap_estimated_retained_bytes: 63 },
+    { ...artifact, extra: true }, { ...artifact, heaps: [] },
+    { ...artifact, heaps: [{ ...artifact.heaps[0], heap_id: 0 }] },
+    { ...artifact, heaps: [{ ...artifact.heaps[0], successful_gc_object_allocations: Number.MAX_SAFE_INTEGER + 1 }] } ];
+  for (const value of corrupt) expect(() => validateMetrics(JSON.stringify(value), "fresh", "default.metrics")).toThrow();
+  const text = JSON.stringify(artifact);
+  expect(() => validateMetrics(text.replace('"schema_version":1', '"schema_version":1.0'), "fresh", "default.metrics")).toThrow();
+  expect(() => validateMetrics(text.replace('"schema_version":1', '"schema_version":1,"schema_version":1'), "fresh", "default.metrics")).toThrow("duplicate");
+  expect(() => validateMetrics("broken", "fresh", "default.metrics")).toThrow();
+});
+
+interface GateFixtureOptions {
+  power?: string; load?: number; platform?: string; regression?: "once" | "always";
+  mismatch?: boolean; exportExit?: boolean; badMetrics?: boolean; buildFailure?: boolean;
+  historyFailure?: boolean; hungProbe?: boolean; badFeatures?: boolean; largeTranscript?: boolean;
+}
+async function gateFixture(options: GateFixtureOptions = {}) {
+  const directory = await mkdtemp(join(tmpdir(), "hiko-gate-test-"));
+  temporary.push(directory);
+  const repo = join(directory, "repo with spaces");
+  const history = join(directory, "report.json");
+  const files = [...corpus, "hiko.toml", "hiko.lock.toml", "policies/benchmark.policy.toml"];
+  for (const file of files) {
+    await mkdir(dirname(join(repo, file)), { recursive: true });
+    await writeFile(join(repo, file), "frozen fixture\n");
+  }
+  let clock = 1n;
+  const calls: Parameters<GateIO["exec"]>[0][] = [];
+  const counts = new Map<string, number>();
+  const encoded = (text: string) => Buffer.from(text).toString("base64");
+  const io: GateIO = {
+    platform: options.platform ?? "darwin", cpuCount: 10, machine: "fixture",
+    now: () => clock, load: () => options.load ?? 0,
+    pause: async ms => { clock += BigInt(ms) * 1_000_000n; },
+    tools: { git: "fixture-git", cargo: "fixture-cargo", rustc: "fixture-rustc", pmset: "fixture-pmset" },
+    writeHistory: async (path, text) => {
+      if (options.historyFailure) throw Error("injected history failure");
+      await writeFile(path, text);
+    },
+    exec: async invocation => {
+      calls.push(invocation); clock += 1_000_000n;
+      const [tool, ...args] = invocation.argv;
+      let stdout = ""; let stderr = ""; let status = 0; let durationNs = "10000"; let timedOut = false;
+      if (tool === "fixture-rustc") stdout = "rustc1.99.1";
+      else if (tool === "fixture-pmset") {
+        stdout = options.power ?? "Now drawing from 'AC Power'\n";
+        if (options.hungProbe) { clock += BigInt(invocation.timeoutMs) * 1_000_000n; timedOut = true; }
+      } else if (tool === "fixture-git") {
+        if (args[0] === "rev-parse") stdout = (args.at(-1)!.startsWith("base") ? "a" : "b").repeat(40) + "\n";
+        else if (args[0] === "ls-files") stdout = files.join("\0") + "\0";
+        else if (args.includes("add")) await mkdir(args.at(-2)!, { recursive: true });
+      } else if (tool === "fixture-cargo") {
+        const target = args[args.indexOf("--target-dir") + 1]!;
+        await mkdir(join(target, "release"), { recursive: true });
+        await writeFile(join(target, "release/hiko-cli"), invocation.cwd);
+        const featureIndex = args.indexOf("--features");
+        const features = featureIndex < 0 ? [] : args[featureIndex + 1]!.split(",");
+        if (options.badFeatures) features.push("opcode-stats");
+        stdout = JSON.stringify({ reason: "compiler-artifact", target: { name: "hiko_vm" }, features });
+        if (options.largeTranscript) stderr = "x".repeat(70_000);
+        if (options.buildFailure && invocation.cwd.endsWith("base.default.metrics")) status = 37;
+      } else {
+        const name = invocation.argv[0]!.includes("/candidate.") ? "candidate" : "base";
+        const key = `${invocation.argv[0]}:${args.at(-1)}`;
+        const count = counts.get(key) ?? 0; counts.set(key, count + 1);
+        stdout = options.mismatch && name === "candidate" && count === 2 ? "different\n42\n" : "full output\n42\n";
+        if (name === "candidate" && options.regression && (options.regression === "always" || count <= 11)) durationNs = "11000";
+        if (invocation.env.HIKO_HEAP_METRICS) {
+          const artifact = { ...metricFixture(), nonce: invocation.env.HIKO_HEAP_METRICS_NONCE, profile: invocation.env.HIKO_HEAP_METRICS_PROFILE };
+          await writeFile(invocation.env.HIKO_HEAP_METRICS, options.badMetrics ? "{}" : JSON.stringify(artifact));
+          if (options.exportExit) status = 38;
+        }
+      }
+      return { status, stdout: encoded(stdout), stderr: encoded(stderr), durationNs, timedOut };
+    },
+  };
+  return { repo, history, io, calls, async run(environment: Record<string, string> = {}) {
+    const report = await gate({ repo, history, base: "base", candidate: "candidate", environment }, io);
+    // Publication failures intentionally retain evidence; remove only this test's owned directory.
+    if (existsSync(report.recovery)) temporary.push(dirname(report.recovery));
+    return report;
+  } };
+}
+
+test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics and cleanup", async () => {
+  const f = await gateFixture(); const report = await f.run();
+  expect(report.verdict).toBe("pass"); expect(report.errors).toEqual([]);
+  expect(report.builds).toHaveLength(8); expect(report.comparisons).toHaveLength(8);
+  expect(report.metrics).toHaveLength(16);
+  expect(report.inputs).toHaveLength(7);
+  for (const row of report.comparisons as { base: string[]; candidate: string[] }[]) {
+    expect(row.base).toHaveLength(11); expect(row.candidate).toHaveLength(11);
+  }
+  const builds = f.calls.filter(c => c.argv[0] === "fixture-cargo");
+  expect(new Set(builds.map(c => c.cwd)).size).toBe(8);
+  expect(new Set(builds.map(c => c.argv[c.argv.indexOf("--target-dir") + 1])).size).toBe(8);
+  expect(builds.every(c => c.argv.includes("--locked") && c.argv.includes("--offline"))).toBe(true);
+  expect(builds.filter(c => c.argv.some(a => a.includes("heap-metrics")))).toHaveLength(4);
+  const samples = f.calls.filter(c => c.argv[0]!.endsWith("hiko-cli") && !c.env.HIKO_HEAP_METRICS);
+  expect(samples.slice(2, 6).map(c => c.argv[0]!.includes("/candidate."))).toEqual([false, true, true, false]);
+  expect(f.calls.filter(c => c.argv.includes("remove"))).toHaveLength(8);
+  expect(JSON.parse(await readFile(f.history, "utf8")).verdict).toBe("pass");
+});
+
+test("VM gate permits exactly one complete recheck only for valid measured regression", async () => {
+  const once = await gateFixture({ regression: "once" }); const passed = await once.run();
+  expect(passed.verdict).toBe("pass");
+  expect(passed.comparisons).toHaveLength(16);
+  expect((passed.comparisons[1] as { verdict: string }).verdict).toBe("pass-with-recheck");
+  const always = await gateFixture({ regression: "always" }); const failed = await always.run();
+  expect(failed.verdict).toBe("fail"); expect(failed.comparisons).toHaveLength(16);
+  expect(failed.errors.filter(e => e.includes("persists"))).toHaveLength(8);
+}, 30_000);
+
+test("VM gate rejects per-invocation output differences without retrying invalid attempts", async () => {
+  const f = await gateFixture({ mismatch: true }); const report = await f.run();
+  expect(report.verdict).toBe("fail");
+  expect(report.comparisons).toHaveLength(8);
+  expect(report.errors.some(e => e.includes("full stdout mismatch"))).toBe(true);
+});
+
+test("VM gate refuses power/load/probe failures, unsupported platforms and injected overrides", async () => {
+  for (const options of [{ power: "Battery\n" }, { power: "" }, { load: NaN }, { load: 4 }, { platform: "linux" }, { hungProbe: true }]) {
+    const f = await gateFixture(options); const report = await f.run();
+    expect(report.verdict).toBe("fail");
+    expect(f.calls.some(c => c.argv[0] === "fixture-cargo")).toBe(false);
+  }
+  for (const name of ["HIKO_BIN", "ALLOW_BATTERY", "CARGO_TARGET_DIR", "RUSTFLAGS", "RUSTC_WRAPPER"]) {
+    const f = await gateFixture(); const report = await f.run({ [name]: "poison" });
+    expect(report.verdict).toBe("fail"); expect(report.errors.join()).toContain(name);
+    expect(f.calls).toHaveLength(0);
+  }
+}, 30_000);
+
+test("VM gate cannot pass with invalid/missing metrics, failed builds or post-export failed exit", async () => {
+  for (const options of [{ badMetrics: true }, { exportExit: true }, { buildFailure: true }, { badFeatures: true }]) {
+    const f = await gateFixture(options); const report = await f.run();
+    expect(report.verdict).toBe("fail"); expect(report.errors.length).toBeGreaterThan(0);
+  }
+}, 30_000);
+
+test("VM gate refuses to overwrite history and retains large compiler transcripts losslessly", async () => {
+  const existing = await gateFixture(); await writeFile(existing.history, "preserve");
+  await expect(existing.run()).rejects.toThrow("already exists");
+  expect(await readFile(existing.history, "utf8")).toBe("preserve");
+  const f = await gateFixture({ largeTranscript: true }); const report = await f.run();
+  expect(report.verdict).toBe("pass");
+  const entries = report.calls.filter(c => c.stderrArtifact);
+  expect(entries).toHaveLength(8);
+  for (const entry of entries) {
+    expect(entry.stderr).toBe("");
+    expect(Buffer.from(await readFile(entry.stderrArtifact!, "utf8"), "base64").toString()).toBe("x".repeat(70_000));
+  }
+  expect(f.calls.filter(c => c.argv[1] === "rev-parse")).toHaveLength(2);
+  expect(f.calls.filter(c => c.argv.includes("add")).every(c => /^[ab]{40}$/.test(c.argv.at(-1)!))).toBe(true);
+}, 30_000);
+
+test("VM gate preserves recoverable provenance when history publication fails", async () => {
+  const f = await gateFixture({ historyFailure: true }); const report = await f.run();
+  expect(report.verdict).toBe("fail"); expect(existsSync(report.recovery)).toBe(true);
+  expect(JSON.parse(await readFile(report.recovery, "utf8")).errors.join()).toContain("history publication failed");
+});
+
+test("VM gate subprocess execution preserves separate bytes and kills/reaps a timeout", async () => {
+  const env = { PATH: process.env.PATH ?? "" };
+  const ok = await execute({ argv: [process.execPath, "-e", "process.stdout.write('a\\u0000b');process.stderr.write('error')"], cwd: tmpdir(), env, timeoutMs: 2_000 });
+  expect(Buffer.from(ok.stdout, "base64").toString()).toBe("a\0b");
+  expect(Buffer.from(ok.stderr, "base64").toString()).toBe("error");
+  const timed = await execute({ argv: [process.execPath, "-e", "setInterval(()=>{},1000)"], cwd: tmpdir(), env, timeoutMs: 50 });
+  expect(timed.timedOut).toBe(true); expect(timed.status).not.toBe(0);
 });

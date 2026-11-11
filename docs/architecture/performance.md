@@ -50,8 +50,11 @@ This separate gate does not change `compare.ts`. It resolves both refs once,
 then builds counter-free release binaries with default features and with
 `register-vm` in unique detached worktrees and targets. `HIKO_BIN`, injected
 Cargo target/features/flags, and power overrides are refused, not fallbacks.
-The selected toolchain, tool paths, build argv, environment and source hashes
-are retained. Unsupported effective Cargo configuration is an explicit error.
+The pinned Rust1.99.1 toolchain, tool paths, build argv, environment and source
+hashes are retained. Builds are locked/offline, use one Cargo job and an isolated
+Cargo home sharing downloaded source caches, not ambient configuration or
+credentials. Compiler artifact messages verify effective VM features, not just
+requested flags. Unsupported effective Cargo configuration is an explicit error.
 
 The ordered HML corpus covers integer recursion, tuple/closure fallback and
 string concatenation (`compare/fib`, `compare/tak`, `local_rec`,
@@ -87,7 +90,11 @@ no source patching or zero-filled metrics may produce an overall PASS.
 
 Schema-versioned history retains all samples/order, probes, attempts, metrics,
 failures and provenance before owned worktrees/targets are removed. History
-write failures exit nonzero and preserve recovery files. The gate changes no
+write failures exit nonzero and preserve recovery files. Choose a fresh history
+path; an existing destination is refused rather than overwritten. Large compiler
+transcripts are retained once as base64 sidecars under `<history>.artifacts`,
+with paths and byte hashes in the history. Preserve those sidecars with the JSON.
+The gate changes no
 runtime semantics, does not gate CI wall-clock time, and does not supply other
 required workspace checks or reviews.
 
