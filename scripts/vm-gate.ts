@@ -237,8 +237,8 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   async function sample(build: Build, input: string, extra: Record<string, string> = {}) {
     if (!await probe()) throw Error("load exceeds bound; attempt invalid");
     const result = await invoke([
-      build.binary, "run", "--config", join(workspace, "inputs/policies/benchmark.policy.toml"),
-      "--workers", "1", join(workspace, "inputs", input),
+      build.binary, "run", "--config", join(workspace, "inputs/hiko.toml"),
+      "--policy", "benchmark", "--workers", "1", join(workspace, "inputs", input),
     ], join(workspace, "inputs"), extra, 60_000);
     if (!await probe()) throw Error("load exceeds bound; attempt invalid");
     median([result.durationNs]);
@@ -414,6 +414,10 @@ if (import.meta.main) {
     }
     const report = await gate(options);
     console.log(`${report.verdict.toUpperCase()}: ${resolve(options.history)}`);
-    if (report.verdict !== "pass") process.exitCode = 1;
+    if (report.verdict !== "pass") {
+      for (const error of report.errors) console.error(error);
+      if (await Bun.file(report.recovery).exists()) console.error(`Recovery evidence: ${report.recovery}`);
+      process.exitCode = 1;
+    }
   } catch (error) { console.error(String(error)); process.exitCode = 1; }
 }

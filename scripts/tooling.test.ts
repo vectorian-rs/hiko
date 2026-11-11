@@ -243,7 +243,8 @@ test("VM gate validates exporter schema, identity, lifecycle and lossless safe i
 interface GateFixtureOptions {
   power?: string; load?: number; platform?: string; regression?: "once" | "always";
   mismatch?: boolean; exportExit?: boolean; badMetrics?: boolean; buildFailure?: boolean;
-  historyFailure?: boolean; hungProbe?: boolean; badFeatures?: boolean; largeTranscript?: boolean;
+  historyFailure?: boolean; historyAfter?: number; powerSwitch?: boolean; loadSwitch?: boolean;
+  hungProbe?: boolean; badFeatures?: boolean; largeTranscript?: boolean;
 }
 async function gateFixture(options: GateFixtureOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), "hiko-gate-test-"));
@@ -255,17 +256,17 @@ async function gateFixture(options: GateFixtureOptions = {}) {
     await mkdir(dirname(join(repo, file)), { recursive: true });
     await writeFile(join(repo, file), "frozen fixture\n");
   }
-  let clock = 1n;
+  let clock = 1n; let publications = 0; let sampleCalls = 0;
   const calls: Parameters<GateIO["exec"]>[0][] = [];
   const counts = new Map<string, number>();
   const encoded = (text: string) => Buffer.from(text).toString("base64");
   const io: GateIO = {
     platform: options.platform ?? "darwin", cpuCount: 10, machine: "fixture",
-    now: () => clock, load: () => options.load ?? 0,
+    now: () => clock, load: () => options.loadSwitch && sampleCalls >= 4 ? 4 : options.load ?? 0,
     pause: async ms => { clock += BigInt(ms) * 1_000_000n; },
     tools: { git: "fixture-git", cargo: "fixture-cargo", rustc: "fixture-rustc", pmset: "fixture-pmset" },
     writeHistory: async (path, text) => {
-      if (options.historyFailure) throw Error("injected history failure");
+      if (options.historyFailure || ++publications > (options.historyAfter ?? Infinity)) throw Error("injected history failure");
       await writeFile(path, text);
     },
     exec: async invocation => {
@@ -274,7 +275,7 @@ async function gateFixture(options: GateFixtureOptions = {}) {
       let stdout = ""; let stderr = ""; let status = 0; let durationNs = "10000"; let timedOut = false;
       if (tool === "fixture-rustc") stdout = "rustc1.99.1";
       else if (tool === "fixture-pmset") {
-        stdout = options.power ?? "Now drawing from 'AC Power'\n";
+        stdout = options.powerSwitch && sampleCalls >= 4 ? "Now drawing from 'Battery Power'\n" : options.power ?? "Now drawing from 'AC Power'\n";
         if (options.hungProbe) { clock += BigInt(invocation.timeoutMs) * 1_000_000n; timedOut = true; }
       } else if (tool === "fixture-git") {
         if (args[0] === "rev-parse") stdout = (args.at(-1)!.startsWith("base") ? "a" : "b").repeat(40) + "\n";
@@ -291,6 +292,7 @@ async function gateFixture(options: GateFixtureOptions = {}) {
         if (options.largeTranscript) stderr = "x".repeat(70_000);
         if (options.buildFailure && invocation.cwd.endsWith("base.default.metrics")) status = 37;
       } else {
+        sampleCalls++;
         const name = invocation.argv[0]!.includes("/candidate.") ? "candidate" : "base";
         const key = `${invocation.argv[0]}:${args.at(-1)}`;
         const count = counts.get(key) ?? 0; counts.set(key, count + 1);
@@ -329,6 +331,8 @@ test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics 
   expect(builds.filter(c => c.argv.some(a => a.includes("heap-metrics")))).toHaveLength(4);
   const samples = f.calls.filter(c => c.argv[0]!.endsWith("hiko-cli") && !c.env.HIKO_HEAP_METRICS);
   expect(samples.slice(2, 6).map(c => c.argv[0]!.includes("/candidate."))).toEqual([false, true, true, false]);
+  expect(samples.every(c => c.argv[c.argv.indexOf("--config") + 1]!.endsWith("/inputs/hiko.toml"))).toBe(true);
+  expect(samples.every(c => c.argv[c.argv.indexOf("--policy") + 1] === "benchmark")).toBe(true);
   expect(f.calls.filter(c => c.argv.includes("remove"))).toHaveLength(8);
   expect(JSON.parse(await readFile(f.history, "utf8")).verdict).toBe("pass");
 });
@@ -363,6 +367,16 @@ test("VM gate refuses power/load/probe failures, unsupported platforms and injec
   }
 }, 30_000);
 
+test("VM gate invalidates mid-attempt power/load contamination without selectively retrying", async () => {
+  for (const options of [{ powerSwitch: true }, { loadSwitch: true }]) {
+    const f = await gateFixture(options); const report = await f.run();
+    expect(report.verdict).toBe("fail"); expect(report.comparisons).toHaveLength(1);
+    expect((report.comparisons[0] as { verdict: string }).verdict).toBe("incomplete");
+    expect(f.calls.filter(c => c.argv[0]!.endsWith("hiko-cli"))).toHaveLength(4);
+    expect(report.errors.join()).toMatch(/changed|load exceeds/);
+  }
+}, 30_000);
+
 test("VM gate cannot pass with invalid/missing metrics, failed builds or post-export failed exit", async () => {
   for (const options of [{ badMetrics: true }, { exportExit: true }, { buildFailure: true }, { badFeatures: true }]) {
     const f = await gateFixture(options); const report = await f.run();
@@ -390,6 +404,16 @@ test("VM gate preserves recoverable provenance when history publication fails", 
   const f = await gateFixture({ historyFailure: true }); const report = await f.run();
   expect(report.verdict).toBe("fail"); expect(existsSync(report.recovery)).toBe(true);
   expect(JSON.parse(await readFile(report.recovery, "utf8")).errors.join()).toContain("history publication failed");
+});
+
+test("VM gate retains earlier successful phases and raw evidence after a later history-write failure", async () => {
+  const f = await gateFixture({ historyAfter: 90 }); const report = await f.run();
+  expect(report.verdict).toBe("fail"); expect(existsSync(report.recovery)).toBe(true);
+  const published = JSON.parse(await readFile(f.history, "utf8"));
+  const recovered = JSON.parse(await readFile(report.recovery, "utf8"));
+  expect(published.calls.length).toBeGreaterThan(5);
+  expect(recovered.calls.length).toBeGreaterThanOrEqual(published.calls.length);
+  expect(recovered.errors.join()).toContain("history publication failed");
 });
 
 test("VM gate subprocess execution preserves separate bytes and kills/reaps a timeout", async () => {
