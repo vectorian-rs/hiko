@@ -40,6 +40,57 @@ Scripts run under the `benchmark` policy (`policies/benchmark.policy.toml`),
 which has no fuel limit. `hiko run --workers N` sets the threaded runtime's
 worker count; the default is 1.
 
+## Exact-commit VM gate
+
+```bash
+bun scripts/vm-gate.ts <base-ref> <candidate-ref> [--history path] [--pairs 11]
+```
+
+This separate gate does not change `compare.ts`. It resolves both refs once,
+then builds counter-free release binaries with default features and with
+`register-vm` in unique detached worktrees and targets. `HIKO_BIN`, injected
+Cargo target/features/flags, and power overrides are refused, not fallbacks.
+The selected toolchain, tool paths, build argv, environment and source hashes
+are retained. Unsupported effective Cargo configuration is an explicit error.
+
+The ordered HML corpus covers integer recursion, tuple/closure fallback and
+string concatenation (`compare/fib`, `compare/tak`, `local_rec`,
+`string_concat`). Its configuration, policy and transitive library inputs are
+frozen once for both commits and hashed. Every invocation, including untimed
+metrics and rechecks, must exit successfully and match the complete stdout
+bytes. Stderr is drained and retained separately, never joined to stdout.
+
+The initial supported host is macOS. Successful recognized `pmset` AC proof is
+required before builds and around every sample. One-minute load must be finite,
+nonnegative and strictly below `min(4, max(1, CPU-count / 2))`. Before and after
+builds, load may settle for at most60 monotonic seconds at a recorded fixed
+interval. Probes have deadlines and timed-out subprocesses are killed and
+reaped. Unsupported OS, unavailable/unknown power, invalid load, battery power,
+timeout or sample contamination is unmet evidence, with no bypass. Boundary
+observations do not prove uninterrupted AC or low load between probes.
+
+At least11 complete AB/BA pairs are timed per benchmark/profile. Durations are
+positive integer monotonic nanoseconds. A regression is the exact comparison
+`100 * median(candidate) > 101 * median(base)`; equality is allowed. Only a
+valid measured regression gets one fresh complete recheck for that cell. Both
+attempts remain separate: second success is `pass-with-recheck`, second
+regression fails. Errors/refusals/output mismatches never trigger a performance
+retry; no pooling, dropped samples or third attempt is permitted.
+
+Separate untimed default/register profiles add only `heap-metrics`. They
+require successful exit and a fresh schema1 artifact with matching nonce and
+profile, complete balanced heap lifecycle and checked safe-integer totals.
+See the [metric contract](execution-bounds.md#untimed-heap-metrics): allocation
+counts and maximum per-heap estimated peaks are not RSS or simultaneous tree
+peaks. Historical commits without the exporter remain explicitly incomplete;
+no source patching or zero-filled metrics may produce an overall PASS.
+
+Schema-versioned history retains all samples/order, probes, attempts, metrics,
+failures and provenance before owned worktrees/targets are removed. History
+write failures exit nonzero and preserve recovery files. The gate changes no
+runtime semantics, does not gate CI wall-clock time, and does not supply other
+required workspace checks or reviews.
+
 ## Baseline (2026-10-31)
 
 Apple M1 Max, 10 cores, macOS (Darwin arm64), release build, hyperfine means

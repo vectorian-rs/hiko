@@ -202,7 +202,7 @@ Verification is evidence, not assertion. Choose per risk:
 | Mutation check | inject the bug the change guards against; the test must fail; revert. |
 | Conformance | programs in `tests/run`, named after the rule they check. |
 | Growth | inputs of size n, 2n, 4n: time must grow linearly. Nothing quadratic. |
-| Benchmark gate | the two builds timed interleaved on the same programs (`benchmarks/`), on AC power, load average below 4, else skipped; the target improves by the stated margin and no benchmark is more than 1% slower, with default and `--all-features` builds. `bun scripts/compare.ts` is the separate comparison against Lua and Python. |
+| Benchmark gate | `bun scripts/vm-gate.ts <base> <candidate>` freezes and hashes one corpus/config/policy, builds exact isolated default/register profiles, and retains >=11 interleaved pairs per cell. Proven macOS AC and strictly bounded load are required; refusal is unmet, not skipped or waived. More than 1% by exact separate medians regresses; one full recheck only. Separate complete untimed heap metrics are required for overall PASS. See the [gate contract](../architecture/performance.md#exact-commit-vm-gate). `compare.ts` remains the separate Lua/Python comparison; workspace/all-feature checks still apply independently. |
 | Live check | for external services, a run with a named read-only profile, against a build of the change. |
 
 ### Verification checkpoint
