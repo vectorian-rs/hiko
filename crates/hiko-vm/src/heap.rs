@@ -888,7 +888,7 @@ impl Heap {
 
     pub(crate) fn allocation_would_exceed_limits(&self, object_bytes: usize) -> bool {
         if let Some(max) = self.max_objects {
-            let live = self.objects.len() - self.free_list.len();
+            let live = self.live_count();
             if live >= max {
                 return true;
             }
@@ -1084,7 +1084,7 @@ impl Heap {
     pub fn alloc(&mut self, obj: HeapObject) -> Result<GcRef, HeapLimitExceeded> {
         let object_bytes = obj.estimated_bytes();
         if let Some(max) = self.max_objects {
-            let live = self.objects.len() - self.free_list.len();
+            let live = self.live_count();
             if live >= max {
                 return Err(HeapLimitExceeded::Objects { live, limit: max });
             }
@@ -1290,7 +1290,7 @@ impl Heap {
             budget.refund((bytes_before - self.current_bytes) as u64);
         }
         self.alloc_since_gc = 0;
-        let live_count = self.objects.len() - self.free_list.len();
+        let live_count = self.live_count();
         self.gc_threshold = live_count.saturating_mul(2).max(1024);
         Ok(())
     }

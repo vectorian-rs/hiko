@@ -309,6 +309,9 @@ struct FuelLease {
 impl FuelLease {
     fn debit_gc(&mut self, cost: Option<u64>) -> Result<(), &'static str> {
         if let Some(grant) = &self.grant {
+            // FuelEntry always pairs a grant with a concrete reservation; an
+            // unlimited-remaining lease with a grant is unconstructible.
+            debug_assert!(self.remaining.is_some());
             let cost = cost.ok_or(crate::process::FUEL_EXHAUSTED_MESSAGE)?;
             let available = self.remaining.unwrap_or(0);
             let local = available.min(cost);

@@ -123,6 +123,14 @@ impl VM {
         forced: bool,
     ) -> Result<(), RuntimeError> {
         self.gc_failed()?;
+        // Ordinary/boundary GC is unmetered: every charge below would be a
+        // no-op, so skip the prologue and hand try_collect a free debit.
+        // Active fault/trace seams keep the fully metered path, so ordinary
+        // tests exercise the same unmetered branch production takes.
+        #[cfg(test)]
+        let metered = forced || self.gc_test_fault.is_some() || self.gc_test_trace.is_some();
+        #[cfg(not(test))]
+        let metered = forced;
         let result = (|| {
             let mut debit = GcDebit {
                 forced,
@@ -133,11 +141,6 @@ impl VM {
                 #[cfg(test)]
                 trace: &mut self.gc_test_trace,
             };
-            // Ordinary/boundary GC is unmetered: in release builds every
-            // charge below would be a no-op, so skip the whole prologue and
-            // hand try_collect a free debit. Test builds keep the full path
-            // for the fault/trace seams.
-            let metered = forced || cfg!(test);
             let mut pending_roots = Vec::new();
             if let Some(obj) = pending {
                 let slots = obj.raw_gc_slots();
