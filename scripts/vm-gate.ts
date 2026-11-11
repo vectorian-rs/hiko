@@ -182,7 +182,7 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     PATH: sourceEnv.PATH ?? "", HOME: home, CARGO_HOME: cargoHome,
     // The host's rustup location is configuration, not an override; it is
     // recorded with every call and the toolchain itself stays pinned.
-    RUSTUP_HOME: sourceEnv.RUSTUP_HOME ?? join(homedir(), ".rustup"), CARGO_BUILD_JOBS: "1",
+    RUSTUP_HOME: sourceEnv.RUSTUP_HOME || join(homedir(), ".rustup"), CARGO_BUILD_JOBS: "1",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C", TZ: "UTC",
   };
   async function save() {
@@ -302,6 +302,13 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
       if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw Error("unsafe frozen input path");
       if (!/^100(644|755)$/.test(mode!) || kind !== "blob") throw Error(`frozen inputs must be regular files: ${path}`);
       const bytes = Buffer.from((await invoke([io.tools.git, "cat-file", "blob", `${history.inputsRef}:${path}`], repo)).stdout, "base64");
+      // The bytes land hashed in history.inputs and verbatim under inputs/;
+      // keeping them inline in the call record too would bloat every save.
+      const record = history.calls.at(-1)!;
+      if (!record.stdoutArtifact) {
+        record.stdout = "";
+        record.stdoutSha256 = digest(bytes);
+      }
       const output = join(workspace, "inputs", path);
       await mkdir(dirname(output), { recursive: true });
       await Bun.write(output, bytes);
@@ -429,6 +436,9 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   return history;
 }
 
+// main() switches to the repo root; a relative --history keeps meaning the
+// invoker's working directory.
+const invokedFrom = process.cwd();
 if (import.meta.main) await main(async () => {
   const args = process.argv.slice(2);
   if (args.length < 2 || args[0]!.startsWith("-") || args[1]!.startsWith("-")) {
@@ -441,7 +451,7 @@ if (import.meta.main) await main(async () => {
     const flag = args[i]!;
     if (seen.has(flag) || args[i + 1] === undefined) throw Error("duplicate/missing VM gate option");
     seen.add(flag);
-    if (flag === "--history") options.history = args[i + 1]!;
+    if (flag === "--history") options.history = resolve(invokedFrom, args[i + 1]!);
     else if (flag === "--pairs") options.pairs = Number(args[i + 1]);
     else throw Error(`unknown VM gate option ${flag}`);
   }

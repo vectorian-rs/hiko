@@ -329,6 +329,8 @@ test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics 
   const frozen = f.calls.filter(c => c.argv[1] === "cat-file");
   expect(frozen).toHaveLength(7);
   expect(frozen.every(c => c.argv[3]!.startsWith(`${"b".repeat(40)}:`))).toBe(true);
+  expect(report.calls.filter(c => c.argv[1] === "cat-file")
+    .every(c => c.stdout === "" && c.stdoutSha256)).toBe(true);
   for (const row of report.comparisons) {
     expect(row.base).toHaveLength(11); expect(row.candidate).toHaveLength(11);
   }
