@@ -40,6 +40,19 @@ Scripts run under the `benchmark` policy (`policies/benchmark.policy.toml`),
 which has no fuel limit. `hiko run --workers N` sets the threaded runtime's
 worker count; the default is 1.
 
+### Comparing optimization datasets
+
+Retain absolute baseline and candidate medians as well as their ratio: an
+unchanged ratio can conceal both versions becoming slower. Fix the sample
+count, warmup policy, workload order and machine conditions before collecting
+a dataset. A run with a different protocol is a separate experiment, not a
+replacement for a failed acceptance run.
+
+Keep changed-source and disabled-optimization controls distinct. Record the
+source and binary identities of each control; a comparison with one change
+disabled does not establish performance against an older collector or a
+previous release. Preserve failed and refused attempts with their provenance.
+
 ## Exact-commit VM gate
 
 ```bash
