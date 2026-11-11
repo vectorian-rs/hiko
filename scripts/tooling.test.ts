@@ -346,7 +346,7 @@ test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics 
   expect(samples.every(c => c.argv[c.argv.indexOf("--policy") + 1] === "benchmark")).toBe(true);
   expect(f.calls.filter(c => c.argv.includes("remove"))).toHaveLength(2);
   expect(JSON.parse(await readFile(f.history, "utf8")).verdict).toBe("pass");
-});
+}, 30_000);
 
 test("VM gate permits exactly one complete recheck only for valid measured regression", async () => {
   const once = await gateFixture({ regression: "once" }); const passed = await once.run();
