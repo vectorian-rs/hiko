@@ -98,7 +98,7 @@ retains the other-pass inventory. The issue is complete and its claim is release
 [PR #239](https://github.com/vectorian-rs/hiko/pull/239) completed
 [#232 rev 1](https://github.com/vectorian-rs/hiko/issues/232) and merged at
 `84f6709` on 2026-11-11. The default-off `heap-metrics` feature exports untimed
-per-heap allocation and retained-byte estimates under the
+allocation counts and per-heap peak retained-byte estimates under the
 [heap-metrics contract](../architecture/execution-bounds.md#untimed-heap-metrics).
 
 [PR #240](https://github.com/vectorian-rs/hiko/pull/240) completed
@@ -107,10 +107,10 @@ per-heap allocation and retained-byte estimates under the
 indexed completion and ordered results; semantics are defined by
 [owned bulk joins](../architecture/runtime.md#owned-bulk-joins).
 
-For both PRs the final heads (`55637d6`, `ca52667`) passed all five hosted CI
+Both final heads (#239 `55637d6`, #240 `ca52667`) passed all five hosted CI
 jobs after review cleanups; the full local workspace checks and independent PM
-reviews were at the earlier heads (`163b6fd`, `ab0915f`), not re-run at the
-final heads. Both issues are complete and their claims are released.
+reviews were at the earlier heads (#239 `163b6fd`, #240 `ab0915f`), not re-run
+at the final heads. Both issues are complete and their claims are released.
 
 [#201 rev 4](https://github.com/vectorian-rs/hiko/issues/201)'s implementation
 cap expired, and the explicitly requested
@@ -118,13 +118,14 @@ cap expired, and the explicitly requested
 on an unfrozen interim snapshot failed one of twelve A2 cells against the 1.10
 limit, under elevated load and with register stack fallback as recorded limits.
 The maintainer then authorized merging the implementation with A2 deferred:
-[PR #243](https://github.com/vectorian-rs/hiko/pull/243) carries the rebased
-work and review record, and
+the still-open [PR #243](https://github.com/vectorian-rs/hiko/pull/243)
+carries the rebased work and review record (not yet on `main`), and
 [#242](https://github.com/vectorian-rs/hiko/issues/242) tracks closing the
 sliced-boundary overhead gap with a load-bounded final measurement.
 
-[#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198) is in progress
-following plan approval and the #232 merge.
+[#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198) is on hold: its
+implementation window expired on 2026-11-11 without a freeze or PR, and
+resuming needs a new grant.
 Its measurement gate remains a prerequisite of the public cutover in #186.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
