@@ -681,7 +681,11 @@ impl VM {
                 let Some(&(op, weight)) = func.code.get(pc) else {
                     fail!(error("unexpected end of register code"));
                 };
-                if let Some(fuel) = self.fuel.as_mut() {
+                if let Some(fuel) = self
+                    .fuel_lease
+                    .as_mut()
+                    .and_then(|lease| lease.remaining.as_mut())
+                {
                     // An instruction worth more than the fuel left is paid
                     // in part now and the rest after the yield, so every
                     // slice makes progress and the total charged is exactly
@@ -877,7 +881,9 @@ mod tests {
     fn run_both(src: &str, fuel: Option<u64>) -> [Result<Vec<String>, String>; 2] {
         let program = compile(src);
         vms(&program).map(|mut vm| {
-            vm.fuel = fuel;
+            if let Some(fuel) = fuel {
+                vm.set_fuel(fuel);
+            }
             match vm.run() {
                 Ok(()) => Ok(vm.get_output().to_vec()),
                 Err(e) => Err(e.message),
@@ -962,7 +968,7 @@ mod tests {
         let program = compile(FIB);
         for fuel in 0..400 {
             let depths = vms(&program).map(|mut vm| {
-                vm.fuel = Some(fuel);
+                vm.set_fuel(fuel);
                 let err = vm.run().expect_err("fib needs more fuel");
                 assert!(err.is_fuel_exhausted(), "{}", err.message);
                 vm.frames.len()

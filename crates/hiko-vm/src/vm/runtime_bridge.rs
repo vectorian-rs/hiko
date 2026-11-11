@@ -96,6 +96,9 @@ impl VM {
 
     /// Take ownership of the next pending runtime request.
     pub fn take_runtime_request(&mut self) -> Option<RuntimeRequest> {
+        if self.gc_failure.is_some() {
+            return None;
+        }
         self.pending_runtime_request.take()
     }
 
@@ -207,12 +210,18 @@ impl VM {
     /// reduction boundary and can run indefinitely for non-terminating programs. Embedders that
     /// need bounded execution or scheduler fairness should call [`VM::run_slice`] instead.
     pub fn run(&mut self) -> Result<(), RuntimeError> {
+        if let Some(message) = &self.gc_failure {
+            return Err(RuntimeError {
+                message: message.clone(),
+            });
+        }
         if let Some(message) = self.startup_error.as_ref() {
             return Err(RuntimeError {
                 message: format!("program verification failed: {message}"),
             });
         }
-        self.frames.push(CallFrame {
+        let entry = FuelEntry::new(self, None)?;
+        entry.vm.frames.push(CallFrame {
             proto_idx: usize::MAX,
             ip: 0,
             base: 0,
@@ -222,9 +231,9 @@ impl VM {
         // stopped on.
         #[cfg(feature = "register-vm")]
         {
-            self.register_paid = 0;
+            entry.vm.register_paid = 0;
         }
-        self.dispatch()
+        entry.vm.dispatch()
     }
 
     /// Run one scheduling slice and report the resulting execution transition.
@@ -240,6 +249,9 @@ impl VM {
     /// The runtime should treat `RunResult` as the authoritative state
     /// transition for the process.
     pub fn run_slice(&mut self, reductions: u64) -> RunResult {
+        if let Some(message) = &self.gc_failure {
+            return RunResult::Failed(ProcessFailure::from_runtime_message(message.clone()));
+        }
         if let Some(message) = self.startup_error.as_ref() {
             return RunResult::Failed(ProcessFailure::runtime(format!(
                 "program verification failed: {message}"
@@ -248,36 +260,31 @@ impl VM {
         if self.cancelled {
             return RunResult::Cancelled;
         }
-        // Reserve this slice's fuel from the tree's budget up front and
-        // return what the slice did not use, so concurrent processes in one
-        // tree can never spend more than the budget between them.
-        let effective = match &self.fuel_budget {
-            Some(budget) => match budget.reserve_up_to(reductions) {
-                0 => return RunResult::Failed(ProcessFailure::FuelExhausted),
-                reserved => reserved,
-            },
-            None => reductions,
-        };
-        self.fuel = Some(effective);
-
-        if self.frames.is_empty() {
-            self.frames.push(CallFrame {
-                proto_idx: usize::MAX,
-                ip: 0,
-                base: 0,
-                captures: Captures::Empty,
-            });
+        let result = {
+            let entry = match FuelEntry::new(self, Some(reductions)) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    return RunResult::Failed(ProcessFailure::from_runtime_message(error.message));
+                }
+            };
+            if entry.vm.frames.is_empty() {
+                entry.vm.frames.push(CallFrame {
+                    proto_idx: usize::MAX,
+                    ip: 0,
+                    base: 0,
+                    captures: Captures::Empty,
+                });
+            }
+            entry.vm.dispatch()
+        }; // Settle the exact original lease BEFORE any boundary/mapping.
+        if let Some(message) = &self.gc_failure {
+            return RunResult::Failed(ProcessFailure::from_runtime_message(message.clone()));
         }
-
-        let result = self.dispatch();
-
-        if let Some(budget) = &self.fuel_budget {
-            budget.refund(self.fuel.unwrap_or(0));
-        }
-        self.fuel = None;
 
         if let Some(req) = self.pending_runtime_request.take() {
-            self.gc_collect_at_boundary_if_needed();
+            if let Err(error) = self.gc_collect_at_boundary_if_needed() {
+                return RunResult::Failed(ProcessFailure::from_runtime_message(error.message));
+            }
             return match req {
                 RuntimeRequest::Spawn {
                     proto_idx,
@@ -299,7 +306,9 @@ impl VM {
             Ok(()) => RunResult::Done,
             Err(e) if e.is_runtime_request() => RunResult::Yielded,
             Err(e) if e.is_fuel_exhausted() => {
-                self.gc_collect_at_boundary_if_needed();
+                if let Err(error) = self.gc_collect_at_boundary_if_needed() {
+                    return RunResult::Failed(ProcessFailure::from_runtime_message(error.message));
+                }
                 RunResult::Yielded
             }
             Err(e) => RunResult::Failed(ProcessFailure::from_runtime_message(e.message)),

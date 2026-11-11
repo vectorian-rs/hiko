@@ -86,7 +86,11 @@ impl VM {
                 code = &chunk.code;
                 code_proto = Some(proto_idx);
             }
-            if let Some(ref mut fuel) = self.fuel {
+            if let Some(fuel) = self
+                .fuel_lease
+                .as_mut()
+                .and_then(|lease| lease.remaining.as_mut())
+            {
                 if *fuel == 0 {
                     return Err(RuntimeError {
                         message: "fuel exhausted (execution limit reached)".into(),
