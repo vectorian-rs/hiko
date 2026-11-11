@@ -264,6 +264,41 @@ impl ProcessTable {
             }
         }
 
+        for entry in self.group_waiters.iter() {
+            let child_pid = *entry.key();
+            let inbox = entry.value();
+            if !known(&child_pid) {
+                return Err(format!(
+                    "group_waiters contains unknown child {child_pid:?}"
+                ));
+            }
+            let Some(parent) = self.processes.get(&inbox.parent) else {
+                return Err(format!(
+                    "group waiter {:?} registered for {child_pid:?} is missing",
+                    inbox.parent
+                ));
+            };
+            match &parent.status {
+                ProcessStatus::Blocked(BlockReason::JoinGroup(id)) if *id == inbox.id => {}
+                status => {
+                    return Err(format!(
+                        "group waiter {:?} registered for {child_pid:?} but has status {status:?}",
+                        inbox.parent
+                    ));
+                }
+            }
+            if !parent
+                .join_group
+                .as_ref()
+                .is_some_and(|group| group.is_pending(child_pid))
+            {
+                return Err(format!(
+                    "group waiter {:?} registered for non-pending {child_pid:?}",
+                    inbox.parent
+                ));
+            }
+        }
+
         for entry in self.io_waiters.iter() {
             let token = *entry.key();
             let pid = *entry.value();

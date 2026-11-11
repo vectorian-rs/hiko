@@ -497,14 +497,17 @@ impl Runtime {
             }
         }
         let inbox = group.inbox.clone();
-        for pid in group.pending_pids() {
-            self.group_waiters.insert(pid, inbox.clone());
-        }
+        let pending: Vec<Pid> = group.pending_pids().collect();
+        // Own the group via the parent before registering waiters, so a
+        // missing parent drops the group without leaving dangling entries.
         let Some(parent) = self.processes.get_mut(&parent_pid) else {
             return;
         };
         parent.status = ProcessStatus::Blocked(BlockReason::JoinGroup(id));
         parent.join_group = Some(group);
+        for pid in pending {
+            self.group_waiters.insert(pid, inbox.clone());
+        }
         let mut terminations = Terminations::new();
         // One initial recheck, published as a batch and advanced once below.
         // Subsequent completions drain an inbox, never a repeated member scan.

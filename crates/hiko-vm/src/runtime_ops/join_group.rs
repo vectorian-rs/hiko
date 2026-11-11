@@ -18,10 +18,12 @@ mod runtime_tests;
 #[cfg(test)]
 mod tests;
 
+/// Also duplicated as a literal pre-check in Std's `Fiber.all`
+/// (libraries/Std-v0.1.0/modules/Fiber.hml); keep the two in sync.
 pub const MAX_JOIN_GROUP_ENTRIES: usize = 10_000;
 const GROUP_BYTES: u64 = 512;
 const ENTRY_BYTES: u64 = 256;
-const NODE_BYTES: u64 = std::mem::size_of::<SendableValue>() as u64;
+const NODE_BYTES: u64 = crate::sendable::MESSAGE_NODE_BYTES;
 
 #[derive(Debug)]
 struct Credits {
