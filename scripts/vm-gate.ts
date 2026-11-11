@@ -166,7 +166,8 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   const history = {
     schema_version: 1, started: new Date().toISOString(), machine: io.machine,
     platform: io.platform, cpus: io.cpuCount, pairs, recovery,
-    refs: {} as Record<string, string>, inputs: [] as { path: string; sha256: string }[],
+    refs: {} as Record<string, string>, inputsRef: "",
+    inputs: [] as { path: string; sha256: string }[],
     tools: io.tools, toolchain: "", gateSha256: digest(await readFile(import.meta.path)),
     calls: [] as CallRecord[],
     probes: [] as { atNs: string; power: string; load: number }[],
@@ -179,7 +180,9 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
   const cargoHome = join(workspace, "cargo-home");
   const env: Record<string, string> = {
     PATH: sourceEnv.PATH ?? "", HOME: home, CARGO_HOME: cargoHome,
-    RUSTUP_HOME: join(homedir(), ".rustup"), CARGO_BUILD_JOBS: "1",
+    // The host's rustup location is configuration, not an override; it is
+    // recorded with every call and the toolchain itself stays pinned.
+    RUSTUP_HOME: sourceEnv.RUSTUP_HOME ?? join(homedir(), ".rustup"), CARGO_BUILD_JOBS: "1",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C", TZ: "UTC",
   };
   async function save() {
@@ -218,7 +221,12 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
     }
     await save();
     if (result.timedOut || result.status !== 0) {
-      throw Error(`${argv[0]} failed (status=${result.status}, timeout=${result.timedOut}): ${decoded(result.stderr)}`);
+      // The complete transcript is already in the call record or its sidecar;
+      // the error carries a bounded excerpt so history.errors stays small.
+      const stderr = decoded(result.stderr);
+      const brief = stderr.length > 2_000
+        ? `${stderr.slice(0, 2_000)}… (${stderr.length} chars; full transcript in the call record)` : stderr;
+      throw Error(`${argv[0]} failed (status=${result.status}, timeout=${result.timedOut}): ${brief}`);
     }
     return result;
   }
@@ -282,16 +290,23 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
       if (!/^[a-f0-9]{40}$/.test(sha)) throw Error("git did not resolve an immutable commit SHA");
       history.refs[name!] = sha;
     }
-    const files = decoded((await invoke([io.tools.git, "ls-files", "-z", "--", "benchmarks", "libraries", "policies", "hiko.toml", "hiko.lock.toml"], repo)).stdout).split("\0").filter(Boolean).sort();
-    for (const path of files) {
+    // Inputs are frozen from the candidate commit, not the working tree, so
+    // the recorded SHAs are measured with exactly the bytes they name.
+    history.inputsRef = history.refs.candidate!;
+    const listing = decoded((await invoke([io.tools.git, "ls-tree", "-r", "-z", history.inputsRef, "--", "benchmarks", "libraries", "policies", "hiko.toml", "hiko.lock.toml"], repo)).stdout);
+    const files: string[] = [];
+    for (const entry of listing.split("\0").filter(Boolean).sort((a, b) => a.slice(a.indexOf("\t") + 1) < b.slice(b.indexOf("\t") + 1) ? -1 : 1)) {
+      const tab = entry.indexOf("\t");
+      const [mode, kind] = entry.slice(0, tab).split(" ");
+      const path = entry.slice(tab + 1);
       if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw Error("unsafe frozen input path");
-      const source = join(repo, path);
-      if (!(await lstat(source)).isFile()) throw Error(`frozen inputs must be regular files: ${path}`);
-      const bytes = await readFile(source);
+      if (!/^100(644|755)$/.test(mode!) || kind !== "blob") throw Error(`frozen inputs must be regular files: ${path}`);
+      const bytes = Buffer.from((await invoke([io.tools.git, "cat-file", "blob", `${history.inputsRef}:${path}`], repo)).stdout, "base64");
       const output = join(workspace, "inputs", path);
       await mkdir(dirname(output), { recursive: true });
       await Bun.write(output, bytes);
       history.inputs.push({ path, sha256: digest(bytes) });
+      files.push(path);
     }
     for (const required of frozenInputs) {
       if (!files.includes(required)) throw Error(`missing frozen input ${required}`);
@@ -333,7 +348,8 @@ export async function gate(options: GateOptions, io: GateIO = systemIO()) {
           const features = [...(mode === "register" ? ["register-vm"] : []), ...(metrics ? ["heap-metrics"] : [])];
           const argv = [io.tools.cargo, `+${toolchain}`, "build", "--release", "--locked", "--offline", "--message-format=json", "-p", "hiko-cli", "--target-dir", target];
           if (features.length) argv.push("--features", features.join(","));
-          const compiled = await invoke(argv, cwd);
+          // Cold single-job release builds far exceed the default deadline.
+          const compiled = await invoke(argv, cwd, {}, 3_600_000);
           const artifacts = decoded(compiled.stdout).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
           const vm = artifacts.find(a => a.reason === "compiler-artifact" && a.target?.name === "hiko_vm");
           if (!vm || !Array.isArray(vm.features) || vm.features.includes("opcode-stats") ||
@@ -418,7 +434,8 @@ if (import.meta.main) await main(async () => {
   if (args.length < 2 || args[0]!.startsWith("-") || args[1]!.startsWith("-")) {
     throw Error("Usage: bun scripts/vm-gate.ts <base> <candidate> [--history path] [--pairs 11]");
   }
-  const options: GateOptions = { repo: root, base: args[0]!, candidate: args[1]!, history: join(root, "target/vm-gate-history", randomUUID() + ".json") };
+  // Evidence must survive cargo clean, so the default lives outside target/.
+  const options: GateOptions = { repo: root, base: args[0]!, candidate: args[1]!, history: join(root, "vm-gate-history", randomUUID() + ".json") };
   const seen = new Set<string>();
   for (let i = 2; i < args.length; i += 2) {
     const flag = args[i]!;

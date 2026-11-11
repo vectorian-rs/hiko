@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { comparisonRow, lastLine } from "./compare.ts";
+import { root, toolchain } from "./common.ts";
 import { acPower, loadLimit, validLoad, median, regresses, validateMetrics, gate, execute, frozenInputs, type GateIO } from "./vm-gate.ts";
 
 const temporary: string[] = [];
@@ -201,6 +202,12 @@ test("last-line checks retain whitespace and trailing blank lines", () => {
   expect(() => comparisonRow("bad", [0, 1, 2])).toThrow("invalid hyperfine results");
 });
 
+test("pinned Rust toolchain stays consistent across scripts, workflows and docs", async () => {
+  for (const file of [".github/workflows/test.yml", ".github/workflows/lint.yml", "docs/project/dev-standard.md"]) {
+    expect(await readFile(join(root, file), "utf8")).toContain(toolchain);
+  }
+});
+
 test("VM gate uses exact positive integer medians and strict one-percent comparison", () => {
   expect(median(["999", "100", "101"])).toBe(101n);
   expect(regresses(Array(11).fill("100"), Array(11).fill("101"))).toBe(false);
@@ -252,10 +259,6 @@ async function gateFixture(options: GateFixtureOptions = {}) {
   const repo = join(directory, "repo with spaces");
   const history = join(directory, "report.json");
   const files = frozenInputs;
-  for (const file of files) {
-    await mkdir(dirname(join(repo, file)), { recursive: true });
-    await writeFile(join(repo, file), "frozen fixture\n");
-  }
   let clock = 1n; let publications = 0; let sampleCalls = 0;
   const calls: Parameters<GateIO["exec"]>[0][] = [];
   const counts = new Map<string, number>();
@@ -279,7 +282,8 @@ async function gateFixture(options: GateFixtureOptions = {}) {
         if (options.hungProbe) { clock += BigInt(invocation.timeoutMs) * 1_000_000n; timedOut = true; }
       } else if (tool === "fixture-git") {
         if (args[0] === "rev-parse") stdout = (args.at(-1)!.startsWith("base") ? "a" : "b").repeat(40) + "\n";
-        else if (args[0] === "ls-files") stdout = files.join("\0") + "\0";
+        else if (args[0] === "ls-tree") stdout = files.map(f => `100644 blob ${"c".repeat(40)}\t${f}`).join("\0") + "\0";
+        else if (args[0] === "cat-file") stdout = "frozen fixture\n";
         else if (args.includes("add")) await mkdir(args.at(-2)!, { recursive: true });
       } else if (tool === "fixture-cargo") {
         const target = args[args.indexOf("--target-dir") + 1]!;
@@ -321,6 +325,10 @@ test("VM gate isolates every SHA/profile and records all pairs, inputs, metrics 
   expect(report.builds).toHaveLength(8); expect(report.comparisons).toHaveLength(8);
   expect(report.metrics).toHaveLength(16);
   expect(report.inputs).toHaveLength(7);
+  expect(report.inputsRef).toBe("b".repeat(40));
+  const frozen = f.calls.filter(c => c.argv[1] === "cat-file");
+  expect(frozen).toHaveLength(7);
+  expect(frozen.every(c => c.argv[3]!.startsWith(`${"b".repeat(40)}:`))).toBe(true);
   for (const row of report.comparisons) {
     expect(row.base).toHaveLength(11); expect(row.candidate).toHaveLength(11);
   }

@@ -202,7 +202,7 @@ Verification is evidence, not assertion. Choose per risk:
 | Mutation check | inject the bug the change guards against; the test must fail; revert. |
 | Conformance | programs in `tests/run`, named after the rule they check. |
 | Growth | inputs of size n, 2n, 4n: time must grow linearly. Nothing quadratic. |
-| Benchmark gate | `bun scripts/vm-gate.ts <base> <candidate>` builds both commits in isolation and times them interleaved on frozen hashed inputs; environment proof is required and refusal is unmet evidence, not a skip or waiver. Untimed heap metrics are part of the overall PASS. Thresholds, pair counts and recheck rules live in the [gate contract](../architecture/performance.md#exact-commit-vm-gate). `compare.ts` remains the separate Lua/Python comparison; workspace/all-feature checks still apply independently. |
+| Benchmark gate | `bun scripts/vm-gate.ts <base> <candidate>` builds both commits in isolation and times them interleaved on frozen hashed inputs; environment proof is required and refusal is unmet evidence, not a skip or waiver. Untimed heap metrics are part of the overall PASS. The gate proves non-regression only; a claimed improvement still needs its own measured evidence. Thresholds, pair counts and recheck rules live in the [gate contract](../architecture/performance.md#exact-commit-vm-gate). `compare.ts` remains the separate Lua/Python comparison; workspace/all-feature checks still apply independently. |
 | Live check | for external services, a run with a named read-only profile, against a build of the change. |
 
 ### Verification checkpoint

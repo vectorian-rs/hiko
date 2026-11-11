@@ -61,7 +61,7 @@ requested flags. Unsupported effective Cargo configuration is an explicit error.
 The ordered HML corpus covers integer recursion, tuple/closure fallback and
 string concatenation (`compare/fib`, `compare/tak`, `local_rec`,
 `string_concat`). Its configuration, policy and transitive library inputs are
-frozen once for both commits and hashed. Every invocation, including untimed
+frozen once from the candidate commit, used for both commits, and hashed. Every invocation, including untimed
 metrics and rechecks, must exit successfully and match the complete stdout
 bytes. Stderr is drained and retained separately, never joined to stdout.
 
