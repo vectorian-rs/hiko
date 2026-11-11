@@ -31,7 +31,7 @@ pub const MAX_MESSAGE_DEPTH: usize = 100_000;
 
 /// Bytes counted against `max_message_bytes` for each node, on top of the
 /// payload of strings and bytes. This is the in-memory size of one node.
-const MESSAGE_NODE_BYTES: u64 = std::mem::size_of::<SendableValue>() as u64;
+pub(crate) const MESSAGE_NODE_BYTES: u64 = std::mem::size_of::<SendableValue>() as u64;
 
 pub fn host_work_for_sendable(value: &SendableValue) -> u64 {
     (value.estimated_bytes() as u64)
@@ -154,6 +154,25 @@ impl SendableValue {
             stack.extend(value.children());
         }
         total
+    }
+
+    /// Checked group-retention size, paying before each visited node. One
+    /// bounded traversal accounts for scalars, containers and shared leaves.
+    pub(crate) fn checked_footprint(&self, heap: &mut Heap) -> Result<u64, String> {
+        let mut total = 0u64;
+        let mut stack = vec![self];
+        while let Some(value) = stack.pop() {
+            heap.charge_host_work(1)?;
+            total = total
+                .checked_add(MESSAGE_NODE_BYTES)
+                .and_then(|n| n.checked_add(value.own_bytes() as u64))
+                .ok_or_else(|| "fiber_await_all: footprint overflow".to_string())?;
+            stack
+                .try_reserve(value.children().len())
+                .map_err(|e| format!("fiber_await_all: footprint allocation: {e}"))?;
+            stack.extend(value.children());
+        }
+        Ok(total)
     }
 
     /// Copy a leaf. Strings, bytes and host configs share their `Arc`.

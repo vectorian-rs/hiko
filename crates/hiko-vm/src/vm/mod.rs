@@ -237,6 +237,7 @@ enum BuiltinKind {
     Spawn,
     Await,
     AwaitResult,
+    AwaitAll,
     Cancel,
     WaitAny,
     Sleep,
@@ -267,6 +268,7 @@ impl BuiltinKind {
             "spawn" => Self::Spawn,
             "await_process" => Self::Await,
             "await_process_result" => Self::AwaitResult,
+            "fiber_await_all" => Self::AwaitAll,
             "cancel" => Self::Cancel,
             "wait_any" => Self::WaitAny,
             "sleep" => Self::Sleep,
@@ -606,6 +608,39 @@ impl VM {
     /// total.
     pub fn set_max_spawns(&mut self, max: u64) {
         self.process_budgets.spawns = Some(crate::budget::SharedBudget::new(max));
+    }
+
+    /// Explicit stack/translated configurations for runtime-boundary probes.
+    #[cfg(all(test, feature = "builtin-process"))]
+    pub(crate) fn test_engine_vms(program: &CompiledProgram) -> Vec<Self> {
+        #[cfg(feature = "register-vm")]
+        {
+            register_check::both_codes(program)
+                .unwrap()
+                .iter()
+                .map(|code| {
+                    let mut vm = register_check::vm(program, code);
+                    vm.set_max_work(100_000_000);
+                    vm
+                })
+                .collect()
+        }
+        #[cfg(not(feature = "register-vm"))]
+        {
+            let mut vm = Self::new(program.clone());
+            vm.set_max_work(100_000_000);
+            vec![vm]
+        }
+    }
+
+    pub(crate) fn join_group_budget(&self) -> &Arc<crate::budget::SharedBudget> {
+        &self.process_budgets.join_groups
+    }
+
+    /// Construction-only configuration. The public policy surface is
+    /// VMBuilder, so no live VM can replace/reset a shared group budget.
+    pub(crate) fn configure_join_group_bytes(&mut self, bytes: u64) {
+        self.process_budgets.join_groups = crate::budget::SharedBudget::new(bytes);
     }
 
     /// Set the largest value one spawn capture or child result may serialize

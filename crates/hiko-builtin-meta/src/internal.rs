@@ -163,12 +163,12 @@ const PROCESS_SOURCE: &str = r#"structure BuiltinProcess = struct
       Ok of 'a
     | Err of error
 
-  val spawn_raw = spawn
-  val await_raw = await_process
-  fun await_result_raw pid =
-    await_process_result pid
-  val cancel_raw = cancel
-  val wait_any_raw = wait_any
+  fun spawn_raw f = spawn f
+  fun await_raw pid = await_process pid
+  fun await_result_raw pid = await_process_result pid
+  fun await_all_raw pids = fiber_await_all pids
+  fun cancel_raw pid = cancel pid
+  fun wait_any_raw pids = wait_any pids
 end
 "#;
 

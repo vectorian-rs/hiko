@@ -96,6 +96,9 @@ impl Drop for BudgetSlot {
 /// Default for `max_live_processes`.
 pub const DEFAULT_MAX_LIVE_PROCESSES: u64 = 10_000;
 
+/// Logical metadata and retained-result storage across owned join groups.
+pub const DEFAULT_MAX_JOIN_GROUP_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Spawn limits for a process tree. The root process is not counted.
 #[derive(Clone, Debug)]
 pub struct ProcessBudgets {
@@ -103,6 +106,8 @@ pub struct ProcessBudgets {
     pub live: Option<Arc<SharedBudget>>,
     /// Processes spawned over the tree's lifetime.
     pub spawns: Option<Arc<SharedBudget>>,
+    /// Independent, finite storage policy, immutable after VM construction.
+    pub join_groups: Arc<SharedBudget>,
 }
 
 impl Default for ProcessBudgets {
@@ -110,6 +115,7 @@ impl Default for ProcessBudgets {
         Self {
             live: Some(SharedBudget::new(DEFAULT_MAX_LIVE_PROCESSES)),
             spawns: None,
+            join_groups: SharedBudget::new(DEFAULT_MAX_JOIN_GROUP_BYTES),
         }
     }
 }
@@ -201,6 +207,7 @@ mod tests {
         let budgets = ProcessBudgets {
             live: Some(SharedBudget::new(1)),
             spawns: Some(SharedBudget::new(2)),
+            ..Default::default()
         };
         let first = budgets.admit_child().unwrap();
         let err = budgets.admit_child().unwrap_err();

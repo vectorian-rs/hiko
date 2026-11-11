@@ -66,7 +66,7 @@ use crate::value::HeapObject;
 ))]
 use crate::value::Value;
 
-mod support;
+pub(crate) mod support;
 
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
 mod json_value;

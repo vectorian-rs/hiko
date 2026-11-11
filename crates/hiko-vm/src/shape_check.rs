@@ -1590,6 +1590,7 @@ mod tests {
             ("spawn", "runtime-only process request"),
             ("await_process", "runtime-only process request"),
             ("await_process_result", "runtime-only process request"),
+            ("fiber_await_all", "runtime-only process request"),
             ("cancel", "runtime-only process request"),
             ("wait_any", "runtime-only process request"),
             (

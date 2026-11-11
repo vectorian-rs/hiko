@@ -2,6 +2,7 @@ use crate::heap::Heap;
 use crate::value::{HeapObject, Value};
 use crate::vm::{TAG_CONS, TAG_NIL};
 #[cfg(any(
+    test,
     feature = "builtin-filesystem",
     feature = "builtin-http",
     feature = "builtin-json",
@@ -33,6 +34,7 @@ pub(crate) fn heap_alloc(heap: &mut Heap, obj: HeapObject) -> Result<Value, Stri
 }
 
 #[cfg(any(
+    test,
     feature = "builtin-filesystem",
     feature = "builtin-http",
     feature = "builtin-json",

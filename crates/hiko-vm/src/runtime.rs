@@ -35,6 +35,8 @@ pub struct Runtime {
     waiters: HashMap<Pid, Vec<Pid>>,
     /// Processes waiting for any child in a set to finish: child_pid → [waiter_pids]
     any_waiters: HashMap<Pid, Vec<Pid>>,
+    /// Join notifications are moved once into a bounded per-group inbox.
+    group_waiters: HashMap<Pid, Arc<crate::runtime_ops::GroupInbox>>,
 }
 
 impl Default for Runtime {
@@ -58,6 +60,7 @@ impl Runtime {
             scheduler,
             waiters: HashMap::new(),
             any_waiters: HashMap::new(),
+            group_waiters: HashMap::new(),
         }
     }
 
@@ -190,6 +193,7 @@ impl Runtime {
             RunResult::AwaitResult(child_pid_val) => {
                 self.handle_await(pid, Pid(child_pid_val), AwaitKind::Result);
             }
+            RunResult::AwaitAll(admission) => self.handle_await_all(pid, admission),
             RunResult::Cancel(child_pid_val) => {
                 self.handle_cancel(pid, Pid(child_pid_val));
             }
@@ -264,6 +268,11 @@ impl Runtime {
             return;
         };
         let children = std::mem::take(&mut process.children);
+        if let Some(group) = process.join_group.take() {
+            for child in group.pending_pids() {
+                self.group_waiters.remove(&child);
+            }
+        }
         self.scheduler.remove(pid);
 
         match process.parent {
@@ -290,6 +299,7 @@ impl Runtime {
             self.tombstones.remove(&child);
         }
 
+        self.notify_group(pid, terminations);
         self.wake_any_waiters(pid, terminations);
         self.wake_join_waiters(pid, terminations);
     }
@@ -318,6 +328,13 @@ impl Runtime {
         match reason.clone() {
             BlockReason::Await { child, .. } => remove_waiter(&mut self.waiters, child, pid),
             BlockReason::WaitAny(child_pids) => self.remove_wait_any_registration(pid, &child_pids),
+            BlockReason::JoinGroup(_) => {
+                if let Some(group) = self.processes.get(&pid).and_then(|p| p.join_group.as_ref()) {
+                    for child in group.pending_pids() {
+                        self.group_waiters.remove(&child);
+                    }
+                }
+            }
             BlockReason::Io(_) => {}
         }
     }
@@ -434,6 +451,131 @@ impl Runtime {
             }
             Some(message) => self.fail(parent_pid, ProcessFailure::runtime(message)),
         }
+    }
+
+    fn handle_await_all(&mut self, parent_pid: Pid, admission: crate::runtime_ops::GroupAdmission) {
+        let Some(parent) = self.processes.get_mut(&parent_pid) else {
+            return;
+        };
+        let Some(id) = parent.join_generation.checked_add(1) else {
+            self.fail(
+                parent_pid,
+                ProcessFailure::runtime("fiber_await_all: group generation exhausted"),
+            );
+            return;
+        };
+        parent.join_generation = id;
+        let max_message_bytes = parent.vm.heap.max_message_bytes();
+        let group = crate::runtime_ops::JoinGroup::admit(
+            admission,
+            parent_pid,
+            id,
+            max_message_bytes,
+            |pid| self.classify_child(parent_pid, pid),
+        );
+        let mut group = match group {
+            Ok(group) => group,
+            Err(failure) => {
+                self.fail(parent_pid, failure);
+                return;
+            }
+        };
+        // Admission invalidity precedes failures. Otherwise select the leftmost
+        // initially-ready failure before retaining any success payloads.
+        if group.cause.is_none() {
+            let failed = group.inbox.members.iter().copied().find(|pid| {
+                self.tombstones
+                    .get(pid)
+                    .is_some_and(|r| matches!(r.outcome, ChildOutcome::Err(_)))
+            });
+            if let Some(pid) = failed
+                && let Some(record) = self.tombstones.remove(&pid)
+                && let Some(parent) = self.processes.get_mut(&parent_pid)
+            {
+                parent.children.remove(&pid);
+                group.complete(pid, record.outcome, &mut parent.vm.heap);
+            }
+        }
+        let inbox = group.inbox.clone();
+        let pending: Vec<Pid> = group.pending_pids().collect();
+        // Own the group via the parent before registering waiters, so a
+        // missing parent drops the group without leaving dangling entries.
+        let Some(parent) = self.processes.get_mut(&parent_pid) else {
+            return;
+        };
+        parent.status = ProcessStatus::Blocked(BlockReason::JoinGroup(id));
+        parent.join_group = Some(group);
+        for pid in pending {
+            self.group_waiters.insert(pid, inbox.clone());
+        }
+        let mut terminations = Terminations::new();
+        // One initial recheck, published as a batch and advanced once below.
+        // Subsequent completions drain an inbox, never a repeated member scan.
+        for &pid in &inbox.members {
+            if !self.is_live(pid)
+                && let Some(waiter) = self.group_waiters.remove(&pid)
+            {
+                waiter.publish(pid);
+            }
+        }
+        self.advance_group(parent_pid, id, &mut terminations);
+        self.drain_terminations(&mut terminations);
+    }
+
+    fn notify_group(&mut self, child: Pid, terminations: &mut Terminations) {
+        if let Some(inbox) = self.group_waiters.remove(&child) {
+            inbox.publish(child);
+            self.advance_group(inbox.parent, inbox.id, terminations);
+        }
+    }
+
+    fn advance_group(&mut self, pid: Pid, id: u64, terminations: &mut Terminations) {
+        if !self.processes.get(&pid).is_some_and(|p| {
+            matches!(p.status,
+            ProcessStatus::Blocked(BlockReason::JoinGroup(current)) if current == id)
+        }) {
+            return;
+        }
+        let Some(mut parent) = self.processes.remove(&pid) else {
+            return;
+        };
+        let Some(mut group) = parent.join_group.take() else {
+            self.processes.insert(pid, parent);
+            return;
+        };
+        while let Some(child) = group.inbox.pop() {
+            if !group.is_pending(child) {
+                continue;
+            }
+            let outcome = self
+                .tombstones
+                .remove(&child)
+                .map(|r| r.outcome)
+                .unwrap_or_else(|| {
+                    ChildOutcome::Err(ProcessFailure::runtime(
+                        "fiber_await_all: missing completion",
+                    ))
+                });
+            parent.children.remove(&child);
+            group.complete(child, outcome, &mut parent.vm.heap);
+        }
+        if group.begin_cleanup() {
+            for child in group.pending_pids() {
+                self.cancel_process(child, terminations);
+            }
+        }
+        if group.ready() {
+            match group.deliver(&mut parent.vm) {
+                Ok(()) => {
+                    parent.status = ProcessStatus::Runnable;
+                    self.scheduler.enqueue(pid);
+                }
+                Err(failure) => terminations.push((pid, ChildOutcome::Err(failure))),
+            }
+        } else {
+            parent.join_group = Some(group);
+        }
+        self.processes.insert(pid, parent);
     }
 
     fn handle_wait_any(&mut self, parent_pid: Pid, child_pids: Vec<Pid>) {
@@ -604,6 +746,7 @@ impl Runtime {
         note("tombstones", self.tombstones.len());
         note("waiters", self.waiters.len());
         note("any_waiters", self.any_waiters.len());
+        note("group_waiters", self.group_waiters.len());
         crate::lifecycle_tests::Report {
             output: self.get_output(pid),
             status: self

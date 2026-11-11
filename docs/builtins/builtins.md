@@ -293,11 +293,27 @@ order matches the runtime tags. Import it to match a typed await result.
 
 The raw builtins are intended to sit under `Std.Fiber`, which provides the user-facing structured-concurrency surface (`Fiber.spawn`, `Fiber.join`, `Fiber.both`, `Fiber.all`, `Fiber.first`, `Fiber.any`). `Fiber.join` is `Result`-typed, so child/runtime failure is handled as a value rather than propagating failure to the parent. `Fiber.both` and `Fiber.all` return the first failure as soon as it happens, and cancel the other fibers.
 
-Loading `Std.Fiber` binds all four process operations, so its policy needs
-`capabilities.process.spawn`, `await_process`, `cancel`, and `wait_any` enabled.
-The `benchmark` and `software-developer-role` profiles grant these explicitly.
-Profiles without process permissions still cannot load the module. The host must
-also compile the `builtin-process` Cargo feature; a policy cannot enable it.
+`Fiber.all`, `join_all` and `both` use the runtime-only `fiber_await_all`
+primitive (`'a pid list -> 'a list BuiltinProcess.await_result`). Its independent,
+default-off grant is `[capabilities.fiber.fiber_await_all] enabled = true`;
+it grants accepted-child await/cancel/reap authority, not spawn or individual
+process leaves. `all` and `both` additionally need `capabilities.process.spawn`.
+The `core`, `benchmark` and `software-developer-role` profiles grant these
+explicitly. Non-strict `Std.Fiber` imports defer denied leaves until invocation;
+strict mode still checks every imported body. The host must compile
+`builtin-process`; a policy cannot enable an omitted Cargo feature.
+
+Bulk admission accepts at most 10,000 entries, with input-order invalidity
+before ready child failures. A group-local error cancels/reaps only positively
+owned named children, never foreign outcomes; parent failure/cancellation still
+cleans up all its children. Reaped/duplicate results report `AlreadyJoined`,
+rendered "result unavailable/reaped; ownership no longer known". The separate
+`limits.max_join_group_bytes` defaults to 64 MiB, shared tree-wide, with logical
+weights 512/group + 256/input entry plus retained result/error footprints.
+Aggregate list/protected-result size also obeys the parent's `max_message_bytes`,
+even for an empty result. These are logical bounds, not RSS or a bound on all
+unregistered tombstones. See [owned bulk joins](../architecture/runtime.md#owned-bulk-joins)
+for cleanup, ordering, transfer and sequential-runtime limitations.
 
 ## Testing
 

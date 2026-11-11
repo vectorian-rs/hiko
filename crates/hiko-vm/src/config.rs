@@ -47,6 +47,8 @@ pub struct Limits {
     /// Largest value one spawn capture or child result may serialize to.
     /// Defaults to `crate::sendable::DEFAULT_MAX_MESSAGE_BYTES`.
     pub max_message_bytes: Option<u64>,
+    /// Independent tree-shared logical bulk-join storage. Defaults to 64 MiB.
+    pub max_join_group_bytes: Option<u64>,
     #[serde(default)]
     pub host_resources: HashMap<String, usize>,
     /// Per-operation I/O limits. Unset keys use the defaults in
@@ -325,6 +327,10 @@ macro_rules! http_family {
         }
     };
 }
+
+enabled_family!(FiberCapabilities {
+    fiber_await_all => "fiber_await_all",
+});
 
 enabled_family!(StdioCapabilities {
     print => "print",
@@ -632,6 +638,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub process: ProcessCapabilities,
     #[serde(default)]
+    pub fiber: FiberCapabilities,
+    #[serde(default)]
     pub path: PathCapabilities,
     #[serde(default)]
     pub filesystem: FilesystemCapabilities,
@@ -664,6 +672,7 @@ impl Capabilities {
         let builder = self.time.apply(builder);
         let builder = self.date.apply(builder);
         let builder = self.process.apply(builder);
+        let builder = self.fiber.apply(builder);
         let builder = self.path.apply(builder);
         let builder = self.filesystem.apply(builder);
         let builder = self.http.apply(builder);
@@ -689,6 +698,7 @@ impl Capabilities {
         self.time.emit(out);
         self.date.emit(out);
         self.process.emit(out);
+        self.fiber.emit(out);
         self.path.emit(out);
         self.filesystem.emit(out);
         self.http.emit(out);
@@ -712,6 +722,7 @@ impl Capabilities {
         self.time.extend_enabled(&mut out);
         self.date.extend_enabled(&mut out);
         self.process.extend_enabled(&mut out);
+        self.fiber.extend_enabled(&mut out);
         self.path.extend_enabled(&mut out);
         self.filesystem.extend_enabled(&mut out);
         self.http.extend_enabled(&mut out);
@@ -723,6 +734,11 @@ impl Capabilities {
 
     fn requires_runtime(&self) -> bool {
         self.process.requires_runtime()
+            || self
+                .fiber
+                .fiber_await_all
+                .as_ref()
+                .is_some_and(|leaf| leaf.enabled)
     }
 }
 
@@ -851,6 +867,9 @@ impl RunConfig {
         }
         if let Some(bytes) = self.limits.max_message_bytes {
             builder = builder.max_message_bytes(bytes);
+        }
+        if let Some(bytes) = self.limits.max_join_group_bytes {
+            builder = builder.max_join_group_bytes(bytes);
         }
         if !self.limits.host_resources.is_empty() {
             builder = builder.host_resource_limits(self.limits.host_resources.clone());
@@ -1066,6 +1085,9 @@ impl RunConfig {
         if let Some(bytes) = self.limits.max_message_bytes {
             s.push_str(&format!("            .max_message_bytes({bytes})\n"));
         }
+        if let Some(bytes) = self.limits.max_join_group_bytes {
+            s.push_str(&format!("            .max_join_group_bytes({bytes})\n"));
+        }
         if !self.limits.host_resources.is_empty() {
             let mut limits: Vec<_> = self.limits.host_resources.iter().collect();
             limits.sort_by_key(|(left, _)| *left);
@@ -1149,6 +1171,31 @@ mod tests {
             .join("../../policies")
             .join(name);
         fs::read_to_string(path).expect("policy file should exist")
+    }
+
+    #[test]
+    fn bulk_join_policy_is_independent_default_off_and_codegen_preserves_storage_limit() {
+        let denied = RunConfig::from_toml("").unwrap();
+        assert!(!denied.enabled_builtin_names().contains("fiber_await_all"));
+        let config = RunConfig::from_toml("[limits]\nmax_join_group_bytes = 12345\n[capabilities.fiber.fiber_await_all]\nenabled = true\n").unwrap();
+        assert!(config.requires_runtime());
+        let enabled = config.enabled_builtin_names();
+        assert!(enabled.contains("fiber_await_all"));
+        for peer in [
+            "spawn",
+            "await_process",
+            "await_process_result",
+            "cancel",
+            "wait_any",
+        ] {
+            assert!(!enabled.contains(peer), "bulk must not imply {peer}");
+        }
+        let source = config.to_rust_source().unwrap();
+        assert!(source.contains(".max_join_group_bytes(12345)"));
+        assert!(source.contains(".register_builtin_name(\"fiber_await_all\")"));
+        let vm = config.build_vm(compile_program("val x = 0"));
+        assert_eq!(vm.join_group_budget().limit(), 12345);
+        assert_eq!(vm.join_group_budget().used(), 0);
     }
 
     #[test]

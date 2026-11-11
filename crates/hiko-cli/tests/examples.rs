@@ -335,6 +335,221 @@ mod thin_modules {
         assert!(output.status.success(), "{}", stderr(&output));
     }
 
+    /// All bulk runtime probes have a hard deadline and kill AND reap on
+    /// expiry; they cannot hang the test runner on a lost-wakeup regression.
+    fn hiko_bounded(project: &Project, args: &[&str]) -> Output {
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hiko-cli"))
+            .current_dir(&project.0)
+            .env("NO_COLOR", "1")
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                return child.wait_with_output().unwrap();
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "bulk probe timed out and was killed/reaped: {}",
+                    stderr(&output)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(feature = "builtin-process")]
+    #[test]
+    fn bulk_only_fiber_import_and_calls_do_not_grant_individual_leaves() {
+        let policy = "[capabilities.process.spawn]\nenabled = true\n[capabilities.fiber.fiber_await_all]\nenabled = true\n";
+        let source = "import Std.Fiber\nval result = case Fiber.all [fn () => 10, fn () => 20] of Result.Ok [10, 20] => 42 | _ => 1 / 0\nval both : (int * string, Fiber.error) Result.result = Fiber.both (fn () => 3, fn () => \"different type\")\n";
+        let project = Project::new(
+            "fiber-bulk-only",
+            &["Fiber", "Either", "Result"],
+            source,
+            policy,
+        );
+        for workers in ["1", "4"] {
+            let output = hiko_bounded(&project, &["run", "--workers", workers, "main.hml"]);
+            assert!(output.status.success(), "{}", stderr(&output));
+        }
+        // The exact same imported bodies remain subject to strict checks.
+        let output = hiko_bounded(&project, &["check", "--strict", "main.hml"]);
+        assert!(
+            !output.status.success(),
+            "strict must reject denied unused leaves"
+        );
+        assert!(
+            stderr(&output).contains("await_process") || stderr(&output).contains("cancel"),
+            "{}",
+            stderr(&output)
+        );
+        let spawn_only = "[capabilities.process.spawn]\nenabled = true\n";
+        for (name, call, expected, policy) in [
+            (
+                "no-bulk",
+                "Fiber.all [fn () => 10]",
+                "fiber_await_all",
+                spawn_only,
+            ),
+            (
+                "no-await",
+                "Fiber.join (Fiber.spawn (fn () => 10))",
+                "await_process_result",
+                policy,
+            ),
+            (
+                "no-cancel",
+                "Fiber.cancel (Fiber.spawn (fn () => 10))",
+                "cancel",
+                policy,
+            ),
+            (
+                "no-wait",
+                "Fiber.first (fn () => 10, fn () => 20)",
+                "wait_any",
+                policy,
+            ),
+        ] {
+            let project = Project::new(
+                name,
+                &["Fiber", "Either", "Result"],
+                &format!("import Std.Fiber\nval result = {call}\n"),
+                policy,
+            );
+            let output = hiko_bounded(&project, &["run", "main.hml"]);
+            assert!(!output.status.success());
+            assert!(
+                stderr(&output).contains(expected),
+                "{name}: {}",
+                stderr(&output)
+            );
+        }
+    }
+
+    #[cfg(all(feature = "builtin-process", feature = "builtin-testing"))]
+    #[test]
+    fn bulk_ceiling_does_not_change_any_and_all_checks_before_first_spawn() {
+        let limits = "[limits]\nmax_fuel = 1000000000\nmax_heap = 2000000\nmax_host_work = 100000000\nmax_live_processes = 20000\nmax_spawns = 10001\nmax_join_group_bytes = 0\n";
+        let leaves = "[capabilities.process.spawn]\nenabled = true\n[capabilities.process.await_process]\nenabled = true\n[capabilities.process.cancel]\nenabled = true\n[capabilities.process.wait_any]\nenabled = true\n[capabilities.testing.panic]\nenabled = true\n";
+        let build = "import Std.Fiber\nfun build n acc = if n = 0 then acc else build (n - 1) ((fn () => 1) :: acc)\n";
+        // No bulk grant, and zero group bytes: any retains its old policy.
+        let project = Project::new(
+            "fiber-any-10001",
+            &["Fiber", "Either", "Result"],
+            &format!(
+                "{build}val result = case Fiber.any (build 10001 []) of Result.Ok 1 => 42 | _ => panic \"any failed\"\n"
+            ),
+            &format!("{limits}{leaves}"),
+        );
+        let output = hiko_bounded(&project, &["run", "--workers", "1", "main.hml"]);
+        assert!(
+            output.status.success(),
+            "any must not inherit bulk ceiling: {}",
+            stderr(&output)
+        );
+        // Even with zero spawn allowance, oversized all fails on the bulk
+        // input precheck before invoking spawn or reserving a group.
+        let project = Project::new(
+            "fiber-all-10001",
+            &["Fiber", "Either", "Result"],
+            &format!("{build}val result = Fiber.all (build 10001 [])\n"),
+            &format!(
+                "{}{}[capabilities.fiber.fiber_await_all]\nenabled = true\n",
+                limits.replace("max_spawns = 10001", "max_spawns = 0"),
+                leaves
+            ),
+        );
+        let output = hiko_bounded(&project, &["run", "--workers", "1", "main.hml"]);
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("Fiber.all: at most 10000 entries allowed"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(
+            !stderr(&output).contains("max_spawns"),
+            "spawn occurred before all precheck: {}",
+            stderr(&output)
+        );
+        // The exact boundary is accepted when the independent group policy
+        // and existing spawn/work/heap policies all permit it.
+        let project = Project::new(
+            "fiber-all-10000",
+            &["Fiber", "Either", "Result"],
+            &format!(
+                "{build}fun count xs n = case xs of [] => n | _ :: rest => count rest (n + 1)\nval result = case Fiber.all (build 10000 []) of Result.Ok values => if count values 0 = 10000 then 42 else panic \"length\" | _ => panic \"all failed\"\n"
+            ),
+            &format!(
+                "{}{}[capabilities.fiber.fiber_await_all]\nenabled = true\n",
+                limits.replace(
+                    "max_join_group_bytes = 0",
+                    "max_join_group_bytes = 67108864"
+                ),
+                leaves
+            ),
+        );
+        let output = hiko_bounded(&project, &["run", "--workers", "1", "main.hml"]);
+        assert!(
+            output.status.success(),
+            "exact bulk boundary rejected: {}",
+            stderr(&output)
+        );
+    }
+
+    #[cfg(all(
+        feature = "builtin-process",
+        feature = "builtin-testing",
+        feature = "builtin-convert"
+    ))]
+    #[test]
+    fn strict_fiber_registration_checks_every_leaf_including_bulk() {
+        let leaves = [
+            ("process.spawn", "spawn"),
+            ("process.await_process", "await_process"),
+            ("process.cancel", "cancel"),
+            ("process.wait_any", "wait_any"),
+            ("fiber.fiber_await_all", "fiber_await_all"),
+            ("testing.panic", "panic"),
+            ("convert.int_to_string", "int_to_string"),
+        ];
+        for omitted in 0..=leaves.len() {
+            let policy = leaves
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != omitted)
+                .map(|(_, (leaf, _))| format!("[capabilities.{leaf}]\nenabled = true\n"))
+                .collect::<String>();
+            let project = Project::new(
+                &format!("strict-fiber-{omitted}"),
+                &["Fiber", "Either", "Result"],
+                "import Std.Fiber\nval x = 1",
+                &policy,
+            );
+            let output = hiko_bounded(&project, &["check", "--strict", "main.hml"]);
+            assert_eq!(
+                output.status.success(),
+                omitted == leaves.len(),
+                "{omitted}: {}",
+                stderr(&output)
+            );
+            if omitted < leaves.len() {
+                assert!(
+                    stderr(&output).contains(leaves[omitted].1),
+                    "{}",
+                    stderr(&output)
+                );
+            }
+        }
+    }
+
     #[test]
     fn system_import_requires_both_cargo_features() {
         if !cfg!(feature = "builtin-system") || !cfg!(feature = "builtin-testing") {
