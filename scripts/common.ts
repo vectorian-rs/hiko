@@ -3,6 +3,9 @@ import { resolve } from "node:path";
 
 export const root = resolve(import.meta.dir, "..");
 
+// The repository's pinned Rust toolchain, shared by lint and the VM gate.
+export const toolchain = "1.99.1";
+
 export class ExitError extends Error {
   constructor(message: string, public exitCode = 1) {
     super(message);

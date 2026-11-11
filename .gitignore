@@ -2,5 +2,6 @@ node_modules/
 .crush/
 .claude/
 target/
+vm-gate-history/
 .qwen/
 _apalache-out/
