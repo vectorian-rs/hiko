@@ -3,7 +3,7 @@
 use super::*;
 
 /// Largest `ConcatString` buffer a VM keeps between concatenations.
-const CONCAT_BUF_KEEP_BYTES: usize = 4096;
+pub(super) const CONCAT_BUF_KEEP_BYTES: usize = 4096;
 
 /// A member of a `MakeRecClosures` group that captures other members.
 struct RecClosurePatch {
@@ -130,8 +130,9 @@ impl VM {
                                 Value::Heap(cached)
                             } else {
                                 // Only clone the constant on the first load.
-                                let s = s.clone();
-                                let v = self.alloc_string(s)?;
+                                let obj = HeapObject::String(s.clone().into());
+                                self.allocation_safepoint(1, obj.estimated_bytes())?;
+                                let v = self.alloc(obj)?;
                                 if let Value::Heap(r) = v {
                                     self.string_cache.insert(proto_idx, idx, r);
                                 }
@@ -296,7 +297,10 @@ impl VM {
                             buf.push_str(s);
                         }
                     }
-                    let val = self.alloc(HeapObject::String(Arc::from(buf.as_str())));
+                    let obj = HeapObject::String(Arc::from(buf.as_str()));
+                    let val = self
+                        .allocation_safepoint(1, obj.estimated_bytes())
+                        .and_then(|()| self.alloc(obj));
                     // Keep a small buffer for the next concatenation, but do
                     // not hold on to a large one outside the heap's accounting.
                     if buf.capacity() <= CONCAT_BUF_KEEP_BYTES {
@@ -312,9 +316,10 @@ impl VM {
                 Op::MakeTuple => {
                     let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let start = self.stack_start_for_arity(arity, "MakeTuple")?;
-                    let elems = Fields::from_slice(&self.stack[start..]);
+                    let obj = HeapObject::Tuple(Fields::from_slice(&self.stack[start..]));
+                    self.allocation_safepoint(1, obj.estimated_bytes())?;
                     self.stack.truncate(start);
-                    let val = self.alloc(HeapObject::Tuple(elems))?;
+                    let val = self.alloc(obj)?;
                     self.push(val)?;
                 }
                 Op::GetField => {
@@ -334,16 +339,24 @@ impl VM {
                     let tag = u16::from_le_bytes(operand!(fi, 2));
                     let arity = u8::from_le_bytes(operand!(fi, 1)) as usize;
                     let start = self.stack_start_for_arity(arity, "MakeData")?;
-                    let fields = Fields::from_slice(&self.stack[start..]);
+                    let obj = HeapObject::Data {
+                        tag,
+                        fields: Fields::from_slice(&self.stack[start..]),
+                    };
+                    self.allocation_safepoint(1, obj.estimated_bytes())?;
                     self.stack.truncate(start);
-                    let val = self.alloc(HeapObject::Data { tag, fields })?;
+                    let val = self.alloc(obj)?;
                     self.push(val)?;
                 }
                 Op::MakeCons => {
                     let start = self.stack_start_for_arity(2, "MakeCons")?;
-                    let fields = Fields::from_buf([self.stack[start], self.stack[start + 1]]);
+                    let obj = HeapObject::Data {
+                        tag: 1,
+                        fields: Fields::from_buf([self.stack[start], self.stack[start + 1]]),
+                    };
+                    self.allocation_safepoint(1, obj.estimated_bytes())?;
                     self.stack.truncate(start);
-                    let val = self.alloc(HeapObject::Data { tag: 1, fields })?;
+                    let val = self.alloc(obj)?;
                     self.push(val)?;
                 }
                 Op::Jump => {
@@ -422,10 +435,12 @@ impl VM {
                         captures.push(val);
                     }
                     let captures: Arc<[Value]> = Arc::from(captures);
-                    let val = self.alloc(HeapObject::Closure {
+                    let obj = HeapObject::Closure {
                         proto_idx: func_proto_idx,
                         captures,
-                    })?;
+                    };
+                    self.allocation_safepoint(1, obj.estimated_bytes())?;
+                    let val = self.alloc(obj)?;
                     self.push(val)?;
                 }
 
@@ -768,14 +783,20 @@ impl VM {
 
     /// `MakeRecClosures`: create a group of closures that capture each other.
     ///
-    /// Each closure is pushed as soon as it is allocated, so the members
-    /// created so far stay GC roots while the next one is allocated. Group
+    /// The complete group is preflighted with source captures still rooted.
+    /// No collection runs while members are allocated and patched. Group
     /// captures hold `Unit` until every member exists; then each closure
     /// that refers to a member gets its final capture array. Nothing can
     /// call a member before that, because no other instruction runs in
     /// between.
     fn make_rec_closures(&mut self, fi: usize) -> Result<(), RuntimeError> {
         let n_closures = self.read_u8()? as usize;
+        if n_closures != 0 {
+            let bytes = n_closures
+                .checked_mul(std::mem::size_of::<HeapObject>())
+                .ok_or_else(|| error("MakeRecClosures: allocation size overflow"))?;
+            self.allocation_safepoint(n_closures, bytes)?;
+        }
         let base = self.stack.len();
         let mut pending: Vec<RecClosurePatch> = Vec::new();
         for member in 0..n_closures {
