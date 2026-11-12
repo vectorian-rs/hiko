@@ -97,104 +97,10 @@ impl ExtensionSurface {
 /// Sources compiled into a sealed `build-vm` artifact (#59).
 ///
 /// Named imports resolve only from `modules`, each checked against its
-/// BLAKE3 hash when it is loaded. When `files` is `Some`, local `use` resolves
-/// only from `files` and never reads the filesystem; their paths are relative
-/// to the entry script's directory, normalized by [`embedded_file_path`].
+/// BLAKE3 hash when it is loaded.
 #[derive(Debug)]
 pub struct EmbeddedSources {
     pub modules: &'static [EmbeddedModule],
-    pub files: Option<&'static [EmbeddedFile]>,
-}
-
-/// The local files (`use "..."`) that the script at `entry` uses, directly
-/// or through other local files, keyed as [`embedded_file_path`] names them
-/// relative to the script's directory. `build-vm --script` embeds these.
-/// `source` is the entry script's text, read once by the caller. A path that
-/// reaches its file through a symbolic link is an error. Sorted by key.
-pub fn local_use_files(entry: &Path, source: &str) -> Result<Vec<(String, String)>, CompileError> {
-    // Resolve from the script's real directory, as `hiko run` does.
-    let entry = std::fs::canonicalize(entry)
-        .map_err(|e| CompileError::codegen(format!("cannot resolve '{}': {e}", entry.display())))?;
-    let root = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut found = std::collections::BTreeMap::new();
-    let mut pending = vec![(PathBuf::new(), source.to_string())];
-    while let Some((dir, source)) = pending.pop() {
-        let tokens = Lexer::new(&source, 0)
-            .tokenize()
-            .map_err(|e| CompileError::codegen(format!("lex error: {}", e.message)))?;
-        let program = Parser::new(tokens)
-            .parse_program()
-            .map_err(|e| CompileError::codegen(format!("parse error: {}", e.message)))?;
-        let program = hiko_syntax::desugar::desugar_program(program);
-        let mut uses = Vec::new();
-        collect_uses(&program.decls, &mut uses);
-        for path in uses {
-            let key = embedded_file_path(&dir, path)?;
-            if found.contains_key(&key) {
-                continue;
-            }
-            // The artifact resolves `..` lexically; `hiko run` follows
-            // symbolic links. Resolve the path as written and refuse it if
-            // the two differ.
-            let written = root.join(&dir).join(path);
-            let canonical = std::fs::canonicalize(&written).map_err(|e| {
-                CompileError::codegen(format!(
-                    "cannot read local use '{}': {e}",
-                    written.display()
-                ))
-            })?;
-            if canonical != lexical_normalize(&root.join(&key)) {
-                return Err(CompileError::codegen(format!(
-                    "local use '{path}' resolves through a symbolic link to '{}'; a sealed program needs plain paths",
-                    canonical.display()
-                )));
-            }
-            let text = std::fs::read_to_string(&canonical).map_err(|e| {
-                CompileError::codegen(format!(
-                    "cannot read local use '{}': {e}",
-                    canonical.display()
-                ))
-            })?;
-            let key_dir = Path::new(&key)
-                .parent()
-                .unwrap_or(Path::new(""))
-                .to_path_buf();
-            found.insert(key, text.clone());
-            pending.push((key_dir, text));
-        }
-    }
-    Ok(found.into_iter().collect())
-}
-
-/// `path` with `.` dropped and `..` applied, without touching the file system.
-fn lexical_normalize(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// The paths of the `use` declarations in `decls`, including those inside
-/// `local` blocks (a desugared structure is one).
-fn collect_uses<'a>(decls: &'a [Decl], uses: &mut Vec<&'a str>) {
-    for decl in decls {
-        match &decl.kind {
-            DeclKind::Use(path) => uses.push(path),
-            DeclKind::Local(locals, body) => {
-                collect_uses(locals, uses);
-                collect_uses(body, uses);
-            }
-            _ => {}
-        }
-    }
 }
 
 /// The path of the first `use` in `tokens`, wherever it sits.
@@ -237,40 +143,6 @@ pub struct EmbeddedModule {
     pub source: &'static str,
 }
 
-/// A local file (`use "..."`) in a sealed artifact.
-#[derive(Debug)]
-pub struct EmbeddedFile {
-    pub path: &'static str,
-    pub source: &'static str,
-}
-
-/// The key of an embedded local file: `path` joined to `base_dir` and
-/// normalized lexically (`.` dropped, `..` applied), with `/` separators.
-/// Absolute paths are refused. `build-vm` uses the same function to name the
-/// files it embeds, so a lookup matches exactly when the paths agree.
-pub fn embedded_file_path(base_dir: &Path, path: &str) -> Result<String, CompileError> {
-    use std::path::Component;
-    let mut parts: Vec<String> = Vec::new();
-    for component in base_dir.join(path).components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if parts.last().is_some_and(|p| p != "..") {
-                    parts.pop();
-                } else {
-                    parts.push("..".to_string());
-                }
-            }
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(CompileError::codegen(format!(
-                    "local use '{path}' is an absolute path; an embedded program can only use relative paths"
-                )));
-            }
-        }
-    }
-    Ok(parts.join("/"))
-}
 
 #[derive(Debug)]
 pub enum CompileError {
@@ -661,9 +533,9 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
                     path.display()
                 )));
             }
-            if module_name.contains('.') {
+            if module_name.split('.').any(str::is_empty) {
                 return Err(CompileError::codegen(format!(
-                    "module '{package_name}.{module_name}' in '{}' must be a single identifier",
+                    "module '{package_name}.{module_name}' in '{}' must use identifiers separated by dots",
                     path.display()
                 )));
             }
@@ -811,22 +683,31 @@ fn validate_package_name(package_name: &str, context: &str) -> Result<(), Compil
     Ok(())
 }
 
+/// Split `Package.Module` or `Package.Nested.Module` into the package name
+/// and the dotted module path. `__Builtin` modules stay single-leaf.
 fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
     let Some((package, module)) = module_name.split_once('.') else {
         return Err(CompileError::codegen(format!(
             "named import '{module_name}' must use the shape Package.Module"
         )));
     };
-    if module.contains('.') {
+    if module.is_empty() || module.split('.').any(str::is_empty) {
         return Err(CompileError::codegen(format!(
             "named import '{module_name}' must use the shape Package.Module"
         )));
     }
-    if !is_internal_builtin_package(package) {
+    if is_internal_builtin_package(package) {
+        if module.contains('.') {
+            return Err(CompileError::codegen(format!(
+                "named import '{module_name}' cannot nest; compiler-owned modules are single names"
+            )));
+        }
+    } else {
         validate_package_name(package, &format!("named import '{module_name}'"))?;
     }
     Ok((package, module))
 }
+
 
 pub(crate) fn checked_builtin_module(
     import: &str,
@@ -1063,7 +944,6 @@ enum ImportSourceKey {
     #[cfg(feature = "loader-integrity-blake3")]
     VerifiedFile(PathBuf),
     Synthetic(&'static str),
-    EmbeddedFile(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2119,7 +1999,6 @@ impl Compiler {
             DeclKind::ImportWithNames(name, names) => {
                 self.compile_named_import_with_names(*name, names)
             }
-            DeclKind::Use(path) => self.compile_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before codegen")
             }
@@ -2162,48 +2041,11 @@ impl Compiler {
 
     // ── Local and named import handling ─────────────────────────────
 
-    fn resolve_local_use(&self, path: &str) -> Result<ResolvedImport, CompileError> {
-        if let Some((requires, importer)) = self.importing_extension {
-            return Err(CompileError::codegen(format!(
-                "module {importer} of extension '{}' declares use '{path}'; an extension module cannot use a file",
-                requires.extension
-            )));
-        }
-        if let Some(files) = self.loader_options.embedded.and_then(|e| e.files) {
-            let key = embedded_file_path(&self.base_dir, path)?;
-            let file = files.iter().find(|f| f.path == key).ok_or_else(|| {
-                CompileError::codegen(format!(
-                    "local use '{path}' ({key}) is not embedded in this artifact"
-                ))
-            })?;
-            return Ok(ResolvedImport::Embedded {
-                key: ImportSourceKey::EmbeddedFile(file.path),
-                owner: PackageOwner::embedded(None),
-                display_name: path.to_string(),
-                source: file.source,
-                base_dir: Path::new(file.path)
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .to_path_buf(),
-                module: false,
-            });
-        }
-        let resolved = self.base_dir.join(path);
-        let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
-            CompileError::codegen(format!(
-                "cannot resolve local use '{}': {e}",
-                resolved.display()
-            ))
-        })?;
-        Ok(ResolvedImport::File {
-            canonical,
-            display_name: path.to_string(),
-            owner: self.source_owner.clone(),
-        })
-    }
-
     fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
+        if package_name == "Proj" {
+            return self.resolve_proj_import(module_name, leaf_module);
+        }
         if let Some((requires, importer)) = self.importing_extension
             && self.loader_options.extensions.module(module_name).is_none()
         {
@@ -2232,6 +2074,47 @@ impl Compiler {
             return resolve_embedded_module(embedded, module_name, self.importing_extension);
         }
         self.resolve_external_named_import(module_name, package_name, leaf_module)
+    }
+
+    /// `Proj` names the package that owns the importing source: a project's
+    /// `src/`, or a library/extension package's own namespace. Never the
+    /// consuming project from inside a dependency.
+    fn resolve_proj_import(
+        &mut self,
+        module_name: &str,
+        module_path: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        let Some(owner) = self.source_owner.clone() else {
+            return Err(CompileError::codegen(format!(
+                "import {module_name} requires an owning package; create hiko.toml"
+            )));
+        };
+        if let Some(root) = owner.project_source_root() {
+            let relative = Path::new("src").join(crate::package::module_file(module_path)?);
+            let canonical =
+                crate::package::checked_module_file(root, &relative, module_name, owner.name())?;
+            return Ok(ResolvedImport::File {
+                canonical,
+                display_name: module_name.to_string(),
+                owner: Some(owner.clone()),
+            });
+        }
+        if owner.is_embedded_project() {
+            return Err(CompileError::codegen(format!(
+                "import {module_name}: this sealed artifact does not embed project modules; rebuild it from the project sources"
+            )));
+        }
+        match owner.owned_package_name() {
+            // A package's own `Proj` names its published namespace; both
+            // spellings select the same owner and module identity.
+            Some(package) => {
+                let qualified = format!("{package}.{module_path}");
+                self.resolve_named_import(&qualified)
+            }
+            None => Err(CompileError::codegen(format!(
+                "import {module_name} cannot resolve: compiler-owned modules do not own Proj"
+            ))),
+        }
     }
 
     /// `import`, a library module that the extension module `importer`
@@ -2347,7 +2230,7 @@ impl Compiler {
             let local_path = root
                 .join(format!("{package_name}-v{}", package.version))
                 .join("modules")
-                .join(format!("{leaf_module}.hml"));
+                .join(crate::package::module_file(leaf_module)?);
             if local_path.is_file() {
                 let source = std::fs::read_to_string(&local_path)
                     .map_err(|e| {
@@ -2377,8 +2260,9 @@ impl Compiler {
         }
 
         let module_url = format!(
-            "{}/modules/{leaf_module}.hml",
-            package.base_url.trim_end_matches('/')
+            "{}/modules/{}.hml",
+            package.base_url.trim_end_matches('/'),
+            leaf_module.replace('.', "/")
         );
         let cache_path = module_cache_path(cache_dir, &module_url, &expected_hash);
 
@@ -2493,7 +2377,6 @@ impl Compiler {
             DeclKind::ImportWithNames(name, names) => {
                 self.infer_named_import_with_names(*name, names)
             }
-            DeclKind::Use(path) => self.infer_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before inference pass")
             }
@@ -2626,11 +2509,6 @@ impl Compiler {
         Ok(())
     }
 
-    fn infer_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let resolved = self.resolve_local_use(path)?;
-        self.infer_import_source(resolved)
-    }
-
     fn infer_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
         let module_name = self.interner.resolve(module_name).to_string();
         let resolved = self.resolve_named_import(&module_name)?;
@@ -2731,11 +2609,6 @@ impl Compiler {
         result?;
         self.compiled_imports.insert(key);
         Ok(())
-    }
-
-    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let resolved = self.resolve_local_use(path)?;
-        self.compile_import_source(resolved.key())
     }
 
     fn compile_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
@@ -4002,14 +3875,21 @@ mod tests {
     }
 
     #[test]
-    fn local_uses_share_the_callers_type_work_budget() {
-        let root = unique_temp_dir("cumulative-use-budget");
+    fn project_modules_share_the_callers_type_work_budget() {
+        let root = unique_temp_dir("cumulative-proj-budget");
+        write_file(&root.join("hiko.toml"), "[project]\nname = 'budget'\n");
         let entry = root.join("main.hml");
-        write_file(&root.join("one.hml"), &import_budget_source("one"));
-        write_file(&root.join("two.hml"), &import_budget_source("two"));
-        let source = "val before = 1\nuse \"./one.hml\"\nuse \"./two.hml\"";
-        write_file(&entry, source);
-        assert_cumulative_import_budget(&root, &entry, source, ModuleLoaderOptions::default());
+        write_file(&root.join("src/One.hml"), &import_budget_source("one"));
+        write_file(&root.join("src/Two.hml"), &import_budget_source("two"));
+        // Every caller declaration references imported aliases, so each one
+        // costs expansion work and the budget error lands in the caller.
+        let mut source = String::from("import Proj.One\nimport Proj.Two\n");
+        source.push_str("type callerb0 = twoa8 twodup\n");
+        for i in 1..=4 {
+            source.push_str(&format!("type callerb{i} = callerb{} twodup\n", i - 1));
+        }
+        write_file(&entry, &source);
+        assert_cumulative_import_budget(&root, &entry, &source, ModuleLoaderOptions::default());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4018,13 +3898,17 @@ mod tests {
     fn named_import_shares_the_callers_type_work_budget() {
         let module = import_budget_source("module");
         let (root, entry) = write_local_package_project(&module, &blake3_hex(module.as_bytes()));
-        let source = "val before = 1\nimport Test.Answer";
+        let mut source = String::from("import Test.Answer\n");
+        source.push_str("type callerb0 = modulea8 moduledup\n");
+        for i in 1..=4 {
+            source.push_str(&format!("type callerb{i} = callerb{} moduledup\n", i - 1));
+        }
         let options = ModuleLoaderOptions {
             local_package_root: Some(root.join("libraries")),
             cache_dir: Some(root.join("unused-cache")),
             ..Default::default()
         };
-        assert_cumulative_import_budget(&root, &entry, source, options);
+        assert_cumulative_import_budget(&root, &entry, &source, options);
         assert!(
             !root.join("unused-cache").exists(),
             "hermetic local package must not fetch"
@@ -4083,13 +3967,9 @@ mod tests {
     }
 
     #[cfg(feature = "loader-embedded")]
-    /// Embedded sources with one module `Pkg.Greet` (its hash computed
-    /// unless `hash` is given) and the given local files.
-    fn embedded(
-        module_source: &str,
-        hash: Option<&str>,
-        files: Option<Vec<(&str, &str)>>,
-    ) -> ModuleLoaderOptions {
+    /// Embedded sources with one module `Pkg.Greet`, its hash computed
+    /// unless `hash` is given.
+    fn embedded(module_source: &str, hash: Option<&str>) -> ModuleLoaderOptions {
         let blake3 = match hash {
             Some(hash) => leak(hash.to_string()),
             None => leak(format!("blake3:{}", blake3_hex(module_source.as_bytes()))),
@@ -4099,18 +3979,8 @@ mod tests {
             blake3,
             source: leak(module_source.to_string()),
         }]));
-        let files = files.map(|files| {
-            let files: Vec<EmbeddedFile> = files
-                .into_iter()
-                .map(|(path, source)| EmbeddedFile {
-                    path: leak(path.to_string()),
-                    source: leak(source.to_string()),
-                })
-                .collect();
-            &*Box::leak(files.into_boxed_slice())
-        });
         ModuleLoaderOptions {
-            embedded: Some(Box::leak(Box::new(EmbeddedSources { modules, files }))),
+            embedded: Some(Box::leak(Box::new(EmbeddedSources { modules }))),
             ..ModuleLoaderOptions::default()
         }
     }
@@ -4122,7 +3992,7 @@ mod tests {
     #[test]
     fn embedded_named_import_resolves_without_a_lockfile() {
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
-        Compiler::compile_embedded(program, embedded(GREET, None, None))
+        Compiler::compile_embedded(program, embedded(GREET, None))
             .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
@@ -4131,7 +4001,7 @@ mod tests {
     fn embedded_module_with_a_wrong_hash_is_refused() {
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
         let wrong = format!("blake3:{}", "0".repeat(64));
-        let err = Compiler::compile_embedded(program, embedded(GREET, Some(&wrong), None))
+        let err = Compiler::compile_embedded(program, embedded(GREET, Some(&wrong)))
             .expect_err("a tampered module must not compile");
         assert!(
             format!("{err:?}").contains("failed BLAKE3 verification"),
@@ -4143,7 +4013,7 @@ mod tests {
     #[test]
     fn named_import_not_embedded_is_refused() {
         let program = parse_program("import Pkg.Other\nval x = 1");
-        let err = Compiler::compile_embedded(program, embedded(GREET, None, None))
+        let err = Compiler::compile_embedded(program, embedded(GREET, None))
             .expect_err("only embedded modules resolve");
         assert!(
             format!("{err:?}").contains("not embedded in this artifact"),
@@ -4153,25 +4023,12 @@ mod tests {
 
     #[cfg(feature = "loader-embedded")]
     #[test]
-    fn embedded_local_use_resolves_relative_to_the_using_file() {
-        let program = parse_program("use \"./lib/a.hml\"\nval y = a + b");
-        let files = vec![
-            ("lib/a.hml", "use \"./b.hml\"\nval a = 1"),
-            ("lib/b.hml", "val b = 2"),
-        ];
-        Compiler::compile_embedded(program, embedded(GREET, None, Some(files)))
-            .unwrap_or_else(|e| panic!("{e:?}"));
-    }
-
-    #[cfg(feature = "loader-embedded")]
-    #[test]
-    fn embedded_local_use_never_reads_the_filesystem() {
-        // Cargo.toml exists next to this crate, but it is not embedded.
-        let program = parse_program("use \"./Cargo.toml\"\nval y = 1");
-        let err = Compiler::compile_embedded(program, embedded(GREET, None, Some(vec![])))
-            .expect_err("only embedded files resolve");
+    fn embedded_program_cannot_reach_project_modules() {
+        let program = parse_program("import Proj.Helper\nval y = 1");
+        let err = Compiler::compile_embedded(program, embedded(GREET, None))
+            .expect_err("a sealed artifact has no project modules");
         assert!(
-            format!("{err:?}").contains("not embedded in this artifact"),
+            format!("{err:?}").contains("does not embed project modules"),
             "{err:?}"
         );
     }
@@ -4181,8 +4038,7 @@ mod tests {
     fn embedded_module_cannot_use_local_files() {
         let module = "use \"./x.hml\"\nstructure Greet = struct val hello = 1 end";
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
-        let files = vec![("x.hml", "val z = 0")];
-        let err = Compiler::compile_embedded(program, embedded(module, None, Some(files)))
+        let err = Compiler::compile_embedded(program, embedded(module, None))
             .expect_err("a locked module may not use files");
         assert!(
             format!("{err:?}").contains("not allowed in a remote module"),
@@ -4219,91 +4075,32 @@ mod tests {
     }
 
     #[test]
-    fn a_used_module_decides_its_own_operators_even_inside_local() {
-        // `dbl`'s `+` is decided by nothing in m.hml, so the module is
-        // rejected wherever it is used; the importer's `dbl 21` must not
+    fn an_imported_project_module_decides_its_own_operators() {
+        // `dbl`'s `+` is decided by nothing in M.hml, so the module is
+        // rejected wherever it is imported; the importer's call site must not
         // decide it, or the cached module's type would depend on where it
         // was first used.
-        let dir = unique_temp_dir("use-in-local");
-        write_file(&dir.join("m.hml"), "fun dbl x = x + x\n");
+        let dir = unique_temp_dir("proj-module-operators");
+        write_file(&dir.join("hiko.toml"), "[project]\nname = 'ops'\n");
+        write_file(
+            &dir.join("src/M.hml"),
+            "structure M = struct fun dbl x = x + x end\n",
+        );
         write_file(
             &dir.join("main.hml"),
-            "local use \"./m.hml\" in val y = dbl 21 end\n",
+            "import Proj.M\nval y = M.dbl 21\n",
         );
-        let err = compile_path(&dir.join("main.hml")).expect_err("m.hml leaves + undecided");
+        let err = compile_path(&dir.join("main.hml")).expect_err("M.hml leaves + undecided");
         assert!(
             format!("{err:?}").contains("cannot tell whether"),
             "{err:?}"
         );
-        write_file(&dir.join("m.hml"), "fun dbl (x : int) = x + x\n");
+        write_file(
+            &dir.join("src/M.hml"),
+            "structure M = struct fun dbl (x : int) = x + x end\n",
+        );
         compile_path(&dir.join("main.hml")).unwrap_or_else(|e| panic!("{e:?}"));
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn local_use_files_finds_uses_inside_local_and_structures() {
-        let dir = unique_temp_dir("local-use-nested");
-        let source = "local use \"./a.hml\" in val x = a end\n\
-                      structure S = struct use \"./b.hml\" val y = b end";
-        write_file(&dir.join("main.hml"), source);
-        write_file(&dir.join("a.hml"), "val a = 1");
-        write_file(&dir.join("b.hml"), "val b = 2");
-        let files =
-            local_use_files(&dir.join("main.hml"), source).unwrap_or_else(|e| panic!("{e:?}"));
-        let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["a.hml", "b.hml"]);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn local_use_files_follows_uses_relative_to_each_file() {
-        let dir = unique_temp_dir("local-use-files");
-        write_file(&dir.join("main.hml"), "use \"./lib/a.hml\"\nval x = a");
-        write_file(
-            &dir.join("lib/a.hml"),
-            "use \"./b.hml\"\nuse \"../c.hml\"\nval a = b + c",
-        );
-        write_file(&dir.join("lib/b.hml"), "val b = 1");
-        write_file(&dir.join("c.hml"), "use \"./lib/b.hml\"\nval c = 2");
-        let main = dir.join("main.hml");
-        let source = std::fs::read_to_string(&main).unwrap();
-        let files = local_use_files(&main, &source).unwrap_or_else(|e| panic!("{e:?}"));
-        let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["c.hml", "lib/a.hml", "lib/b.hml"]);
-        assert_eq!(files[2].1, "val b = 1");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn local_use_files_refuses_a_path_through_a_symbolic_link() {
-        let dir = unique_temp_dir("local-use-symlink");
-        write_file(&dir.join("real/b.hml"), "val b = 1");
-        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
-        write_file(&dir.join("main.hml"), "");
-        let source = "use \"./link/b.hml\"\nval x = b";
-        let err = local_use_files(&dir.join("main.hml"), source).expect_err("link/ is a symlink");
-        assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
-        // Into the link and back out: the key is "b.hml", but `hiko run`
-        // reads the file next to the link's target.
-        // hop -> real/sub, so hop/.. is real/, which holds a different c.hml.
-        write_file(&dir.join("real/sub/x.hml"), "");
-        write_file(&dir.join("real/c.hml"), "val c = 2");
-        std::os::unix::fs::symlink(dir.join("real/sub"), dir.join("hop")).unwrap();
-        write_file(&dir.join("c.hml"), "val c = 3");
-        let source = "use \"./hop/../c.hml\"\nval x = c";
-        let err =
-            local_use_files(&dir.join("main.hml"), source).expect_err("hop/.. leaves the link");
-        assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
-    }
-
-    #[test]
-    fn embedded_file_paths_are_normalized_and_relative() {
-        let path = |base: &str, p: &str| embedded_file_path(Path::new(base), p).ok();
-        assert_eq!(path("", "a.hml").as_deref(), Some("a.hml"));
-        assert_eq!(path("", "./lib/../a.hml").as_deref(), Some("a.hml"));
-        assert_eq!(path("lib", "b.hml").as_deref(), Some("lib/b.hml"));
-        assert_eq!(path("lib", "../../up.hml").as_deref(), Some("../up.hml"));
-        assert_eq!(path("", "/etc/passwd.hml"), None);
     }
 
     #[test]
@@ -4892,11 +4689,7 @@ mod tests {
                      BuiltinProcess.Forged n => {use_value}
                    | BuiltinProcess.Other _ => 0\n"
             );
-            for (before, after) in [
-                ("", ""),
-                ("", "import __Builtin.Process\n"),
-                ("import __Builtin.Process\n", ""),
-            ] {
+            for (before, after) in [("", ""), ("import __Builtin.Process\n", "")] {
                 let msg = compile_error(&format!("{before}{source}{after}"));
                 assert!(
                     msg.contains("runtime-owned type 'BuiltinProcess.await_result'"),
@@ -5521,16 +5314,6 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
-    fn pinned_module_use_in_let_refused_when_script_used_file() {
-        assert_nested_use_refused(compile_with_pinned_module(
-            "pinned-let-use-script-used",
-            "val n = let use \"../helper.hml\" in helper end\n",
-            "use \"./helper.hml\"\nimport Test.Answer\nval m = n\n",
-        ));
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    #[test]
     fn pinned_module_use_in_let_refused_when_script_did_not_use_file() {
         assert_nested_use_refused(compile_with_pinned_module(
             "pinned-let-use-alone",
@@ -5543,15 +5326,8 @@ Answer = "blake3:deadbeef"
     #[test]
     fn pinned_module_use_in_let_in_fun_refused() {
         for (name, script) in [
-            (
-                "pinned-fun-use-script-used",
-                "use \"./helper.hml\"\nimport Test.Answer\nval m = f ()\n",
-            ),
             ("pinned-fun-use-alone", "import Test.Answer\nval m = f ()\n"),
-            (
-                "pinned-fun-use-not-called",
-                "use \"./helper.hml\"\nimport Test.Answer\nval m = 1\n",
-            ),
+            ("pinned-fun-use-not-called", "import Test.Answer\nval m = 1\n"),
         ] {
             assert_nested_use_refused(compile_with_pinned_module(
                 name,
@@ -5571,7 +5347,7 @@ Answer = "blake3:deadbeef"
             assert_nested_use_refused(compile_with_pinned_module(
                 "pinned-nested-use",
                 module,
-                "use \"./helper.hml\"\nimport Test.Answer",
+                "import Test.Answer",
             ));
         }
     }
@@ -5584,10 +5360,7 @@ Answer = "blake3:deadbeef"
             "val broken = )\nuse \"../helper.hml\"",
             "val broken = unknown_name\nuse \"../helper.hml\"",
         ] {
-            for script in [
-                "import Test.Answer",
-                "use \"./helper.hml\"\nimport Test.Answer",
-            ] {
+            for script in ["import Test.Answer"] {
                 assert_nested_use_refused(compile_with_pinned_module(
                     "pinned-use-error-precedence",
                     module,
@@ -5595,36 +5368,6 @@ Answer = "blake3:deadbeef"
                 ));
             }
         }
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    #[test]
-    fn pinned_module_cannot_reuse_locally_loaded_cache_file() {
-        let (project_dir, entry_path, cache_path) = write_pinned_module_project(
-            "pinned-local-cache-use",
-            "val n = let use \"../helper.hml\" in helper end",
-        );
-        // macOS temp paths can contain a symlink (/var -> /private/var).
-        // Use the canonical path so a path mismatch cannot mask the bypass.
-        let canonical = std::fs::canonicalize(cache_path).unwrap();
-        let canonical_project = std::fs::canonicalize(&project_dir).unwrap();
-        let entry_path = canonical_project.join(entry_path.file_name().unwrap());
-        let relative_cache = canonical.strip_prefix(&canonical_project).unwrap();
-        write_file(
-            &entry_path,
-            &format!(
-                "use \"./helper.hml\"\nuse \"./{}\"\nimport Test.Answer\nval m = n",
-                relative_cache.display()
-            ),
-        );
-        for helper in [41, 999] {
-            write_file(
-                &project_dir.join("helper.hml"),
-                &format!("val helper = {helper}"),
-            );
-            assert_nested_use_refused(compile_path(&entry_path));
-        }
-        std::fs::remove_dir_all(project_dir).ok();
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
@@ -5647,7 +5390,7 @@ Answer = "blake3:deadbeef"
             ),
             source,
         );
-        write_file(&entry_path, "use \"./helper.hml\"\nimport Test.Answer");
+        write_file(&entry_path, "import Test.Answer");
         assert_nested_use_refused(compile_path(&entry_path));
         std::fs::remove_dir_all(project_dir).ok();
     }
@@ -5656,8 +5399,8 @@ Answer = "blake3:deadbeef"
     #[test]
     fn pinned_module_embedded_nested_use_precedes_parse_error() {
         let module = "val n = let use \"../helper.hml\" in helper end\nval broken =";
-        let script = parse_program("use \"./helper.hml\"\nimport Pkg.Greet");
-        let options = embedded(module, None, Some(vec![("helper.hml", "val helper = 41")]));
+        let script = parse_program("import Pkg.Greet");
+        let options = embedded(module, None);
         let err = Compiler::compile_embedded(script, options).unwrap_err();
         assert!(
             format!("{err:?}")
@@ -5851,11 +5594,11 @@ Answer = "blake3:deadbeef"
             "[project]\nname = 'display-name'\n",
         );
         let entry = root.join("src/Main.hml");
-        write_file(&entry, "use \"./Util.hml\"");
-        write_file(&root.join("src/Util.hml"), "use \"./Main.hml\"");
-        let result = Compiler::compile_file(parse_program("use \"./Util.hml\""), &entry);
+        write_file(&entry, "import Proj.Util");
+        write_file(&root.join("src/Util.hml"), "import Proj.Main");
+        let result = Compiler::compile_file(parse_program("import Proj.Util"), &entry);
         assert!(
-            matches!(result, Err(CompileError::Codegen(ref message)) if message.contains("circular import detected while loading './Main.hml'")),
+            matches!(result, Err(CompileError::Codegen(ref message)) if message.contains("circular import detected") && message.contains("Proj.Main")),
             "{result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -6081,19 +5824,22 @@ Prelude = "blake3:deadbeef"
 
     #[cfg(feature = "builtin-path")]
     #[test]
-    fn malformed_lockfile_does_not_affect_local_use_compile() {
-        let project_dir = unique_temp_dir("local-use-ignores-bad-lockfile");
+    fn malformed_lockfile_does_not_affect_project_module_compile() {
+        let project_dir = unique_temp_dir("proj-ignores-bad-lockfile");
         let entry_path = project_dir.join("main.hml");
-        let helper_path = project_dir.join("helper.hml");
 
+        write_file(&project_dir.join("hiko.toml"), "[project]\nname = 'p'\n");
         write_file(
             &project_dir.join("hiko.lock.toml"),
             "this = [ is not valid toml",
         );
-        write_file(&helper_path, "val local_answer = 7\n");
+        write_file(
+            &project_dir.join("src/Helper.hml"),
+            "structure Helper = struct val local_answer = 7 end\n",
+        );
         write_file(
             &entry_path,
-            "use \"./helper.hml\"\nval answer = local_answer\n",
+            "import Proj.Helper\nval answer = Helper.local_answer\n",
         );
 
         let result = compile_path(&entry_path);
@@ -6204,21 +5950,37 @@ Filesystem = "blake3:deadbeef"
     }
 
     #[test]
-    fn use_rejects_nonexistent_file() {
-        let project_dir = unique_temp_dir("use-bad-path");
+    fn proj_import_without_a_project_names_the_fix() {
+        let dir = unique_temp_dir("proj-no-project");
+        let entry_path = dir.join("main.hml");
+        write_file(&entry_path, "import Proj.Helper\nval answer = 1\n");
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => assert!(
+                message.contains("requires an owning package; create hiko.toml"),
+                "{message}"
+            ),
+            other => panic!("expected the missing project to be named, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn proj_import_rejects_missing_module() {
+        let project_dir = unique_temp_dir("proj-missing-module");
         let entry_path = project_dir.join("main.hml");
 
-        write_file(
-            &entry_path,
-            "use \"./no_such_module.hml\"\nval answer = 1\n",
-        );
+        write_file(&project_dir.join("hiko.toml"), "[project]\nname = 'p'\n");
+        std::fs::create_dir_all(project_dir.join("src")).unwrap();
+        write_file(&entry_path, "import Proj.NoSuchModule\nval answer = 1\n");
 
         let result = compile_path(&entry_path);
         match result {
             Err(CompileError::Codegen(message)) => {
                 assert!(
-                    message.contains("cannot resolve local use"),
-                    "expected 'cannot resolve local use' in error, got: {message}"
+                    message.contains("missing from package Proj")
+                        && message.contains("NoSuchModule.hml"),
+                    "expected the missing module and expected path, got: {message}"
                 );
             }
             other => panic!("expected compile error for missing use path, got {other:?}"),

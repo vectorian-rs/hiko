@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use hiko_compile::compiler::LockedModuleSource;
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
-    CompileError, Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions,
-    codegen_message, local_use_files, resolve_directory_of,
+    CompileError, Compiler, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions, codegen_message,
+    resolve_directory_of,
 };
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_syntax::{lexer::Lexer, parser::Parser};
@@ -71,7 +71,7 @@ pub fn parse_args(args: &[String]) -> Result<BuildVmOptions, String> {
 struct Sealed {
     modules: Vec<LockedModuleSource>,
     /// The entry script and its local files, with `--script`.
-    script: Option<(String, Vec<(String, String)>)>,
+    script: Option<String>,
 }
 
 /// Generate the crate. Returns its directory.
@@ -328,8 +328,7 @@ fn collect_sealed(
             let source = fs::read_to_string(path)
                 .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
             crate::check_script_project(path)?;
-            let files = local_use_files(path, &source).map_err(|e| format!("{e:?}"))?;
-            Some((source, files))
+            Some(source)
         }
         None => None,
     };
@@ -343,7 +342,7 @@ fn collect_sealed(
 /// artifact.
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> Result<(), String> {
-    let Some((source, files)) = &sealed.script else {
+    let Some(source) = &sealed.script else {
         return Ok(());
     };
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
@@ -356,16 +355,8 @@ fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> R
             source: leak(&m.source),
         })
         .collect();
-    let files: Vec<EmbeddedFile> = files
-        .iter()
-        .map(|(path, source)| EmbeddedFile {
-            path: leak(path),
-            source: leak(source),
-        })
-        .collect();
     let embedded: &'static EmbeddedSources = Box::leak(Box::new(EmbeddedSources {
         modules: Box::leak(modules.into_boxed_slice()),
-        files: Some(Box::leak(files.into_boxed_slice())),
     }));
     let tokens = Lexer::new(source, 0)
         .tokenize()
@@ -404,18 +395,13 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
             writeln!(rs, "//! | `{}` | `{}` |", m.import_name, m.blake3).unwrap();
         }
     }
-    if let Some((_, files)) = &sealed.script {
+    if sealed.script.is_some() {
         rs.push_str(
             "//!\n//! Program: `sealed/main.hml`, which the binary runs and nothing else.\n",
         );
-        for (path, _) in files {
-            writeln!(rs, "//! Local file: `{path}`").unwrap();
-        }
     }
-    rs.push_str(
-        "\nuse hiko_compile::compiler::{EmbeddedFile, EmbeddedModule, EmbeddedSources};\n\n",
-    );
-    if let Some((source, _)) = &sealed.script {
+    rs.push_str("\nuse hiko_compile::compiler::{EmbeddedModule, EmbeddedSources};\n\n");
+    if let Some(source) = &sealed.script {
         write(&out_dir.join("sealed/main.hml"), source)?;
         rs.push_str("pub static SCRIPT: &str = include_str!(\"../sealed/main.hml\");\n\n");
     }
@@ -432,25 +418,7 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
         )
         .unwrap();
     }
-    rs.push_str("    ],\n");
-    match &sealed.script {
-        Some((_, files)) => {
-            rs.push_str("    files: Some(&[\n");
-            // Files are stored by index: a path may contain `..`.
-            for (i, (path, source)) in files.iter().enumerate() {
-                let file = format!("sealed/files/{i}.hml");
-                write(&out_dir.join(&file), source)?;
-                writeln!(
-                    rs,
-                    "        EmbeddedFile {{ path: {path:?}, source: include_str!(\"../{file}\") }},"
-                )
-                .unwrap();
-            }
-            rs.push_str("    ]),\n");
-        }
-        None => rs.push_str("    files: None,\n"),
-    }
-    rs.push_str("};\n");
+    rs.push_str("    ],\n};\n");
     write(&out_dir.join("src/embedded.rs"), &rs)?;
 
     let mut build = String::new();

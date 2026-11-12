@@ -98,6 +98,29 @@ impl PackageOwner {
             OwnerIdentity::Builtin => "__Builtin",
         }
     }
+
+    /// The canonical root whose `src/` holds a project owner's `Proj` modules.
+    pub(crate) fn project_source_root(&self) -> Option<&Path> {
+        match self.0.as_ref() {
+            OwnerIdentity::Project(root) => Some(root),
+            _ => None,
+        }
+    }
+
+    /// The package namespace `Proj` selects for a non-project owner, if any.
+    pub(crate) fn owned_package_name(&self) -> Option<&str> {
+        match self.0.as_ref() {
+            OwnerIdentity::Locked { name, .. } | OwnerIdentity::EmbeddedPackage(name) => Some(name),
+            OwnerIdentity::Extension { package, .. } => Some(package),
+            OwnerIdentity::Project(_) | OwnerIdentity::EmbeddedProject | OwnerIdentity::Builtin => {
+                None
+            }
+        }
+    }
+
+    pub(crate) fn is_embedded_project(&self) -> bool {
+        matches!(self.0.as_ref(), OwnerIdentity::EmbeddedProject)
+    }
 }
 
 /// Logical identity shared by an owner's qualified and Proj imports.
@@ -506,7 +529,7 @@ fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
     Ok((package, module))
 }
 
-fn module_file(module: &str) -> Result<PathBuf, CompileError> {
+pub(crate) fn module_file(module: &str) -> Result<PathBuf, CompileError> {
     let mut path = PathBuf::new();
     for segment in module.split('.') {
         if !identifier(segment) {
@@ -531,7 +554,7 @@ fn normalized_hash(hash: &str) -> Result<String, CompileError> {
 }
 
 /// Check each written component rather than accepting case-folding or symlinks.
-fn checked_module_file(
+pub(crate) fn checked_module_file(
     root: &Path,
     relative: &Path,
     import: &str,
