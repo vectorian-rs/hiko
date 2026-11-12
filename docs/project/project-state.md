@@ -8,7 +8,7 @@ inventory and triage, not a plan that has been executed. Nothing listed as
 
 ## Delivery checkpoint (2026-11-08)
 
-Merge status refreshed 2026-11-11; the inventory below keeps its snapshot date.
+Merge status refreshed 2026-11-12; the inventory below keeps its snapshot date.
 
 [PR #221](https://github.com/vectorian-rs/hiko/pull/221) completed
 [#183](https://github.com/vectorian-rs/hiko/issues/183) and merged at `e980d88`.
@@ -118,15 +118,27 @@ cap expired, and the explicitly requested
 on an unfrozen interim snapshot failed one of twelve A2 cells against the 1.10
 limit, under elevated load and with register stack fallback as recorded limits.
 The maintainer then authorized merging the implementation with A2 deferred:
-the still-open [PR #243](https://github.com/vectorian-rs/hiko/pull/243)
-carries the rebased work and review record (not yet on `main`), and
+[PR #243](https://github.com/vectorian-rs/hiko/pull/243) subsequently merged
+at `a9501fe` on 2026-11-11, with final head `bf2c5ee`. Its rebased work is on
+`main` and the PR carries the review record; the earlier interim measurements
+are not relabeled as final-head results.
 [#242](https://github.com/vectorian-rs/hiko/issues/242) tracks closing the
 sliced-boundary overhead gap with a load-bounded final measurement.
 
-[#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198) is on hold: its
-implementation window expired on 2026-11-11 without a freeze or PR, and
-resuming needs a new grant.
-Its measurement gate remains a prerequisite of the public cutover in #186.
+An earlier [#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198)
+implementation window expired on 2026-11-11 without a freeze or PR. A
+separately authorized
+recovery produced [PR #244](https://github.com/vectorian-rs/hiko/pull/244),
+which the maintainer merged at `986cff1` on 2026-11-11, with final head
+`1382b24`. The
+[exact-commit measurement gate](../architecture/performance.md#exact-commit-vm-gate)
+is now implemented on `main`. The recovery's real gate attempts — a
+supported-host run, a same-commit self-comparison and a slowdown negative
+control — were refused on bounded-load failures or left incomplete by a
+physical AC-to-battery transition. Earlier workspace checks and the timeout
+fix review ran at earlier heads; neither they nor the merge supply the
+measurement evidence the public cutover in #186 still requires.
+
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
 
