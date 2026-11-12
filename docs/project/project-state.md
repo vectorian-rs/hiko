@@ -139,6 +139,23 @@ physical AC-to-battery transition. Earlier workspace checks and the timeout
 fix review ran at earlier heads; neither they nor the merge supply the
 measurement evidence the public cutover in #186 still requires.
 
+[PR #246](https://github.com/vectorian-rs/hiko/pull/246) completed
+[#245](https://github.com/vectorian-rs/hiko/issues/245) and merged at `c0ad09c`
+on 2026-11-12, with final head `5e0e15d`. Both Fiber error fixtures use the
+shared test-only blocking backend and lifecycle reports; production scheduling
+and the ordinary immediate mock remain unchanged. All five final-head hosted
+checks passed. Local workspace checks, repeated fixture checks and the agent's
+independent implementation review were at earlier head `704274c`, not rerun
+at `5e0e15d`. Later external changes and CI are separate from that agent's
+expired verification window. The original CI failure's precise cause remains
+unproven; the demonstrated fixture race is fixed. The issue is closed.
+
+The factual closeout [PR #248](https://github.com/vectorian-rs/hiko/pull/248)
+merged at `b31997e` on 2026-11-12, with final head `7206f27`. Its earlier
+independent review at `943088a` is not relabeled as a review of the later prose
+changes. All five final-head hosted checks passed; neither this documentation
+merge nor PR #246 supplies missing performance acceptance for #198 or #242.
+
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
 
