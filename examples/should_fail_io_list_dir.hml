@@ -1,2 +1,4 @@
 (* Expected to fail under policies/should-fail-io.policy.toml. *)
-val _ = list_dir "examples"
+import Std.Filesystem
+
+val _ = Filesystem.list_entries "examples"

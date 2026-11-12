@@ -1,2 +1,4 @@
 (* Expected to fail under policies/should-fail-io.policy.toml. *)
-val _ = read_file_bytes "examples/should_fail_io_fixture.txt"
+import Std.Filesystem
+
+val _ = Filesystem.read_bytes "examples/should_fail_io_fixture.txt"

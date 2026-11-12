@@ -1,4 +1,7 @@
 (* Either type for error handling *)
+import Std.Int
+import Std.Stdio
+
 datatype ('a, 'b) either =
     Left of 'a
   | Right of 'b
@@ -24,6 +27,6 @@ val r2 =
       Left _ => ~1
     | Right n => n
 
-val _ = println (int_to_string r1)
+val _ = Stdio.println (Int.to_string r1)
 
-val _ = println (int_to_string r2)
+val _ = Stdio.println (Int.to_string r2)

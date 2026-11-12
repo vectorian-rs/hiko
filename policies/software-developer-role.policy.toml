@@ -27,31 +27,31 @@ enabled = true
 [capabilities.stdio.read_stdin]
 enabled = true
 
-[capabilities.convert.int_to_string]
+[capabilities.int.to_string]
 enabled = true
 
-[capabilities.convert.float_to_string]
+[capabilities.float.to_string]
 enabled = true
 
-[capabilities.convert.string_to_int]
+[capabilities.int.of_string]
 enabled = true
 
-[capabilities.convert.char_to_int]
+[capabilities.char.to_int]
 enabled = true
 
-[capabilities.convert.int_to_char]
+[capabilities.char.of_int]
 enabled = true
 
-[capabilities.convert.int_to_float]
+[capabilities.float.of_int]
 enabled = true
 
-[capabilities.string.string_length]
+[capabilities.string.length]
 enabled = true
 
 [capabilities.string.substring]
 enabled = true
 
-[capabilities.string.string_contains]
+[capabilities.string.contains]
 enabled = true
 
 [capabilities.string.trim]
@@ -60,7 +60,7 @@ enabled = true
 [capabilities.string.split]
 enabled = true
 
-[capabilities.string.string_replace]
+[capabilities.string.replace]
 enabled = true
 
 [capabilities.string.starts_with]
@@ -69,91 +69,91 @@ enabled = true
 [capabilities.string.ends_with]
 enabled = true
 
-[capabilities.string.to_upper]
+[capabilities.string.upper]
 enabled = true
 
-[capabilities.string.to_lower]
+[capabilities.string.lower]
 enabled = true
 
-[capabilities.string.string_join]
+[capabilities.string.join]
 enabled = true
 
-[capabilities.regex.regex_match]
+[capabilities.regex.matches]
 enabled = true
 
-[capabilities.regex.regex_replace]
+[capabilities.regex.replace]
 enabled = true
 
-[capabilities.json.json_parse]
+[capabilities.json.parse]
 enabled = true
 
-[capabilities.json.json_to_string]
+[capabilities.json.to_string]
 enabled = true
 
-[capabilities.json.json_get]
+[capabilities.json.get]
 enabled = true
 
-[capabilities.json.json_keys]
+[capabilities.json.keys]
 enabled = true
 
-[capabilities.json.json_length]
+[capabilities.json.length]
 enabled = true
 
-[capabilities.math.sqrt]
+[capabilities.float.sqrt]
 enabled = true
 
-[capabilities.math.abs_int]
+[capabilities.int.abs]
 enabled = true
 
-[capabilities.math.abs_float]
+[capabilities.float.abs]
 enabled = true
 
-[capabilities.math.floor]
+[capabilities.float.floor]
 enabled = true
 
-[capabilities.math.ceil]
+[capabilities.float.ceil]
 enabled = true
 
-[capabilities.bytes.bytes_length]
+[capabilities.bytes.length]
 enabled = true
 
-[capabilities.bytes.bytes_to_string]
+[capabilities.bytes.to_string]
 enabled = true
 
-[capabilities.bytes.string_to_bytes]
+[capabilities.bytes.of_string]
 enabled = true
 
-[capabilities.bytes.bytes_get]
+[capabilities.bytes.get]
 enabled = true
 
-[capabilities.bytes.bytes_slice]
+[capabilities.bytes.slice]
 enabled = true
 
-[capabilities.hash.blake3]
+[capabilities.hash.blake3.hash]
 enabled = true
 
-[capabilities.random.random_bytes]
+[capabilities.random.entropy]
 enabled = true
 
-[capabilities.random.rng_seed]
+[capabilities.random.seed]
 enabled = true
 
-[capabilities.random.rng_bytes]
+[capabilities.random.bytes]
 enabled = true
 
-[capabilities.random.rng_int]
+[capabilities.random.int_between]
 enabled = true
 
-[capabilities.env.getenv]
+[capabilities.env.get]
 enabled = true
 
 [capabilities.time.epoch]
 enabled = true
 
-[capabilities.time.epoch_ms]
+[capabilities.time.now]
 enabled = true
 
-[capabilities.time.monotonic_ms]
+[capabilities.time.monotonic_now]
 enabled = true
 
 [capabilities.time.sleep]
@@ -228,90 +228,91 @@ enabled = true
 [capabilities.date.parse_rfc9557]
 enabled = true
 
-[capabilities.process.spawn]
+[capabilities.fiber.spawn]
 enabled = true
 
-[capabilities.process.await_process]
+[capabilities.fiber.join_or_fail]
+[capabilities.fiber.join]
 enabled = true
 
-[capabilities.process.cancel]
+[capabilities.fiber.cancel]
 enabled = true
 
-[capabilities.process.wait_any]
+[capabilities.fiber.wait_any]
 enabled = true
 
 # Owned bulk joins have independent authority; no individual leaf is implied.
-[capabilities.fiber.fiber_await_all]
+[capabilities.fiber.join_all]
 enabled = true
 
-[capabilities.path.path_join]
+[capabilities.path.join]
 enabled = true
 
-[capabilities.filesystem.read_file]
-enabled = true
-folders = ["."]
-
-[capabilities.filesystem.read_file_bytes]
+[capabilities.filesystem.read_text]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.write_file]
+[capabilities.filesystem.read_bytes]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.file_exists]
+[capabilities.filesystem.write_text]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.list_dir]
+[capabilities.filesystem.exists]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.remove_file]
+[capabilities.filesystem.list_entries]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.create_dir]
+[capabilities.filesystem.remove]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.is_dir]
+[capabilities.filesystem.create_directory]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.is_file]
+[capabilities.filesystem.is_directory]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.glob]
+[capabilities.filesystem.is_regular_file]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.walk_dir]
+[capabilities.filesystem.glob_matches]
 enabled = true
 folders = ["."]
 
-[capabilities.http.http_get]
+[capabilities.filesystem.walk]
+enabled = true
+folders = ["."]
+
+[capabilities.http.client.get]
 enabled = true
 allowed_hosts = ["127.0.0.1", "localhost"]
 
-[capabilities.http.http]
+[capabilities.http.client.request]
 enabled = true
 allowed_hosts = ["127.0.0.1", "localhost"]
 
-[capabilities.http.http_json]
+[capabilities.http.client.request_json]
 enabled = true
 allowed_hosts = ["127.0.0.1", "localhost"]
 
-[capabilities.http.http_msgpack]
+[capabilities.http.client.request_msgpack]
 enabled = true
 allowed_hosts = ["127.0.0.1", "localhost"]
 
-[capabilities.http.http_bytes]
+[capabilities.http.client.request_bytes]
 enabled = true
 allowed_hosts = ["127.0.0.1", "localhost"]
 
-[capabilities.exec.exec]
+[capabilities.exec.run]
 enabled = true
 allowed_commands = [
   "./target/release/hiko-cli",
@@ -363,11 +364,11 @@ allowed_commands = [
 [capabilities.system.exit]
 enabled = true
 
-[capabilities.testing.panic]
+[capabilities.system.panic]
 enabled = true
 
-[capabilities.testing.assert]
+[capabilities.testing.check]
 enabled = true
 
-[capabilities.testing.assert_eq]
+[capabilities.testing.equal]
 enabled = true

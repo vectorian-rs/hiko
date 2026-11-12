@@ -2,6 +2,13 @@
  * BLAKE3-hash a 32nd of the files. bun scripts/bench.ts points it at a copy of
  * the git directory when .git is a file. Needs a policy that allows
  * walk_dir and read_file_bytes there. *)
+import Hash.Blake3
+import Std.Bytes
+import Std.Fiber
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+
 val target_dir = ".git"
 
 val chunks = 32
@@ -11,10 +18,10 @@ fun hash_all (paths, acc) =
       [] => acc
     | path :: rest =>
       let
-        val bytes = read_file_bytes path
-        val _ = blake3 bytes
+        val bytes = Filesystem.read_bytes path
+        val _ = Blake3.hash bytes
       in
-        hash_all (rest, acc + bytes_length bytes)
+        hash_all (rest, acc + Bytes.length bytes)
       end
 
 (* Split the files into contiguous chunks of `size`. *)
@@ -33,17 +40,17 @@ fun length (xs, n) = case xs of [] => n | _ :: rest => length (rest, n + 1)
 fun spawn_all (lists, acc) =
   case lists of
       [] => acc
-    | l :: ls => spawn_all (ls, spawn (fn () => hash_all (l, 0)) :: acc)
+    | l :: ls => spawn_all (ls, Fiber.spawn (fn () => hash_all (l, 0)) :: acc)
 
 fun await_all (pids, acc : int) =
   case pids of
       [] => acc
-    | pid :: rest => await_all (rest, acc + await_process pid)
+    | pid :: rest => await_all (rest, acc + Fiber.join_or_fail pid)
 
-val files = walk_dir target_dir
+val files = Filesystem.walk target_dir
 
 val size = (length (files, 0) + chunks - 1) / chunks
 
 val total = await_all (spawn_all (split (files, size), []), 0)
 
-val _ = println ("fanout_hash = " ^ int_to_string total)
+val _ = Stdio.println ("fanout_hash = " ^ Int.to_string total)

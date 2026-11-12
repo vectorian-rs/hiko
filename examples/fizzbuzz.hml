@@ -1,4 +1,7 @@
 (* FizzBuzz with a tuple pattern match. *)
+import Std.Int
+import Std.Stdio
+
 fun fizzbuzz n =
   let
     val f = n mod 3 = 0
@@ -8,11 +11,11 @@ fun fizzbuzz n =
         (true, true) => "FizzBuzz"
       | (true, _) => "Fizz"
       | (_, true) => "Buzz"
-      | (_, _) => int_to_string n
+      | (_, _) => Int.to_string n
   end
 
 fun loop i max = if i > max then () else let
-    val _ = println ((int_to_string i) ^ " : " ^ (fizzbuzz i))
+    val _ = Stdio.println ((Int.to_string i) ^ " : " ^ (fizzbuzz i))
   in
     loop (i + 1) max
   end

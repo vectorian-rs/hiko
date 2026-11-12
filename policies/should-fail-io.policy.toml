@@ -13,26 +13,26 @@ enabled = true
 [capabilities.stdio.read_stdin]
 enabled = true
 
-[capabilities.filesystem.read_file]
+[capabilities.filesystem.read_text]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.read_file_bytes]
+[capabilities.filesystem.read_bytes]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.write_file]
+[capabilities.filesystem.write_text]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.list_dir]
+[capabilities.filesystem.list_entries]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.glob]
+[capabilities.filesystem.glob_matches]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.walk_dir]
+[capabilities.filesystem.walk]
 enabled = true
 folders = ["."]

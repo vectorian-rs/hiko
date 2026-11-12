@@ -7,8 +7,11 @@
  * `max_work` currently counts executed opcodes, so straight-line code can use
  * a budget close to the reported total while loops/recursion need more.
  *)
+import Std.Int
+import Std.Stdio
+
 fun inc x = x + 1
 
 val answer = inc 41
 
-val _ = println (int_to_string answer)
+val _ = Stdio.println (Int.to_string answer)

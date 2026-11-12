@@ -12,43 +12,49 @@
  *   - Threaded: builtins suspend the process (no thread blocked)
  *)
 import Std.Json
+import Std.Env
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+import Std.String
+import Std.Time
 
 
 (* ── File I/O ──────────────────────────────────────────────── *)
-val _ = println "--- File I/O ---"
+val _ = Stdio.println "--- File I/O ---"
 
 val path = "target/hiko_io_demo.txt"
 
-val _ = write_file (path, "line one\nline two\nline three\n")
+val _ = Filesystem.write_text path "line one\nline two\nline three\n"
 
-val contents = read_file path
+val contents = Filesystem.read_text path
 
-val _ = println ("Wrote and read back:\n" ^ contents)
+val _ = Stdio.println ("Wrote and read back:\n" ^ contents)
 
-val lines = split (contents, "\n")
+val lines = String.split "\n" contents
 
 fun count_nonempty xs =
   case xs of
       [] => 0
-    | x :: rest => if string_length x > 0 then 1 + count_nonempty rest else count_nonempty rest
+    | x :: rest => if String.length x > 0 then 1 + count_nonempty rest else count_nonempty rest
 
-val _ = println ("Non-empty lines: " ^ int_to_string (count_nonempty lines))
+val _ = Stdio.println ("Non-empty lines: " ^ Int.to_string (count_nonempty lines))
 
-val _ = remove_file path
+val _ = Filesystem.remove path
 
 (* ── Environment and time ──────────────────────────────────── *)
-val _ = println "\n--- Environment ---"
+val _ = Stdio.println "\n--- Environment ---"
 
-val user = getenv "USER"
+val user = Env.get "USER"
 
-val _ = println ("USER=" ^ user)
+val _ = Stdio.println ("USER=" ^ user)
 
-val now = epoch ()
+val now = Time.to_epoch_ms (Time.now ())
 
-val _ = println ("epoch=" ^ int_to_string now)
+val _ = Stdio.println ("epoch=" ^ Int.to_string now)
 
 (* ── JSON round-trip ───────────────────────────────────────── *)
-val _ = println "\n--- JSON ---"
+val _ = Stdio.println "\n--- JSON ---"
 
 val data = "{\"lang\": \"hiko\", \"version\": 4, \"typed\": true}"
 
@@ -56,17 +62,17 @@ val parsed = Json.parse data
 
 val back = Json.to_string parsed
 
-val _ = println ("Parsed and re-serialized: " ^ back)
+val _ = Stdio.println ("Parsed and re-serialized: " ^ back)
 
 (* ── Sleep ─────────────────────────────────────────────────── *)
-val _ = println "\n--- Sleep ---"
+val _ = Stdio.println "\n--- Sleep ---"
 
-val before = epoch ()
+val before = Time.to_epoch_ms (Time.now ())
 
-val _ = sleep 100
+val _ = Time.sleep (Time.from_ms 100)
 
-val after = epoch ()
+val after = Time.to_epoch_ms (Time.now ())
 
-val _ = println ("Slept ~100ms (epoch delta: " ^ int_to_string (after - before) ^ ")")
+val _ = Stdio.println ("Slept ~100ms (epoch delta: " ^ Int.to_string (after - before) ^ ")")
 
-val _ = println "\nAll I/O builtin demos passed."
+val _ = Stdio.println "\nAll I/O builtin demos passed."

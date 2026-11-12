@@ -4,6 +4,8 @@ import Std.Char
 import Std.Word
 import Std.Path
 import Std.System
+import Std.Stdio
+import Std.Testing
 
 val int_of_string : string -> int = Int.of_string
 val int_to_text : int -> string = Int.to_string
@@ -20,21 +22,21 @@ val exit_unit : int -> unit = System.exit
 val panic_int : string -> int = System.panic
 val panic_bool : string -> bool = System.panic
 
-val _ = assert_eq (Int.of_string " 42 ", string_to_int " 42 ", "Int.of_string")
-val _ = assert_eq (Int.to_string (~42), int_to_string (~42), "Int.to_string")
-val _ = assert_eq (Float.of_int 42, int_to_float 42, "Float.of_int")
-val _ = assert_eq (Float.to_string 2.75, float_to_string 2.75, "Float.to_string")
-val _ = assert_eq (Char.of_int 128512, int_to_char 128512, "Char.of_int")
-val _ = assert_eq (Char.to_int (Char.of_int 65), 65, "Char round trip")
-val _ = assert_eq (Word.to_int (Word.of_int 42), 42, "Word round trip")
-val _ = assert_eq (Word.of_string "42", string_to_word "42", "Word.of_string")
-val _ = assert_eq (Word.of_string "  42  ", string_to_word "  42  ", "Word whitespace")
-val _ = assert_eq (Word.to_string (Word.of_int 42), word_to_string (int_to_word 42), "Word.to_string")
-val _ = assert_eq (Path.join ("a", "b"), path_join ("a", "b"), "Path.join")
-val _ = assert_eq (Int.of_string "-9223372036854775808", string_to_int "-9223372036854775808", "Int minimum")
-val _ = assert_eq (Int.of_string "9223372036854775807", string_to_int "9223372036854775807", "Int maximum")
-val _ = assert_eq (Word.of_string "18446744073709551615", string_to_word "18446744073709551615", "Word maximum")
-val _ = assert_eq (Char.of_int 1114111, int_to_char 1114111, "Unicode maximum")
-val _ = assert_eq (Float.of_int 9223372036854775807, int_to_float 9223372036854775807, "Float rounding")
-val _ = assert_eq (Float.to_string (~0.0), float_to_string (~0.0), "Float negative zero")
-val _ = println "thin module tests passed"
+val _ = Testing.equal (Int.of_string " 42 ") (Int.of_string " 42 ") "Int.of_string"
+val _ = Testing.equal (Int.to_string (~42)) (Int.to_string (~42)) "Int.to_string"
+val _ = Testing.equal (Float.of_int 42) (Float.of_int 42) "Float.of_int"
+val _ = Testing.equal (Float.to_string 2.75) (Float.to_string 2.75) "Float.to_string"
+val _ = Testing.equal (Char.of_int 128512) (Char.of_int 128512) "Char.of_int"
+val _ = Testing.equal (Char.to_int (Char.of_int 65)) 65 "Char round trip"
+val _ = Testing.equal (Word.to_int (Word.of_int 42)) 42 "Word round trip"
+val _ = Testing.equal (Word.of_string "42") (Word.of_string "42") "Word.of_string"
+val _ = Testing.equal (Word.of_string "  42  ") (Word.of_string "  42  ") "Word whitespace"
+val _ = Testing.equal (Word.to_string (Word.of_int 42)) (Word.to_string (Word.of_int 42)) "Word.to_string"
+val _ = Testing.equal (Path.join ("a", "b")) (Path.join ["a", "b"]) "Path.join"
+val _ = Testing.equal (Int.of_string "-9223372036854775808") (Int.of_string "-9223372036854775808") "Int minimum"
+val _ = Testing.equal (Int.of_string "9223372036854775807") (Int.of_string "9223372036854775807") "Int maximum"
+val _ = Testing.equal (Word.of_string "18446744073709551615") (Word.of_string "18446744073709551615") "Word maximum"
+val _ = Testing.equal (Char.of_int 1114111) (Char.of_int 1114111) "Unicode maximum"
+val _ = Testing.equal (Float.of_int 9223372036854775807) (Float.of_int 9223372036854775807) "Float rounding"
+val _ = Testing.equal (Float.to_string (~0.0)) (Float.to_string (~0.0)) "Float negative zero"
+val _ = Stdio.println "thin module tests passed"

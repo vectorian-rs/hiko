@@ -1,39 +1,43 @@
 (* glob_walk.hml -- File discovery with glob patterns and recursive walk *)
 import Std.List
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+import Std.String
 
 (* Find all Rust source files *)
-val _ = println "=== Rust files in crates/ ==="
+val _ = Stdio.println "=== Rust files in crates/ ==="
 
-val rs_files = glob "crates/**/*.rs"
+val rs_files = Filesystem.glob_matches "crates/**/*.rs"
 
-val _ = List.map println rs_files
+val _ = List.map Stdio.println rs_files
 
 (* Find all hml files in examples *)
-val _ = println "\n=== Example scripts ==="
+val _ = Stdio.println "\n=== Example scripts ==="
 
-val examples = glob "examples/*.hml"
+val examples = Filesystem.glob_matches "examples/*.hml"
 
-val _ = println (int_to_string (List.length examples) ^ " examples found")
+val _ = Stdio.println (Int.to_string (List.length examples) ^ " examples found")
 
 (* Recursive directory walk *)
-val _ = println "\n=== All files under libraries/Std-v0.1.0/ ==="
+val _ = Stdio.println "\n=== All files under libraries/Std-v0.1.0/ ==="
 
-val stdlib_files = walk_dir "libraries/Std-v0.1.0"
+val stdlib_files = Filesystem.walk "libraries/Std-v0.1.0"
 
-val _ = List.map println stdlib_files
+val _ = List.map Stdio.println stdlib_files
 
 (* Combine glob with file reading *)
-val _ = println "\n=== Cargo.toml files ==="
+val _ = Stdio.println "\n=== Cargo.toml files ==="
 
-val toml_files = glob "crates/*/Cargo.toml"
+val toml_files = Filesystem.glob_matches "crates/*/Cargo.toml"
 
 val _ = List.map (fn f => let
-  val content = read_file f
-  val lines = split (content, "\n")
+  val content = Filesystem.read_text f
+  val lines = String.split "\n" content
   val name_line =
-    case List.filter (fn l => starts_with (l, "name")) lines of
+    case List.filter (fn l => String.starts_with "name" l) lines of
         l :: _ => l
       | [] => "name = ?"
 in
-  println (f ^ ": " ^ trim name_line)
+  Stdio.println (f ^ ": " ^ String.trim name_line)
 end) toml_files

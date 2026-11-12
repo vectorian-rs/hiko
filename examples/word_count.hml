@@ -1,4 +1,8 @@
 (* Count words in a string *)
+import Std.Int
+import Std.Stdio
+import Std.String
+
 fun length xs =
   case xs of
       [] => 0
@@ -11,17 +15,17 @@ fun filter p xs =
 
 val text = "the quick brown fox jumps over the lazy dog"
 
-val words = split (text, " ")
+val words = String.split " " text
 
 val count = length words
 
-val _ = println ("Text: " ^ text)
+val _ = Stdio.println ("Text: " ^ text)
 
-val _ = println ("Word count: " ^ int_to_string count)
+val _ = Stdio.println ("Word count: " ^ Int.to_string count)
 
 (* Count words longer than 3 characters *)
-val long_words = filter (fn w => string_length w > 3) words
+val long_words = filter (fn w => String.length w > 3) words
 
 val long_count = length long_words
 
-val _ = println ("Words longer than 3 chars: " ^ int_to_string long_count)
+val _ = Stdio.println ("Words longer than 3 chars: " ^ Int.to_string long_count)

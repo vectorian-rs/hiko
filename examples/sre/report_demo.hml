@@ -5,6 +5,8 @@
      hiko run examples/sre/report_demo.hml *)
 import Sre.Health
 import Sre.Report
+import Std.Int
+import Std.Stdio
 
 val checks = [
   ("db", Health.Healthy, "2026-11-03T09:00:00Z", "fine"),
@@ -13,4 +15,4 @@ val checks = [
 
 val status = Report.print ("demo", checks)
 
-val _ = println (int_to_string (Health.exit_code status))
+val _ = Stdio.println (Int.to_string (Health.exit_code status))

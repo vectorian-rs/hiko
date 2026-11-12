@@ -1,5 +1,9 @@
 (* List recursion: the length of a 100,000-element list, 100 times. Each step
  * is a constructor pattern match. *)
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 fun build (n, acc) = if n = 0 then acc else build (n - 1, n :: acc)
 
 fun len (xs, acc) =
@@ -13,6 +17,6 @@ fun repeat (k, total) = if k = 0 then total else repeat (k - 1, total + len (xs,
 
 val total = repeat (100, 0)
 
-val _ = assert_eq (total, 10000000, "list_length")
+val _ = Testing.equal total 10000000 "list_length"
 
-val _ = println ("list_length = " ^ int_to_string total)
+val _ = Stdio.println ("list_length = " ^ Int.to_string total)

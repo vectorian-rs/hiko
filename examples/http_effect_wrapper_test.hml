@@ -11,6 +11,11 @@
  *   - Each handler answers a request and resumes at once, so it also
  *     receives the next request
  *)
+import Http.Client
+import Std.Int
+import Std.Stdio
+import Std.String
+
 effect HttpGet of string
 
 (* ── Business logic ────────────────────────────────────────── *)
@@ -18,7 +23,7 @@ fun fetch url =
   let
     val (status, _, body) = perform HttpGet url
   in
-    (url, status, string_length body)
+    (url, status, String.length body)
   end
 
 fun fetch_all () =
@@ -36,8 +41,8 @@ fun show xs =
       [] => ()
     | (url, status, len) :: rest =>
       let
-        val _ = println ("    " ^ url)
-        val _ = println ("      status: " ^ int_to_string status ^ "  body: " ^ int_to_string len ^ " bytes")
+        val _ = Stdio.println ("    " ^ url)
+        val _ = Stdio.println ("      status: " ^ Int.to_string status ^ "  body: " ^ Int.to_string len ^ " bytes")
       in
         show rest
       end
@@ -50,7 +55,7 @@ fun with_mock_http f =
     return x => x
   | HttpGet url k => resume k (200, [], "fake body from " ^ url)
 
-val _ = println "1. Mock handler (no network)"
+val _ = Stdio.println "1. Mock handler (no network)"
 
 val t0 = monotonic_ms ()
 
@@ -60,7 +65,7 @@ val mock_time = monotonic_ms () - t0
 
 val _ = show mock_results
 
-val _ = println ("    time: " ^ int_to_string mock_time ^ " ms\n")
+val _ = Stdio.println ("    time: " ^ Int.to_string mock_time ^ " ms\n")
 
 (* ── 2. Real handler ───────────────────────────────────────── *)
 fun with_real_http f =
@@ -68,9 +73,9 @@ fun with_real_http f =
     f ()
   with
     return x => x
-  | HttpGet url k => resume k (http_get url)
+  | HttpGet url k => resume k (Client.get url)
 
-val _ = println "2. Real handler (network)"
+val _ = Stdio.println "2. Real handler (network)"
 
 val t1 = monotonic_ms ()
 
@@ -80,4 +85,4 @@ val real_time = monotonic_ms () - t1
 
 val _ = show real_results
 
-val _ = println ("    time: " ^ int_to_string real_time ^ " ms")
+val _ = Stdio.println ("    time: " ^ Int.to_string real_time ^ " ms")

@@ -1,4 +1,7 @@
 (* A small expression evaluator *)
+import Std.Int
+import Std.Stdio
+
 datatype expr =
     Num of int
   | Add of expr * expr
@@ -15,4 +18,4 @@ val program = Mul (Add (Num 1, Num 2), Add (Num 3, Num 4))
 
 val result = eval program
 
-val _ = println (int_to_string result)
+val _ = Stdio.println (Int.to_string result)

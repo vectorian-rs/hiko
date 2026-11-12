@@ -1,6 +1,11 @@
 (* json_typed.hml -- JSON as a proper algebraic data type *)
 import Std.Json
 import Std.List
+import Std.Float
+import Std.Int
+import Std.Stdio
+import Std.String
+import Std.Time
 
 (* ── Functional test ────────────────────────────────────────────────── *)
 val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"stars\": 42, \"pi\": 3.14, \"active\": true, \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com\", \"private\": false}, \"legacy\": null}"
@@ -18,24 +23,24 @@ val _ =
               case value of
                   Json.JNull => "null"
                 | Json.JBool b => if b then "true" else "false"
-                | Json.JInt n => int_to_string n
-                | Json.JFloat f => float_to_string f
+                | Json.JInt n => Int.to_string n
+                | Json.JFloat f => Float.to_string f
                 | Json.JStr s => "\"" ^ s ^ "\""
                 | Json.JArray _ => "[...]"
                 | Json.JObject _ => "{...}"
           in
-            println ("  " ^ key ^ " = " ^ display)
+            Stdio.println ("  " ^ key ^ " = " ^ display)
           end
       in
         let
-          val _ = println "Parsed object fields:"
+          val _ = Stdio.println "Parsed object fields:"
         in
           List.map show_field fields
         end
       end
     | _ =>
       let
-        val _ = println "ERROR: expected Json.JObject"
+        val _ = Stdio.println "ERROR: expected Json.JObject"
       in
         []
       end
@@ -56,23 +61,23 @@ val _ =
             | _ => "?"
         val stars =
           case lookup "stars" fields of
-              Json.JInt n => int_to_string n
+              Json.JInt n => Int.to_string n
             | _ => "?"
-        val _ = println ("\nname: " ^ name ^ ", stars: " ^ stars)
+        val _ = Stdio.println ("\nname: " ^ name ^ ", stars: " ^ stars)
         val repo_url =
           case lookup "repo" fields of
               Json.JObject rf => (case lookup "url" rf of
                   Json.JStr s => s
                 | _ => "?")
             | _ => "?"
-        val _ = println ("repo url: " ^ repo_url)
+        val _ = Stdio.println ("repo url: " ^ repo_url)
         val features =
           case lookup "features" fields of
               Json.JArray fs => fs
             | _ => []
-        val _ = println ("features: " ^ int_to_string (List.length features))
+        val _ = Stdio.println ("features: " ^ Int.to_string (List.length features))
         val _ = List.map (fn f => case f of
-            Json.JStr s => println ("  - " ^ s)
+            Json.JStr s => Stdio.println ("  - " ^ s)
           | _ => ()) features
       in
         ()
@@ -82,38 +87,38 @@ val _ =
 (* ── Round-trip test ────────────────────────────────────────────────── *)
 val serialized = Json.to_string parsed
 
-val _ = println ("\nRound-trip: " ^ serialized)
+val _ = Stdio.println ("\nRound-trip: " ^ serialized)
 
 (* Parse it again and verify *)
 val reparsed = Json.parse serialized
 
 val reserialized = Json.to_string reparsed
 
-val _ = println ("Re-serialized: " ^ reserialized)
+val _ = Stdio.println ("Re-serialized: " ^ reserialized)
 
 (* ── Performance benchmark ──────────────────────────────────────────── *)
-val big_json = "[" ^ int_to_string 1 ^ "," ^ int_to_string 2 ^ "," ^ int_to_string 3 ^ "]"
+val big_json = "[" ^ Int.to_string 1 ^ "," ^ Int.to_string 2 ^ "," ^ Int.to_string 3 ^ "]"
 
 (* Build a moderately large JSON string *)
-fun repeat_json (n, acc) = if n = 0 then acc else repeat_json (n - 1, acc ^ ",{\"id\":" ^ int_to_string n ^ ",\"name\":\"item" ^ int_to_string n ^ "\",\"values\":[1,2,3],\"nested\":{\"a\":true,\"b\":null}}")
+fun repeat_json (n, acc) = if n = 0 then acc else repeat_json (n - 1, acc ^ ",{\"id\":" ^ Int.to_string n ^ ",\"name\":\"item" ^ Int.to_string n ^ "\",\"values\":[1,2,3],\"nested\":{\"a\":true,\"b\":null}}")
 
 val large = "[{\"id\":0,\"name\":\"item0\",\"values\":[1,2,3],\"nested\":{\"a\":true,\"b\":null}}" ^ repeat_json (99, "") ^ "]"
 
-val t0 = epoch ()
+val t0 = Time.to_epoch_ms (Time.now ())
 
 val parsed_large = Json.parse large
 
-val t1 = epoch ()
+val t1 = Time.to_epoch_ms (Time.now ())
 
 val _ =
   case parsed_large of
-      Json.JArray items => println ("\nParsed " ^ int_to_string (List.length items) ^ " items")
-    | _ => println "ERROR"
+      Json.JArray items => Stdio.println ("\nParsed " ^ Int.to_string (List.length items) ^ " items")
+    | _ => Stdio.println "ERROR"
 
 val serialized_large = Json.to_string parsed_large
 
-val t2 = epoch ()
+val t2 = Time.to_epoch_ms (Time.now ())
 
-val _ = println ("JSON length: " ^ int_to_string (string_length serialized_large) ^ " chars")
+val _ = Stdio.println ("JSON length: " ^ Int.to_string (String.length serialized_large) ^ " chars")
 
-val _ = println ("Parse + serialize completed (epoch resolution is 1s, so <1s means fast)")
+val _ = Stdio.println ("Parse + serialize completed (epoch resolution is 1s, so <1s means fast)")

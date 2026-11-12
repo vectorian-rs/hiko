@@ -1,31 +1,34 @@
 (* json.hml -- Demonstrates JSON builtins *)
 import Std.List
+import Std.Int
+import Std.Json
+import Std.Stdio
 
 val data = "{\"name\": \"hiko\", \"version\": \"0.2.0\", \"features\": [\"effects\", \"types\", \"vm\"], \"repo\": {\"url\": \"github.com/vectorian-rs/hiko\", \"stars\": 42}}"
 
 (* Get a top-level field *)
-val name = json_get (data, "name")
+val name = Json.get "name" data
 
-val _ = println ("name: " ^ name)
+val _ = Stdio.println ("name: " ^ name)
 
 (* Get a nested field with dot notation *)
-val url = json_get (data, "repo.url")
+val url = Json.get "repo.url" data
 
-val _ = println ("repo url: " ^ url)
+val _ = Stdio.println ("repo url: " ^ url)
 
 (* Get array element by index *)
-val feat = json_get (data, "features.1")
+val feat = Json.get "features.1" data
 
-val _ = println ("feature[1]: " ^ feat)
+val _ = Stdio.println ("feature[1]: " ^ feat)
 
 (* Get all keys *)
-val keys = json_keys data
+val keys = Json.keys data
 
-val _ = println ("keys: " ^ int_to_string (List.length keys))
+val _ = Stdio.println ("keys: " ^ Int.to_string (List.length keys))
 
-val _ = List.map (fn k => println ("  " ^ k)) keys
+val _ = List.map (fn k => Stdio.println ("  " ^ k)) keys
 
 (* Get array length *)
-val n = json_length "[1,2,3,4,5]"
+val n = Json.length "[1,2,3,4,5]"
 
-val _ = println ("array length: " ^ int_to_string n)
+val _ = Stdio.println ("array length: " ^ Int.to_string n)

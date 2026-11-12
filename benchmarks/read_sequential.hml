@@ -2,8 +2,14 @@
  * async request to the I/O backend, so this measures the round trip from
  * request to resumed process. Needs a policy that allows read_file in the
  * repository root. *)
-fun reads (n, acc) = if n = 0 then acc else reads (n - 1, acc + string_length (read_file "README.md"))
+import Std.Fiber
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+import Std.String
 
-val total = await_process (spawn (fn () => reads (1000, 0)))
+fun reads (n, acc) = if n = 0 then acc else reads (n - 1, acc + String.length (Filesystem.read_text "README.md"))
 
-val _ = println ("read_sequential = " ^ int_to_string total)
+val total = Fiber.join_or_fail (Fiber.spawn (fn () => reads (1000, 0)))
+
+val _ = Stdio.println ("read_sequential = " ^ Int.to_string total)

@@ -20,23 +20,30 @@
  *   ./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy tools/run_all.hml
  *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
+import Std.Env
+import Std.Exec
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+import Std.String
+import Std.System
 
-val examples = glob "examples/*.hml"
+val examples = Filesystem.glob_matches "examples/*.hml"
 
-val cwd = getenv "PWD"
+val cwd = Env.get "PWD"
 
 val cwd_prefix = cwd ^ "/"
 
 (* Skip examples that are intentionally failing or externally flaky. *)
 val skip = ["examples/cycle_a.hml", "examples/cycle_b.hml", "examples/should_fail_io_stdout.hml", "examples/should_fail_io_stdin.hml", "examples/should_fail_io_read_file.hml", "examples/should_fail_io_read_file_bytes.hml", "examples/should_fail_io_write_file.hml", "examples/should_fail_io_list_dir.hml", "examples/should_fail_io_glob.hml", "examples/should_fail_io_walk_dir.hml"]
 
-fun should_skip file = List.any (fn s => ends_with (file, s)) skip
+fun should_skip file = List.any (fn s => String.ends_with s file) skip
 
-fun display_name file = if starts_with (file, cwd_prefix) then substring (file, string_length cwd_prefix, string_length file - string_length cwd_prefix) else file
+fun display_name file = if String.starts_with cwd_prefix file then String.substring (String.length cwd_prefix) (String.length file - String.length cwd_prefix) file else file
 
 fun failure_suffix stderr = let
-    val msg = trim stderr
+    val msg = String.trim stderr
   in
     if msg = "" then "" else ": " ^ msg
   end
@@ -45,15 +52,15 @@ val runtime_runner_root = "./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-
 
 val runtime_runner_local = "./target/release/hiko-vm-hiko-run-all-policy"
 
-fun example_exec file = if file_exists runtime_runner_root then (runtime_runner_root, [file]) else if file_exists runtime_runner_local then (runtime_runner_local, [file]) else ("./target/release/hiko-cli", ["run", file])
+fun example_exec file = if Filesystem.exists runtime_runner_root then (runtime_runner_root, [file]) else if Filesystem.exists runtime_runner_local then (runtime_runner_local, [file]) else ("./target/release/hiko-cli", ["run", file])
 
 fun run_example file = let
     val name = display_name file
     val t0 = monotonic_ms ()
     val (command, args) = example_exec file
-    val (code, _, stderr) = exec (command, args)
+    val (code, _, stderr) = Exec.run command args
     val elapsed = monotonic_ms () - t0
-    val _ = if code = 0 then println ("  PASS  " ^ name ^ " (" ^ int_to_string elapsed ^ " ms)") else println ("  FAIL  " ^ name ^ " (" ^ int_to_string elapsed ^ " ms)" ^ failure_suffix stderr)
+    val _ = if code = 0 then Stdio.println ("  PASS  " ^ name ^ " (" ^ Int.to_string elapsed ^ " ms)") else Stdio.println ("  FAIL  " ^ name ^ " (" ^ Int.to_string elapsed ^ " ms)" ^ failure_suffix stderr)
   in
     if code = 0 then (1, 0, elapsed) else (1, 1, elapsed)
   end
@@ -61,7 +68,7 @@ fun run_example file = let
 fun run_examples files run skipped failed child_ms = case files of
       [] => (run, skipped, failed, child_ms)
     | file :: rest => if should_skip file then let
-        val _ = println ("  SKIP  " ^ display_name file)
+        val _ = Stdio.println ("  SKIP  " ^ display_name file)
       in
         run_examples rest run (skipped + 1) failed child_ms
       end else let
@@ -70,7 +77,7 @@ fun run_examples files run skipped failed child_ms = case files of
         run_examples rest (run + run_inc) skipped (failed + fail_inc) (child_ms + elapsed)
       end
 
-val _ = println "Running examples..."
+val _ = Stdio.println "Running examples..."
 
 val harness_start = monotonic_ms ()
 
@@ -78,12 +85,12 @@ val (run_count, skipped_count, failed_count, child_ms) = run_examples examples 0
 
 val wall_ms = monotonic_ms () - harness_start
 
-val _ = println ""
+val _ = Stdio.println ""
 
-val _ = println ("Summary: " ^ int_to_string run_count ^ " run, " ^ int_to_string skipped_count ^ " skipped, " ^ int_to_string failed_count ^ " failed")
+val _ = Stdio.println ("Summary: " ^ Int.to_string run_count ^ " run, " ^ Int.to_string skipped_count ^ " skipped, " ^ Int.to_string failed_count ^ " failed")
 
-val _ = println ("Child runtime: " ^ int_to_string child_ms ^ " ms")
+val _ = Stdio.println ("Child runtime: " ^ Int.to_string child_ms ^ " ms")
 
-val _ = println ("Wall clock: " ^ int_to_string wall_ms ^ " ms")
+val _ = Stdio.println ("Wall clock: " ^ Int.to_string wall_ms ^ " ms")
 
-val _ = if failed_count = 0 then () else panic (int_to_string failed_count ^ " example(s) failed")
+val _ = if failed_count = 0 then () else System.panic (Int.to_string failed_count ^ " example(s) failed")

@@ -1,7 +1,11 @@
 (* Recursively walk a directory and print all files *)
+import Std.Filesystem
+import Std.Path
+import Std.Stdio
+
 fun walk dir =
   let
-    val entries = list_dir dir
+    val entries = Filesystem.list_entries dir
   in
     walk_entries dir entries
   end
@@ -10,8 +14,8 @@ and walk_entries dir entries =
       [] => ()
     | name :: rest =>
       let
-        val full = path_join (dir, name)
-        val _ = if is_dir full then walk full else println full
+        val full = Path.join [dir, name]
+        val _ = if Filesystem.is_directory full then walk full else Stdio.println full
       in
         walk_entries dir rest
       end

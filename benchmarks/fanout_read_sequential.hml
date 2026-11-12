@@ -1,14 +1,20 @@
 (* Fan-out of sequential I/O: 32 processes each read README.md 100 times in
  * sequence. Needs a policy that allows read_file in the repository root. *)
-fun reads (n, acc) = if n = 0 then acc else reads (n - 1, acc + string_length (read_file "README.md"))
+import Std.Fiber
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+import Std.String
 
-fun spawn_all (n, acc) = if n = 0 then acc else spawn_all (n - 1, spawn (fn () => reads (100, 0)) :: acc)
+fun reads (n, acc) = if n = 0 then acc else reads (n - 1, acc + String.length (Filesystem.read_text "README.md"))
+
+fun spawn_all (n, acc) = if n = 0 then acc else spawn_all (n - 1, Fiber.spawn (fn () => reads (100, 0)) :: acc)
 
 fun await_all (pids, acc : int) =
   case pids of
       [] => acc
-    | pid :: rest => await_all (rest, acc + await_process pid)
+    | pid :: rest => await_all (rest, acc + Fiber.join_or_fail pid)
 
 val total = await_all (spawn_all (32, []), 0)
 
-val _ = println ("fanout_read_sequential = " ^ int_to_string total)
+val _ = Stdio.println ("fanout_read_sequential = " ^ Int.to_string total)

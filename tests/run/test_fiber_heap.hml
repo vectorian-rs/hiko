@@ -1,4 +1,7 @@
-use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+import Std.Fiber
+import Std.Stdio
+import Std.String
+import Std.Testing
 
 fun build n acc = if n = 0 then acc else build (n - 1) (n :: acc)
 
@@ -7,9 +10,9 @@ val child = Fiber.spawn (fn () => build 200 [])
 val heap_status =
   case Fiber.join child of
       Ok _ => 0
-    | Err err => if string_contains (Fiber.render_error err, "heap limit exceeded: ") then 1 else 0
+    | Err err => if String.contains "heap limit exceeded: " (Fiber.render_error err) then 1 else 0
     | _ => 0
 
-val _ = assert_eq (heap_status, 1, "heap limit exceeded")
+val _ = Testing.equal heap_status 1 "heap limit exceeded"
 
-val _ = println "fiber heap tests passed"
+val _ = Stdio.println "fiber heap tests passed"

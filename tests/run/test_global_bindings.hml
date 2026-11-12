@@ -1,51 +1,52 @@
 use "./global_bindings/used.hml"
 import Std.Option
+import Std.Testing
 
 val imported = 3
 val imported = 4
-val _ = assert_eq (read_imported (), 2, "use preserves lexical bindings")
+val _ = Testing.equal (read_imported ()) 2 "use preserves lexical bindings"
 
 val x = 1
 val x = 2
 fun earlier () = x
 val x = 3
 val x = 4
-val _ = assert_eq (earlier (), 2, "repeated shadowing preserves earlier function")
+val _ = Testing.equal (earlier ()) 2 "repeated shadowing preserves earlier function"
 val reader = fn () => x
 val x = 5
 val x = 6
-val _ = assert_eq (reader (), 4, "generic closure keeps its global")
+val _ = Testing.equal (reader ()) 4 "generic closure keeps its global"
 
 val n = 1
 val n = n + 1
 val n = n + 1
 val n = n + 1
-val _ = assert_eq (n, 4, "RHS reads the preceding binding")
+val _ = Testing.equal n 4 "RHS reads the preceding binding"
 
 fun f n = n + 1
 fun call_old n = f n
 val old_function = f
 fun f n = n + 2
 fun f n = n + 3
-val _ = assert_eq (call_old 10, 11, "direct call keeps its proto")
-val _ = assert_eq (old_function 10, 11, "copied function keeps its proto")
-val _ = assert_eq (f 10, 13, "latest function is callable")
+val _ = Testing.equal (call_old 10) 11 "direct call keeps its proto"
+val _ = Testing.equal (old_function 10) 11 "copied function keeps its proto"
+val _ = Testing.equal (f 10) 13 "latest function is callable"
 
 structure Box = struct val value = 1 end
 structure Box = struct val value = 2 end
 val read_box = fn () => Box.value
 structure Box = struct val value = 3 end
 structure Box = struct val value = 4 end
-val _ = assert_eq (read_box (), 2, "structure value retains its identity")
+val _ = Testing.equal (read_box ()) 2 "structure value retains its identity"
 
 val none = Option.None
 fun option_value opt = Option.with_default 7 opt
 structure Option = struct fun with_default n opt = n + 1 end
 structure Option = struct fun with_default n opt = n + 2 end
-val _ = assert_eq (option_value none, 7, "named import keeps its function")
+val _ = Testing.equal (option_value none) 7 "named import keeps its function"
 
 fun show n = int_to_string n
 val int_to_string = fn n => "first"
 val int_to_string = fn n => "second"
-val _ = assert_eq (show 42, "42", "earlier builtin is preserved")
-val _ = assert_eq (int_to_string 42, "second", "builtin name can be rebound")
+val _ = Testing.equal (show 42) "42" "earlier builtin is preserved"
+val _ = Testing.equal (int_to_string 42) "second" "builtin name can be rebound"
