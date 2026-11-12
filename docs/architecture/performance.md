@@ -40,6 +40,19 @@ Scripts run under the `benchmark` policy (`policies/benchmark.policy.toml`),
 which has no fuel limit. `hiko run --workers N` sets the threaded runtime's
 worker count; the default is 1.
 
+### Comparing optimization datasets
+
+Retain absolute baseline and candidate medians as well as their ratio: an
+unchanged ratio can conceal both versions becoming slower. Fix the sample
+count, warmup policy, workload order and machine conditions before collecting
+a dataset. A run with a different protocol is a separate experiment, not a
+replacement for a failed acceptance run.
+
+Keep changed-source and disabled-optimization controls distinct. Record the
+source and binary identities of each control; a comparison with one change
+disabled does not establish performance against an older collector or a
+previous release. Preserve failed and refused attempts with their provenance.
+
 ## Exact-commit VM gate
 
 ```bash
@@ -699,6 +712,16 @@ not CPU timing, and failed blocks are not completed-work counters. This is not a
 moving/resumable collector or a native allocator retry. Performance comparisons
 must pair current-baseline libraries/toolchain/profiles, omit setup, and keep
 counter-free release timings separate from quota/fuel outcome tests.
+
+The interpreter keeps one canonical remaining-credit counter on the dispatch
+hot path, separate from cold active-entry metadata and its original granting
+budget. An uncapped entry still has an active marker, but no remaining counter.
+Entry exit, unwind, fuel replacement and VM drop share once-only settlement;
+children inherit the persistent budget, not transient credit. This representation
+does not change reservation size, register-instruction partial payment or GC
+charges, and is not chunked replenishment. A performance benefit still requires
+matched counter-free measurements under the fixed acceptance protocol; the
+representation alone is not evidence that an earlier failed cell now passes.
 
 ### What the VM executes (opcode counts, #152)
 
