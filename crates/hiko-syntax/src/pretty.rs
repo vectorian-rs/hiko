@@ -332,11 +332,6 @@ fn pretty_decl(
             }
             buf.push(')');
         }
-        DeclKind::Use(path) => {
-            write_indent(buf, indent);
-            buf.push_str("use ");
-            write_escaped_string(buf, path);
-        }
         DeclKind::Signature(sig) => {
             write_indent(buf, indent);
             writeln!(buf, "signature {} = sig", interner.resolve(sig.name)).unwrap();

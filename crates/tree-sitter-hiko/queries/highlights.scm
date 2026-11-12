@@ -1,4 +1,3 @@
-"use" @keyword
 "import" @keyword
 "val" @keyword
 "rec" @keyword

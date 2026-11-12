@@ -77,7 +77,6 @@ fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
         | DeclKind::TypeAlias(_)
         | DeclKind::Import(_)
         | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
         | DeclKind::AbstractType(_)
         | DeclKind::ExportVal { .. }
         | DeclKind::Effect(_, _)) => kind,
@@ -211,7 +210,6 @@ fn collect_decl_exports(
         DeclKind::Signature(_)
         | DeclKind::Import(_)
         | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
         | DeclKind::Structure { .. }
         | DeclKind::AbstractType(_)
         | DeclKind::ExportVal { .. } => {}
@@ -458,7 +456,6 @@ fn rename_module_decl(
         }
         kind @ (DeclKind::Import(_)
         | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
         | DeclKind::AbstractType(_)
         | DeclKind::ExportVal { .. }) => vec![Decl {
             kind,

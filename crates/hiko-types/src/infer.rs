@@ -1194,7 +1194,7 @@ impl InferCtx {
                 self.end_local_scope(result.is_ok());
                 result
             }
-            DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) | DeclKind::Use(_) => Ok(()),
+            DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) => Ok(()),
             DeclKind::Signature(_) => unreachable!("signatures must be removed before inference"),
             DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference")
