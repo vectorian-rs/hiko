@@ -713,6 +713,16 @@ moving/resumable collector or a native allocator retry. Performance comparisons
 must pair current-baseline libraries/toolchain/profiles, omit setup, and keep
 counter-free release timings separate from quota/fuel outcome tests.
 
+The interpreter keeps one canonical remaining-credit counter on the dispatch
+hot path, separate from cold active-entry metadata and its original granting
+budget. An uncapped entry still has an active marker, but no remaining counter.
+Entry exit, unwind, fuel replacement and VM drop share once-only settlement;
+children inherit the persistent budget, not transient credit. This representation
+does not change reservation size, register-instruction partial payment or GC
+charges, and is not chunked replenishment. A performance benefit still requires
+matched counter-free measurements under the fixed acceptance protocol; the
+representation alone is not evidence that an earlier failed cell now passes.
+
 ### What the VM executes (opcode counts, #152)
 
 Counted with the `opcode-stats` feature (`HIKO_OPCODE_STATS=<path>`) on

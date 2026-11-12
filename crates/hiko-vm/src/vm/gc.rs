@@ -5,7 +5,8 @@ use crate::heap::{GcError, GcStage, gc_units};
 /// A split borrow keeps roots/heap available while the debit owns only credit.
 struct GcDebit<'a> {
     forced: bool,
-    lease: &'a mut Option<FuelLease>,
+    remaining: &'a mut Option<u64>,
+    entry: &'a Option<ActiveFuel>,
     budget: &'a Option<Arc<crate::budget::SharedBudget>>,
     #[cfg(test)]
     fault: &'a mut Option<GcStage>,
@@ -27,8 +28,8 @@ impl GcDebit<'_> {
             }
         }
         if self.forced {
-            if let Some(lease) = self.lease {
-                lease.debit_gc(units).map_err(GcError)?;
+            if let Some(entry) = self.entry {
+                entry.debit_gc(self.remaining, units).map_err(GcError)?;
             } else if let Some(budget) = self.budget {
                 // Dispatch always holds an entry lease; only direct collection
                 // calls without one (tests) charge the grant here.
@@ -134,7 +135,8 @@ impl VM {
         let result = (|| {
             let mut debit = GcDebit {
                 forced,
-                lease: &mut self.fuel_lease,
+                remaining: &mut self.fuel_remaining,
+                entry: &self.fuel_entry,
                 budget: &self.fuel_budget,
                 #[cfg(test)]
                 fault: &mut self.gc_test_fault,

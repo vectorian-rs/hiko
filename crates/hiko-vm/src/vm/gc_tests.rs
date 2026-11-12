@@ -1,4 +1,4 @@
-//! Abstract-work, transaction and entry-lifetime regressions for #201.
+//! Abstract-work, transaction and entry-lifetime regressions for #201/#242.
 use super::tests::compile_vm as machine;
 use super::*;
 use crate::heap::GcStage;
@@ -8,64 +8,79 @@ fn garbage(vm: &mut VM, count: usize) {
         vm.heap.alloc(HeapObject::String("garbage".into())).unwrap();
     }
 }
-fn leased(budget: &Arc<crate::budget::SharedBudget>, requested: u64) -> FuelLease {
-    FuelLease {
-        remaining: Some(budget.reserve_up_to(requested)),
+fn reserved_vm(budget: &Arc<crate::budget::SharedBudget>, requested: u64) -> VM {
+    let mut vm = machine("val unused = 0");
+    vm.fuel_remaining = Some(budget.reserve_up_to(requested));
+    vm.fuel_entry = Some(ActiveFuel {
         grant: Some(budget.clone()),
-    }
+    });
+    vm
+}
+fn debit(vm: &mut VM, cost: Option<u64>) -> Result<(), &'static str> {
+    vm.fuel_entry
+        .as_ref()
+        .unwrap()
+        .debit_gc(&mut vm.fuel_remaining, cost)
+}
+fn assert_settled(vm: &VM) {
+    assert!(vm.fuel_remaining.is_none());
+    assert!(vm.fuel_entry.is_none());
 }
 #[test]
 fn credit_100_10_20_refunds_70_and_never_double_charges() {
     let budget = crate::budget::SharedBudget::new(1000);
-    let mut lease = leased(&budget, 100);
-    lease.debit_gc(Some(10)).unwrap();
-    lease.debit_gc(Some(20)).unwrap();
-    assert_eq!(lease.remaining, Some(70));
+    let mut vm = reserved_vm(&budget, 100);
+    debit(&mut vm, Some(10)).unwrap();
+    debit(&mut vm, Some(20)).unwrap();
+    assert_eq!(vm.fuel_remaining, Some(70));
     assert_eq!(budget.used(), 100);
-    drop(lease);
+    drop(vm);
     assert_eq!(budget.used(), 30);
 }
 #[test]
 fn deficit_is_atomic_before_local_credit_and_only_unspent_grant_refunds() {
     let budget = crate::budget::SharedBudget::new(105);
-    let mut lease = leased(&budget, 100);
-    assert!(lease.debit_gc(Some(110)).is_err());
-    assert_eq!(lease.remaining, Some(100));
+    let mut vm = reserved_vm(&budget, 100);
+    assert!(debit(&mut vm, Some(110)).is_err());
+    assert_eq!(vm.fuel_remaining, Some(100));
     assert_eq!(budget.used(), 100);
-    drop(lease);
+    drop(vm);
     assert_eq!(budget.used(), 0);
     let budget = crate::budget::SharedBudget::new(200);
-    let mut lease = leased(&budget, 10);
-    lease.debit_gc(Some(15)).unwrap();
-    assert_eq!(lease.remaining, Some(0));
-    drop(lease);
+    let mut vm = reserved_vm(&budget, 10);
+    debit(&mut vm, Some(15)).unwrap();
+    assert_eq!(vm.fuel_remaining, Some(0));
+    drop(vm);
     assert_eq!(budget.used(), 15);
 }
 #[test]
 fn credit_exact_zero_overflow_and_no_cap_quantum_are_distinct() {
     let budget = crate::budget::SharedBudget::new(u64::MAX);
-    let mut lease = leased(&budget, u64::MAX);
-    assert!(lease.debit_gc(None).is_err());
-    assert_eq!(lease.remaining, Some(u64::MAX));
-    lease.debit_gc(Some(u64::MAX)).unwrap();
-    assert_eq!(lease.remaining, Some(0));
-    assert!(lease.debit_gc(Some(1)).is_err());
-    lease.debit_gc(Some(0)).unwrap();
-    drop(lease);
+    let mut vm = reserved_vm(&budget, u64::MAX);
+    assert!(debit(&mut vm, None).is_err());
+    assert_eq!(vm.fuel_remaining, Some(u64::MAX));
+    debit(&mut vm, Some(u64::MAX)).unwrap();
+    assert_eq!(vm.fuel_remaining, Some(0));
+    assert!(debit(&mut vm, Some(1)).is_err());
+    debit(&mut vm, Some(0)).unwrap();
+    drop(vm);
     assert_eq!(budget.used(), u64::MAX);
-    let mut quantum = FuelLease {
-        remaining: Some(1),
-        grant: None,
-    };
-    quantum.debit_gc(Some(20)).unwrap();
-    assert_eq!(quantum.remaining, Some(0));
-    quantum.debit_gc(None).unwrap();
-    let mut unlimited = FuelLease {
-        remaining: None,
-        grant: None,
-    };
-    unlimited.debit_gc(None).unwrap();
-    assert_eq!(unlimited.remaining, None);
+    let mut quantum = machine("val unused = 0");
+    {
+        let entry = FuelEntry::new(&mut quantum, Some(1)).unwrap();
+        debit(entry.vm, Some(20)).unwrap();
+        assert_eq!(entry.vm.fuel_remaining, Some(0));
+        debit(entry.vm, None).unwrap();
+    }
+    assert_settled(&quantum);
+    let mut unlimited = machine("val unused = 0");
+    {
+        let entry = FuelEntry::new(&mut unlimited, None).unwrap();
+        debit(entry.vm, None).unwrap();
+        assert_eq!(entry.vm.fuel_remaining, None);
+        assert!(entry.vm.fuel_entry.is_some());
+    }
+    assert_settled(&unlimited);
 }
 #[test]
 fn sibling_leases_share_one_cap_and_refund_once() {
@@ -76,9 +91,9 @@ fn sibling_leases_share_one_cap_and_refund_once() {
             let budget = &budget;
             let barrier = &barrier;
             scope.spawn(move || {
-                let mut lease = leased(budget, 60);
+                let mut vm = reserved_vm(budget, 60);
                 barrier.wait();
-                lease.debit_gc(Some(40)).unwrap();
+                debit(&mut vm, Some(40)).unwrap();
             });
         }
     });
@@ -101,7 +116,7 @@ fn actual_run_and_slice_unwind_refund_with_vm_surviving() {
             }))
             .is_err()
         );
-        assert!(vm.fuel_lease.is_none());
+        assert_settled(&vm);
         assert!(original.used() > 0 && original.used() < 100);
         let spent = original.used();
         vm.set_fuel(500);
@@ -116,17 +131,51 @@ fn lease_refunds_the_original_arc_even_if_vm_budget_is_replaced() {
     let original = vm.fuel_budget().unwrap().clone();
     {
         let entry = FuelEntry::new(&mut vm, Some(100)).unwrap();
-        entry
-            .vm
-            .fuel_lease
-            .as_mut()
-            .unwrap()
-            .debit_gc(Some(30))
-            .unwrap();
+        debit(entry.vm, Some(30)).unwrap();
         entry.vm.fuel_budget = Some(crate::budget::SharedBudget::new(1000));
     }
+    assert_settled(&vm);
     assert_eq!(original.used(), 30);
     assert_eq!(vm.fuel_budget().unwrap().used(), 0);
+}
+#[test]
+fn set_fuel_and_repeated_settlement_clear_both_fields_and_refund_once() {
+    let mut vm = machine("val unused = 0");
+    vm.set_fuel(100);
+    let original = vm.fuel_budget().unwrap().clone();
+    {
+        let entry = FuelEntry::new(&mut vm, Some(100)).unwrap();
+        debit(entry.vm, Some(30)).unwrap();
+        entry.vm.set_fuel(1000);
+        assert_settled(entry.vm);
+        assert_eq!(original.used(), 30);
+        // Entry Drop will call the same helper again, without a second refund.
+        entry.vm.settle_fuel_entry();
+    }
+    assert_settled(&vm);
+    assert_eq!(original.used(), 30);
+    assert_eq!(vm.fuel_budget().unwrap().used(), 0);
+    drop(vm);
+    assert_eq!(original.used(), 30);
+}
+#[test]
+fn active_uncapped_gc_does_not_debit_a_replacement_budget() {
+    let mut vm = machine("val unused = 0");
+    garbage(&mut vm, 1);
+    let replacement = crate::budget::SharedBudget::new(1000);
+    {
+        let entry = FuelEntry::new(&mut vm, None).unwrap();
+        assert!(entry.vm.fuel_remaining.is_none());
+        assert!(entry.vm.fuel_entry.is_some());
+        entry.vm.fuel_budget = Some(replacement.clone());
+        entry.vm.gc_collect_checked(None, &[], true).unwrap();
+        assert_eq!(replacement.used(), 0);
+    }
+    assert_settled(&vm);
+    garbage(&mut vm, 1);
+    // Without an active entry, direct forced GC must charge the budget.
+    vm.gc_collect_checked(None, &[], true).unwrap();
+    assert!(replacement.used() > 0);
 }
 fn root_fixture() -> (VM, GcRef, Arc<crate::sendable::SendableValue>) {
     let mut vm = machine("val unused = 0");
@@ -345,7 +394,7 @@ fn ordinary_boundary_fault_overrides_yield_but_done_never_adds_gc() {
     assert!(
         matches!(vm.run_slice(1), RunResult::Failed(ProcessFailure::RuntimeError(ref m)) if m == "GC scratch allocation failed")
     );
-    assert!(vm.fuel_lease.is_none());
+    assert_settled(&vm);
     assert!(vm.fuel_budget().unwrap().used() < 1000);
     let mut done = machine("val value = 1");
     garbage(&mut done, 300);
@@ -394,7 +443,7 @@ fn forced_object_and_byte_gc_use_reserved_credit_exactly_in_run_and_slice() {
                 .sum();
             assert!(gc > 0);
             assert_eq!(vm.fuel_budget().unwrap().used(), opcodes + gc);
-            assert!(vm.fuel_lease.is_none());
+            assert_settled(&vm);
             assert!(vm.gc_failure.is_none());
             let exact = opcodes + gc;
             let mut equal = force_machine(bytes, exact);
@@ -429,6 +478,8 @@ fn quantum_alone_and_persistent_deficit_can_overrun_synchronously_then_yield() {
         if persistent {
             assert!(vm.fuel_budget().unwrap().used() > 3);
         }
+        assert_settled(&vm);
         assert!(matches!(vm.run_slice(1000), RunResult::Done));
+        assert_settled(&vm);
     }
 }
