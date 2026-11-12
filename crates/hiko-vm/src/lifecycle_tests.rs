@@ -547,6 +547,20 @@ pub(crate) struct StuckIoBackend {
     pub(crate) cancelled: Mutex<Vec<IoToken>>,
 }
 
+impl StuckIoBackend {
+    /// Every request the backend accepted was cancelled. (A request can be
+    /// cancelled without ever being registered, if the cancel arrives while
+    /// the child is parking.)
+    pub(crate) fn assert_all_registered_cancelled(&self) {
+        let registered = self.registered.lock().unwrap().clone();
+        let cancelled = self.cancelled.lock().unwrap().clone();
+        assert!(
+            registered.iter().all(|token| cancelled.contains(token)),
+            "registered {registered:?}, cancelled {cancelled:?}"
+        );
+    }
+}
+
 impl IoBackend for StuckIoBackend {
     fn register(&self, token: IoToken, _request: IoRequest) -> Result<(), String> {
         self.registered.lock().unwrap().push(token);
@@ -583,15 +597,7 @@ fn cancelling_a_process_blocked_on_io_wakes_its_parent_and_cancels_the_io() {
         assert_eq!(report.output, vec!["cancelled\n"], "run {run}");
         assert_eq!(report.status, "Done", "run {run}");
         assert!(report.leftovers.is_empty(), "run {run}: {report:?}");
-        // Every request the backend accepted was cancelled. (A request can be
-        // cancelled without ever being registered, if the cancel arrives
-        // while the child is parking.)
-        let registered = backend.registered.lock().unwrap().clone();
-        let cancelled = backend.cancelled.lock().unwrap().clone();
-        assert!(
-            registered.iter().all(|token| cancelled.contains(token)),
-            "run {run}: registered {registered:?}, cancelled {cancelled:?}"
-        );
+        backend.assert_all_registered_cancelled();
     }
 }
 
