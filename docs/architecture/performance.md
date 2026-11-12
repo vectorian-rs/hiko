@@ -700,6 +700,23 @@ moving/resumable collector or a native allocator retry. Performance comparisons
 must pair current-baseline libraries/toolchain/profiles, omit setup, and keep
 counter-free release timings separate from quota/fuel outcome tests.
 
+### Rooted allocation safepoints (#206)
+
+Allocation preflight is per logical instruction, including the complete recursive
+closure group, not per member. Neither the collector nor its cadence changes.
+Compare counter-free concatenation/local-recursion runs in matched, interleaved
+stack and register-enabled profiles; allocating functions still use fallback.
+A translated caller entering that fallback is not an all-translated allocation
+claim. Unexplained regressions greater than 1% remain failures, not exemptions.
+
+For memory, use separate matched untimed, single-heap, whole-fixture lifetime
+estimated peaks: `abs(Pcandidate - P201) <= E`. `E` is the maximum complete
+logical-instruction footprint, including all group members and spilled-field
+capacity. Keep setup, roots, policy, limits and the lifetime window identical;
+report setup domination and never subtract lifetime peaks or widen the envelope
+after observing results. These are neither RSS nor native/reachable-byte proofs.
+Missing measurements or divergent outcomes remain unmet acceptance.
+
 ### What the VM executes (opcode counts, #152)
 
 Counted with the `opcode-stats` feature (`HIKO_OPCODE_STATS=<path>`) on

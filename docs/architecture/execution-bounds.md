@@ -135,11 +135,10 @@ claims; this does not add native-allocation retry or change byte accounting.
 
 GC may run:
 
-- before allocating a heap object if the adaptive threshold says collection is
-  due;
-- before allocating a heap object if the allocation would exceed heap/object or
-  byte limits, giving unreachable objects a chance to be reclaimed before a
-  controlled limit error;
+- at rooted allocation-instruction safepoints when the adaptive threshold is due;
+- at those safepoints when the whole instruction's object count or estimated
+  bytes would exceed limits, before scheduled collection is considered; this
+  gives garbage a chance to be reclaimed before a controlled limit error;
 - at slice/runtime-request boundaries when boundary collection is due.
 
 ### Root set
@@ -150,8 +149,16 @@ The VM root set includes:
 - call-frame captures;
 - globals;
 - handler captures, including handlers hidden while a provider clause runs;
-- string cache entries;
-- request-local extra roots for objects being allocated.
+- string cache entries.
+
+String-cache misses, concatenation, tuple/data/cons construction and single or
+recursive-group closure construction preflight before allocation. Field operands
+and capture sources remain rooted until preflight completes. Concatenation first
+finishes its owned payload and consumes its inputs; it never reads them after GC.
+Recursive groups preflight their complete count/bytes once, then construct and
+patch sequentially without GC or yielding. Later shared-budget charges remain
+fallible; this is neither reservation nor atomic group admission. `VM::alloc`
+never collects, including native/deserialization callers.
 
 The runtime does not compute GC roots. Root discovery stays inside the VM layer.
 
@@ -175,7 +182,9 @@ a persistent fuel failure. Reservations can temporarily starve siblings.
 
 Paid blocks cover arena passes, root containers and raw slots (including scalar
 and None slots), GcRef attempts including duplicates, work-item pops and outgoing
-raw slots. Pending-object slots are paid before constructing extra roots. Before
+raw slots. Allocation operands are scanned in their existing rooted containers,
+not a temporary pending-object root list. This changes finite-fuel thresholds;
+pinned-fuel fixtures must document their changes, not silently loosen them. Before
 commit, prepay `2 * arena.len + sent.capacity + sent_bytes + 1`; `sent_bytes` is
 cached `footprint()` including scalar nodes, not payload byte estimates. Reserve
 free-list scratch capacity before commit. Abort may leave scratch marks, but

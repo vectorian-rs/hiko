@@ -247,7 +247,6 @@ pub struct Heap {
 /// Private block labels also let regression tests refuse an exact stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GcStage {
-    PendingObject,
     Stack,
     Globals,
     Frames,

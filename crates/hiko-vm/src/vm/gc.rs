@@ -69,24 +69,51 @@ impl VM {
             message: message.clone(),
         }
     }
+    /// Call only while all references needed by the instruction are VM roots.
+    /// This checks the complete instruction, not a reservation: shared charges
+    /// can still fail in any subsequent allocation.
+    pub(super) fn allocation_safepoint(
+        &mut self,
+        objects: usize,
+        bytes: usize,
+    ) -> Result<(), RuntimeError> {
+        self.gc_failed()?;
+        let object_limit = |heap: &Heap| {
+            heap.max_objects().filter(|&limit| {
+                heap.live_count()
+                    .checked_add(objects)
+                    .is_none_or(|live| live > limit)
+            })
+        };
+        // Whole-instruction limit pressure wins even when cadence is also due.
+        let forced = self.heap.allocation_would_exceed_limits(bytes)
+            || (objects > 1 && object_limit(&self.heap).is_some());
+        if forced || self.heap.should_collect() {
+            self.gc_collect_checked(&[], forced)?;
+        }
+        if let Some(limit) = object_limit(&self.heap) {
+            return Err(RuntimeError {
+                message: crate::heap::HeapLimitExceeded::Objects {
+                    live: self.heap.live_count(),
+                    limit,
+                }
+                .to_string(),
+            });
+        }
+        self.heap
+            .ensure_can_allocate_bytes(bytes)
+            .map_err(|e| RuntimeError {
+                message: e.to_string(),
+            })
+    }
     pub(super) fn alloc(&mut self, obj: HeapObject) -> Result<Value, RuntimeError> {
         self.gc_failed()?;
-        // Limit pressure wins classification even when the schedule is also due.
-        let forced = self
-            .heap
-            .allocation_would_exceed_limits(obj.estimated_bytes());
-        if forced || self.heap.should_collect() {
-            self.gc_collect_checked(Some(&obj), &[], forced)?;
-        }
         self.heap
             .alloc(obj)
             .map(Value::Heap)
             .map_err(|e| RuntimeError {
                 message: e.to_string(),
             })
-    }
-    pub(super) fn alloc_string(&mut self, s: String) -> Result<Value, RuntimeError> {
-        self.alloc(HeapObject::String(s.into()))
     }
     pub(super) fn capture_value(
         &self,
@@ -114,11 +141,9 @@ impl VM {
     }
 
     /// Prepay each container and raw length before inspecting/filtering it.
-    /// `pending` is a not-yet-allocated object whose slots are paid and whose
-    /// references are rooted alongside `extra_roots`.
+    /// Production safepoints use only VM roots; `extra_roots` supports tests.
     pub(super) fn gc_collect_checked(
         &mut self,
-        pending: Option<&HeapObject>,
         extra_roots: &[GcRef],
         forced: bool,
     ) -> Result<(), RuntimeError> {
@@ -141,17 +166,6 @@ impl VM {
                 #[cfg(test)]
                 trace: &mut self.gc_test_trace,
             };
-            let mut pending_roots = Vec::new();
-            if let Some(obj) = pending {
-                let slots = obj.raw_gc_slots();
-                if metered {
-                    debit.container(GcStage::PendingObject, slots)?;
-                }
-                pending_roots
-                    .try_reserve(slots)
-                    .map_err(|_| GcError::SCRATCH)?;
-                obj.for_each_gc_ref(|r| pending_roots.push(r));
-            }
             if metered {
                 // Keep this prepay list in sync with the roots chain below: a
                 // container missing here under-charges, one missing there
@@ -177,7 +191,7 @@ impl VM {
                 for row in &self.string_cache.rows {
                     debit.container(GcStage::Cache, row.len())?;
                 }
-                debit.container(GcStage::ExtraRoots, pending_roots.len() + extra_roots.len())?;
+                debit.container(GcStage::ExtraRoots, extra_roots.len())?;
             }
             let roots = self
                 .stack
@@ -199,7 +213,6 @@ impl VM {
                     }
                 })
                 .chain(self.string_cache.values())
-                .chain(pending_roots.iter().copied())
                 .chain(extra_roots.iter().copied());
             if metered {
                 self.heap
@@ -218,11 +231,11 @@ impl VM {
         roots: impl IntoIterator<Item = GcRef>,
     ) -> Result<(), RuntimeError> {
         let extra: Vec<GcRef> = roots.into_iter().collect();
-        self.gc_collect_checked(None, &extra, false)
+        self.gc_collect_checked(&extra, false)
     }
     pub(super) fn gc_collect_at_boundary_if_needed(&mut self) -> Result<(), RuntimeError> {
         if self.heap.should_collect_at_boundary() {
-            self.gc_collect_checked(None, &[], false)?;
+            self.gc_collect_checked(&[], false)?;
         }
         Ok(())
     }
