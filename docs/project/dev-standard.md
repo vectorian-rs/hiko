@@ -87,9 +87,11 @@ Add or update tests for:
 ### Concurrent runtime fixtures
 
 Use a deterministic blocking backend or an explicit handshake when a test
-requires a child to remain blocked until cancellation. `MockIoBackend`
-completes sleep requests immediately, regardless of the requested duration;
-a long mock sleep is not a scheduling barrier.
+requires a child to remain blocked until cancellation: `hiko-vm`'s lifecycle
+tests share `StuckIoBackend`, which never completes a request and records
+cancellations. `MockIoBackend` completes sleep requests immediately,
+regardless of the requested duration; a long mock sleep is not a scheduling
+barrier.
 
 When checking a threaded root's output, first assert or report
 `runtime.failure(pid)`. `run_to_completion()` returning `Ok` does not by

@@ -2029,19 +2029,17 @@ mod tests {
     #[test]
     fn test_stdlib_fiber_error_paths() {
         let program = compile_file(&test_program_path("test_fiber_errors.hml"));
+        // Same race as the multiworker variant: cancellation must win, so the
+        // backend never completes a sleep.
         let runtime = ThreadedRuntime::new(1)
-            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+            .with_io_backend(Arc::new(crate::lifecycle_tests::StuckIoBackend::default()));
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
-        let output = runtime.table.get_output(pid);
-        let status = runtime
-            .table
-            .processes
-            .get(&pid)
-            .map(|process| format!("{:?}", process.status))
-            .unwrap_or_else(|| "<missing>".into());
-        assert_eq!(status, "Done");
-        assert_eq!(output, vec!["fiber error tests passed\n"]);
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
+        assert_eq!(
+            runtime.table.get_output(pid),
+            vec!["fiber error tests passed\n"]
+        );
     }
 
     #[test]
@@ -2746,110 +2744,26 @@ mod tests {
         );
     }
 
-    /// This fixture requires cancellation, not a race with an immediate mock timer.
-    /// A child may also be cancelled before it ever registers its sleep.
-    #[derive(Default)]
-    struct FiberErrorIo {
-        pending: std::sync::Mutex<std::collections::HashSet<IoToken>>,
-    }
-
-    impl IoBackend for FiberErrorIo {
-        fn register(
-            &self,
-            token: IoToken,
-            request: crate::io_backend::IoRequest,
-        ) -> Result<(), String> {
-            match request {
-                crate::io_backend::IoRequest::Sleep(_) => {
-                    self.pending.lock().unwrap().insert(token);
-                    Ok(())
-                }
-                _ => Err("fiber error fixture only supports sleep".into()),
-            }
-        }
-
-        fn poll(&self) -> Vec<(IoToken, IoResult)> {
-            Vec::new()
-        }
-
-        fn cancel(&self, token: IoToken) {
-            self.pending.lock().unwrap().remove(&token);
-        }
-    }
-
-    fn assert_fiber_error_root_succeeded(runtime: &ThreadedRuntime, pid: Pid) {
-        let failure = runtime.failure(pid);
-        let process = runtime
-            .table
-            .processes
-            .get(&pid)
-            .expect("fiber error fixture root is missing");
-        assert!(
-            matches!(process.status, ProcessStatus::Done),
-            "fiber error fixture root status: {:?}; failure: {failure:?}",
-            process.status
-        );
-    }
-
-    #[test]
-    fn test_fiber_error_backend_holds_sleep_until_cancelled() {
-        use crate::io_backend::IoRequest;
-        use std::time::Duration;
-
-        let io = FiberErrorIo::default();
-        for (token, duration) in [(IoToken(1), Duration::ZERO), (IoToken(2), Duration::MAX)] {
-            io.register(token, IoRequest::Sleep(duration)).unwrap();
-        }
-        assert!(io.poll().is_empty());
-        assert_eq!(io.pending.lock().unwrap().len(), 2);
-        io.cancel(IoToken(1));
-        io.cancel(IoToken(1)); // Cancellation is idempotent, including unknown tokens.
-        io.cancel(IoToken(99));
-        assert!(io.pending.lock().unwrap().contains(&IoToken(2)));
-        assert_eq!(io.pending.lock().unwrap().len(), 1);
-        assert!(io.poll().is_empty());
-        io.cancel(IoToken(2));
-        assert!(io.pending.lock().unwrap().is_empty());
-        assert!(io.poll().is_empty());
-
-        // The ordinary mock still completes sleep immediately.
-        let immediate = crate::io_backend::MockIoBackend::new();
-        immediate
-            .register(IoToken(3), IoRequest::Sleep(Duration::MAX))
-            .unwrap();
-        assert!(matches!(
-            immediate.poll().as_slice(),
-            [(IoToken(3), IoResult::Ok { .. })]
-        ));
-    }
-
-    #[test]
-    fn test_fiber_error_root_failure_diagnostic_precedes_output() {
-        let runtime = ThreadedRuntime::new(4);
-        let pid = runtime.spawn_root(compile("val _ = panic \"fixture diagnostic\""));
-        runtime.run_to_completion().unwrap();
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_fiber_error_root_succeeded(&runtime, pid);
-        }))
-        .expect_err("a failed root must fail the status assertion");
-        let message = panic.downcast_ref::<String>().unwrap();
-        assert!(message.contains("Failed"), "{message}");
-        assert!(message.contains("fixture diagnostic"), "{message}");
-        assert!(runtime.table.get_output(pid).is_empty());
-    }
-
     #[test]
     fn test_multiworker_fiber_error_paths() {
         let program = compile_file(&test_program_path("test_fiber_errors.hml"));
-        let io = Arc::new(FiberErrorIo::default());
+        // The fixture requires cancellation, not a race with an immediate mock
+        // timer, so the backend never completes a sleep.
+        let io = Arc::new(crate::lifecycle_tests::StuckIoBackend::default());
         let runtime = ThreadedRuntime::new(4).with_io_backend(io.clone());
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
-        assert_fiber_error_root_succeeded(&runtime, pid);
+        assert!(runtime.failure(pid).is_none(), "{:?}", runtime.failure(pid));
         let output = runtime.table.get_output(pid);
         assert_eq!(output, vec!["fiber error tests passed\n"]);
-        // Zero registered sleeps is valid when cancellation wins before registration.
-        assert!(io.pending.lock().unwrap().is_empty());
+        // Every accepted request was cancelled; cancellation may also win
+        // before a sleep is ever registered.
+        let registered = io.registered.lock().unwrap().clone();
+        let cancelled = io.cancelled.lock().unwrap().clone();
+        assert!(
+            registered.iter().all(|token| cancelled.contains(token)),
+            "registered {registered:?}, cancelled {cancelled:?}"
+        );
         assert!(runtime.table.io_waiters.is_empty());
         runtime.check_invariants().unwrap();
     }

@@ -539,10 +539,12 @@ fn cancelling_a_sleeping_fiber_and_dropping_the_runtime_is_prompt() {
 }
 
 /// An I/O backend that never completes anything and records cancellations.
+/// Shared with other runtime test modules that need a child to stay blocked
+/// until cancellation: a mock sleep is not a scheduling barrier.
 #[derive(Default)]
-struct StuckIoBackend {
-    registered: Mutex<Vec<IoToken>>,
-    cancelled: Mutex<Vec<IoToken>>,
+pub(crate) struct StuckIoBackend {
+    pub(crate) registered: Mutex<Vec<IoToken>>,
+    pub(crate) cancelled: Mutex<Vec<IoToken>>,
 }
 
 impl IoBackend for StuckIoBackend {
