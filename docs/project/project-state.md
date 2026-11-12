@@ -128,13 +128,13 @@ An earlier [#198 rev 5](https://github.com/vectorian-rs/hiko/issues/198)
 implementation window expired without a freeze or PR. A separately authorized
 recovery produced [PR #244](https://github.com/vectorian-rs/hiko/pull/244),
 which the maintainer merged at `986cff1` on 2026-11-11, with final head
-`1382b24`. The exact-commit measurement gate is now implemented on `main`.
-The real supported/self/slowdown attempts recorded in that recovery were
-refused or incomplete under load and an AC-to-battery transition, not
-successful performance acceptance. Earlier workspace checks and the timeout
-fix review were at earlier heads; they are not relabeled as full final-head
-verification. Implementation merge does not turn those refusals into positive
-measurement evidence for the public cutover in #186.
+`1382b24`. The
+[exact-commit measurement gate](../architecture/performance.md#exact-commit-vm-gate)
+is now implemented on `main`. The real supported/self/slowdown attempts
+recorded in that recovery were refused or incomplete under load and an
+AC-to-battery transition. Earlier workspace checks and the timeout fix review
+ran at earlier heads; neither they nor the merge supply the measurement
+evidence the public cutover in #186 still requires.
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
 
