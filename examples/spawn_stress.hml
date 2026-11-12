@@ -13,6 +13,10 @@ import Std.Fiber
 import Std.Int
 import Std.Stdio
 import Std.Testing
+import Std.Time
+
+(* Milliseconds from the monotonic clock, for interval arithmetic. *)
+fun now_ms () = case Time.monotonic_now () of Time.Monotonic ms => ms
 
 val count = 6000
 
@@ -23,15 +27,15 @@ fun await_all pids (acc : int) =
       [] => acc
     | pid :: rest => await_all rest (acc + Fiber.join_or_fail pid)
 
-val t0 = monotonic_ms ()
+val t0 = now_ms ()
 
 val pids = spawn_many count []
 
-val spawn_ms = monotonic_ms () - t0
+val spawn_ms = now_ms () - t0
 
 val total = await_all pids 0
 
-val total_ms = monotonic_ms () - t0
+val total_ms = now_ms () - t0
 
 val expected = (count * (count + 1)) / 2
 

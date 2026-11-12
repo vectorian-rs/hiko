@@ -1,10 +1,11 @@
-use "./global_bindings/used.hml"
+import Proj.GlobalBindings
+import Std.Int
 import Std.Option
 import Std.Testing
 
 val imported = 3
 val imported = 4
-val _ = Testing.equal (read_imported ()) 2 "use preserves lexical bindings"
+val _ = Testing.equal (GlobalBindings.read_imported ()) 2 "imported module keeps its lexical bindings"
 
 val x = 1
 val x = 2
@@ -45,8 +46,8 @@ structure Option = struct fun with_default n opt = n + 1 end
 structure Option = struct fun with_default n opt = n + 2 end
 val _ = Testing.equal (option_value none) 7 "named import keeps its function"
 
-fun show n = int_to_string n
+fun show n = Int.to_string n
 val int_to_string = fn n => "first"
 val int_to_string = fn n => "second"
-val _ = Testing.equal (show 42) "42" "earlier builtin is preserved"
-val _ = Testing.equal (int_to_string 42) "second" "builtin name can be rebound"
+val _ = Testing.equal (show 42) "42" "module call is preserved across rebinding"
+val _ = Testing.equal (int_to_string 42) "second" "a former alias name is an ordinary binding"

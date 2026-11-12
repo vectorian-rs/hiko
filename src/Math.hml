@@ -1,0 +1,6 @@
+(* Helper module imported by examples/import_test.hml. *)
+structure Math = struct
+  fun square (x : int) = x * x
+
+  fun double (x : int) = x + x
+end

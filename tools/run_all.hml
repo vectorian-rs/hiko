@@ -28,6 +28,10 @@ import Std.Int
 import Std.Stdio
 import Std.String
 import Std.System
+import Std.Time
+
+(* Milliseconds from the monotonic clock, for interval arithmetic. *)
+fun now_ms () = case Time.monotonic_now () of Time.Monotonic ms => ms
 
 val examples = Filesystem.glob_matches "examples/*.hml"
 
@@ -56,10 +60,10 @@ fun example_exec file = if Filesystem.exists runtime_runner_root then (runtime_r
 
 fun run_example file = let
     val name = display_name file
-    val t0 = monotonic_ms ()
+    val t0 = now_ms ()
     val (command, args) = example_exec file
     val (code, _, stderr) = Exec.run command args
-    val elapsed = monotonic_ms () - t0
+    val elapsed = now_ms () - t0
     val _ = if code = 0 then Stdio.println ("  PASS  " ^ name ^ " (" ^ Int.to_string elapsed ^ " ms)") else Stdio.println ("  FAIL  " ^ name ^ " (" ^ Int.to_string elapsed ^ " ms)" ^ failure_suffix stderr)
   in
     if code = 0 then (1, 0, elapsed) else (1, 1, elapsed)
@@ -79,11 +83,11 @@ fun run_examples files run skipped failed child_ms = case files of
 
 val _ = Stdio.println "Running examples..."
 
-val harness_start = monotonic_ms ()
+val harness_start = now_ms ()
 
 val (run_count, skipped_count, failed_count, child_ms) = run_examples examples 0 0 0 0
 
-val wall_ms = monotonic_ms () - harness_start
+val wall_ms = now_ms () - harness_start
 
 val _ = Stdio.println ""
 

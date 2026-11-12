@@ -15,6 +15,10 @@ import Http.Client
 import Std.Int
 import Std.Stdio
 import Std.String
+import Std.Time
+
+(* Milliseconds from the monotonic clock, for interval arithmetic. *)
+fun now_ms () = case Time.monotonic_now () of Time.Monotonic ms => ms
 
 effect HttpGet of string
 
@@ -57,11 +61,11 @@ fun with_mock_http f =
 
 val _ = Stdio.println "1. Mock handler (no network)"
 
-val t0 = monotonic_ms ()
+val t0 = now_ms ()
 
 val mock_results = with_mock_http fetch_all
 
-val mock_time = monotonic_ms () - t0
+val mock_time = now_ms () - t0
 
 val _ = show mock_results
 
@@ -77,11 +81,11 @@ fun with_real_http f =
 
 val _ = Stdio.println "2. Real handler (network)"
 
-val t1 = monotonic_ms ()
+val t1 = now_ms ()
 
 val real_results = with_real_http fetch_all
 
-val real_time = monotonic_ms () - t1
+val real_time = now_ms () - t1
 
 val _ = show real_results
 
