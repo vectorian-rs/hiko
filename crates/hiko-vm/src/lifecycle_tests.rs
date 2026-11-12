@@ -539,10 +539,26 @@ fn cancelling_a_sleeping_fiber_and_dropping_the_runtime_is_prompt() {
 }
 
 /// An I/O backend that never completes anything and records cancellations.
+/// Shared with other runtime test modules that need a child to stay blocked
+/// until cancellation: a mock sleep is not a scheduling barrier.
 #[derive(Default)]
-struct StuckIoBackend {
-    registered: Mutex<Vec<IoToken>>,
-    cancelled: Mutex<Vec<IoToken>>,
+pub(crate) struct StuckIoBackend {
+    pub(crate) registered: Mutex<Vec<IoToken>>,
+    pub(crate) cancelled: Mutex<Vec<IoToken>>,
+}
+
+impl StuckIoBackend {
+    /// Every request the backend accepted was cancelled. (A request can be
+    /// cancelled without ever being registered, if the cancel arrives while
+    /// the child is parking.)
+    pub(crate) fn assert_all_registered_cancelled(&self) {
+        let registered = self.registered.lock().unwrap().clone();
+        let cancelled = self.cancelled.lock().unwrap().clone();
+        assert!(
+            registered.iter().all(|token| cancelled.contains(token)),
+            "registered {registered:?}, cancelled {cancelled:?}"
+        );
+    }
 }
 
 impl IoBackend for StuckIoBackend {
@@ -581,15 +597,7 @@ fn cancelling_a_process_blocked_on_io_wakes_its_parent_and_cancels_the_io() {
         assert_eq!(report.output, vec!["cancelled\n"], "run {run}");
         assert_eq!(report.status, "Done", "run {run}");
         assert!(report.leftovers.is_empty(), "run {run}: {report:?}");
-        // Every request the backend accepted was cancelled. (A request can be
-        // cancelled without ever being registered, if the cancel arrives
-        // while the child is parking.)
-        let registered = backend.registered.lock().unwrap().clone();
-        let cancelled = backend.cancelled.lock().unwrap().clone();
-        assert!(
-            registered.iter().all(|token| cancelled.contains(token)),
-            "run {run}: registered {registered:?}, cancelled {cancelled:?}"
-        );
+        backend.assert_all_registered_cancelled();
     }
 }
 

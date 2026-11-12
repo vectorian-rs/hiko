@@ -2029,19 +2029,17 @@ mod tests {
     #[test]
     fn test_stdlib_fiber_error_paths() {
         let program = compile_file(&test_program_path("test_fiber_errors.hml"));
-        let runtime = ThreadedRuntime::new(1)
-            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        // Same race as the multiworker variant: cancellation must win, so the
+        // backend never completes a sleep.
+        let io = Arc::new(crate::lifecycle_tests::StuckIoBackend::default());
+        let runtime = ThreadedRuntime::new(1).with_io_backend(io.clone());
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
-        let output = runtime.table.get_output(pid);
-        let status = runtime
-            .table
-            .processes
-            .get(&pid)
-            .map(|process| format!("{:?}", process.status))
-            .unwrap_or_else(|| "<missing>".into());
-        assert_eq!(status, "Done");
-        assert_eq!(output, vec!["fiber error tests passed\n"]);
+        let report = runtime.lifecycle_report(pid);
+        assert_eq!(report.status, "Done", "failure: {:?}", runtime.failure(pid));
+        assert_eq!(report.output, vec!["fiber error tests passed\n"]);
+        assert!(report.leftovers.is_empty(), "{report:?}");
+        io.assert_all_registered_cancelled();
     }
 
     #[test]
@@ -2749,12 +2747,17 @@ mod tests {
     #[test]
     fn test_multiworker_fiber_error_paths() {
         let program = compile_file(&test_program_path("test_fiber_errors.hml"));
-        let runtime = ThreadedRuntime::new(4)
-            .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
+        // The fixture requires cancellation, not a race with an immediate mock
+        // timer, so the backend never completes a sleep.
+        let io = Arc::new(crate::lifecycle_tests::StuckIoBackend::default());
+        let runtime = ThreadedRuntime::new(4).with_io_backend(io.clone());
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
-        let output = runtime.table.get_output(pid);
-        assert_eq!(output, vec!["fiber error tests passed\n"]);
+        let report = runtime.lifecycle_report(pid);
+        assert_eq!(report.status, "Done", "failure: {:?}", runtime.failure(pid));
+        assert_eq!(report.output, vec!["fiber error tests passed\n"]);
+        assert!(report.leftovers.is_empty(), "{report:?}");
+        io.assert_all_registered_cancelled();
     }
 
     #[test]
