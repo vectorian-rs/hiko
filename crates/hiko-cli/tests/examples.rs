@@ -290,17 +290,31 @@ mod thin_modules {
         let cases: &[(&str, &[(&str, &str)], bool)] = &[
             (
                 "Int",
-                &[("int.of_string", "string_to_int"), ("int.to_string", "int_to_string")],
+                &[
+                    ("int.abs", "abs_int"),
+                    ("int.of_string", "string_to_int"),
+                    ("int.to_string", "int_to_string"),
+                ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
                 "Float",
-                &[("float.of_int", "int_to_float"), ("float.to_string", "float_to_string")],
+                &[
+                    ("float.abs", "abs_float"),
+                    ("float.ceil", "ceil"),
+                    ("float.floor", "floor"),
+                    ("float.of_int", "int_to_float"),
+                    ("float.sqrt", "sqrt"),
+                    ("float.to_string", "float_to_string"),
+                ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
                 "Char",
-                &[("char.of_int", "int_to_char"), ("char.to_int", "char_to_int")],
+                &[
+                    ("char.of_int", "int_to_char"),
+                    ("char.to_int", "char_to_int"),
+                ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
@@ -367,7 +381,9 @@ mod thin_modules {
     fn all_thin_module_signatures_typecheck_from_installed_sources() {
         let project = Project::new(
             "signatures",
-            &["Int", "Float", "Char", "Word", "Path", "System", "Stdio", "Testing"],
+            &[
+                "Int", "Float", "Char", "Word", "Path", "System", "Stdio", "Testing",
+            ],
             include_str!("../../../tests/run/test_thin_modules.hml"),
             "",
         );
@@ -479,13 +495,13 @@ mod thin_modules {
     fn bulk_ceiling_does_not_change_any_and_all_checks_before_first_spawn() {
         let limits = "[limits]\nmax_fuel = 1000000000\nmax_heap = 2000000\nmax_host_work = 100000000\nmax_live_processes = 20000\nmax_spawns = 10001\nmax_join_group_bytes = 0\n";
         let leaves = "[capabilities.fiber.spawn]\nenabled = true\n[capabilities.fiber.join_or_fail]\nenabled = true\n[capabilities.fiber.join]\nenabled = true\n[capabilities.fiber.cancel]\nenabled = true\n[capabilities.fiber.wait_any]\nenabled = true\n[capabilities.system.panic]\nenabled = true\n";
-        let build = "import Std.Fiber\nfun build n acc = if n = 0 then acc else build (n - 1) ((fn () => 1) :: acc)\n";
+        let build = "import Std.Fiber\nimport Std.System\nfun build n acc = if n = 0 then acc else build (n - 1) ((fn () => 1) :: acc)\n";
         // No bulk grant, and zero group bytes: any retains its old policy.
         let project = Project::new(
             "fiber-any-10001",
-            &["Fiber", "Either", "Result"],
+            &["Fiber", "Either", "Result", "System"],
             &format!(
-                "{build}val result = case Fiber.any (build 10001 []) of Result.Ok 1 => 42 | _ => panic \"any failed\"\n"
+                "{build}val result = case Fiber.any (build 10001 []) of Result.Ok 1 => 42 | _ => System.panic \"any failed\"\n"
             ),
             &format!("{limits}{leaves}"),
         );
@@ -499,7 +515,7 @@ mod thin_modules {
         // input precheck before invoking spawn or reserving a group.
         let project = Project::new(
             "fiber-all-10001",
-            &["Fiber", "Either", "Result"],
+            &["Fiber", "Either", "Result", "System"],
             &format!("{build}val result = Fiber.all (build 10001 [])\n"),
             &format!(
                 "{}{}[capabilities.fiber.join_all]\nenabled = true\n",
@@ -523,9 +539,9 @@ mod thin_modules {
         // and existing spawn/work/heap policies all permit it.
         let project = Project::new(
             "fiber-all-10000",
-            &["Fiber", "Either", "Result"],
+            &["Fiber", "Either", "Result", "System"],
             &format!(
-                "{build}fun count xs n = case xs of [] => n | _ :: rest => count rest (n + 1)\nval result = case Fiber.all (build 10000 []) of Result.Ok values => if count values 0 = 10000 then 42 else panic \"length\" | _ => panic \"all failed\"\n"
+                "{build}fun count xs n = case xs of [] => n | _ :: rest => count rest (n + 1)\nval result = case Fiber.all (build 10000 []) of Result.Ok values => if count values 0 = 10000 then 42 else System.panic \"length\" | _ => System.panic \"all failed\"\n"
             ),
             &format!(
                 "{}{}[capabilities.fiber.join_all]\nenabled = true\n",
@@ -559,6 +575,8 @@ mod thin_modules {
             ("fiber.wait_any", "wait_any"),
             ("fiber.join_all", "fiber_await_all"),
             ("system.panic", "panic"),
+            ("int.abs", "abs_int"),
+            ("int.of_string", "string_to_int"),
             ("int.to_string", "int_to_string"),
         ];
         for omitted in 0..=leaves.len() {

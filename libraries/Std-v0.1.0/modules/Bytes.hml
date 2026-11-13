@@ -3,13 +3,13 @@ import __Builtin.Bytes
 structure Bytes = struct
   type t = bytes
 
-  fun length value = BuiltinBytes.length_raw value
+  fun length value = BuiltinBytes.length value
 
-  fun to_string value = BuiltinBytes.to_string_raw value
+  fun to_string value = BuiltinBytes.to_string value
 
-  fun of_string text = BuiltinBytes.of_string_raw text
+  fun of_string text = BuiltinBytes.of_string text
 
-  fun get index value = BuiltinBytes.get_raw (value, index)
+  fun get index value = BuiltinBytes.get (value, index)
 
-  fun slice start len value = BuiltinBytes.slice_raw (value, start, len)
+  fun slice start len value = BuiltinBytes.slice (value, start, len)
 end

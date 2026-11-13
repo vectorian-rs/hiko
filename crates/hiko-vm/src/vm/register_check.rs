@@ -177,7 +177,7 @@ fn program_from_bytes(bytes: &[u8]) -> String {
         scope: Vec::new(),
         lets: 0,
         calls: false,
-        out: String::new(),
+        out: String::from("import __Builtin.Stdio\nimport __Builtin.Int\n"),
     };
     for f in 0..g.arities.len() {
         let params: Vec<String> = (0..g.arities[f]).map(|i| format!("p{i}")).collect();
@@ -201,7 +201,8 @@ fn program_from_bytes(bytes: &[u8]) -> String {
     g.scope.clear();
     g.calls = false;
     for _ in 0..1 + g.choices.below(3) {
-        g.out.push_str("val _ = println (int_to_string ");
+        g.out
+            .push_str("val _ = BuiltinStdio.println (BuiltinInt.to_string ");
         let counter = g.choices.below(7).to_string();
         g.call(1, &counter);
         g.out.push_str(")\n");
@@ -331,7 +332,7 @@ pub fn check_bytes(bytes: &[u8]) -> Result<(), String> {
     check(&program, *seed).map_err(|diff| format!("{diff}\nprogram:\n{src}"))
 }
 
-// Generated programs print with `println` and `int_to_string`.
+// Generated programs print with `BuiltinStdio.println` and `BuiltinInt.to_string`.
 #[cfg(all(test, feature = "builtin-stdio", feature = "builtin-convert"))]
 mod tests {
     use super::*;

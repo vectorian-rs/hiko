@@ -12,14 +12,14 @@ structure Json = struct
   val JObject = BuiltinJson.JObject
 
   (* Parse text into a JSON value; malformed text raises a runtime error. *)
-  fun parse text = BuiltinJson.parse_raw text
+  fun parse text = BuiltinJson.parse text
 
   (* Serialize a JSON value. Other Hiko types must be converted explicitly. *)
-  fun to_string value = BuiltinJson.to_string_raw value
+  fun to_string value = BuiltinJson.to_string value
 
-  fun get path text = BuiltinJson.get_raw (text, path)
+  fun get path text = BuiltinJson.get (text, path)
 
-  fun keys text = BuiltinJson.keys_raw text
+  fun keys text = BuiltinJson.keys text
 
-  fun length text = BuiltinJson.length_raw text
+  fun length text = BuiltinJson.length text
 end

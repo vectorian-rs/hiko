@@ -72,8 +72,8 @@ Example:
 ```sml
 val t = Parquet.read "./data/users.parquet"
 
-println (Parquet.show t 10)
-println (int_to_string (Parquet.num_rows t))
+Stdio.println (Parquet.show t 10)
+Stdio.println (Int.to_string (Parquet.num_rows t))
 ```
 
 Or:

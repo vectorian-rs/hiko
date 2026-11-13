@@ -46,26 +46,26 @@ structure Filesystem = struct
 
   fun walk path = perform Walk path
 
-  fun join parts = BuiltinPath.join_raw parts
+  fun join parts = BuiltinPath.join parts
 
   fun run f =
     handle
       f ()
     with
       return x => x
-    | ReadText path k => resume k (BuiltinFilesystem.read_text_raw path)
-    | ReadBytes path k => resume k (BuiltinFilesystem.read_bytes_raw path)
+    | ReadText path k => resume k (BuiltinFilesystem.read_text path)
+    | ReadBytes path k => resume k (BuiltinFilesystem.read_bytes path)
     | WriteText pair k => let
         val (path, content) = pair
       in
-        resume k (BuiltinFilesystem.write_text_raw (path, content))
+        resume k (BuiltinFilesystem.write_text (path, content))
       end
-    | Exists path k => resume k (BuiltinFilesystem.exists_raw path)
-    | ListEntries path k => resume k (BuiltinFilesystem.list_entries_raw path)
-    | Remove path k => resume k (BuiltinFilesystem.remove_raw path)
-    | CreateDirectory path k => resume k (BuiltinFilesystem.create_directory_raw path)
-    | IsDirectory path k => resume k (BuiltinFilesystem.is_directory_raw path)
-    | IsRegularFile path k => resume k (BuiltinFilesystem.is_regular_file_raw path)
-    | GlobMatches pattern k => resume k (BuiltinFilesystem.glob_raw pattern)
-    | Walk path k => resume k (BuiltinFilesystem.walk_raw path)
+    | Exists path k => resume k (BuiltinFilesystem.exists path)
+    | ListEntries path k => resume k (BuiltinFilesystem.list_entries path)
+    | Remove path k => resume k (BuiltinFilesystem.remove path)
+    | CreateDirectory path k => resume k (BuiltinFilesystem.create_directory path)
+    | IsDirectory path k => resume k (BuiltinFilesystem.is_directory path)
+    | IsRegularFile path k => resume k (BuiltinFilesystem.is_regular_file path)
+    | GlobMatches pattern k => resume k (BuiltinFilesystem.glob pattern)
+    | Walk path k => resume k (BuiltinFilesystem.walk path)
 end

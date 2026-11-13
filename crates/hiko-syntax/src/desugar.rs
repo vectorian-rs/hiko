@@ -102,14 +102,29 @@ fn desugar_structure(
     let scope = collect_module_scope(&decls, module_path, interner, signature.is_some());
     let mut out = Vec::new();
     let empty_values = HashSet::new();
+    // `val` is not recursive: its right-hand side reads the preceding
+    // binding, so member names not yet defined stay unrenamed there and
+    // resolve outside the structure (`val print = print` aliases the outer
+    // `print`). `fun` and `val rec` members stay mutually visible.
+    let mut pending: HashSet<Symbol> = scope.values.keys().copied().collect();
     for decl in decls {
-        out.extend(rename_module_decl(
-            decl,
-            &scope,
-            &empty_values,
+        let own_scope = collect_module_scope(
+            std::slice::from_ref(&decl),
+            module_path,
+            interner,
             signature.is_some(),
-            signature.is_none(),
-        ));
+        );
+        let skip = if matches!(decl.kind, DeclKind::Val(_, _)) {
+            &pending
+        } else {
+            &empty_values
+        };
+        let renamed =
+            rename_module_decl(decl, &scope, skip, signature.is_some(), signature.is_none());
+        for name in own_scope.values.keys() {
+            pending.remove(name);
+        }
+        out.extend(renamed);
     }
     let mut out: Vec<Decl> = out
         .into_iter()

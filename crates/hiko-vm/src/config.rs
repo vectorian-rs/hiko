@@ -801,72 +801,195 @@ impl Default for RunConfig {
 /// a failed policy parse. There are no compatibility aliases: old keys fail.
 const RENAMED_CAPABILITY_KEYS: &[(&str, &str)] = &[
     ("capabilities.bytes.bytes_get", "capabilities.bytes.get"),
-    ("capabilities.bytes.bytes_length", "capabilities.bytes.length"),
+    (
+        "capabilities.bytes.bytes_length",
+        "capabilities.bytes.length",
+    ),
     ("capabilities.bytes.bytes_slice", "capabilities.bytes.slice"),
-    ("capabilities.bytes.bytes_to_string", "capabilities.bytes.to_string"),
-    ("capabilities.bytes.string_to_bytes", "capabilities.bytes.of_string"),
-    ("capabilities.convert.char_to_int", "capabilities.char.to_int"),
-    ("capabilities.convert.float_to_string", "capabilities.float.to_string"),
-    ("capabilities.convert.int_to_char", "capabilities.char.of_int"),
-    ("capabilities.convert.int_to_float", "capabilities.float.of_int"),
-    ("capabilities.convert.int_to_string", "capabilities.int.to_string"),
-    ("capabilities.convert.int_to_word", "capabilities.word.of_int"),
-    ("capabilities.convert.string_to_int", "capabilities.int.of_string"),
-    ("capabilities.convert.string_to_word", "capabilities.word.of_string"),
-    ("capabilities.convert.word_to_int", "capabilities.word.to_int"),
-    ("capabilities.convert.word_to_string", "capabilities.word.to_string"),
+    (
+        "capabilities.bytes.bytes_to_string",
+        "capabilities.bytes.to_string",
+    ),
+    (
+        "capabilities.bytes.string_to_bytes",
+        "capabilities.bytes.of_string",
+    ),
+    (
+        "capabilities.convert.char_to_int",
+        "capabilities.char.to_int",
+    ),
+    (
+        "capabilities.convert.float_to_string",
+        "capabilities.float.to_string",
+    ),
+    (
+        "capabilities.convert.int_to_char",
+        "capabilities.char.of_int",
+    ),
+    (
+        "capabilities.convert.int_to_float",
+        "capabilities.float.of_int",
+    ),
+    (
+        "capabilities.convert.int_to_string",
+        "capabilities.int.to_string",
+    ),
+    (
+        "capabilities.convert.int_to_word",
+        "capabilities.word.of_int",
+    ),
+    (
+        "capabilities.convert.string_to_int",
+        "capabilities.int.of_string",
+    ),
+    (
+        "capabilities.convert.string_to_word",
+        "capabilities.word.of_string",
+    ),
+    (
+        "capabilities.convert.word_to_int",
+        "capabilities.word.to_int",
+    ),
+    (
+        "capabilities.convert.word_to_string",
+        "capabilities.word.to_string",
+    ),
     ("capabilities.env.getenv", "capabilities.env.get"),
     ("capabilities.exec.exec", "capabilities.exec.run"),
-    ("capabilities.fiber.fiber_await_all", "capabilities.fiber.join_all"),
-    ("capabilities.filesystem.create_dir", "capabilities.filesystem.create_directory"),
-    ("capabilities.filesystem.file_exists", "capabilities.filesystem.exists"),
-    ("capabilities.filesystem.glob", "capabilities.filesystem.glob_matches"),
-    ("capabilities.filesystem.is_dir", "capabilities.filesystem.is_directory"),
-    ("capabilities.filesystem.is_file", "capabilities.filesystem.is_regular_file"),
-    ("capabilities.filesystem.list_dir", "capabilities.filesystem.list_entries"),
-    ("capabilities.filesystem.read_file", "capabilities.filesystem.read_text"),
-    ("capabilities.filesystem.read_file_bytes", "capabilities.filesystem.read_bytes"),
-    ("capabilities.filesystem.remove_file", "capabilities.filesystem.remove"),
-    ("capabilities.filesystem.walk_dir", "capabilities.filesystem.walk"),
-    ("capabilities.filesystem.write_file", "capabilities.filesystem.write_text"),
+    (
+        "capabilities.fiber.fiber_await_all",
+        "capabilities.fiber.join_all",
+    ),
+    (
+        "capabilities.filesystem.create_dir",
+        "capabilities.filesystem.create_directory",
+    ),
+    (
+        "capabilities.filesystem.file_exists",
+        "capabilities.filesystem.exists",
+    ),
+    (
+        "capabilities.filesystem.glob",
+        "capabilities.filesystem.glob_matches",
+    ),
+    (
+        "capabilities.filesystem.is_dir",
+        "capabilities.filesystem.is_directory",
+    ),
+    (
+        "capabilities.filesystem.is_file",
+        "capabilities.filesystem.is_regular_file",
+    ),
+    (
+        "capabilities.filesystem.list_dir",
+        "capabilities.filesystem.list_entries",
+    ),
+    (
+        "capabilities.filesystem.read_file",
+        "capabilities.filesystem.read_text",
+    ),
+    (
+        "capabilities.filesystem.read_file_bytes",
+        "capabilities.filesystem.read_bytes",
+    ),
+    (
+        "capabilities.filesystem.remove_file",
+        "capabilities.filesystem.remove",
+    ),
+    (
+        "capabilities.filesystem.walk_dir",
+        "capabilities.filesystem.walk",
+    ),
+    (
+        "capabilities.filesystem.write_file",
+        "capabilities.filesystem.write_text",
+    ),
     ("capabilities.hash.blake3", "capabilities.hash.blake3.hash"),
     ("capabilities.http.http", "capabilities.http.client.request"),
-    ("capabilities.http.http_bytes", "capabilities.http.client.request_bytes"),
+    (
+        "capabilities.http.http_bytes",
+        "capabilities.http.client.request_bytes",
+    ),
     ("capabilities.http.http_get", "capabilities.http.client.get"),
-    ("capabilities.http.http_json", "capabilities.http.client.request_json"),
-    ("capabilities.http.http_msgpack", "capabilities.http.client.request_msgpack"),
+    (
+        "capabilities.http.http_json",
+        "capabilities.http.client.request_json",
+    ),
+    (
+        "capabilities.http.http_msgpack",
+        "capabilities.http.client.request_msgpack",
+    ),
     ("capabilities.json.json_get", "capabilities.json.get"),
     ("capabilities.json.json_keys", "capabilities.json.keys"),
     ("capabilities.json.json_length", "capabilities.json.length"),
     ("capabilities.json.json_parse", "capabilities.json.parse"),
-    ("capabilities.json.json_to_string", "capabilities.json.to_string"),
+    (
+        "capabilities.json.json_to_string",
+        "capabilities.json.to_string",
+    ),
     ("capabilities.math.abs_float", "capabilities.float.abs"),
     ("capabilities.math.abs_int", "capabilities.int.abs"),
     ("capabilities.math.ceil", "capabilities.float.ceil"),
     ("capabilities.math.floor", "capabilities.float.floor"),
     ("capabilities.math.sqrt", "capabilities.float.sqrt"),
     ("capabilities.path.path_join", "capabilities.path.join"),
-    ("capabilities.process.await_process", "capabilities.fiber.join_or_fail"),
+    (
+        "capabilities.process.await_process",
+        "capabilities.fiber.join_or_fail",
+    ),
     ("capabilities.process.cancel", "capabilities.fiber.cancel"),
     ("capabilities.process.spawn", "capabilities.fiber.spawn"),
-    ("capabilities.process.wait_any", "capabilities.fiber.wait_any"),
-    ("capabilities.random.random_bytes", "capabilities.random.entropy"),
+    (
+        "capabilities.process.wait_any",
+        "capabilities.fiber.wait_any",
+    ),
+    (
+        "capabilities.random.random_bytes",
+        "capabilities.random.entropy",
+    ),
     ("capabilities.random.rng_bytes", "capabilities.random.bytes"),
-    ("capabilities.random.rng_int", "capabilities.random.int_between"),
+    (
+        "capabilities.random.rng_int",
+        "capabilities.random.int_between",
+    ),
     ("capabilities.random.rng_seed", "capabilities.random.seed"),
-    ("capabilities.regex.regex_match", "capabilities.regex.matches"),
-    ("capabilities.regex.regex_replace", "capabilities.regex.replace"),
-    ("capabilities.string.string_contains", "capabilities.string.contains"),
-    ("capabilities.string.string_join", "capabilities.string.join"),
-    ("capabilities.string.string_length", "capabilities.string.length"),
-    ("capabilities.string.string_replace", "capabilities.string.replace"),
+    (
+        "capabilities.regex.regex_match",
+        "capabilities.regex.matches",
+    ),
+    (
+        "capabilities.regex.regex_replace",
+        "capabilities.regex.replace",
+    ),
+    (
+        "capabilities.string.string_contains",
+        "capabilities.string.contains",
+    ),
+    (
+        "capabilities.string.string_join",
+        "capabilities.string.join",
+    ),
+    (
+        "capabilities.string.string_length",
+        "capabilities.string.length",
+    ),
+    (
+        "capabilities.string.string_replace",
+        "capabilities.string.replace",
+    ),
     ("capabilities.string.to_lower", "capabilities.string.lower"),
     ("capabilities.string.to_upper", "capabilities.string.upper"),
     ("capabilities.testing.assert", "capabilities.testing.check"),
-    ("capabilities.testing.assert_eq", "capabilities.testing.equal"),
+    (
+        "capabilities.testing.assert_eq",
+        "capabilities.testing.equal",
+    ),
     ("capabilities.testing.panic", "capabilities.system.panic"),
     ("capabilities.time.epoch_ms", "capabilities.time.now"),
-    ("capabilities.time.monotonic_ms", "capabilities.time.monotonic_now"),
+    (
+        "capabilities.time.monotonic_ms",
+        "capabilities.time.monotonic_now",
+    ),
 ];
 
 /// Guidance for a policy that still names pre-#186 capability keys.
@@ -1424,6 +1547,8 @@ enabled = true
         let docs_dir = root.join("docs");
         fs::create_dir_all(&docs_dir).unwrap();
 
+        // Importing __Builtin.Filesystem binds every member eagerly, so the
+        // policy must enable `remove` too; keep it scoped to the docs dir.
         let policy = load_policy_text("docs-writer.policy.toml")
             .replace(
                 "folders = [\"./docs\"]",
@@ -1432,12 +1557,16 @@ enabled = true
             .replace(
                 "folders = [\".\"]",
                 &format!("folders = [\"{}\"]", toml_path_literal(&root)),
+            )
+            + &format!(
+                "\n[capabilities.filesystem.remove]\nenabled = true\nfolders = [\"{}\"]\n",
+                toml_path_literal(&docs_dir)
             );
         let config = RunConfig::from_toml(&policy).expect("policy should parse");
 
         let allowed = docs_dir.join("allowed.md");
         let program = compile_program(&format!(
-            "val _ = write_file ({:?}, \"ok\")",
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.write_text ({:?}, \"ok\")",
             allowed.to_string_lossy()
         ));
         let mut vm = config.build_vm(program);
@@ -1446,7 +1575,7 @@ enabled = true
 
         let blocked = root.join("README.md");
         let program = compile_program(&format!(
-            "val _ = write_file ({:?}, \"nope\")",
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.write_text ({:?}, \"nope\")",
             blocked.to_string_lossy()
         ));
         let mut vm = config.build_vm(program);
@@ -1460,7 +1589,8 @@ enabled = true
     fn docs_policy_does_not_expose_exec() {
         let config = RunConfig::from_toml(&load_policy_text("docs-writer.policy.toml"))
             .expect("policy should parse");
-        let program = compile_program(r#"val _ = exec ("echo", [])"#);
+        let program =
+            compile_program("import __Builtin.Exec\nval _ = BuiltinExec.exec (\"echo\", [])");
         let mut vm = config.build_vm(program);
         let err = vm.run().expect_err("docs policy should not expose exec");
         assert!(err.message.contains("undefined global: exec"));
@@ -1483,13 +1613,15 @@ enabled = true
             .expect("policy should parse");
 
         let program = compile_program(&format!(
-            r#"val response = http_get "http://127.0.0.1:{port}/""#
+            "import __Builtin.Http\nval response = BuiltinHttp.get \"http://127.0.0.1:{port}/\""
         ));
         let mut vm = config.build_vm(program);
         vm.run().expect("localhost http should be allowed");
         server.join().unwrap();
 
-        let program = compile_program(r#"val response = http_get "http://example.com/""#);
+        let program = compile_program(
+            "import __Builtin.Http\nval response = BuiltinHttp.get \"http://example.com/\"",
+        );
         let mut vm = config.build_vm(program);
         let err = vm.run().expect_err("remote host should be rejected");
         assert!(err.message.contains("not in allowed hosts"));

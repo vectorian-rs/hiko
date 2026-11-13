@@ -351,25 +351,27 @@ fn fixed_payload_member_growth_and_separate_byte_growth_report_logical_costs() {
 fn real_runtimes_bulk_order_duplicates_failures_and_no_bookkeeping_leaks() {
     super::runtime_tests::bounded!();
     let source = r#"
-        import __Builtin.Process
-        val left = spawn (fn () => 10)
-        val right = spawn (fn () => 20)
-        val _ = case BuiltinProcess.await_all_raw [left, right] of
-            BuiltinProcess.Ok [10, 20] => ()
-          | _ => panic "order"
-        val owned = spawn (fn () => 30)
-        val _ = case BuiltinProcess.await_all_raw [owned, owned] of
-            BuiltinProcess.Err BuiltinProcess.AlreadyJoined => ()
-          | _ => panic "duplicate"
-        val _ = case BuiltinProcess.await_all_raw [owned] of
-            BuiltinProcess.Err BuiltinProcess.AlreadyJoined => ()
-          | _ => panic "reaped"
-        val failed = spawn (fn () => panic "chosen")
-        val peer = spawn (fn () => 42)
-        val _ = case BuiltinProcess.await_all_raw [failed, peer] of
-            BuiltinProcess.Err (BuiltinProcess.RuntimeError "chosen") => ()
-          | _ => panic "failure"
-        val _ = println "bulk ok"
+        import __Builtin.Fiber
+        import __Builtin.Testing
+        import __Builtin.Stdio
+        val left = BuiltinFiber.spawn_raw (fn () => 10)
+        val right = BuiltinFiber.spawn_raw (fn () => 20)
+        val _ = case BuiltinFiber.await_all [left, right] of
+            BuiltinFiber.Ok [10, 20] => ()
+          | _ => BuiltinTesting.panic "order"
+        val owned = BuiltinFiber.spawn_raw (fn () => 30)
+        val _ = case BuiltinFiber.await_all [owned, owned] of
+            BuiltinFiber.Err BuiltinFiber.AlreadyJoined => ()
+          | _ => BuiltinTesting.panic "duplicate"
+        val _ = case BuiltinFiber.await_all [owned] of
+            BuiltinFiber.Err BuiltinFiber.AlreadyJoined => ()
+          | _ => BuiltinTesting.panic "reaped"
+        val failed = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic "chosen")
+        val peer = BuiltinFiber.spawn_raw (fn () => 42)
+        val _ = case BuiltinFiber.await_all [failed, peer] of
+            BuiltinFiber.Err (BuiltinFiber.RuntimeError "chosen") => ()
+          | _ => BuiltinTesting.panic "failure"
+        val _ = BuiltinStdio.println "bulk ok"
     "#;
     let program = crate::test_support::compile_source_hermetic(source);
     let mut runtime = Runtime::new();

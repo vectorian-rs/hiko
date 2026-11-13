@@ -1,5 +1,8 @@
 import Std.List
 import Sre.Health
+import __Builtin.Int
+import __Builtin.Stdio
+import __Builtin.String
 
 (* Health checks, reported the same way to people and to agents.
 
@@ -19,9 +22,9 @@ import Sre.Health
    `exit (Health.exit_code (Report.print (source, checks)))`.
 
    Code that reports needs the capabilities println, int_to_string,
-   string_length, string_join and string_replace. The module calls those
-   builtins directly: importing Std.Stdio or Std.String would need every
-   builtin those modules wrap. Std.List wraps none. *)
+   string_length, string_join and string_replace. The module reaches those
+   builtins through `__Builtin` members and calls only these leaves.
+   Std.List wraps none. *)
 structure Report = struct
   (* `check` placed after every check at least as urgent. *)
   fun insert (check, sorted) =
@@ -44,31 +47,31 @@ structure Report = struct
       let val half = repeat (text, n / 2)
       in if n mod 2 = 0 then half ^ half else half ^ half ^ text end
 
-  fun pad_right width text = text ^ repeat (" ", width - string_length text)
+  fun pad_right width text = text ^ repeat (" ", width - BuiltinString.length text)
 
   (* A table cell: `\` written `\\` and `|` written `\|`, so a cell
      splits back exactly; a line break (`\r\n`, `\r` or `\n`) as a space. *)
   fun cell text =
-    string_replace (string_replace (string_replace (string_replace (string_replace (text, "\\", "\\\\"),
+    BuiltinString.replace (BuiltinString.replace (BuiltinString.replace (BuiltinString.replace (BuiltinString.replace (text, "\\", "\\\\"),
       "|", "\\|"), "\r\n", " "), "\r", " "), "\n", " ")
 
   (* One word: whitespace, `=` and `|` become `-`. *)
   fun word text =
-    List.foldl (fn (text, c) => string_replace (text, c, "-")) text [" ", "\t", "\r", "\n", "=", "|"]
+    List.foldl (fn (text, c) => BuiltinString.replace (text, c, "-")) text [" ", "\t", "\r", "\n", "=", "|"]
 
   fun wider (width, text) =
-    if string_length text > width then string_length text else width
+    if BuiltinString.length text > width then BuiltinString.length text else width
 
   (* `key=value` pairs; `source` is made one word, so every field is. *)
   fun summary (source, checks) =
-    string_join ([
+    BuiltinString.join ([
       "status=" ^ Health.status_name (Health.overall checks),
       "source=" ^ word source,
-      "total=" ^ int_to_string (List.length checks),
-      "crit=" ^ int_to_string (Health.count Health.Critical checks),
-      "unknown=" ^ int_to_string (Health.count Health.Unknown checks),
-      "warn=" ^ int_to_string (Health.count Health.Warning checks),
-      "ok=" ^ int_to_string (Health.count Health.Healthy checks)
+      "total=" ^ BuiltinInt.to_string (List.length checks),
+      "crit=" ^ BuiltinInt.to_string (Health.count Health.Critical checks),
+      "unknown=" ^ BuiltinInt.to_string (Health.count Health.Unknown checks),
+      "warn=" ^ BuiltinInt.to_string (Health.count Health.Warning checks),
+      "ok=" ^ BuiltinInt.to_string (Health.count Health.Healthy checks)
     ], " ")
 
   (* The table of `checks`, worst first, as lines: a header, a separator,
@@ -86,7 +89,7 @@ structure Report = struct
           (0, 0, 0, 0)
           (header :: rows)
       fun line (a, b, c, d) =
-        string_join (["|", pad_right w1 a, "|", pad_right w2 b, "|", pad_right w3 c,
+        BuiltinString.join (["|", pad_right w1 a, "|", pad_right w2 b, "|", pad_right w3 c,
           "|", pad_right w4 d, "|"], " ")
     in
       line header
@@ -98,11 +101,11 @@ structure Report = struct
      (only the summary when it selects none). Returns the overall status. *)
   fun report keep (source, checks) =
     let
-      val _ = println (summary (source, checks))
+      val _ = BuiltinStdio.println (summary (source, checks))
       val _ =
         case List.filter keep checks of
             [] => ()
-          | shown => List.foldl (fn ((), text) => println text) () (table shown)
+          | shown => List.foldl (fn ((), text) => BuiltinStdio.println text) () (table shown)
     in
       Health.overall checks
     end

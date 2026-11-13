@@ -373,10 +373,7 @@ fn a_required_internal_builtin_needs_no_project() {
 
 #[test]
 fn a_required_internal_builtin_needs_no_embedded_copy() {
-    static NOTHING: EmbeddedSources = EmbeddedSources {
-        modules: &[],
-        files: None,
-    };
+    static NOTHING: EmbeddedSources = EmbeddedSources { modules: &[] };
     let options = ModuleLoaderOptions {
         embedded: Some(&NOTHING),
         ..nested_options(&PATHS)
@@ -592,7 +589,6 @@ fn an_embedded_module_failing_its_hash_names_the_extension_and_the_fix() {
             blake3: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             source: include_str!("../../../libraries/Std-v0.1.0/modules/Result.hml"),
         }],
-        files: None,
     };
     let options = ModuleLoaderOptions {
         embedded: Some(&WRONG),
@@ -612,10 +608,7 @@ fn an_embedded_module_failing_its_hash_names_the_extension_and_the_fix() {
 #[test]
 fn a_sealed_artifact_without_std_result_is_an_error_naming_the_extension() {
     // What `build-vm --ext aws` without `--lock` embeds: no modules.
-    static NOTHING: EmbeddedSources = EmbeddedSources {
-        modules: &[],
-        files: None,
-    };
+    static NOTHING: EmbeddedSources = EmbeddedSources { modules: &[] };
     let options = ModuleLoaderOptions {
         embedded: Some(&NOTHING),
         ..s3_options()

@@ -1,4 +1,9 @@
 import Std.Option
+import __Builtin.Env
+import __Builtin.Int
+import __Builtin.Stdio
+import __Builtin.String
+import __Builtin.Time
 
 (* Log lines in the format of Rust's env_logger, written to stderr:
 
@@ -13,10 +18,10 @@ import Std.Option
      `Log.to_stderr Log.Info (fn () => ...)`, `Log.discard`, or
      `Log.handle_with` and any function.
 
-   Code that logs needs the capabilities eprintln, epoch_ms, int_to_string,
-   string_length and string_join, plus getenv, to_lower and trim for
-   from_env. The module calls those builtins directly: importing Std.Stdio,
-   Std.String or Std.Time would need every builtin those modules wrap. *)
+   Code that logs needs the capabilities stdio.eprintln, time.epoch_ms,
+   int.to_string, string.length and string.join, plus env.get, string.lower
+   and string.trim for from_env. The module reaches those builtins through
+   `__Builtin` members and calls only these leaves. *)
 structure Log = struct
   datatype level = Trace | Debug | Info | Warn | Error
 
@@ -40,7 +45,7 @@ structure Log = struct
   fun enabled (min, level) = severity level >= severity min
 
   fun parse_level text =
-    case to_lower (trim text) of
+    case BuiltinString.lower (BuiltinString.trim text) of
         "trace" => Option.Some Trace
       | "debug" => Option.Some Debug
       | "info" => Option.Some Info
@@ -52,16 +57,16 @@ structure Log = struct
      RUST_LOG does without per-target filters; `default` when it is unset
      or names no level. *)
   fun from_env name default =
-    case parse_level (getenv name) of
+    case parse_level (BuiltinEnv.get name) of
         Option.Some level => level
       | Option.None => default
 
   fun pad_right width text =
-    if string_length text >= width then text else pad_right width (text ^ " ")
+    if BuiltinString.length text >= width then text else pad_right width (text ^ " ")
 
-  fun two n = if n < 10 then "0" ^ int_to_string n else int_to_string n
+  fun two n = if n < 10 then "0" ^ BuiltinInt.to_string n else BuiltinInt.to_string n
 
-  fun concat parts = string_join (parts, "")
+  fun concat parts = BuiltinString.join (parts, "")
 
   (* (year, month, day) of a day count since 1970-01-01, in the proleptic
      Gregorian calendar (Howard Hinnant's civil_from_days). Std.Date can
@@ -90,7 +95,7 @@ structure Log = struct
       val time = secs mod 86400
     in
       concat [
-        int_to_string year, "-", two month, "-", two day, "T",
+        BuiltinInt.to_string year, "-", two month, "-", two day, "T",
         two (time / 3600), ":", two (time mod 3600 / 60), ":", two (time mod 60), "Z"
       ]
     end
@@ -118,7 +123,7 @@ structure Log = struct
   (* `message k1=v1 k2=v2` *)
   fun kv message fields = concat (message :: field_parts fields)
 
-  fun now_ms () = epoch_ms ()
+  fun now_ms () = BuiltinTime.epoch_ms ()
 
   (* Logger values *)
 
@@ -129,7 +134,7 @@ structure Log = struct
 
   fun log (Logger (min, target)) level message =
     if enabled (min, level) then
-      eprintln (format_line (now_ms (), level, target, message))
+      BuiltinStdio.eprintln (format_line (now_ms (), level, target, message))
     else ()
 
   fun trace logger message = log logger Trace message
@@ -174,7 +179,7 @@ structure Log = struct
         resume k ()
       end
 
-  fun to_stderr min f = handle_with eprintln min f
+  fun to_stderr min f = handle_with BuiltinStdio.eprintln min f
 
   fun discard f =
     handle

@@ -872,7 +872,8 @@ mod tests {
 
     #[test]
     fn test_single_process_output() {
-        let program = compile("val _ = println \"hello from process\"");
+        let program =
+            compile("import __Builtin.Stdio\nval _ = BuiltinStdio.println \"hello from process\"");
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -882,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_process_failure() {
-        let program = compile("val _ = panic \"boom\"");
+        let program = compile("import __Builtin.Testing\nval _ = BuiltinTesting.panic \"boom\"");
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -920,9 +921,10 @@ mod tests {
     fn test_runtime_with_yielding_process() {
         // A process that needs many reductions
         let program = compile(
-            "fun loop n = if n = 0 then () else loop (n - 1)\n\
+            "import __Builtin.Stdio\n\
+             fun loop n = if n = 0 then () else loop (n - 1)\n\
              val _ = loop 5000\n\
-             val _ = println \"done\"",
+             val _ = BuiltinStdio.println \"done\"",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
@@ -935,9 +937,12 @@ mod tests {
     #[test]
     fn test_spawn_and_await_basic() {
         let program = compile(
-            "val child = spawn (fn () => 42)\n\
-             val result = await_process child\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val result = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
@@ -952,10 +957,13 @@ mod tests {
         // Use let-binding to force closure capture (top-level vals are globals,
         // not captured by closures in the child VM)
         let program = compile(
-            "fun make_spawner x = spawn (fn () => x + 32)\n\
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             fun make_spawner x = BuiltinFiber.spawn_raw (fn () => x + 32)\n\
              val child = make_spawner 10\n\
-             val result = await_process child\n\
-             val _ = println (int_to_string result)",
+             val result = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
@@ -967,11 +975,14 @@ mod tests {
     #[test]
     fn test_spawn_two_children() {
         let program = compile(
-            "val c1 = spawn (fn () => 10)\n\
-             val c2 = spawn (fn () => 20)\n\
-             val r1 = await_process c1\n\
-             val r2 = await_process c2\n\
-             val _ = println (int_to_string (r1 + r2))",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val c1 = BuiltinFiber.spawn_raw (fn () => 10)\n\
+             val c2 = BuiltinFiber.spawn_raw (fn () => 20)\n\
+             val r1 = BuiltinFiber.await c1\n\
+             val r2 = BuiltinFiber.await c2\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (r1 + r2))",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
@@ -983,11 +994,14 @@ mod tests {
     #[test]
     fn test_wait_any_returns_leftmost_completed_child() {
         let program = compile(
-            "val left = spawn (fn () => 10)\n\
-             val right = spawn (fn () => 20)\n\
-             val winner = wait_any [left, right]\n\
-             val result = await_process winner\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val left = BuiltinFiber.spawn_raw (fn () => 10)\n\
+             val right = BuiltinFiber.spawn_raw (fn () => 20)\n\
+             val winner = BuiltinFiber.wait_any_raw [left, right]\n\
+             val result = BuiltinFiber.await winner\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
@@ -1029,9 +1043,12 @@ mod tests {
     #[test]
     fn test_reaps_finished_child_after_await() {
         let program = compile(
-            "val child = spawn (fn () => 42)\n\
-             val result = await_process child\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val result = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);
@@ -1044,8 +1061,10 @@ mod tests {
     #[test]
     fn test_reaps_failed_child_after_await() {
         let program = compile(
-            "val child = spawn (fn () => panic \"boom\")\n\
-             val _ = await_process child",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Testing\n\
+             val child = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic \"boom\")\n\
+             val _ = BuiltinFiber.await child",
         );
         let mut runtime = Runtime::new();
         let pid = runtime.spawn_root(program);

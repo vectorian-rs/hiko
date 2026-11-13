@@ -1612,7 +1612,8 @@ mod tests {
 
     #[test]
     fn test_threaded_single_process() {
-        let program = compile("val _ = println \"hello threaded\"");
+        let program =
+            compile("import __Builtin.Stdio\nval _ = BuiltinStdio.println \"hello threaded\"");
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -1626,9 +1627,10 @@ mod tests {
         // While a slice runs, its process is out of the table. The monitor
         // must not mistake the moment it is put back for "all done".
         let program = compile(
-            "fun loop n = if n = 0 then 0 else loop (n - 1)\n\
+            "import __Builtin.Stdio\n\
+             fun loop n = if n = 0 then 0 else loop (n - 1)\n\
              val _ = loop 300000\n\
-             val _ = println \"finished\"",
+             val _ = BuiltinStdio.println \"finished\"",
         );
         for _ in 0..20 {
             let runtime = ThreadedRuntime::new(1);
@@ -1834,7 +1836,8 @@ mod tests {
 
     #[test]
     fn test_threaded_zero_workers_clamps_to_one() {
-        let program = compile("val _ = println \"hello threaded\"");
+        let program =
+            compile("import __Builtin.Stdio\nval _ = BuiltinStdio.println \"hello threaded\"");
         let runtime = ThreadedRuntime::new(0);
         let pid = runtime.spawn_root(program);
         runtime.run_to_completion().unwrap();
@@ -1845,9 +1848,12 @@ mod tests {
     #[test]
     fn test_threaded_spawn_await() {
         let program = compile(
-            "val child = spawn (fn () => 42)\n\
-             val result = await_process child\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val result = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
@@ -1861,20 +1867,23 @@ mod tests {
     #[test]
     fn test_threaded_children_capturing_the_same_list() {
         let program = compile(
-            "fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)\n\
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)\n\
              fun sum (xs, acc : int) = case xs of [] => acc | x :: r => sum (r, acc + x)\n\
              fun run () =\n\
                let\n\
                  val xs = range (1000, [])\n\
                  val ys = range (10, [])\n\
-                 val a = spawn (fn () => sum (xs, 0))\n\
-                 val b = spawn (fn () => sum (xs, 1))\n\
-                 val c = spawn (fn () => sum (ys, 0))\n\
+                 val a = BuiltinFiber.spawn_raw (fn () => sum (xs, 0))\n\
+                 val b = BuiltinFiber.spawn_raw (fn () => sum (xs, 1))\n\
+                 val c = BuiltinFiber.spawn_raw (fn () => sum (ys, 0))\n\
                in\n\
-                 (await_process a, await_process b, await_process c)\n\
+                 (BuiltinFiber.await a, BuiltinFiber.await b, BuiltinFiber.await c)\n\
                end\n\
              val (a, b, c) = run ()\n\
-             val _ = println (int_to_string a ^ \" \" ^ int_to_string b ^ \" \" ^ int_to_string c)",
+             val _ = BuiltinStdio.println (BuiltinInt.to_string a ^ \" \" ^ BuiltinInt.to_string b ^ \" \" ^ BuiltinInt.to_string c)",
         );
         let runtime = ThreadedRuntime::new(2);
         let pid = runtime.spawn_root(program);
@@ -1885,18 +1894,21 @@ mod tests {
     #[test]
     fn test_threaded_many_processes() {
         let program = compile(
-            "fun make n = spawn (fn () => n * 2)\n\
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             fun make n = BuiltinFiber.spawn_raw (fn () => n * 2)\n\
              val c1 = make 1\n\
              val c2 = make 2\n\
              val c3 = make 3\n\
              val c4 = make 4\n\
              val c5 = make 5\n\
-             val r1 = await_process c1\n\
-             val r2 = await_process c2\n\
-             val r3 = await_process c3\n\
-             val r4 = await_process c4\n\
-             val r5 = await_process c5\n\
-             val _ = println (int_to_string (r1 + r2 + r3 + r4 + r5))",
+             val r1 = BuiltinFiber.await c1\n\
+             val r2 = BuiltinFiber.await c2\n\
+             val r3 = BuiltinFiber.await c3\n\
+             val r4 = BuiltinFiber.await c4\n\
+             val r5 = BuiltinFiber.await c5\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (r1 + r2 + r3 + r4 + r5))",
         );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
@@ -1909,8 +1921,10 @@ mod tests {
     fn test_async_sleep() {
         // sleep builtin suspends the process via MockIoBackend (deterministic)
         let program = compile(
-            "val _ = sleep 999999\n\
-             val _ = println \"after sleep\"",
+            "import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinTime.sleep 999999\n\
+             val _ = BuiltinStdio.println \"after sleep\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -1938,7 +1952,7 @@ mod tests {
 
     #[test]
     fn test_threaded_io_register_failure_fails_process() {
-        let program = compile("val _ = sleep 1");
+        let program = compile("import __Builtin.Time\nval _ = BuiltinTime.sleep 1");
         let runtime = ThreadedRuntime::new(1).with_io_backend(Arc::new(FailingIoBackend));
         let pid = runtime.spawn_root(program);
 
@@ -1958,11 +1972,14 @@ mod tests {
     fn test_mock_backend_concurrent_sleep() {
         // Two child processes sleeping via MockIoBackend (instant, deterministic)
         let program = compile(
-            "val a = spawn (fn () => sleep 999999)\n\
-             val b = spawn (fn () => sleep 999999)\n\
-             val _ = await_process a\n\
-             val _ = await_process b\n\
-             val _ = println \"both done\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val a = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val b = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val _ = BuiltinFiber.await a\n\
+             val _ = BuiltinFiber.await b\n\
+             val _ = BuiltinStdio.println \"both done\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -1975,11 +1992,15 @@ mod tests {
     #[test]
     fn test_wait_any_returns_only_completed_child_pid() {
         let program = compile(
-            "val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
-             val fast = spawn (fn () => 20)\n\
-             val winner = wait_any [slow, fast]\n\
-             val result = await_process winner\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val slow = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 10 end)\n\
+             val fast = BuiltinFiber.spawn_raw (fn () => 20)\n\
+             val winner = BuiltinFiber.wait_any_raw [slow, fast]\n\
+             val result = BuiltinFiber.await winner\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -1992,9 +2013,12 @@ mod tests {
     #[test]
     fn test_cancel_marks_blocked_child_cancelled() {
         let program = compile(
-            "val child = spawn (fn () => let val _ = sleep 999999 in 42 end)\n\
-             val _ = cancel child\n\
-             val _ = println \"cancelled\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val child = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
+             val _ = BuiltinFiber.cancel_raw child\n\
+             val _ = BuiltinStdio.println \"cancelled\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2153,10 +2177,12 @@ mod tests {
         let path = temp_path("async-read-file");
         let path_str = path.to_string_lossy();
         let program = compile(&format!(
-            "val _ = write_file (\"{path_str}\", \"hello async\")\n\
-             val contents = read_file \"{path_str}\"\n\
-             val _ = println contents\n\
-             val _ = remove_file \"{path_str}\"",
+            "import __Builtin.Filesystem\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinFilesystem.write_text (\"{path_str}\", \"hello async\")\n\
+             val contents = BuiltinFilesystem.read_text \"{path_str}\"\n\
+             val _ = BuiltinStdio.println contents\n\
+             val _ = BuiltinFilesystem.remove \"{path_str}\"",
         ));
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
@@ -2173,7 +2199,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&data, "hello").unwrap();
 
-        let program = compile("val _ = read_file \"data.txt\"");
+        let program = compile(
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.read_text \"data.txt\"",
+        );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.new_pid();
         let mut vm = VM::new(program);
@@ -2206,10 +2234,13 @@ mod tests {
     fn test_double_await_fails() {
         // Second await on the same child should fail (result consumed)
         let program = compile(
-            "val child = spawn (fn () => 42)\n\
-             val r1 = await_process child\n\
-             val r2 = await_process child\n\
-             val _ = println (int_to_string (r1 + r2))",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val r1 = BuiltinFiber.await child\n\
+             val r2 = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (r1 + r2))",
         );
         let runtime = ThreadedRuntime::new(1);
         let _pid = runtime.spawn_root(program);
@@ -2233,10 +2264,12 @@ mod tests {
         let data_str = data.to_string_lossy();
         let root_str = root.to_string_lossy();
         let program = compile(&format!(
-            "val _ = write_file (\"{data_str}\", \"rooted\")\n\
-             val contents = read_file \"data.txt\"\n\
-             val _ = println contents\n\
-             val _ = remove_file \"{data_str}\"",
+            "import __Builtin.Filesystem\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinFilesystem.write_text (\"{data_str}\", \"rooted\")\n\
+             val contents = BuiltinFilesystem.read_text \"data.txt\"\n\
+             val _ = BuiltinStdio.println contents\n\
+             val _ = BuiltinFilesystem.remove \"{data_str}\"",
         ));
         // Set up the directory
         let _ = std::fs::create_dir_all(&root);
@@ -2286,14 +2319,20 @@ mod tests {
             (runtime.table.get_output(pid), failed)
         };
 
-        let (output, failed) = run("val child = spawn (fn () => read_file \"data.txt\")\n\
-             val _ = println (await_process child)");
+        let (output, failed) = run("import __Builtin.Fiber\n\
+             import __Builtin.Filesystem\n\
+             import __Builtin.Stdio\n\
+             val child = BuiltinFiber.spawn_raw (fn () => BuiltinFilesystem.read_text \"data.txt\")\n\
+             val _ = BuiltinStdio.println (BuiltinFiber.await child)");
         assert!(!failed);
         assert_eq!(output, vec!["rooted\n"]);
 
         let (output, failed) = run(&format!(
-            "val child = spawn (fn () => read_file \"{}\")\n\
-             val _ = println (await_process child)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Filesystem\n\
+             import __Builtin.Stdio\n\
+             val child = BuiltinFiber.spawn_raw (fn () => BuiltinFilesystem.read_text \"{}\")\n\
+             val _ = BuiltinStdio.println (BuiltinFiber.await child)",
             outside.to_string_lossy()
         ));
         assert!(failed, "reading outside the root must fail in a child");
@@ -2334,17 +2373,22 @@ mod tests {
     #[cfg(feature = "builtin-http")]
     fn pool_fairness_program(slow_url: &str, slow_count: usize, fast_url: &str) -> CompiledProgram {
         let slows = (0..slow_count)
-            .map(|_| format!("spawn (fn () => http_get {slow_url:?})"))
+            .map(|_| format!("BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get {slow_url:?})"))
             .collect::<Vec<_>>()
             .join(", ");
         compile(&format!(
-            "val slows = [{slows}]\n\
-             val sleeper = spawn (fn () =>\n\
-               let val a = monotonic_ms () val _ = sleep 10 in monotonic_ms () - a end)\n\
-             val fast = spawn (fn () =>\n\
-               let val a = monotonic_ms () val _ = http_get {fast_url:?} in monotonic_ms () - a end)\n\
-             val _ = println (int_to_string (await_process sleeper))\n\
-             val _ = println (int_to_string (await_process fast))"
+            "import __Builtin.Fiber\n\
+             import __Builtin.Http\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val slows = [{slows}]\n\
+             val sleeper = BuiltinFiber.spawn_raw (fn () =>\n\
+               let val a = BuiltinTime.monotonic_ms () val _ = BuiltinTime.sleep 10 in BuiltinTime.monotonic_ms () - a end)\n\
+             val fast = BuiltinFiber.spawn_raw (fn () =>\n\
+               let val a = BuiltinTime.monotonic_ms () val _ = BuiltinHttp.get {fast_url:?} in BuiltinTime.monotonic_ms () - a end)\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await sleeper))\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await fast))"
         ))
     }
 
@@ -2354,6 +2398,13 @@ mod tests {
             .with_core()
             .register_builtin_name("spawn")
             .register_builtin_name("await_process")
+            // `import __Builtin.Http` aliases every member, so the raw
+            // globals must exist even though only `http_get` is called
+            // (and only it gets an allowed host).
+            .register_builtin_name("http")
+            .register_builtin_name("http_json")
+            .register_builtin_name("http_msgpack")
+            .register_builtin_name("http_bytes")
             .allow_http_builtin("http_get", vec!["127.0.0.1".to_string()])
     }
 
@@ -2388,12 +2439,21 @@ mod tests {
         prelude: &str,
         epilogue: &str,
     ) -> CompiledProgram {
-        let mut source = String::from(prelude);
+        let mut source = String::from(
+            "import __Builtin.Fiber\n\
+             import __Builtin.Http\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n",
+        );
+        source.push_str(prelude);
         for i in 0..count {
-            source.push_str(&format!("val c{i} = spawn (fn () => http_get {url:?})\n"));
+            source.push_str(&format!(
+                "val c{i} = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get {url:?})\n"
+            ));
         }
         for i in 0..count {
-            source.push_str(&format!("val _ = await_process_result c{i}\n"));
+            source.push_str(&format!("val _ = BuiltinFiber.await_result c{i}\n"));
         }
         source.push_str(epilogue);
         compile(&source)
@@ -2437,8 +2497,8 @@ mod tests {
         let busy = spawn_and_join_program(
             &slow_url,
             6,
-            "val t0 = monotonic_ms ()\n",
-            "val _ = println (int_to_string (monotonic_ms () - t0))",
+            "val t0 = BuiltinTime.monotonic_ms ()\n",
+            "val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinTime.monotonic_ms () - t0))",
         );
         let busy_vm = http_test_vm(busy)
             .register_builtin_name("await_process_result")
@@ -2446,10 +2506,14 @@ mod tests {
             .build();
         // Tree B starts its request once A's are queued.
         let other = compile(&format!(
-            "val _ = sleep 100\n\
-             val a = monotonic_ms ()\n\
-             val _ = http_get {fast_url:?}\n\
-             val _ = println (int_to_string (monotonic_ms () - a))"
+            "import __Builtin.Http\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val _ = BuiltinTime.sleep 100\n\
+             val a = BuiltinTime.monotonic_ms ()\n\
+             val _ = BuiltinHttp.get {fast_url:?}\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinTime.monotonic_ms () - a))"
         ));
         let other_vm = http_test_vm(other).build();
 
@@ -2489,17 +2553,28 @@ mod tests {
         // With one VM worker, the second process can only run before the
         // HTTP timeout if the pending request does not occupy that worker.
         let program = compile(&format!(
-            "val t0 = monotonic_ms ()\n\
-             val slow = spawn (fn () => http_get \"http://{addr}/\")\n\
-             val counter = spawn (fn () => monotonic_ms ())\n\
-             val t_counter = await_process counter\n\
-             val _ = println (int_to_string (t_counter - t0))\n\
-             val _ = await_process slow"
+            "import __Builtin.Fiber\n\
+             import __Builtin.Http\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val t0 = BuiltinTime.monotonic_ms ()\n\
+             val slow = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://{addr}/\")\n\
+             val counter = BuiltinFiber.spawn_raw (fn () => BuiltinTime.monotonic_ms ())\n\
+             val t_counter = BuiltinFiber.await counter\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (t_counter - t0))\n\
+             val _ = BuiltinFiber.await slow"
         ));
         let vm = crate::builder::VMBuilder::new(program)
             .with_core()
             .register_builtin_name("spawn")
             .register_builtin_name("await_process")
+            // See `http_test_vm`: `import __Builtin.Http` needs every raw
+            // http global defined, though only `http_get` is called.
+            .register_builtin_name("http")
+            .register_builtin_name("http_json")
+            .register_builtin_name("http_msgpack")
+            .register_builtin_name("http_bytes")
             .allow_http_builtin("http_get", vec!["127.0.0.1".to_string()])
             .http_timeout_ms(1000)
             .build();
@@ -2530,15 +2605,18 @@ mod tests {
     fn test_concurrent_async_http() {
         // Multiple spawned processes doing http_get via MockIoBackend
         let program = compile(
-            "val a = spawn (fn () => http_get \"http://a.test\")\n\
-             val b = spawn (fn () => http_get \"http://b.test\")\n\
-             val c = spawn (fn () => http_get \"http://c.test\")\n\
-             val (_, _, body_a) = await_process a\n\
-             val (_, _, body_b) = await_process b\n\
-             val (_, _, body_c) = await_process c\n\
-             val _ = println body_a\n\
-             val _ = println body_b\n\
-             val _ = println body_c",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Http\n\
+             import __Builtin.Stdio\n\
+             val a = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://a.test\")\n\
+             val b = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://b.test\")\n\
+             val c = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://c.test\")\n\
+             val (_, _, body_a) = BuiltinFiber.await a\n\
+             val (_, _, body_b) = BuiltinFiber.await b\n\
+             val (_, _, body_c) = BuiltinFiber.await c\n\
+             val _ = BuiltinStdio.println body_a\n\
+             val _ = BuiltinStdio.println body_b\n\
+             val _ = BuiltinStdio.println body_c",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2555,8 +2633,10 @@ mod tests {
     fn test_mock_backend_sleep() {
         // MockIoBackend completes sleep immediately
         let program = compile(
-            "val _ = sleep 999999\n\
-             val _ = println \"instant\"",
+            "import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinTime.sleep 999999\n\
+             val _ = BuiltinStdio.println \"instant\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2584,9 +2664,12 @@ mod tests {
     #[test]
     fn test_threaded_reaps_finished_child_after_await() {
         let program = compile(
-            "val child = spawn (fn () => 42)\n\
-             val result = await_process child\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val result = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
@@ -2599,8 +2682,10 @@ mod tests {
     #[test]
     fn test_threaded_reaps_failed_child_after_await() {
         let program = compile(
-            "val child = spawn (fn () => panic \"boom\")\n\
-             val _ = await_process child",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Testing\n\
+             val child = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic \"boom\")\n\
+             val _ = BuiltinFiber.await child",
         );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
@@ -2621,9 +2706,12 @@ mod tests {
     #[test]
     fn test_multiworker_spawn_await() {
         let program = compile(
-            "val child = spawn (fn () => 42)\n\
-             val result = await_process child\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val result = BuiltinFiber.await child\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let runtime = ThreadedRuntime::new(4);
         let pid = runtime.spawn_root(program);
@@ -2635,18 +2723,21 @@ mod tests {
     #[test]
     fn test_multiworker_many_children() {
         let program = compile(
-            "fun make n = spawn (fn () => n * 2)\n\
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             fun make n = BuiltinFiber.spawn_raw (fn () => n * 2)\n\
              val c1 = make 1\n\
              val c2 = make 2\n\
              val c3 = make 3\n\
              val c4 = make 4\n\
              val c5 = make 5\n\
-             val r1 = await_process c1\n\
-             val r2 = await_process c2\n\
-             val r3 = await_process c3\n\
-             val r4 = await_process c4\n\
-             val r5 = await_process c5\n\
-             val _ = println (int_to_string (r1 + r2 + r3 + r4 + r5))",
+             val r1 = BuiltinFiber.await c1\n\
+             val r2 = BuiltinFiber.await c2\n\
+             val r3 = BuiltinFiber.await c3\n\
+             val r4 = BuiltinFiber.await c4\n\
+             val r5 = BuiltinFiber.await c5\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (r1 + r2 + r3 + r4 + r5))",
         );
         let runtime = ThreadedRuntime::new(4);
         let pid = runtime.spawn_root(program);
@@ -2658,11 +2749,14 @@ mod tests {
     #[test]
     fn test_multiworker_wait_any_returns_leftmost_completed_child() {
         let program = compile(
-            "val left = spawn (fn () => 10)\n\
-             val right = spawn (fn () => 20)\n\
-             val winner = wait_any [left, right]\n\
-             val result = await_process winner\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val left = BuiltinFiber.spawn_raw (fn () => 10)\n\
+             val right = BuiltinFiber.spawn_raw (fn () => 20)\n\
+             val winner = BuiltinFiber.wait_any_raw [left, right]\n\
+             val result = BuiltinFiber.await winner\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let runtime = ThreadedRuntime::new(1);
         let pid = runtime.spawn_root(program);
@@ -2674,11 +2768,15 @@ mod tests {
     #[test]
     fn test_multiworker_wait_any() {
         let program = compile(
-            "val fast = spawn (fn () => 20)\n\
-             val slow = spawn (fn () => let val _ = sleep 999999 in 10 end)\n\
-             val winner = wait_any [fast, slow]\n\
-             val result = await_process winner\n\
-             val _ = println (int_to_string result)",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             val fast = BuiltinFiber.spawn_raw (fn () => 20)\n\
+             val slow = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 10 end)\n\
+             val winner = BuiltinFiber.wait_any_raw [fast, slow]\n\
+             val result = BuiltinFiber.await winner\n\
+             val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
         let runtime = ThreadedRuntime::new(4)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2691,9 +2789,12 @@ mod tests {
     #[test]
     fn test_multiworker_cancel_blocked_child() {
         let program = compile(
-            "val child = spawn (fn () => let val _ = sleep 999999 in 42 end)\n\
-             val _ = cancel child\n\
-             val _ = println \"cancelled\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val child = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
+             val _ = BuiltinFiber.cancel_raw child\n\
+             val _ = BuiltinStdio.println \"cancelled\"",
         );
         let runtime = ThreadedRuntime::new(4)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2707,13 +2808,16 @@ mod tests {
     fn test_multiworker_concurrent_sleep() {
         // Multiple children sleeping concurrently with multiple workers
         let program = compile(
-            "val a = spawn (fn () => sleep 999999)\n\
-             val b = spawn (fn () => sleep 999999)\n\
-             val c = spawn (fn () => sleep 999999)\n\
-             val _ = await_process a\n\
-             val _ = await_process b\n\
-             val _ = await_process c\n\
-             val _ = println \"all done\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val a = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val b = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val c = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val _ = BuiltinFiber.await a\n\
+             val _ = BuiltinFiber.await b\n\
+             val _ = BuiltinFiber.await c\n\
+             val _ = BuiltinStdio.println \"all done\"",
         );
         let runtime = ThreadedRuntime::new(4)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2763,17 +2867,19 @@ mod tests {
     #[test]
     fn test_multiworker_stress_spawn_await_loop() {
         let program = compile(
-            "fun loop n =\n\
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             fun loop n =\n\
                if n = 0 then ()\n\
                else\n\
                  let\n\
-                   val child = spawn (fn () => n)\n\
-                   val _ = await_process child\n\
+                   val child = BuiltinFiber.spawn_raw (fn () => n)\n\
+                   val _ = BuiltinFiber.await child\n\
                  in\n\
                    loop (n - 1)\n\
                  end\n\
              val _ = loop 100\n\
-             val _ = println \"done\"",
+             val _ = BuiltinStdio.println \"done\"",
         );
         let runtime = ThreadedRuntime::new(4);
         let pid = runtime.spawn_root(program);
@@ -2788,8 +2894,11 @@ mod tests {
     fn test_scope_cancels_unawaited_child() {
         // Parent finishes without awaiting child → child should be cancelled by scope cleanup
         let program = compile(
-            "val _ = spawn (fn () => let val _ = sleep 999999 in 42 end)\n\
-             val _ = println \"parent done\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
+             val _ = BuiltinStdio.println \"parent done\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2804,10 +2913,13 @@ mod tests {
     #[test]
     fn test_scope_cancels_multiple_unawaited_children() {
         let program = compile(
-            "val _ = spawn (fn () => let val _ = sleep 999999 in 1 end)\n\
-             val _ = spawn (fn () => let val _ = sleep 999999 in 2 end)\n\
-             val _ = spawn (fn () => let val _ = sleep 999999 in 3 end)\n\
-             val _ = println \"done\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 1 end)\n\
+             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 2 end)\n\
+             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 3 end)\n\
+             val _ = BuiltinStdio.println \"done\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2822,10 +2934,13 @@ mod tests {
     fn test_scope_cascades_cancellation() {
         // Parent spawns child, child spawns grandchild; parent exits → both cancelled
         let program = compile(
-            "val _ = spawn (fn () =>\n\
-               let val _ = spawn (fn () => sleep 999999)\n\
-               in sleep 999999 end)\n\
-             val _ = println \"root done\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinFiber.spawn_raw (fn () =>\n\
+               let val _ = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+               in BuiltinTime.sleep 999999 end)\n\
+             val _ = BuiltinStdio.println \"root done\"",
         );
         let runtime = ThreadedRuntime::new(1)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2840,9 +2955,12 @@ mod tests {
     fn test_multiworker_scope_cleanup() {
         // Same scope cleanup test but with 4 workers
         let program = compile(
-            "val _ = spawn (fn () => let val _ = sleep 999999 in 1 end)\n\
-             val _ = spawn (fn () => let val _ = sleep 999999 in 2 end)\n\
-             val _ = println \"done\"",
+            "import __Builtin.Fiber\n\
+             import __Builtin.Time\n\
+             import __Builtin.Stdio\n\
+             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 1 end)\n\
+             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 2 end)\n\
+             val _ = BuiltinStdio.println \"done\"",
         );
         let runtime = ThreadedRuntime::new(4)
             .with_io_backend(Arc::new(crate::io_backend::MockIoBackend::new()));
@@ -2857,12 +2975,17 @@ mod tests {
     /// `await_process_result` so that a failed child does not fail the root
     /// by itself. The root prints how many children succeeded.
     fn spawn_children_program(count: usize, child: &str) -> CompiledProgram {
-        let mut source = String::from("import __Builtin.Process\n");
+        let mut source = String::from(
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             import __Builtin.Int\n\
+             import __Builtin.String\n",
+        );
         source.push_str(&format!(
-            "fun spawn_all n acc = if n = 0 then acc else spawn_all (n - 1) (spawn (fn () => {child}) :: acc)\n\
-             fun join_all ps ok = case ps of [] => ok | p :: rest => (case BuiltinProcess.await_result_raw p of BuiltinProcess.Ok _ => join_all rest (ok + 1) | BuiltinProcess.Err _ => join_all rest ok)\n\
+            "fun spawn_all n acc = if n = 0 then acc else spawn_all (n - 1) (BuiltinFiber.spawn_raw (fn () => {child}) :: acc)\n\
+             fun join_all ps ok = case ps of [] => ok | p :: rest => (case BuiltinFiber.await_result p of BuiltinFiber.Ok _ => join_all rest (ok + 1) | BuiltinFiber.Err _ => join_all rest ok)\n\
              val ok = join_all (spawn_all {count} []) 0\n\
-             val _ = println (int_to_string ok)\n"
+             val _ = BuiltinStdio.println (BuiltinInt.to_string ok)\n"
         ));
         crate::test_support::compile_source_hermetic(&source)
     }
@@ -2894,7 +3017,7 @@ mod tests {
         const IO_BYTES: u64 = 1_000;
         let program = spawn_children_program(
             100,
-            "let fun spam () = let val _ = print \"0123456789\" in spam () end in spam () end",
+            "let fun spam () = let val _ = BuiltinStdio.print \"0123456789\" in spam () end in spam () end",
         );
         let vm = tree_budget_vm(program).max_io_bytes(IO_BYTES).build();
         let budget = vm.heap().io_budget().unwrap().clone();
@@ -2915,7 +3038,7 @@ mod tests {
         const HOST_WORK: u64 = 5_000;
         let program = spawn_children_program(
             100,
-            "let fun measure n = measure (n + string_length \"abc\") in measure 0 end",
+            "let fun measure n = measure (n + BuiltinString.length \"abc\") in measure 0 end",
         );
         let vm = tree_budget_vm(program).max_host_work(HOST_WORK).build();
         let budget = vm.heap().host_work_budget().unwrap().clone();
@@ -2938,9 +3061,10 @@ mod tests {
         // everything the child did not use.
         const FUEL: u64 = 100_000;
         let program = compile(
-            "fun count n = if n = 0 then 0 else count (n - 1)\n\
-             val c = spawn (fn () => count 100)\n\
-             val _ = await_process_result c\n\
+            "import __Builtin.Fiber\n\
+             fun count n = if n = 0 then 0 else count (n - 1)\n\
+             val c = BuiltinFiber.spawn_raw (fn () => count 100)\n\
+             val _ = BuiltinFiber.await_result c\n\
              fun spin () = spin ()\n\
              val _ = spin ()\n",
         );
@@ -2960,10 +3084,11 @@ mod tests {
         // copied. (The plan's `val x1 = (x0, x0) ... val x30` version gives a
         // tuple type with 2^30 leaves, which the type checker cannot handle.)
         let program = compile(
-            "datatype t = Leaf | Node of t * t\n\
+            "import __Builtin.Fiber\n\
+             datatype t = Leaf | Node of t * t\n\
              fun grow n acc = if n = 0 then acc else grow (n - 1) (Node (acc, acc))\n\
-             val c = let val x30 = grow 30 Leaf in spawn (fn () => case x30 of Leaf => 0 | Node _ => 1) end\n\
-             val _ = await_process_result c\n",
+             val c = let val x30 = grow 30 Leaf in BuiltinFiber.spawn_raw (fn () => case x30 of Leaf => 0 | Node _ => 1) end\n\
+             val _ = BuiltinFiber.await_result c\n",
         );
         let vm = tree_budget_vm(program).build();
         let runtime = ThreadedRuntime::new(1);
@@ -2986,7 +3111,8 @@ mod tests {
         // Ten children that never finish: the fourth spawn exceeds
         // max_live_processes = 3 and fails the root.
         let program = compile(
-            "fun spawn_all n = if n = 0 then () else let val _ = spawn (fn () => let fun spin () = spin () in spin () end) in spawn_all (n - 1) end\n\
+            "import __Builtin.Fiber\n\
+             fun spawn_all n = if n = 0 then () else let val _ = BuiltinFiber.spawn_raw (fn () => let fun spin () = spin () in spin () end) in spawn_all (n - 1) end\n\
              val _ = spawn_all 10\n",
         );
         let vm = tree_budget_vm(program).max_live_processes(3).build();
@@ -3000,9 +3126,11 @@ mod tests {
         // Children that finish free their slot, but max_spawns counts every
         // spawn.
         let program = compile(
-            "fun spawn_all n = if n = 0 then () else let val c = spawn (fn () => 0) val _ = await_process_result c in spawn_all (n - 1) end\n\
+            "import __Builtin.Fiber\n\
+             import __Builtin.Stdio\n\
+             fun spawn_all n = if n = 0 then () else let val c = BuiltinFiber.spawn_raw (fn () => 0) val _ = BuiltinFiber.await_result c in spawn_all (n - 1) end\n\
              val _ = spawn_all 10\n\
-             val _ = println \"done\"\n",
+             val _ = BuiltinStdio.println \"done\"\n",
         );
         let vm = tree_budget_vm(program.clone())
             .max_live_processes(1)

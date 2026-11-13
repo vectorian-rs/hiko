@@ -87,7 +87,8 @@ fn sibling_leases_share_one_cap_and_refund_once() {
 #[test]
 fn actual_run_and_slice_unwind_refund_with_vm_surviving() {
     for slice in [false, true] {
-        let mut vm = machine("val _ = panic \"rust panic\"");
+        let mut vm =
+            machine("import __Builtin.Testing\nval _ = BuiltinTesting.panic \"rust panic\"");
         vm.register_builtin("panic", |_, _| panic!("injected Rust panic"));
         vm.set_fuel(100);
         let original = vm.fuel_budget().unwrap().clone();

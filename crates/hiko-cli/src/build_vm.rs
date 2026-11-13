@@ -535,7 +535,7 @@ mod tests {
     fn script_project(dir: &Path) -> PathBuf {
         write(
             &dir.join("main.hml"),
-            "import Std.Option\nval _ = println (if Option.is_some (Option.Some 1) then \"sealed: some\" else \"sealed: none\")\n",
+            "import Std.Option\nimport __Builtin.Stdio\nval _ = BuiltinStdio.println (if Option.is_some (Option.Some 1) then \"sealed: some\" else \"sealed: none\")\n",
         )
         .unwrap();
         dir.join("main.hml")
@@ -899,7 +899,11 @@ mod tests {
     #[test]
     fn script_with_an_extension_needs_it_linked_here() {
         let dir = temp_dir("script-ext");
-        write(&dir.join("main.hml"), "val _ = println \"x\"\n").unwrap();
+        write(
+            &dir.join("main.hml"),
+            "import __Builtin.Stdio\nval _ = BuiltinStdio.println \"x\"\n",
+        )
+        .unwrap();
         let options = BuildVmOptions {
             config_path: "run.toml".into(),
             script: Some(dir.join("main.hml")),
@@ -950,13 +954,20 @@ mod tests {
             };
             generate(&options, &config, &[&hiko_ext_aws::AWS])
         };
-        let err =
-            build("ext-s3", "import Aws.S3\nval _ = println \"hi\"\n").expect_err("not embedded");
+        let err = build(
+            "ext-s3",
+            "import Aws.S3\nimport __Builtin.Stdio\nval _ = BuiltinStdio.println \"hi\"\n",
+        )
+        .expect_err("not embedded");
         assert_eq!(
             err,
             "the script does not compile with only the embedded sources: module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed; build it with --lock and a lockfile that pins Std.Result"
         );
-        build("ext-none", "val _ = println \"hi\"\n").expect("needs nothing");
+        build(
+            "ext-none",
+            "import __Builtin.Stdio\nval _ = BuiltinStdio.println \"hi\"\n",
+        )
+        .expect("needs nothing");
     }
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
@@ -970,7 +981,7 @@ mod tests {
         let dir = temp_dir("e2e-ext");
         write(
             &dir.join("main.hml"),
-            "import Github.Issue\nval _ = println \"extension linked\"\n",
+            "import Github.Issue\nimport __Builtin.Stdio\nval _ = BuiltinStdio.println \"extension linked\"\n",
         )
         .unwrap();
         let options = BuildVmOptions {

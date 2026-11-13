@@ -2569,7 +2569,7 @@ mod tests {
         ] {
             assert_eq!(
                 parse_err(src),
-                "expected declaration (val, fun, datatype, type, local, import, use, signature, structure, or effect)",
+                "expected declaration (val, fun, datatype, type, local, import, signature, structure, or effect)",
                 "{src}"
             );
         }

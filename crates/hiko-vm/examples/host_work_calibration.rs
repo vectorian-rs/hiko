@@ -101,7 +101,7 @@ const INPUTS: &[(&str, &[&str], &str)] = &[
     (
         "parsed",
         &["json_array"],
-        "val parsed = BuiltinJson.parse_raw json_array",
+        "val parsed = BuiltinJson.parse json_array",
     ),
     (
         "rng",
@@ -154,9 +154,9 @@ const CALLS: &[(&str, &str)] = &[
     ("json_get", "json_get (json_object, \"k.0\")"),
     (
         "json_parse",
-        "(BuiltinJson.parse_raw json_array : BuiltinJson.json)",
+        "(BuiltinJson.parse json_array : BuiltinJson.json)",
     ),
-    ("json_to_string", "BuiltinJson.to_string_raw parsed"),
+    ("json_to_string", "BuiltinJson.to_string parsed"),
     ("random_bytes", "random_bytes SIZE"),
     ("rng_bytes", "rng_bytes (rng, SIZE)"),
     ("rng_seed", "rng_seed bytes"),

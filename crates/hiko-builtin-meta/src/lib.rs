@@ -78,6 +78,22 @@ impl BuiltinMeta {
         }
     }
 
+    /// Module-only builtin outside the core default; a policy enables it, and
+    /// only compiler-owned modules may name it.
+    const fn module_only_opt_in(
+        name: &'static str,
+        capability_path: &'static str,
+        owner: &'static str,
+        replacement: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: false,
+            surface: BuiltinSurface::ModuleOnly { owner, replacement },
+        }
+    }
+
     /// Internal alias used by `__Builtin` modules. It has no policy leaf and
     /// is always registered.
     const fn runtime_alias(name: &'static str) -> Self {

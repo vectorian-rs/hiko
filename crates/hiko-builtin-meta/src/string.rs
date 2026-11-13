@@ -1,15 +1,70 @@
 use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta::core("string_length", "capabilities.string.length"),
-    BuiltinMeta::core("substring", "capabilities.string.substring"),
-    BuiltinMeta::core("string_contains", "capabilities.string.contains"),
-    BuiltinMeta::core("trim", "capabilities.string.trim"),
-    BuiltinMeta::core("split", "capabilities.string.split"),
-    BuiltinMeta::core("string_replace", "capabilities.string.replace"),
-    BuiltinMeta::core("starts_with", "capabilities.string.starts_with"),
-    BuiltinMeta::core("ends_with", "capabilities.string.ends_with"),
-    BuiltinMeta::core("to_upper", "capabilities.string.upper"),
-    BuiltinMeta::core("to_lower", "capabilities.string.lower"),
-    BuiltinMeta::core("string_join", "capabilities.string.join"),
+    BuiltinMeta::module_only(
+        "string_length",
+        "capabilities.string.length",
+        "__Builtin.String",
+        "Std.String.length",
+    ),
+    BuiltinMeta::module_only(
+        "substring",
+        "capabilities.string.substring",
+        "__Builtin.String",
+        "Std.String.substring",
+    ),
+    BuiltinMeta::module_only(
+        "string_contains",
+        "capabilities.string.contains",
+        "__Builtin.String",
+        "Std.String.contains",
+    ),
+    BuiltinMeta::module_only(
+        "trim",
+        "capabilities.string.trim",
+        "__Builtin.String",
+        "Std.String.trim",
+    ),
+    BuiltinMeta::module_only(
+        "split",
+        "capabilities.string.split",
+        "__Builtin.String",
+        "Std.String.split",
+    ),
+    BuiltinMeta::module_only(
+        "string_replace",
+        "capabilities.string.replace",
+        "__Builtin.String",
+        "Std.String.replace",
+    ),
+    BuiltinMeta::module_only(
+        "starts_with",
+        "capabilities.string.starts_with",
+        "__Builtin.String",
+        "Std.String.starts_with",
+    ),
+    BuiltinMeta::module_only(
+        "ends_with",
+        "capabilities.string.ends_with",
+        "__Builtin.String",
+        "Std.String.ends_with",
+    ),
+    BuiltinMeta::module_only(
+        "to_upper",
+        "capabilities.string.upper",
+        "__Builtin.String",
+        "Std.String.upper",
+    ),
+    BuiltinMeta::module_only(
+        "to_lower",
+        "capabilities.string.lower",
+        "__Builtin.String",
+        "Std.String.lower",
+    ),
+    BuiltinMeta::module_only(
+        "string_join",
+        "capabilities.string.join",
+        "__Builtin.String",
+        "Std.String.join",
+    ),
 ];

@@ -3,11 +3,11 @@ import __Builtin.Word
 (* Unsigned word conversions. Negative integers, overflowing words and invalid
    strings preserve raw errors; --strict requires all four noun leaves. *)
 structure Word = struct
-  fun of_int value = BuiltinWord.of_int_raw value
+  fun of_int value = BuiltinWord.of_int value
 
-  fun to_int value = BuiltinWord.to_int_raw value
+  fun to_int value = BuiltinWord.to_int value
 
-  fun of_string text = BuiltinWord.of_string_raw text
+  fun of_string text = BuiltinWord.of_string text
 
-  fun to_string value = BuiltinWord.to_string_raw value
+  fun to_string value = BuiltinWord.to_string value
 end

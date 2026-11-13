@@ -143,7 +143,6 @@ pub struct EmbeddedModule {
     pub source: &'static str,
 }
 
-
 #[derive(Debug)]
 pub enum CompileError {
     Type(TypeError),
@@ -707,7 +706,6 @@ fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
     }
     Ok((package, module))
 }
-
 
 pub(crate) fn checked_builtin_module(
     import: &str,
@@ -1621,10 +1619,14 @@ impl Compiler {
     }
 
     fn is_private_builtin(&self, name: &str) -> bool {
-        self.compiling_builtin.is_some_and(|module| {
-            matches!(hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
-                Some(BuiltinSurface::ModuleOnly { owner, .. }) if owner == module.import_name)
-        })
+        // Any compiler-owned module may name module-only builtins; several
+        // internal modules share primitives (exit, panic). Ordinary and
+        // extension source stay outside this boundary.
+        self.compiling_builtin.is_some()
+            && matches!(
+                hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
+                Some(BuiltinSurface::ModuleOnly { .. })
+            )
     }
 
     /// Start a new top-level binding of `name`: later references resolve to
@@ -4086,10 +4088,7 @@ mod tests {
             &dir.join("src/M.hml"),
             "structure M = struct fun dbl x = x + x end\n",
         );
-        write_file(
-            &dir.join("main.hml"),
-            "import Proj.M\nval y = M.dbl 21\n",
-        );
+        write_file(&dir.join("main.hml"), "import Proj.M\nval y = M.dbl 21\n");
         let err = compile_path(&dir.join("main.hml")).expect_err("M.hml leaves + undecided");
         assert!(
             format!("{err:?}").contains("cannot tell whether"),
@@ -4456,8 +4455,12 @@ mod tests {
             compiled.main.code.clone()
         };
         assert_eq!(
-            code("val xs = [print \"a\", print \"b\", ()]\n"),
-            code("val xs = print \"a\" :: print \"b\" :: () :: []\n")
+            code(
+                "import __Builtin.Stdio\nval xs = [BuiltinStdio.print \"a\", BuiltinStdio.print \"b\", ()]\n"
+            ),
+            code(
+                "import __Builtin.Stdio\nval xs = BuiltinStdio.print \"a\" :: BuiltinStdio.print \"b\" :: () :: []\n"
+            )
         );
     }
 
@@ -4666,7 +4669,7 @@ mod tests {
     #[test]
     fn compile_accepts_internal_builtin_import_without_file_context() {
         let result = Compiler::compile(parse_program(
-            "import __Builtin.Path\nval joined = BuiltinPath.join_raw (\"alpha\", \"beta\")\n",
+            "import __Builtin.Path\nval joined = BuiltinPath.join (\"alpha\", \"beta\")\n",
         ));
         assert!(
             result.is_ok(),
@@ -4682,26 +4685,26 @@ mod tests {
             ("int list", "7", "case n of [] => 0 | x :: _ => x"),
         ] {
             let source = format!(
-                "structure BuiltinProcess = struct
+                "structure BuiltinFiber = struct
                    datatype 'a await_result = Forged of {payload} | Other of 'a
                  end
                  val result = case await_process_result (spawn (fn () => {child})) of
-                     BuiltinProcess.Forged n => {use_value}
-                   | BuiltinProcess.Other _ => 0\n"
+                     BuiltinFiber.Forged n => {use_value}
+                   | BuiltinFiber.Other _ => 0\n"
             );
-            for (before, after) in [("", ""), ("import __Builtin.Process\n", "")] {
+            for (before, after) in [("", ""), ("import __Builtin.Fiber\n", "")] {
                 let msg = compile_error(&format!("{before}{source}{after}"));
                 assert!(
-                    msg.contains("runtime-owned type 'BuiltinProcess.await_result'"),
+                    msg.contains("runtime-owned type 'BuiltinFiber.await_result'"),
                     "{msg}"
                 );
             }
         }
         // Copying the embedded source into user code does not grant its authority.
-        let source = internal_builtin_module("Process").unwrap().source;
+        let source = internal_builtin_module("Fiber").unwrap().source;
         let msg = compile_error(source);
         assert!(
-            msg.contains("runtime-owned type 'BuiltinProcess.error'"),
+            msg.contains("runtime-owned type 'BuiltinFiber.error'"),
             "{msg}"
         );
     }
@@ -4725,8 +4728,8 @@ mod tests {
     #[test]
     fn compile_json_raw_aliases_are_monomorphic() {
         for source in [
-            "val x : int = BuiltinJson.parse_raw \"[]\"",
-            "val s = BuiltinJson.to_string_raw (fn (x : int) => x)",
+            "val x : int = BuiltinJson.parse \"[]\"",
+            "val s = BuiltinJson.to_string (fn (x : int) => x)",
         ] {
             let message = compile_error(&format!("import __Builtin.Json\n{source}"));
             assert!(message.contains("type mismatch"), "{message}");
@@ -4761,7 +4764,7 @@ mod tests {
     fn compile_does_not_trust_extension_source_named_builtin_json() {
         for source in [
             internal_builtin_module("Json").unwrap().source,
-            "structure BuiltinJson = struct val parse_raw = json_parse end",
+            "structure BuiltinJson = struct val parse = json_parse end",
         ] {
             let options = ModuleLoaderOptions {
                 extensions: ExtensionSurface {
@@ -4803,15 +4806,15 @@ mod tests {
     #[cfg(feature = "builtin-process")]
     #[test]
     fn bulk_join_signature_preserves_pid_payloads_and_protected_result_type() {
-        let source = "import __Builtin.Process\n\
-            fun bulk (pids : 'a pid list) = fiber_await_all pids\n\
-            val ints : int list BuiltinProcess.await_result = bulk [spawn (fn () => 1)]\n\
-            val strings : string list BuiltinProcess.await_result = bulk [spawn (fn () => \"text\")]\n\
-            val empty : int list BuiltinProcess.await_result = bulk []\n";
+        let source = "import __Builtin.Fiber\n\
+            fun bulk (pids : 'a pid list) = BuiltinFiber.await_all pids\n\
+            val ints : int list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn_raw (fn () => 1)]\n\
+            val strings : string list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn_raw (fn () => \"text\")]\n\
+            val empty : int list BuiltinFiber.await_result = bulk []\n";
         Compiler::compile(parse_program(source)).unwrap();
         for source in [
-            "val bad = fiber_await_all [spawn (fn () => 1), spawn (fn () => \"text\")]",
-            "val bad : string list BuiltinProcess.await_result = fiber_await_all [spawn (fn () => 1)]",
+            "import __Builtin.Fiber\nval bad = BuiltinFiber.await_all [BuiltinFiber.spawn_raw (fn () => 1), BuiltinFiber.spawn_raw (fn () => \"text\")]",
+            "import __Builtin.Fiber\nval bad : string list BuiltinFiber.await_result = BuiltinFiber.await_all [BuiltinFiber.spawn_raw (fn () => 1)]",
         ] {
             assert!(
                 matches!(
@@ -4829,23 +4832,22 @@ mod tests {
         let options = ModuleLoaderOptions {
             extensions: ExtensionSurface {
                 modules: vec![(
-                    "__Builtin.Process",
-                    "structure BuiltinProcess = struct
+                    "__Builtin.Fiber",
+                    "structure BuiltinFiber = struct
                     datatype 'a await_result = Forged of int | Other of 'a end",
                 )],
                 ..Default::default()
             },
             ..Default::default()
         };
-        let err =
-            Compiler::compile_with_options(parse_program("import __Builtin.Process"), options)
-                .unwrap_err();
+        let err = Compiler::compile_with_options(parse_program("import __Builtin.Fiber"), options)
+            .unwrap_err();
         let CompileError::Type(err) = err else {
             panic!("expected type error: {err:?}")
         };
         assert!(
             err.message
-                .contains("runtime-owned type 'BuiltinProcess.await_result'"),
+                .contains("runtime-owned type 'BuiltinFiber.await_result'"),
             "{err:?}"
         );
     }
@@ -5327,7 +5329,10 @@ Answer = "blake3:deadbeef"
     fn pinned_module_use_in_let_in_fun_refused() {
         for (name, script) in [
             ("pinned-fun-use-alone", "import Test.Answer\nval m = f ()\n"),
-            ("pinned-fun-use-not-called", "import Test.Answer\nval m = 1\n"),
+            (
+                "pinned-fun-use-not-called",
+                "import Test.Answer\nval m = 1\n",
+            ),
         ] {
             assert_nested_use_refused(compile_with_pinned_module(
                 name,
@@ -5810,7 +5815,7 @@ Prelude = "blake3:deadbeef"
 
         write_file(
             &entry_path,
-            "import __Builtin.Path\nval joined = BuiltinPath.join_raw (\"alpha\", \"beta\")\n",
+            "import __Builtin.Path\nval joined = BuiltinPath.join (\"alpha\", \"beta\")\n",
         );
 
         let result = compile_path(&entry_path);
@@ -5900,7 +5905,7 @@ Prelude = "blake3:deadbeef"
 
         write_file(
             &entry_path,
-            "import __Builtin.Hash\nval digest = BuiltinHash.blake3_raw \"abc\"\n",
+            "import __Builtin.Hash\nval digest = BuiltinHash.blake3 \"abc\"\n",
         );
 
         let result = compile_path(&entry_path);
