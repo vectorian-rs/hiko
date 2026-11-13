@@ -13,6 +13,7 @@ fn repo_root() -> PathBuf {
 /// Populate the repository's `.hiko-cache` from `libraries/`, exactly as
 /// `hiko install` would from the local registry, so example runs resolve
 /// named imports without network or machine-global state. Idempotent.
+#[cfg(all(feature = "cli-lock", feature = "loader-named-imports"))]
 fn populate_module_cache() {
     let root = repo_root();
     let cache = root.join(".hiko-cache");
@@ -53,6 +54,11 @@ fn populate_module_cache() {
         }
     }
 }
+
+/// Without the loader features the cache cannot be read either; the example
+/// runs that need it are feature-gated with the binary surface they test.
+#[cfg(not(all(feature = "cli-lock", feature = "loader-named-imports")))]
+fn populate_module_cache() {}
 
 /// Runs `script` under `policy` with `stdin` and returns (success, stderr).
 fn run(script: &str, policy: &str, stdin: &[u8]) -> (bool, String) {
@@ -287,7 +293,8 @@ mod thin_modules {
 
     #[test]
     fn strict_noun_import_checks_every_unused_leaf() {
-        let cases: &[(&str, &[(&str, &str)], bool)] = &[
+        type NounCase = (&'static str, &'static [(&'static str, &'static str)], bool);
+        let cases: &[NounCase] = &[
             (
                 "Int",
                 &[

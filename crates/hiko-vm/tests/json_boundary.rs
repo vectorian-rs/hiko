@@ -51,10 +51,13 @@ fn json_constructor_aliases_round_trip_on_both_runtimes() {
     let program = compile(
         r#"
         import Std.Json
+        import __Builtin.Int
+        import __Builtin.Stdio
+        import __Builtin.Testing
         fun describe value = case value of
             Json.JNull => "null"
           | Json.JBool b => if b then "true" else "false"
-          | Json.JInt n => int_to_string n
+          | Json.JInt n => BuiltinInt.to_string n
           | Json.JFloat _ => "float"
           | Json.JStr s => s
           | Json.JArray _ => "array"
@@ -66,8 +69,8 @@ fn json_constructor_aliases_round_trip_on_both_runtimes() {
             let
                 val encoded = Json.to_string value
                 val decoded : Json.json = Json.parse encoded
-                val _ = assert_eq (Json.to_string decoded, encoded, "JSON round trip")
-                val _ = println (describe decoded)
+                val _ = BuiltinTesting.assert_eq (Json.to_string decoded, encoded, "JSON round trip")
+                val _ = BuiltinStdio.println (describe decoded)
             in check rest end
         val _ = check values
     "#,
@@ -92,12 +95,14 @@ fn trusted_json_converters_ignore_and_restore_user_bindings() {
     let program = compile(
         r#"
         import Std.Json
+        import __Builtin.Stdio
+        import __Builtin.Testing
         fun json_parse (_ : string) = 99
         fun json_to_string (_ : int) = "user serializer"
-        val _ = assert_eq (Json.to_string (Json.parse "[7]"), "[7]", "trusted converters")
-        val _ = assert_eq (json_parse "ignored", 99, "user parser survives import")
-        val _ = assert_eq (json_to_string 1, "user serializer", "user serializer survives import")
-        val _ = println "bindings preserved"
+        val _ = BuiltinTesting.assert_eq (Json.to_string (Json.parse "[7]"), "[7]", "trusted converters")
+        val _ = BuiltinTesting.assert_eq (json_parse "ignored", 99, "user parser survives import")
+        val _ = BuiltinTesting.assert_eq (json_to_string 1, "user serializer", "user serializer survives import")
+        val _ = BuiltinStdio.println "bindings preserved"
     "#,
     )
     .unwrap();

@@ -146,41 +146,57 @@ fn thin_conversion_errors_match_raw_errors() {
     .map(|key| format!("[capabilities.{key}]\nenabled = true\n"))
     .join("");
     for (module, wrapper, raw) in [
-        ("Char", "Char.of_int (~1)", "int_to_char (~1)"),
-        ("Char", "Char.of_int 55296", "int_to_char 55296"),
-        ("Char", "Char.of_int 4294967361", "int_to_char 4294967361"),
-        ("Word", "Word.of_int (~1)", "int_to_word (~1)"),
+        ("Char", "Char.of_int (~1)", "BuiltinChar.of_int (~1)"),
+        ("Char", "Char.of_int 55296", "BuiltinChar.of_int 55296"),
+        (
+            "Char",
+            "Char.of_int 4294967361",
+            "BuiltinChar.of_int 4294967361",
+        ),
+        ("Word", "Word.of_int (~1)", "BuiltinWord.of_int (~1)"),
         (
             "Word",
             "Word.to_int 0w18446744073709551615",
-            "word_to_int 0w18446744073709551615",
+            "BuiltinWord.to_int 0w18446744073709551615",
         ),
         (
             "Word",
             "Word.of_string \"invalid\"",
-            "string_to_word \"invalid\"",
+            "BuiltinWord.of_string \"invalid\"",
         ),
         (
             "Word",
             "Word.of_string \"18446744073709551616\"",
-            "string_to_word \"18446744073709551616\"",
+            "BuiltinWord.of_string \"18446744073709551616\"",
         ),
-        ("Word", "Word.of_string \"   \"", "string_to_word \"   \""),
-        ("Int", "Int.of_string \"   \"", "string_to_int \"   \""),
+        (
+            "Word",
+            "Word.of_string \"   \"",
+            "BuiltinWord.of_string \"   \"",
+        ),
+        (
+            "Int",
+            "Int.of_string \"   \"",
+            "BuiltinInt.of_string \"   \"",
+        ),
         (
             "Int",
             "Int.of_string \"invalid\"",
-            "string_to_int \"invalid\"",
+            "BuiltinInt.of_string \"invalid\"",
         ),
         (
             "Int",
             "Int.of_string \"9223372036854775808\"",
-            "string_to_int \"9223372036854775808\"",
+            "BuiltinInt.of_string \"9223372036854775808\"",
         ),
     ] {
         let wrapped = run_thin_source(&format!("import Std.{module}\nval x = {wrapper}"), &policy)
             .unwrap_err();
-        let raw = run_thin_source(&format!("val x = {raw}"), &policy).unwrap_err();
+        let raw = run_thin_source(
+            &format!("import __Builtin.{module}\nval x = {raw}"),
+            &policy,
+        )
+        .unwrap_err();
         assert_eq!(wrapped, raw, "{wrapper}");
     }
 }
@@ -193,9 +209,9 @@ fn existing_width_modules_keep_empty_policy_behavior() {
         ("Word32", "Word32.to_int (Word32.of_int 3) = 3"),
         ("Float32", "Float32.to_float (Float32.of_float 3.0) = 3.0"),
     ] {
-        let source = format!(
-            "import Std.{module}\nval x = if {expression} then () else panic \"wrong value\""
-        );
+        // Division by zero fails the run under the empty policy, which grants
+        // no capability for a panic builtin.
+        let source = format!("import Std.{module}\nval x = if {expression} then 1 else 1 / 0");
         run_thin_source(&source, "").unwrap_or_else(|e| panic!("{module}: {e}"));
     }
 }

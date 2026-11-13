@@ -364,9 +364,19 @@ mod tests {
                 .collect();
             let program = compile(&program_from_bytes(&bytes)).expect("compiles");
             let code = RegisterCode::translate(&program);
-            total += program.functions.len();
+            // Count only the generated `f<n>` functions: the __Builtin module
+            // members the imports add are alias shapes, not generated ones.
+            let generated = |i: usize| {
+                program.functions[i]
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with('f') && !name.contains('.'))
+            };
+            total += (0..program.functions.len())
+                .filter(|&i| generated(i))
+                .count();
             translated += (0..program.functions.len())
-                .filter(|&i| code.get(i).is_some())
+                .filter(|&i| generated(i) && code.get(i).is_some())
                 .count();
         }
         eprintln!("{translated} of {total} generated functions translate");

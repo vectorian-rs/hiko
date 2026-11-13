@@ -354,20 +354,20 @@ fn real_runtimes_bulk_order_duplicates_failures_and_no_bookkeeping_leaks() {
         import __Builtin.Fiber
         import __Builtin.Testing
         import __Builtin.Stdio
-        val left = BuiltinFiber.spawn_raw (fn () => 10)
-        val right = BuiltinFiber.spawn_raw (fn () => 20)
+        val left = BuiltinFiber.spawn (fn () => 10)
+        val right = BuiltinFiber.spawn (fn () => 20)
         val _ = case BuiltinFiber.await_all [left, right] of
             BuiltinFiber.Ok [10, 20] => ()
           | _ => BuiltinTesting.panic "order"
-        val owned = BuiltinFiber.spawn_raw (fn () => 30)
+        val owned = BuiltinFiber.spawn (fn () => 30)
         val _ = case BuiltinFiber.await_all [owned, owned] of
             BuiltinFiber.Err BuiltinFiber.AlreadyJoined => ()
           | _ => BuiltinTesting.panic "duplicate"
         val _ = case BuiltinFiber.await_all [owned] of
             BuiltinFiber.Err BuiltinFiber.AlreadyJoined => ()
           | _ => BuiltinTesting.panic "reaped"
-        val failed = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic "chosen")
-        val peer = BuiltinFiber.spawn_raw (fn () => 42)
+        val failed = BuiltinFiber.spawn (fn () => BuiltinTesting.panic "chosen")
+        val peer = BuiltinFiber.spawn (fn () => 42)
         val _ = case BuiltinFiber.await_all [failed, peer] of
             BuiltinFiber.Err (BuiltinFiber.RuntimeError "chosen") => ()
           | _ => BuiltinTesting.panic "failure"

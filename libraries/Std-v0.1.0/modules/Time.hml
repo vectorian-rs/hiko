@@ -13,7 +13,7 @@ structure Time = struct
 
   fun monotonic_now () = Monotonic (BuiltinTime.monotonic_ms ())
 
-  fun from_ms n = if n < 0 then BuiltinSystemPanic.panic_raw "Time.from_ms: negative duration" else Dur n
+  fun from_ms n = if n < 0 then BuiltinSystemPanic.panic "Time.from_ms: negative duration" else Dur n
 
   fun from_s n = from_ms (n * 1000)
 

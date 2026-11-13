@@ -50,14 +50,14 @@ structure List = struct
 
   fun nth xs n =
     case xs of
-        [] => BuiltinSystemPanic.panic_raw "nth: index out of bounds"
+        [] => BuiltinSystemPanic.panic "nth: index out of bounds"
       | x :: rest => if n = 0 then x else nth rest (n - 1)
 
   fun last xs =
     case xs of
         x :: [] => x
       | _ :: rest => last rest
-      | [] => BuiltinSystemPanic.panic_raw "last: empty list"
+      | [] => BuiltinSystemPanic.panic "last: empty list"
 
   (* A negative count consumes the whole finite input, as before. *)
   fun take n xs =
@@ -100,6 +100,6 @@ structure List = struct
 
   fun find p xs =
     case xs of
-        [] => BuiltinSystemPanic.panic_raw "find: not found"
+        [] => BuiltinSystemPanic.panic "find: not found"
       | x :: xs => if p x then x else find p xs
 end

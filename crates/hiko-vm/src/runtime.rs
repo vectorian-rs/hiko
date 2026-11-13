@@ -940,7 +940,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val child = BuiltinFiber.spawn (fn () => 42)\n\
              val result = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -960,7 +960,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             fun make_spawner x = BuiltinFiber.spawn_raw (fn () => x + 32)\n\
+             fun make_spawner x = BuiltinFiber.spawn (fn () => x + 32)\n\
              val child = make_spawner 10\n\
              val result = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
@@ -978,8 +978,8 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val c1 = BuiltinFiber.spawn_raw (fn () => 10)\n\
-             val c2 = BuiltinFiber.spawn_raw (fn () => 20)\n\
+             val c1 = BuiltinFiber.spawn (fn () => 10)\n\
+             val c2 = BuiltinFiber.spawn (fn () => 20)\n\
              val r1 = BuiltinFiber.await c1\n\
              val r2 = BuiltinFiber.await c2\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string (r1 + r2))",
@@ -997,9 +997,9 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val left = BuiltinFiber.spawn_raw (fn () => 10)\n\
-             val right = BuiltinFiber.spawn_raw (fn () => 20)\n\
-             val winner = BuiltinFiber.wait_any_raw [left, right]\n\
+             val left = BuiltinFiber.spawn (fn () => 10)\n\
+             val right = BuiltinFiber.spawn (fn () => 20)\n\
+             val winner = BuiltinFiber.wait_any [left, right]\n\
              val result = BuiltinFiber.await winner\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -1046,7 +1046,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val child = BuiltinFiber.spawn (fn () => 42)\n\
              val result = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -1063,7 +1063,7 @@ mod tests {
         let program = compile(
             "import __Builtin.Fiber\n\
              import __Builtin.Testing\n\
-             val child = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic \"boom\")\n\
+             val child = BuiltinFiber.spawn (fn () => BuiltinTesting.panic \"boom\")\n\
              val _ = BuiltinFiber.await child",
         );
         let mut runtime = Runtime::new();

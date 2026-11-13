@@ -3,7 +3,15 @@ use crate::intern::{StringInterner, Symbol};
 use crate::span::Span;
 use std::collections::{HashMap, HashSet};
 
-pub fn desugar_program(mut program: Program) -> Program {
+pub fn desugar_program(program: Program) -> Program {
+    desugar_program_reserving(program, &HashSet::new())
+}
+
+/// Like [`desugar_program`], but names in `reserved` always resolve outside a
+/// structure, even where a member shares the name. The compiler desugars its
+/// own builtin modules this way: an alias member like `fun print text =
+/// print text` must reach the raw builtin its body names, not itself.
+pub fn desugar_program_reserving(mut program: Program, reserved: &HashSet<Symbol>) -> Program {
     let mut interner = std::mem::take(&mut program.interner);
     let signatures = collect_signatures(&program.decls);
     let mut decls = Vec::new();
@@ -18,8 +26,14 @@ pub fn desugar_program(mut program: Program) -> Program {
             } => {
                 let module_name = interner.resolve(name).to_string();
                 let signature = signature.and_then(|sig| signatures.get(&sig));
-                let members =
-                    desugar_structure(body, &[module_name], signature, opaque, &mut interner);
+                let members = desugar_structure(
+                    body,
+                    &[module_name],
+                    signature,
+                    opaque,
+                    &mut interner,
+                    reserved,
+                );
                 // One declaration, as in Standard ML: a later member or the
                 // signature may decide an earlier member's overloaded
                 // operator. A `local` with no private part binds exactly
@@ -98,14 +112,15 @@ fn desugar_structure(
     signature: Option<&SignatureDecl>,
     opaque: bool,
     interner: &mut StringInterner,
+    reserved: &HashSet<Symbol>,
 ) -> Vec<Decl> {
     let scope = collect_module_scope(&decls, module_path, interner, signature.is_some());
     let mut out = Vec::new();
-    let empty_values = HashSet::new();
     // `val` is not recursive: its right-hand side reads the preceding
     // binding, so member names not yet defined stay unrenamed there and
     // resolve outside the structure (`val print = print` aliases the outer
-    // `print`). `fun` and `val rec` members stay mutually visible.
+    // `print`). `fun` and `val rec` members stay mutually visible, except
+    // for `reserved` names, which always resolve outside the structure.
     let mut pending: HashSet<Symbol> = scope.values.keys().copied().collect();
     for decl in decls {
         let own_scope = collect_module_scope(
@@ -114,13 +129,17 @@ fn desugar_structure(
             interner,
             signature.is_some(),
         );
-        let skip = if matches!(decl.kind, DeclKind::Val(_, _)) {
-            &pending
-        } else {
-            &empty_values
-        };
-        let renamed =
-            rename_module_decl(decl, &scope, skip, signature.is_some(), signature.is_none());
+        let mut skip = reserved.clone();
+        if matches!(decl.kind, DeclKind::Val(_, _)) {
+            skip.extend(pending.iter().copied());
+        }
+        let renamed = rename_module_decl(
+            decl,
+            &scope,
+            &skip,
+            signature.is_some(),
+            signature.is_none(),
+        );
         for name in own_scope.values.keys() {
             pending.remove(name);
         }

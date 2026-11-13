@@ -81,8 +81,8 @@ fn group_local_invalidity_preserves_unlisted_children_and_reaps_named_members() 
         import __Builtin.Fiber
         import __Builtin.Testing
         fun forever n = forever (n + 1)
-        val unlisted = BuiltinFiber.spawn_raw (fn () => 42)
-        val named = BuiltinFiber.spawn_raw (fn () => forever 0)
+        val unlisted = BuiltinFiber.spawn (fn () => 42)
+        val named = BuiltinFiber.spawn (fn () => forever 0)
         val _ = case BuiltinFiber.await_all [named, named] of
             BuiltinFiber.Err BuiltinFiber.AlreadyJoined => ()
           | _ => BuiltinTesting.panic "wrong admission precedence"
@@ -103,14 +103,14 @@ fn foreign_outcomes_remain_with_their_parent_and_reaped_grandchildren_are_truthf
         r#"
         import __Builtin.Fiber
         import __Builtin.Testing
-        val foreign = BuiltinFiber.spawn_raw (fn () => 42)
-        val requester = BuiltinFiber.spawn_raw (fn () =>
+        val foreign = BuiltinFiber.spawn (fn () => 42)
+        val requester = BuiltinFiber.spawn (fn () =>
           case BuiltinFiber.await_all [foreign] of
               BuiltinFiber.Err (BuiltinFiber.RuntimeError _) => 7
             | _ => BuiltinTesting.panic "foreign accepted")
         val _ = if BuiltinFiber.await requester = 7 then () else BuiltinTesting.panic "requester"
         val _ = if BuiltinFiber.await foreign = 42 then () else BuiltinTesting.panic "foreign consumed"
-        val owner = BuiltinFiber.spawn_raw (fn () => BuiltinFiber.spawn_raw (fn () => 43))
+        val owner = BuiltinFiber.spawn (fn () => BuiltinFiber.spawn (fn () => 43))
         val reaped = BuiltinFiber.await owner
         fun check n =
           case BuiltinFiber.await_all [reaped] of
@@ -130,8 +130,8 @@ fn admission_quota_parent_failure_cancels_all_children_including_unlisted() {
         r#"
         import __Builtin.Fiber
         fun forever n = forever (n + 1)
-        val unlisted = BuiltinFiber.spawn_raw (fn () => forever 0)
-        val named = BuiltinFiber.spawn_raw (fn () => forever 0)
+        val unlisted = BuiltinFiber.spawn (fn () => forever 0)
+        val named = BuiltinFiber.spawn (fn () => forever 0)
         val _ = BuiltinFiber.await_all [named]
     "#,
     );
@@ -282,8 +282,8 @@ mod exec_barrier {
             import __Builtin.Time
             import __Builtin.Testing
             import __Builtin.Stdio
-            val slow = BuiltinFiber.spawn_raw (fn () => BuiltinExec.exec ("/bin/sleep", ["5"]))
-            val failed = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 0 in BuiltinTesting.panic "chosen" end)
+            val slow = BuiltinFiber.spawn (fn () => BuiltinExec.exec ("/bin/sleep", ["5"]))
+            val failed = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 0 in BuiltinTesting.panic "chosen" end)
             val _ = case BuiltinFiber.await_all [slow, failed] of
                 BuiltinFiber.Err (BuiltinFiber.RuntimeError "chosen") => BuiltinStdio.println "resumed"
               | _ => BuiltinTesting.panic "wrong cause"
@@ -325,12 +325,12 @@ fn parent_cancellation_drains_active_group_and_unlisted_children() {
         import __Builtin.Time
         import __Builtin.Testing
         fun forever n = forever (n + 1)
-        val owner = BuiltinFiber.spawn_raw (fn () => let
-            val unlisted = BuiltinFiber.spawn_raw (fn () => forever 0)
-            val named = BuiltinFiber.spawn_raw (fn () => forever 0)
+        val owner = BuiltinFiber.spawn (fn () => let
+            val unlisted = BuiltinFiber.spawn (fn () => forever 0)
+            val named = BuiltinFiber.spawn (fn () => forever 0)
           in BuiltinFiber.await_all [named] end)
         val _ = BuiltinTime.sleep 0
-        val _ = BuiltinFiber.cancel_raw owner
+        val _ = BuiltinFiber.cancel owner
         val _ = case BuiltinFiber.await_result owner of
             BuiltinFiber.Err BuiltinFiber.Cancelled => ()
           | _ => BuiltinTesting.panic "owner did not cancel"

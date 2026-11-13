@@ -2,4 +2,4 @@ name = "Http"
 version = "0.1.0"
 
 [modules]
-Client = "blake3:7c3d4307fd328985a370cb54c5a210c09184e9e1d8a4fa86ec4296b2c519c118"
+Client = "blake3:90b39cf110ad4c01f30cb4aa4c26d821e25eade2cc255bfbe837981667e436e9"

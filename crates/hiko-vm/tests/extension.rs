@@ -147,11 +147,13 @@ fn sync_builtin_module_and_host_resource() {
     let config = config(CONFIGURED);
     let program = compile(
         r#"import Test.Greet
-val _ = println (Greet.hello "ada")
+import __Builtin.Int
+import __Builtin.Stdio
+val _ = BuiltinStdio.println (Greet.hello "ada")
 val c = test_counter_new 41
 val _ = test_counter_next c
-val _ = println (int_to_string (test_counter_next c))
-val _ = println (test_shout "quiet")"#,
+val _ = BuiltinStdio.println (BuiltinInt.to_string (test_counter_next c))
+val _ = BuiltinStdio.println (test_shout "quiet")"#,
         &config,
     )
     .expect("compile");
@@ -223,8 +225,10 @@ fn async_builtin_and_state_in_a_child_under_the_runtime() {
          [capabilities.fiber.join_or_fail]\nenabled = true\n[capabilities.fiber.join]\nenabled = true\n"
     ));
     let program = compile(
-        r#"val child = spawn (fn () => test_shout (test_greet "bob"))
-val _ = println (await_process child)"#,
+        r#"import __Builtin.Fiber
+import __Builtin.Stdio
+val child = BuiltinFiber.spawn (fn () => test_shout (test_greet "bob"))
+val _ = BuiltinStdio.println (BuiltinFiber.await child)"#,
         &config,
     )
     .expect("compile");

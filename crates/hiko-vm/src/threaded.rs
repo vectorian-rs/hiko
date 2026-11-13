@@ -1851,7 +1851,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val child = BuiltinFiber.spawn (fn () => 42)\n\
              val result = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -1876,9 +1876,9 @@ mod tests {
                let\n\
                  val xs = range (1000, [])\n\
                  val ys = range (10, [])\n\
-                 val a = BuiltinFiber.spawn_raw (fn () => sum (xs, 0))\n\
-                 val b = BuiltinFiber.spawn_raw (fn () => sum (xs, 1))\n\
-                 val c = BuiltinFiber.spawn_raw (fn () => sum (ys, 0))\n\
+                 val a = BuiltinFiber.spawn (fn () => sum (xs, 0))\n\
+                 val b = BuiltinFiber.spawn (fn () => sum (xs, 1))\n\
+                 val c = BuiltinFiber.spawn (fn () => sum (ys, 0))\n\
                in\n\
                  (BuiltinFiber.await a, BuiltinFiber.await b, BuiltinFiber.await c)\n\
                end\n\
@@ -1897,7 +1897,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             fun make n = BuiltinFiber.spawn_raw (fn () => n * 2)\n\
+             fun make n = BuiltinFiber.spawn (fn () => n * 2)\n\
              val c1 = make 1\n\
              val c2 = make 2\n\
              val c3 = make 3\n\
@@ -1975,8 +1975,8 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val a = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
-             val b = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val a = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 999999)\n\
+             val b = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 999999)\n\
              val _ = BuiltinFiber.await a\n\
              val _ = BuiltinFiber.await b\n\
              val _ = BuiltinStdio.println \"both done\"",
@@ -1996,9 +1996,9 @@ mod tests {
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val slow = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 10 end)\n\
-             val fast = BuiltinFiber.spawn_raw (fn () => 20)\n\
-             val winner = BuiltinFiber.wait_any_raw [slow, fast]\n\
+             val slow = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 10 end)\n\
+             val fast = BuiltinFiber.spawn (fn () => 20)\n\
+             val winner = BuiltinFiber.wait_any [slow, fast]\n\
              val result = BuiltinFiber.await winner\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -2016,8 +2016,8 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val child = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
-             val _ = BuiltinFiber.cancel_raw child\n\
+             val child = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
+             val _ = BuiltinFiber.cancel child\n\
              val _ = BuiltinStdio.println \"cancelled\"",
         );
         let runtime = ThreadedRuntime::new(1)
@@ -2237,7 +2237,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val child = BuiltinFiber.spawn (fn () => 42)\n\
              val r1 = BuiltinFiber.await child\n\
              val r2 = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string (r1 + r2))",
@@ -2322,7 +2322,7 @@ mod tests {
         let (output, failed) = run("import __Builtin.Fiber\n\
              import __Builtin.Filesystem\n\
              import __Builtin.Stdio\n\
-             val child = BuiltinFiber.spawn_raw (fn () => BuiltinFilesystem.read_text \"data.txt\")\n\
+             val child = BuiltinFiber.spawn (fn () => BuiltinFilesystem.read_text \"data.txt\")\n\
              val _ = BuiltinStdio.println (BuiltinFiber.await child)");
         assert!(!failed);
         assert_eq!(output, vec!["rooted\n"]);
@@ -2331,7 +2331,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Filesystem\n\
              import __Builtin.Stdio\n\
-             val child = BuiltinFiber.spawn_raw (fn () => BuiltinFilesystem.read_text \"{}\")\n\
+             val child = BuiltinFiber.spawn (fn () => BuiltinFilesystem.read_text \"{}\")\n\
              val _ = BuiltinStdio.println (BuiltinFiber.await child)",
             outside.to_string_lossy()
         ));
@@ -2373,7 +2373,7 @@ mod tests {
     #[cfg(feature = "builtin-http")]
     fn pool_fairness_program(slow_url: &str, slow_count: usize, fast_url: &str) -> CompiledProgram {
         let slows = (0..slow_count)
-            .map(|_| format!("BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get {slow_url:?})"))
+            .map(|_| format!("BuiltinFiber.spawn (fn () => BuiltinHttp.get {slow_url:?})"))
             .collect::<Vec<_>>()
             .join(", ");
         compile(&format!(
@@ -2383,9 +2383,9 @@ mod tests {
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
              val slows = [{slows}]\n\
-             val sleeper = BuiltinFiber.spawn_raw (fn () =>\n\
+             val sleeper = BuiltinFiber.spawn (fn () =>\n\
                let val a = BuiltinTime.monotonic_ms () val _ = BuiltinTime.sleep 10 in BuiltinTime.monotonic_ms () - a end)\n\
-             val fast = BuiltinFiber.spawn_raw (fn () =>\n\
+             val fast = BuiltinFiber.spawn (fn () =>\n\
                let val a = BuiltinTime.monotonic_ms () val _ = BuiltinHttp.get {fast_url:?} in BuiltinTime.monotonic_ms () - a end)\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await sleeper))\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await fast))"
@@ -2449,7 +2449,7 @@ mod tests {
         source.push_str(prelude);
         for i in 0..count {
             source.push_str(&format!(
-                "val c{i} = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get {url:?})\n"
+                "val c{i} = BuiltinFiber.spawn (fn () => BuiltinHttp.get {url:?})\n"
             ));
         }
         for i in 0..count {
@@ -2559,8 +2559,8 @@ mod tests {
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
              val t0 = BuiltinTime.monotonic_ms ()\n\
-             val slow = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://{addr}/\")\n\
-             val counter = BuiltinFiber.spawn_raw (fn () => BuiltinTime.monotonic_ms ())\n\
+             val slow = BuiltinFiber.spawn (fn () => BuiltinHttp.get \"http://{addr}/\")\n\
+             val counter = BuiltinFiber.spawn (fn () => BuiltinTime.monotonic_ms ())\n\
              val t_counter = BuiltinFiber.await counter\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string (t_counter - t0))\n\
              val _ = BuiltinFiber.await slow"
@@ -2608,9 +2608,9 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Http\n\
              import __Builtin.Stdio\n\
-             val a = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://a.test\")\n\
-             val b = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://b.test\")\n\
-             val c = BuiltinFiber.spawn_raw (fn () => BuiltinHttp.get \"http://c.test\")\n\
+             val a = BuiltinFiber.spawn (fn () => BuiltinHttp.get \"http://a.test\")\n\
+             val b = BuiltinFiber.spawn (fn () => BuiltinHttp.get \"http://b.test\")\n\
+             val c = BuiltinFiber.spawn (fn () => BuiltinHttp.get \"http://c.test\")\n\
              val (_, _, body_a) = BuiltinFiber.await a\n\
              val (_, _, body_b) = BuiltinFiber.await b\n\
              val (_, _, body_c) = BuiltinFiber.await c\n\
@@ -2667,7 +2667,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val child = BuiltinFiber.spawn (fn () => 42)\n\
              val result = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -2684,7 +2684,7 @@ mod tests {
         let program = compile(
             "import __Builtin.Fiber\n\
              import __Builtin.Testing\n\
-             val child = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic \"boom\")\n\
+             val child = BuiltinFiber.spawn (fn () => BuiltinTesting.panic \"boom\")\n\
              val _ = BuiltinFiber.await child",
         );
         let runtime = ThreadedRuntime::new(1);
@@ -2709,7 +2709,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val child = BuiltinFiber.spawn_raw (fn () => 42)\n\
+             val child = BuiltinFiber.spawn (fn () => 42)\n\
              val result = BuiltinFiber.await child\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -2726,7 +2726,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             fun make n = BuiltinFiber.spawn_raw (fn () => n * 2)\n\
+             fun make n = BuiltinFiber.spawn (fn () => n * 2)\n\
              val c1 = make 1\n\
              val c2 = make 2\n\
              val c3 = make 3\n\
@@ -2752,9 +2752,9 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val left = BuiltinFiber.spawn_raw (fn () => 10)\n\
-             val right = BuiltinFiber.spawn_raw (fn () => 20)\n\
-             val winner = BuiltinFiber.wait_any_raw [left, right]\n\
+             val left = BuiltinFiber.spawn (fn () => 10)\n\
+             val right = BuiltinFiber.spawn (fn () => 20)\n\
+             val winner = BuiltinFiber.wait_any [left, right]\n\
              val result = BuiltinFiber.await winner\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -2772,9 +2772,9 @@ mod tests {
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
              import __Builtin.Int\n\
-             val fast = BuiltinFiber.spawn_raw (fn () => 20)\n\
-             val slow = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 10 end)\n\
-             val winner = BuiltinFiber.wait_any_raw [fast, slow]\n\
+             val fast = BuiltinFiber.spawn (fn () => 20)\n\
+             val slow = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 10 end)\n\
+             val winner = BuiltinFiber.wait_any [fast, slow]\n\
              val result = BuiltinFiber.await winner\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string result)",
         );
@@ -2792,8 +2792,8 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val child = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
-             val _ = BuiltinFiber.cancel_raw child\n\
+             val child = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
+             val _ = BuiltinFiber.cancel child\n\
              val _ = BuiltinStdio.println \"cancelled\"",
         );
         let runtime = ThreadedRuntime::new(4)
@@ -2811,9 +2811,9 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val a = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
-             val b = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
-             val c = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val a = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 999999)\n\
+             val b = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 999999)\n\
+             val c = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 999999)\n\
              val _ = BuiltinFiber.await a\n\
              val _ = BuiltinFiber.await b\n\
              val _ = BuiltinFiber.await c\n\
@@ -2873,7 +2873,7 @@ mod tests {
                if n = 0 then ()\n\
                else\n\
                  let\n\
-                   val child = BuiltinFiber.spawn_raw (fn () => n)\n\
+                   val child = BuiltinFiber.spawn (fn () => n)\n\
                    val _ = BuiltinFiber.await child\n\
                  in\n\
                    loop (n - 1)\n\
@@ -2897,7 +2897,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
+             val _ = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 42 end)\n\
              val _ = BuiltinStdio.println \"parent done\"",
         );
         let runtime = ThreadedRuntime::new(1)
@@ -2916,9 +2916,9 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 1 end)\n\
-             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 2 end)\n\
-             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 3 end)\n\
+             val _ = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 1 end)\n\
+             val _ = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 2 end)\n\
+             val _ = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 3 end)\n\
              val _ = BuiltinStdio.println \"done\"",
         );
         let runtime = ThreadedRuntime::new(1)
@@ -2937,8 +2937,8 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val _ = BuiltinFiber.spawn_raw (fn () =>\n\
-               let val _ = BuiltinFiber.spawn_raw (fn () => BuiltinTime.sleep 999999)\n\
+             val _ = BuiltinFiber.spawn (fn () =>\n\
+               let val _ = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 999999)\n\
                in BuiltinTime.sleep 999999 end)\n\
              val _ = BuiltinStdio.println \"root done\"",
         );
@@ -2958,8 +2958,8 @@ mod tests {
             "import __Builtin.Fiber\n\
              import __Builtin.Time\n\
              import __Builtin.Stdio\n\
-             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 1 end)\n\
-             val _ = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 999999 in 2 end)\n\
+             val _ = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 1 end)\n\
+             val _ = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 999999 in 2 end)\n\
              val _ = BuiltinStdio.println \"done\"",
         );
         let runtime = ThreadedRuntime::new(4)
@@ -2982,7 +2982,7 @@ mod tests {
              import __Builtin.String\n",
         );
         source.push_str(&format!(
-            "fun spawn_all n acc = if n = 0 then acc else spawn_all (n - 1) (BuiltinFiber.spawn_raw (fn () => {child}) :: acc)\n\
+            "fun spawn_all n acc = if n = 0 then acc else spawn_all (n - 1) (BuiltinFiber.spawn (fn () => {child}) :: acc)\n\
              fun join_all ps ok = case ps of [] => ok | p :: rest => (case BuiltinFiber.await_result p of BuiltinFiber.Ok _ => join_all rest (ok + 1) | BuiltinFiber.Err _ => join_all rest ok)\n\
              val ok = join_all (spawn_all {count} []) 0\n\
              val _ = BuiltinStdio.println (BuiltinInt.to_string ok)\n"
@@ -3063,7 +3063,7 @@ mod tests {
         let program = compile(
             "import __Builtin.Fiber\n\
              fun count n = if n = 0 then 0 else count (n - 1)\n\
-             val c = BuiltinFiber.spawn_raw (fn () => count 100)\n\
+             val c = BuiltinFiber.spawn (fn () => count 100)\n\
              val _ = BuiltinFiber.await_result c\n\
              fun spin () = spin ()\n\
              val _ = spin ()\n",
@@ -3087,7 +3087,7 @@ mod tests {
             "import __Builtin.Fiber\n\
              datatype t = Leaf | Node of t * t\n\
              fun grow n acc = if n = 0 then acc else grow (n - 1) (Node (acc, acc))\n\
-             val c = let val x30 = grow 30 Leaf in BuiltinFiber.spawn_raw (fn () => case x30 of Leaf => 0 | Node _ => 1) end\n\
+             val c = let val x30 = grow 30 Leaf in BuiltinFiber.spawn (fn () => case x30 of Leaf => 0 | Node _ => 1) end\n\
              val _ = BuiltinFiber.await_result c\n",
         );
         let vm = tree_budget_vm(program).build();
@@ -3112,7 +3112,7 @@ mod tests {
         // max_live_processes = 3 and fails the root.
         let program = compile(
             "import __Builtin.Fiber\n\
-             fun spawn_all n = if n = 0 then () else let val _ = BuiltinFiber.spawn_raw (fn () => let fun spin () = spin () in spin () end) in spawn_all (n - 1) end\n\
+             fun spawn_all n = if n = 0 then () else let val _ = BuiltinFiber.spawn (fn () => let fun spin () = spin () in spin () end) in spawn_all (n - 1) end\n\
              val _ = spawn_all 10\n",
         );
         let vm = tree_budget_vm(program).max_live_processes(3).build();
@@ -3128,7 +3128,7 @@ mod tests {
         let program = compile(
             "import __Builtin.Fiber\n\
              import __Builtin.Stdio\n\
-             fun spawn_all n = if n = 0 then () else let val c = BuiltinFiber.spawn_raw (fn () => 0) val _ = BuiltinFiber.await_result c in spawn_all (n - 1) end\n\
+             fun spawn_all n = if n = 0 then () else let val c = BuiltinFiber.spawn (fn () => 0) val _ = BuiltinFiber.await_result c in spawn_all (n - 1) end\n\
              val _ = spawn_all 10\n\
              val _ = BuiltinStdio.println \"done\"\n",
         );

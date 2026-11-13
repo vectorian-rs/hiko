@@ -5,13 +5,13 @@ import __Builtin.Float
 structure Float = struct
   fun abs value = BuiltinFloat.abs value
 
-  fun ceil value = BuiltinFloat.ceil_raw value
+  fun ceil value = BuiltinFloat.ceil value
 
-  fun floor value = BuiltinFloat.floor_raw value
+  fun floor value = BuiltinFloat.floor value
 
   fun of_int value = BuiltinFloat.of_int value
 
-  fun sqrt value = BuiltinFloat.sqrt_raw value
+  fun sqrt value = BuiltinFloat.sqrt value
 
   fun to_string value = BuiltinFloat.to_string value
 end

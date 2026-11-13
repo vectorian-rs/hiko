@@ -11,8 +11,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 static ID: AtomicU64 = AtomicU64::new(0);
-// The eager __Builtin.Stdio module body names every stdio builtin.
-const STDIO: &str = "[capabilities.stdio.print]\nenabled = true\n[capabilities.stdio.println]\nenabled = true\n[capabilities.stdio.eprint]\nenabled = true\n[capabilities.stdio.eprintln]\nenabled = true\n[capabilities.stdio.read_line]\nenabled = true\n[capabilities.stdio.read_stdin]\nenabled = true\n";
+const STDIO: &str = "[capabilities.stdio.println]\nenabled = true\n";
 const STDIO_IMPORT: &str = "import __Builtin.Stdio\n";
 struct Project(PathBuf);
 impl Project {
@@ -157,13 +156,13 @@ mod enabled {
         assert!(read_artifact(&project.artifact(), "stale-nonce", "untimed-test").is_err());
         assert!(read_artifact(&project.artifact(), "fresh-test-232", "wrong-profile").is_err());
     }
-    const PROCESS: &str = "[capabilities.fiber.spawn]\nenabled=true\n[capabilities.fiber.join_or_fail]\nenabled=true\n[capabilities.fiber.join]\nenabled=true\n[capabilities.fiber.cancel]\nenabled=true\n[capabilities.system.panic]\nenabled=true\n[capabilities.testing.check]\nenabled=true\n[capabilities.testing.equal]\nenabled=true\n";
+    const PROCESS: &str = "[capabilities.fiber.spawn]\nenabled=true\n[capabilities.fiber.join_or_fail]\nenabled=true\n[capabilities.fiber.join]\nenabled=true\n[capabilities.fiber.cancel]\nenabled=true\n[capabilities.system.panic]\nenabled=true\n";
     // Per-fixture heap accounting lives in the hiko-vm integration test; this
     // proves the CLI reaps an abandoned child before exporting balanced evidence.
     #[test]
     fn threaded_run_reaps_abandoned_child_and_exports_balanced_evidence() {
         for workers in [1, 2] {
-            let source = "import __Builtin.Fiber\nfun loop n = loop (n + 1)\nval p = BuiltinFiber.spawn_raw (fn () => loop 0)";
+            let source = "import __Builtin.Fiber\nfun loop n = loop (n + 1)\nval p = BuiltinFiber.spawn (fn () => loop 0)";
             let project = Project::new(source, PROCESS);
             let mut command = project.command(true);
             command.args(["--workers", &workers.to_string()]);
@@ -189,12 +188,12 @@ mod enabled {
             ),
             (
                 "import __Builtin.Testing\nval _ = BuiltinTesting.panic \"sentinel\"",
-                "[capabilities.system.panic]\nenabled=true\n[capabilities.testing.check]\nenabled=true\n[capabilities.testing.equal]\nenabled=true\n",
+                "[capabilities.system.panic]\nenabled=true\n",
                 Some(1),
             ),
             ("val x =", "", Some(1)),
             (
-                "import __Builtin.Fiber\nimport __Builtin.Testing\nval p = BuiltinFiber.spawn_raw (fn () => BuiltinTesting.panic \"child\")\nval _ = BuiltinFiber.await p",
+                "import __Builtin.Fiber\nimport __Builtin.Testing\nval p = BuiltinFiber.spawn (fn () => BuiltinTesting.panic \"child\")\nval _ = BuiltinFiber.await p",
                 PROCESS,
                 Some(1),
             ),
@@ -259,7 +258,7 @@ mod enabled {
         for rename_error in [false, true] {
             let project = Project::new(
                 "import __Builtin.Stdio\nval _ = BuiltinStdio.println \"ready\"\nval _ = BuiltinStdio.read_line ()",
-                STDIO,
+                &format!("{STDIO}[capabilities.stdio.read_line]\nenabled=true\n"),
             );
             let ready = project.0.join("ready.log");
             let destination = if rename_error {

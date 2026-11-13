@@ -73,17 +73,24 @@ fn endless_body_server() -> (String, std::thread::JoinHandle<u64>) {
 }
 
 fn http_vm(source: &str) -> VMBuilder {
+    // The eager __Builtin.Http module body names every http builtin.
     VMBuilder::new(compile(source))
         .with_core()
         .allow_http_builtin("http_get", vec!["127.0.0.1".to_string()])
+        .allow_http_builtin("http", vec![])
+        .allow_http_builtin("http_json", vec![])
+        .allow_http_builtin("http_msgpack", vec![])
+        .allow_http_builtin("http_bytes", vec![])
 }
 
 #[test]
 fn http_get_fails_within_timeout_on_silent_server() {
     let (url, server) = silent_server(Duration::from_secs(4));
-    let mut vm = http_vm(&format!("val _ = http_get {url:?}"))
-        .http_timeout_ms(1000)
-        .build();
+    let mut vm = http_vm(&format!(
+        "import __Builtin.Http\nval _ = BuiltinHttp.get {url:?}"
+    ))
+    .http_timeout_ms(1000)
+    .build();
 
     let started = Instant::now();
     let err = vm.run().unwrap_err();
@@ -101,9 +108,11 @@ fn http_get_fails_within_timeout_on_silent_server() {
 fn http_response_is_cut_off_at_max_http_response_bytes() {
     const LIMIT: u64 = 64 * 1024;
     let (url, server) = endless_body_server();
-    let mut vm = http_vm(&format!("val _ = http_get {url:?}"))
-        .max_http_response_bytes(LIMIT)
-        .build();
+    let mut vm = http_vm(&format!(
+        "import __Builtin.Http\nval _ = BuiltinHttp.get {url:?}"
+    ))
+    .max_http_response_bytes(LIMIT)
+    .build();
 
     let err = vm.run().unwrap_err();
     assert!(
@@ -128,11 +137,21 @@ fn read_file_over_max_file_read_bytes_fails() {
     let path = dir.join("big.txt");
     std::fs::write(&path, vec![b'a'; 4096]).unwrap();
     let mut vm = VMBuilder::new(compile(&format!(
-        "val _ = read_file {:?}",
+        "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.read_text {:?}",
         path.to_string_lossy()
     )))
     .with_core()
     .register_builtin_name("read_file")
+    .register_builtin_name("read_file_bytes")
+    .register_builtin_name("write_file")
+    .register_builtin_name("file_exists")
+    .register_builtin_name("list_dir")
+    .register_builtin_name("remove_file")
+    .register_builtin_name("create_dir")
+    .register_builtin_name("is_dir")
+    .register_builtin_name("is_file")
+    .register_builtin_name("glob")
+    .register_builtin_name("walk_dir")
     .max_file_read_bytes(1024)
     .build();
 
@@ -149,11 +168,23 @@ fn read_file_over_max_file_read_bytes_fails() {
 #[test]
 fn read_file_stops_at_limit_on_endless_file() {
     // /dev/zero never ends, so this only returns if the read stops at the limit.
-    let mut vm = VMBuilder::new(compile("val _ = read_file_bytes \"/dev/zero\""))
-        .with_core()
-        .register_builtin_name("read_file_bytes")
-        .max_file_read_bytes(1024)
-        .build();
+    let mut vm = VMBuilder::new(compile(
+        "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.read_bytes \"/dev/zero\"",
+    ))
+    .with_core()
+    .register_builtin_name("read_file")
+    .register_builtin_name("read_file_bytes")
+    .register_builtin_name("write_file")
+    .register_builtin_name("file_exists")
+    .register_builtin_name("list_dir")
+    .register_builtin_name("remove_file")
+    .register_builtin_name("create_dir")
+    .register_builtin_name("is_dir")
+    .register_builtin_name("is_file")
+    .register_builtin_name("glob")
+    .register_builtin_name("walk_dir")
+    .max_file_read_bytes(1024)
+    .build();
     let err = vm.run().unwrap_err();
     assert!(
         err.message.contains("max_file_read_bytes"),
@@ -168,11 +199,21 @@ fn max_io_bytes_still_applies_when_smaller_than_per_op_limit() {
     let path = dir.join("f.txt");
     std::fs::write(&path, vec![b'a'; 4096]).unwrap();
     let mut vm = VMBuilder::new(compile(&format!(
-        "val _ = read_file {:?}",
+        "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.read_text {:?}",
         path.to_string_lossy()
     )))
     .with_core()
     .register_builtin_name("read_file")
+    .register_builtin_name("read_file_bytes")
+    .register_builtin_name("write_file")
+    .register_builtin_name("file_exists")
+    .register_builtin_name("list_dir")
+    .register_builtin_name("remove_file")
+    .register_builtin_name("create_dir")
+    .register_builtin_name("is_dir")
+    .register_builtin_name("is_file")
+    .register_builtin_name("glob")
+    .register_builtin_name("walk_dir")
     .max_io_bytes(100)
     .build();
 
@@ -208,7 +249,7 @@ fn process_alive(pid: &str) -> bool {
 #[cfg(unix)]
 fn exec_vm(script: &std::path::Path) -> VMBuilder {
     VMBuilder::new(compile(&format!(
-        "val _ = exec ({:?}, [])",
+        "import __Builtin.Exec\nval _ = BuiltinExec.exec ({:?}, [])",
         script.to_string_lossy()
     )))
     .with_core()
@@ -233,7 +274,7 @@ fn exec_timeout_kills_the_whole_process_group() {
         pid_file.to_string_lossy()
     );
     let mut vm = VMBuilder::new(compile(&format!(
-        "val _ = exec (\"/bin/sh\", [\"-c\", {command:?}])"
+        "import __Builtin.Exec\nval _ = BuiltinExec.exec (\"/bin/sh\", [\"-c\", {command:?}])"
     )))
     .with_core()
     .with_exec(hiko_vm::builder::ExecPolicy {
@@ -300,7 +341,7 @@ fn exec_within_limits_still_returns_output() {
     let dir = temp_dir("exec-ok");
     let script = write_script(&dir, "ok.sh", "#!/bin/sh\necho out\necho err >&2\nexit 3\n");
     let program = compile(&format!(
-        "val (code, out, err) = exec ({:?}, [])",
+        "import __Builtin.Exec\nval (code, out, err) = BuiltinExec.exec ({:?}, [])",
         script.to_string_lossy()
     ));
     let mut vm = VMBuilder::new(program)

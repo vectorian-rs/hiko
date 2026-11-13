@@ -21,8 +21,8 @@ import __Builtin.String
    wherever Markdown does. A script ends with
    `exit (Health.exit_code (Report.print (source, checks)))`.
 
-   Code that reports needs the capabilities println, int_to_string,
-   string_length, string_join and string_replace. The module reaches those
+   Code that reports needs the stdio family, int.to_string,
+   string.length, string.join and string.replace. The module reaches those
    builtins through `__Builtin` members and calls only these leaves.
    Std.List wraps none. *)
 structure Report = struct

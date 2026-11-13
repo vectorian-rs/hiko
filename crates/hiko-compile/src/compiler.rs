@@ -2463,7 +2463,18 @@ impl Compiler {
                 CompileError::codegen(format!("parse error in '{display_name}': {}", e.message))
             })?;
 
-        let program = hiko_syntax::desugar::desugar_program(program);
+        // Compiler-owned modules alias raw builtins under their own member
+        // names; those names must resolve to the builtins, not the members.
+        let program = match builtin_module {
+            Some(_) => {
+                let mut program = program;
+                let reserved = hiko_builtin_meta::builtins()
+                    .map(|meta| program.interner.intern(meta.name))
+                    .collect();
+                hiko_syntax::desugar::desugar_program_reserving(program, &reserved)
+            }
+            None => hiko_syntax::desugar::desugar_program(program),
+        };
         let program = hiko_syntax::constfold::fold_program(program);
         self.interner = program.interner;
         self.infer_ctx.interner = self.interner.clone();
@@ -4808,13 +4819,13 @@ mod tests {
     fn bulk_join_signature_preserves_pid_payloads_and_protected_result_type() {
         let source = "import __Builtin.Fiber\n\
             fun bulk (pids : 'a pid list) = BuiltinFiber.await_all pids\n\
-            val ints : int list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn_raw (fn () => 1)]\n\
-            val strings : string list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn_raw (fn () => \"text\")]\n\
+            val ints : int list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn (fn () => 1)]\n\
+            val strings : string list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn (fn () => \"text\")]\n\
             val empty : int list BuiltinFiber.await_result = bulk []\n";
         Compiler::compile(parse_program(source)).unwrap();
         for source in [
-            "import __Builtin.Fiber\nval bad = BuiltinFiber.await_all [BuiltinFiber.spawn_raw (fn () => 1), BuiltinFiber.spawn_raw (fn () => \"text\")]",
-            "import __Builtin.Fiber\nval bad : string list BuiltinFiber.await_result = BuiltinFiber.await_all [BuiltinFiber.spawn_raw (fn () => 1)]",
+            "import __Builtin.Fiber\nval bad = BuiltinFiber.await_all [BuiltinFiber.spawn (fn () => 1), BuiltinFiber.spawn (fn () => \"text\")]",
+            "import __Builtin.Fiber\nval bad : string list BuiltinFiber.await_result = BuiltinFiber.await_all [BuiltinFiber.spawn (fn () => 1)]",
         ] {
             assert!(
                 matches!(
@@ -5365,13 +5376,11 @@ Answer = "blake3:deadbeef"
             "val broken = )\nuse \"../helper.hml\"",
             "val broken = unknown_name\nuse \"../helper.hml\"",
         ] {
-            for script in ["import Test.Answer"] {
-                assert_nested_use_refused(compile_with_pinned_module(
-                    "pinned-use-error-precedence",
-                    module,
-                    script,
-                ));
-            }
+            assert_nested_use_refused(compile_with_pinned_module(
+                "pinned-use-error-precedence",
+                module,
+                "import Test.Answer",
+            ));
         }
     }
 

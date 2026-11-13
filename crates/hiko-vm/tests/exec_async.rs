@@ -28,8 +28,8 @@ fn failed_child_cancels_a_sixty_second_exec_sibling_promptly() {
              import __Builtin.Fiber
              import __Builtin.Testing
              import __Builtin.Time
-             val slow = BuiltinFiber.spawn_raw (fn () => BuiltinExec.exec (\"/bin/sleep\", [\"60\"]))
-             val failed = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 100 in BuiltinTesting.panic \"expected failure\" end)
+             val slow = BuiltinFiber.spawn (fn () => BuiltinExec.exec (\"/bin/sleep\", [\"60\"]))
+             val failed = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 100 in BuiltinTesting.panic \"expected failure\" end)
              val _ = BuiltinFiber.await failed",
         )
         .build();
@@ -74,12 +74,12 @@ fn late_exec_completion_cannot_resume_a_cancelled_child() {
              import __Builtin.Fiber
              import __Builtin.Stdio
              import __Builtin.Time
-             val child = BuiltinFiber.spawn_raw (fn () => let
+             val child = BuiltinFiber.spawn (fn () => let
                  val _ = BuiltinExec.exec (\"/bin/sleep\", [\"60\"])
                  val _ = BuiltinStdio.println \"must not resume\"
              in 1 end)
              val _ = BuiltinTime.sleep 50
-             val _ = BuiltinFiber.cancel_raw child
+             val _ = BuiltinFiber.cancel child
              val _ = BuiltinTime.sleep 50
              val _ = BuiltinStdio.println \"done\"",
         )
@@ -101,8 +101,8 @@ fn exec_does_not_block_a_vm_worker_or_unrelated_timer() {
              import __Builtin.Stdio
              import __Builtin.Time
              val started = BuiltinTime.monotonic_ms ()
-             val slow = BuiltinFiber.spawn_raw (fn () => BuiltinExec.exec (\"/bin/sleep\", [\"1\"]))
-             val timer = BuiltinFiber.spawn_raw (fn () => let val _ = BuiltinTime.sleep 10 in BuiltinTime.monotonic_ms () - started end)
+             val slow = BuiltinFiber.spawn (fn () => BuiltinExec.exec (\"/bin/sleep\", [\"1\"]))
+             val timer = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 10 in BuiltinTime.monotonic_ms () - started end)
              val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await timer))
              val _ = BuiltinFiber.await slow",
         );
