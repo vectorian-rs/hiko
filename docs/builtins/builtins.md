@@ -1,6 +1,9 @@
 # Hiko Builtins Reference
 
-All builtins are available as global functions. No imports needed.
+Builtins are module functions since the #186 cutover: ordinary source
+imports `Std.*` wrappers (or `__Builtin` modules for the raw shapes), and a
+bare alias fails naming its replacement. Policy keys use the module-noun
+names from [builtin-audit.md](builtin-audit.md).
 
 Width-specific numeric APIs live in stdlib modules such as `Int32`, `Word32`,
 and `Float32`; see [numerics.md](../language/numerics.md). Their raw runtime builtins are
@@ -194,17 +197,17 @@ Pure functional RNG (PCG-XSH-RR). State is threaded explicitly — no mutation.
 allows. There are two kinds of permission, and a call needs one of them:
 
 ```toml
-[capabilities.exec.exec]
+[capabilities.exec.run]
 enabled = true
 # These commands may run with any arguments.
 allowed_commands = ["git"]
 
 # This command may run only with exactly these arguments.
-[[capabilities.exec.exec.allow]]
+[[capabilities.exec.run.allow]]
 argv = ["mise", "run", "//cell:sre-check"]
 
 # With rest = "any", these arguments are a fixed prefix: more may follow.
-[[capabilities.exec.exec.allow]]
+[[capabilities.exec.run.allow]]
 argv = ["mise", "run", "//cell:logs", "--"]
 rest = "any"   # default "none"
 ```
@@ -295,9 +298,9 @@ The raw builtins are intended to sit under `Std.Fiber`, which provides the user-
 
 `Fiber.all`, `join_all` and `both` use the runtime-only `fiber_await_all`
 primitive (`'a pid list -> 'a list BuiltinProcess.await_result`). Its independent,
-default-off grant is `[capabilities.fiber.fiber_await_all] enabled = true`;
+default-off grant is `[capabilities.fiber.join_all] enabled = true`;
 it grants accepted-child await/cancel/reap authority, not spawn or individual
-process leaves. `all` and `both` additionally need `capabilities.process.spawn`.
+fiber leaves. `all` and `both` additionally need `capabilities.fiber.spawn`.
 The `core`, `benchmark` and `software-developer-role` profiles grant these
 explicitly. Non-strict `Std.Fiber` imports defer denied leaves until invocation;
 strict mode still checks every imported body. The host must compile
