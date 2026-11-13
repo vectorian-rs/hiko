@@ -535,12 +535,7 @@ mod tests {
     fn script_project(dir: &Path) -> PathBuf {
         write(
             &dir.join("main.hml"),
-            "import Std.Option\nuse \"./lib/greet.hml\"\nval _ = println (greeting (Option.is_some (Option.Some 1)))\n",
-        )
-        .unwrap();
-        write(
-            &dir.join("lib/greet.hml"),
-            "fun greeting (b : bool) = if b then \"sealed: some\" else \"sealed: none\"\n",
+            "import Std.Option\nval _ = println (if Option.is_some (Option.Some 1) then \"sealed: some\" else \"sealed: none\")\n",
         )
         .unwrap();
         dir.join("main.hml")
@@ -664,7 +659,6 @@ mod tests {
         let embedded = read(out.join("src/embedded.rs"));
         let option_hash = "blake3:bfef3fd8c6aa36f674c79e39ce0948dfbfe7f15cf69adeb8231c51b79ee56a84";
         assert!(embedded.contains(&format!("| `Std.Option` | `{option_hash}` |")));
-        assert!(embedded.contains("path: \"lib/greet.hml\""));
         assert_eq!(
             read(module_file(&out, "Std.Option")),
             read(repo().join("libraries/Std-v0.1.0/modules/Option.hml"))
@@ -782,7 +776,10 @@ mod tests {
         let main = read(out.join("src/main.rs"));
         assert!(main.contains("compile_file_with_options"));
         assert!(main.contains("embedded: Some(&embedded::SOURCES)"));
-        assert!(read(out.join("src/embedded.rs")).contains("files: None"));
+        assert!(
+            !read(out.join("src/embedded.rs")).contains("files"),
+            "sealed sources hold only modules"
+        );
     }
 
     fn github_config() -> RunConfig {

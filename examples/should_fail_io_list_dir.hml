@@ -1,4 +1,4 @@
 (* Expected to fail under policies/should-fail-io.policy.toml. *)
 import Std.Filesystem
 
-val _ = Filesystem.list_entries "examples"
+val _ = Filesystem.run (fn () => Filesystem.list_entries "examples")

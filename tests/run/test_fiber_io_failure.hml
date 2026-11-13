@@ -3,6 +3,6 @@ import Std.Filesystem
 import Std.Stdio
 
 (* A child that fails while blocked on I/O must still be joinable. *)
-val f = Fiber.spawn (fn () => Filesystem.read_text "/definitely/not/here.txt")
+val f = Fiber.spawn (fn () => Filesystem.run (fn () => Filesystem.read_text "/definitely/not/here.txt"))
 val r = case Fiber.join f of Ok _ => "ok" | Err _ => "err" | _ => "other"
 val _ = Stdio.println r

@@ -1671,7 +1671,7 @@ mod tests {
         assert_eq!(violations[0].builtin, "exec");
         assert_eq!(
             violations[0].capability_path,
-            Some("capabilities.exec.exec")
+            Some("capabilities.exec.run")
         );
     }
 
@@ -1819,7 +1819,7 @@ name = "demo"
     fn strict_message_includes_layer_and_policy_context() {
         let violation = super::StrictViolation {
             builtin: "exec".to_string(),
-            capability_path: Some("capabilities.exec.exec"),
+            capability_path: Some("capabilities.exec.run"),
             span: None,
         };
         let surface = RuntimeSurface::Policy(ResolvedPolicy {
@@ -1831,7 +1831,7 @@ name = "demo"
         let message = strict_message(&violation, &surface);
         assert!(message.contains("RunConfig::build_vm"), "got: {message}");
         assert!(message.contains("policy 'dev'"), "got: {message}");
-        assert!(message.contains("capabilities.exec.exec"), "got: {message}");
+        assert!(message.contains("capabilities.exec.run"), "got: {message}");
     }
 
     #[test]
@@ -1844,6 +1844,6 @@ name = "demo"
         };
         let message = runtime_error_message("undefined global: exec", &policy);
         assert!(message.contains("policy 'core'"), "got: {message}");
-        assert!(message.contains("capabilities.exec.exec"), "got: {message}");
+        assert!(message.contains("capabilities.exec.run"), "got: {message}");
     }
 }

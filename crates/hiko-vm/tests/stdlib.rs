@@ -119,7 +119,11 @@ fn thin_conversions_need_only_the_invoked_policy_leaf() {
         run_thin_source(&format!("import Std.{module}\nval x = 1"), "")
             .unwrap_or_else(|e| panic!("{module} import: {e}"));
         let source = format!("import Std.{module}\nval x = {module}.{call}");
-        let policy = format!("[capabilities.convert.{leaf}]\nenabled = true\n");
+        let policy = format!(
+            "[capabilities.{}.{}]\nenabled = true\n",
+            module.to_lowercase(),
+            call.split_whitespace().next().unwrap()
+        );
         run_thin_source(&source, &policy).unwrap_or_else(|e| panic!("{leaf}: {e}"));
         let denied = run_thin_source(&source, "").unwrap_err();
         assert!(
@@ -133,13 +137,13 @@ fn thin_conversions_need_only_the_invoked_policy_leaf() {
 #[test]
 fn thin_conversion_errors_match_raw_errors() {
     let policy = [
-        "int_to_char",
-        "int_to_word",
-        "word_to_int",
-        "string_to_int",
-        "string_to_word",
+        "char.of_int",
+        "word.of_int",
+        "word.to_int",
+        "int.of_string",
+        "word.of_string",
     ]
-    .map(|leaf| format!("[capabilities.convert.{leaf}]\nenabled = true\n"))
+    .map(|key| format!("[capabilities.{key}]\nenabled = true\n"))
     .join("");
     for (module, wrapper, raw) in [
         ("Char", "Char.of_int (~1)", "int_to_char (~1)"),
@@ -203,7 +207,7 @@ fn thin_path_import_defers_permission_until_call() {
     let source = "import Std.Path\nval x = Path.join (\"a\", \"b\")";
     let denied = run_thin_source(source, "").unwrap_err();
     assert!(denied.contains("undefined global: path_join"), "{denied}");
-    run_thin_source(source, "[capabilities.path.path_join]\nenabled = true").unwrap();
+    run_thin_source(source, "[capabilities.path.join]\nenabled = true").unwrap();
 }
 
 #[test]

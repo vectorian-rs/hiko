@@ -1,9 +1,9 @@
 use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta::core("sqrt", "capabilities.math.sqrt"),
-    BuiltinMeta::core("abs_int", "capabilities.math.abs_int"),
-    BuiltinMeta::core("abs_float", "capabilities.math.abs_float"),
-    BuiltinMeta::core("floor", "capabilities.math.floor"),
-    BuiltinMeta::core("ceil", "capabilities.math.ceil"),
+    BuiltinMeta::core("sqrt", "capabilities.float.sqrt"),
+    BuiltinMeta::core("abs_int", "capabilities.int.abs"),
+    BuiltinMeta::core("abs_float", "capabilities.float.abs"),
+    BuiltinMeta::core("floor", "capabilities.float.floor"),
+    BuiltinMeta::core("ceil", "capabilities.float.ceil"),
 ];

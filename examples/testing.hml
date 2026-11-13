@@ -1,7 +1,14 @@
 (* testing.hml -- unit testing with assert, assert_eq, and Result *)
-import Std.List
 
 (* ── Basic assertions ─────────────────────────────────────────────── *)
+import Std.Json
+import Std.List
+import Std.Regex
+import Std.Result
+import Std.Stdio
+import Std.String
+import Std.Testing
+
 val _ = Testing.check true "true should be true"
 
 val _ = Testing.check (1 + 1 = 2) "arithmetic"
@@ -47,7 +54,6 @@ val _ = Testing.equal (area (Circle 5)) 75 "circle area"
 val _ = Testing.equal (area (Rect (3, 4))) 12 "rect area"
 
 (* ── JSON round-trip ──────────────────────────────────────────────── *)
-import Std.Json
 
 val original = "{\"name\":\"test\",\"value\":42}"
 
@@ -69,11 +75,6 @@ val _ = Testing.check (not (Regex.matches "\\d+" "hello")) "regex no digits"
 val _ = Testing.check (Regex.replace "-" "_" "a-b-c" = "a_b_c") "regex replace"
 
 (* ── Error handling with Result ──────────────────────────────────── *)
-import Std.Result
-import Std.Regex
-import Std.Stdio
-import Std.String
-import Std.Testing
 
 fun safe_divide a b = if b = 0 then Result.Err "division by zero" else Result.Ok (a / b)
 

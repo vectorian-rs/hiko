@@ -26,7 +26,7 @@ fun find_version xs = case xs of
           | _ => find_version rest
       end else find_version rest
 
-val current = "crates/hiko-syntax/Cargo.toml" |> Filesystem.read_text |> lines |> find_version
+val current = Filesystem.run (fn () => Filesystem.read_text "crates/hiko-syntax/Cargo.toml") |> lines |> find_version
 
 val _ = Stdio.println ("Current version: " ^ current)
 
@@ -41,8 +41,8 @@ val new_str = "version = \"" ^ new_version ^ "\""
 fun replace_version content = String.replace old_str new_str content
 
 fun update_file path = let
-    val updated = path |> Filesystem.read_text |> replace_version
-    val _ = Filesystem.write_text path updated
+    val updated = Filesystem.run (fn () => Filesystem.read_text path) |> replace_version
+    val _ = Filesystem.run (fn () => Filesystem.write_text path updated)
   in
     Stdio.println ("  updated " ^ path)
   end

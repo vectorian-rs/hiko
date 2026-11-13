@@ -209,6 +209,8 @@ enabled = true
 enabled = true
 
 [capabilities.fiber.join_or_fail]
+enabled = true
+
 [capabilities.fiber.join]
 enabled = true
 
@@ -300,10 +302,10 @@ allowed_hosts = ["api.example.com"]
 enabled = true
 allowed_commands = ["git", "cargo"]
 
-[[capabilities.exec.exec.allow]]
+[[capabilities.exec.run.allow]]
 argv = ["terraform", "plan", "-input=false"]
 
-[[capabilities.exec.exec.allow]]
+[[capabilities.exec.run.allow]]
 argv = ["terraform", "show", "--"]
 rest = "any"
 

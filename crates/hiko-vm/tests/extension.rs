@@ -135,7 +135,7 @@ fn compile(source: &str, config: &RunConfig) -> Result<CompiledProgram, CompileE
 
 fn config(extra: &str) -> RunConfig {
     RunConfig::from_toml(&format!(
-        "[capabilities.stdio.println]\nenabled = true\n[capabilities.convert.int_to_string]\nenabled = true\n{extra}"
+        "[capabilities.stdio.println]\nenabled = true\n[capabilities.int.to_string]\nenabled = true\n{extra}"
     ))
     .expect("config")
 }
@@ -219,8 +219,8 @@ fn extension_host_resources_count_against_their_kind_limit() {
 #[test]
 fn async_builtin_and_state_in_a_child_under_the_runtime() {
     let config = config(&format!(
-        "{CONFIGURED}[capabilities.process.spawn]\nenabled = true\n\
-         [capabilities.process.await_process]\nenabled = true\n"
+        "{CONFIGURED}[capabilities.fiber.spawn]\nenabled = true\n\
+         [capabilities.fiber.join_or_fail]\nenabled = true\n[capabilities.fiber.join]\nenabled = true\n"
     ));
     let program = compile(
         r#"val child = spawn (fn () => test_shout (test_greet "bob"))
@@ -324,7 +324,7 @@ fn an_extension_module_cannot_use_a_file() {
         format!("{err:?}"),
         format!(
             "Codegen({:?})",
-            "module UsesFile.M of extension 'uses_file' declares use './helper.hml'; an extension module cannot use a file"
+            "parse error in 'UsesFile.M': use was removed; use import Proj.<Module> for local modules under src/"
         )
     );
 }

@@ -7,7 +7,7 @@ import Std.Stdio
 import Std.String
 
 fun spawn_all (n, acc) =
-  if n = 0 then acc else spawn_all (n - 1, Fiber.spawn (fn () => String.length (Filesystem.read_text "README.md")) :: acc)
+  if n = 0 then acc else spawn_all (n - 1, Fiber.spawn (fn () => String.length (Filesystem.run (fn () => Filesystem.read_text "README.md"))) :: acc)
 
 fun await_all (pids, acc : int) =
   case pids of

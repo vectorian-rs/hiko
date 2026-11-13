@@ -149,7 +149,7 @@ mod enabled {
         assert!(read_artifact(&project.artifact(), "stale-nonce", "untimed-test").is_err());
         assert!(read_artifact(&project.artifact(), "fresh-test-232", "wrong-profile").is_err());
     }
-    const PROCESS: &str = "[capabilities.process.spawn]\nenabled=true\n[capabilities.process.await_process]\nenabled=true\n[capabilities.process.cancel]\nenabled=true\n[capabilities.testing.panic]\nenabled=true\n";
+    const PROCESS: &str = "[capabilities.fiber.spawn]\nenabled=true\n[capabilities.fiber.join_or_fail]\nenabled=true\n[capabilities.fiber.join]\nenabled=true\n[capabilities.fiber.cancel]\nenabled=true\n[capabilities.system.panic]\nenabled=true\n";
     // Per-fixture heap accounting lives in the hiko-vm integration test; this
     // proves the CLI reaps an abandoned child before exporting balanced evidence.
     #[test]
@@ -181,7 +181,7 @@ mod enabled {
             ),
             (
                 "val _ = panic \"sentinel\"",
-                "[capabilities.testing.panic]\nenabled=true\n",
+                "[capabilities.system.panic]\nenabled=true\n",
                 Some(1),
             ),
             ("val x =", "", Some(1)),

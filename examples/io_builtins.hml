@@ -25,9 +25,9 @@ val _ = Stdio.println "--- File I/O ---"
 
 val path = "target/hiko_io_demo.txt"
 
-val _ = Filesystem.write_text path "line one\nline two\nline three\n"
+val _ = Filesystem.run (fn () => Filesystem.write_text path "line one\nline two\nline three\n")
 
-val contents = Filesystem.read_text path
+val contents = Filesystem.run (fn () => Filesystem.read_text path)
 
 val _ = Stdio.println ("Wrote and read back:\n" ^ contents)
 
@@ -40,7 +40,7 @@ fun count_nonempty xs =
 
 val _ = Stdio.println ("Non-empty lines: " ^ Int.to_string (count_nonempty lines))
 
-val _ = Filesystem.remove path
+val _ = Filesystem.run (fn () => Filesystem.remove path)
 
 (* ── Environment and time ──────────────────────────────────── *)
 val _ = Stdio.println "\n--- Environment ---"

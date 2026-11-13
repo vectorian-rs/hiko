@@ -17,9 +17,9 @@ fun is_function_line line = Regex.matches "^\\s*(pub\\s+)?(fn|fun)\\s+" line
 fun count_matches xs = List.length xs
 
 (* Count all function definitions across all Rust files *)
-val rs_files = Filesystem.glob_matches "crates/**/*.rs"
+val rs_files = Filesystem.run (fn () => Filesystem.glob_matches "crates/**/*.rs")
 
-fun count_fns file = file |> Filesystem.read_text |> lines |> List.filter is_function_line |> count_matches
+fun count_fns file = Filesystem.run (fn () => Filesystem.read_text file) |> lines |> List.filter is_function_line |> count_matches
 
 val counts = rs_files |> List.map (fn f => (f, count_fns f))
 

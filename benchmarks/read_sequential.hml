@@ -8,7 +8,7 @@ import Std.Int
 import Std.Stdio
 import Std.String
 
-fun reads (n, acc) = if n = 0 then acc else reads (n - 1, acc + String.length (Filesystem.read_text "README.md"))
+fun reads (n, acc) = if n = 0 then acc else reads (n - 1, acc + String.length (Filesystem.run (fn () => Filesystem.read_text "README.md")))
 
 val total = Fiber.join_or_fail (Fiber.spawn (fn () => reads (1000, 0)))
 

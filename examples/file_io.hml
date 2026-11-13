@@ -6,9 +6,9 @@ import Std.Testing
 
 val path = "target/hiko_example.txt"
 
-val _ = Filesystem.write_text path "Hello from Hiko!\nLine 2\n"
+val _ = Filesystem.run (fn () => Filesystem.write_text path "Hello from Hiko!\nLine 2\n")
 
-val contents = Filesystem.read_text path
+val contents = Filesystem.run (fn () => Filesystem.read_text path)
 
 val _ = Stdio.println contents
 
@@ -25,10 +25,10 @@ fun print_lines xs =
 
 val _ = print_lines lines
 
-val _ = Testing.check (Filesystem.exists path) "file should exist"
+val _ = Testing.check (Filesystem.run (fn () => Filesystem.exists path)) "file should exist"
 
-val _ = Filesystem.remove path
+val _ = Filesystem.run (fn () => Filesystem.remove path)
 
-val _ = Testing.check (not (Filesystem.exists path)) "file should be gone"
+val _ = Testing.check (not (Filesystem.run (fn () => Filesystem.exists path))) "file should be gone"
 
 val _ = Stdio.println "file_io test passed"

@@ -91,9 +91,9 @@ fn json_constructor_aliases_round_trip_on_both_runtimes() {
 fn trusted_json_converters_ignore_and_restore_user_bindings() {
     let program = compile(
         r#"
+        import Std.Json
         fun json_parse (_ : string) = 99
         fun json_to_string (_ : int) = "user serializer"
-        import Std.Json
         val _ = assert_eq (Json.to_string (Json.parse "[7]"), "[7]", "trusted converters")
         val _ = assert_eq (json_parse "ignored", 99, "user parser survives import")
         val _ = assert_eq (json_to_string 1, "user serializer", "user serializer survives import")
@@ -126,17 +126,17 @@ fn malformed_json_keeps_the_host_diagnostic() {
 fn json_wrappers_cannot_enable_denied_converters() {
     let program = compile("import Std.Json\nval s = Json.to_string (Json.parse \"null\")").unwrap();
     let names = [
-        "json_parse",
-        "json_to_string",
-        "json_get",
-        "json_keys",
-        "json_length",
+        ("parse", "json_parse"),
+        ("to_string", "json_to_string"),
+        ("get", "json_get"),
+        ("keys", "json_keys"),
+        ("length", "json_length"),
     ];
-    for denied in ["json_parse", "json_to_string"] {
+    for (denied_leaf, denied) in [("parse", "json_parse"), ("to_string", "json_to_string")] {
         let config = names
             .iter()
-            .filter(|&&name| name != denied)
-            .map(|name| format!("[capabilities.json.{name}]\nenabled = true\n"))
+            .filter(|&&(leaf, _)| leaf != denied_leaf)
+            .map(|(leaf, _)| format!("[capabilities.json.{leaf}]\nenabled = true\n"))
             .collect::<String>();
         let config = RunConfig::from_toml(&config).unwrap();
         assert!(!config.enabled_builtin_names().contains(denied));

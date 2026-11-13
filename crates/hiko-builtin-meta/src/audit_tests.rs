@@ -100,8 +100,8 @@ fn builtin_audit_rejects_duplicate_unknown_and_drifted_rows() {
             .contains("unknown audit name")
     );
     let drifted = AUDIT.replace(
-        "| capabilities.convert.int_to_string |",
         "| capabilities.int.to_string |",
+        "| capabilities.convert.int_to_string |",
     );
     assert!(
         validate_audit(&drifted)

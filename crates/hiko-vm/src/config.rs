@@ -145,7 +145,7 @@ struct ExecLeaf {
     /// Commands allowed with any arguments.
     #[serde(default)]
     allowed_commands: Vec<String>,
-    /// `[[capabilities.exec.exec.allow]]`: commands allowed only with these
+    /// `[[capabilities.exec.run.allow]]`: commands allowed only with these
     /// arguments.
     #[serde(default)]
     allow: Vec<ExecAllowLeaf>,
@@ -329,8 +329,28 @@ macro_rules! http_family {
 }
 
 enabled_family!(FiberCapabilities {
-    fiber_await_all => "fiber_await_all",
+    spawn => "spawn",
+    join => "await_process_result",
+    join_or_fail => "await_process",
+    join_all => "fiber_await_all",
+    cancel => "cancel",
+    wait_any => "wait_any",
 });
+
+impl FiberCapabilities {
+    fn requires_runtime(&self) -> bool {
+        [
+            &self.spawn,
+            &self.join,
+            &self.join_or_fail,
+            &self.join_all,
+            &self.cancel,
+            &self.wait_any,
+        ]
+        .into_iter()
+        .any(|leaf| leaf.as_ref().is_some_and(|leaf| leaf.enabled))
+    }
+}
 
 enabled_family!(StdioCapabilities {
     print => "print",
@@ -341,190 +361,179 @@ enabled_family!(StdioCapabilities {
     read_stdin => "read_stdin",
 });
 
-enabled_family!(ConvertCapabilities {
-    int_to_string => "int_to_string",
-    float_to_string => "float_to_string",
-    string_to_int => "string_to_int",
-    char_to_int => "char_to_int",
-    int_to_char => "int_to_char",
-    int_to_float => "int_to_float",
-    word_to_int => "word_to_int",
-    int_to_word => "int_to_word",
-    word_to_string => "word_to_string",
-    string_to_word => "string_to_word",
+enabled_family!(IntCapabilities {
+    abs => "abs_int",
+    of_string => "string_to_int",
+    to_string => "int_to_string",
+});
+
+enabled_family!(FloatCapabilities {
+    abs => "abs_float",
+    ceil => "ceil",
+    floor => "floor",
+    of_int => "int_to_float",
+    sqrt => "sqrt",
+    to_string => "float_to_string",
+});
+
+enabled_family!(CharCapabilities {
+    of_int => "int_to_char",
+    to_int => "char_to_int",
+});
+
+enabled_family!(WordCapabilities {
+    of_int => "int_to_word",
+    of_string => "string_to_word",
+    to_int => "word_to_int",
+    to_string => "word_to_string",
 });
 
 enabled_family!(StringCapabilities {
-    string_length => "string_length",
+    length => "string_length",
     substring => "substring",
-    string_contains => "string_contains",
+    contains => "string_contains",
     trim => "trim",
     split => "split",
-    string_replace => "string_replace",
+    replace => "string_replace",
     starts_with => "starts_with",
     ends_with => "ends_with",
-    to_upper => "to_upper",
-    to_lower => "to_lower",
-    string_join => "string_join",
+    upper => "to_upper",
+    lower => "to_lower",
+    join => "string_join",
 });
 
 enabled_family!(RegexCapabilities {
-    regex_match => "regex_match",
-    regex_replace => "regex_replace",
+    matches => "regex_match",
+    replace => "regex_replace",
 });
 
 enabled_family!(JsonCapabilities {
-    json_parse => "json_parse",
-    json_to_string => "json_to_string",
-    json_get => "json_get",
-    json_keys => "json_keys",
-    json_length => "json_length",
-});
-
-enabled_family!(MathCapabilities {
-    sqrt => "sqrt",
-    abs_int => "abs_int",
-    abs_float => "abs_float",
-    floor => "floor",
-    ceil => "ceil",
+    parse => "json_parse",
+    to_string => "json_to_string",
+    get => "json_get",
+    keys => "json_keys",
+    length => "json_length",
 });
 
 enabled_family!(BytesCapabilities {
-    bytes_length => "bytes_length",
-    bytes_to_string => "bytes_to_string",
-    string_to_bytes => "string_to_bytes",
-    bytes_get => "bytes_get",
-    bytes_slice => "bytes_slice",
+    length => "bytes_length",
+    to_string => "bytes_to_string",
+    of_string => "string_to_bytes",
+    get => "bytes_get",
+    slice => "bytes_slice",
 });
 
-enabled_family!(HashCapabilities {
-    blake3 => "blake3",
+enabled_family!(HashBlake3Capabilities {
+    hash => "blake3",
 });
+
+/// Hash keys nest one level: `capabilities.hash.blake3.hash.<leaf>`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HashCapabilities {
+    #[serde(default)]
+    blake3: HashBlake3Capabilities,
+}
+
+impl HashCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        self.blake3.apply(builder)
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        self.blake3.extend_enabled(out);
+    }
+
+    fn emit(&self, out: &mut String) {
+        self.blake3.emit(out);
+    }
+}
 
 enabled_family!(RandomCapabilities {
-    random_bytes => "random_bytes",
-    rng_seed => "rng_seed",
-    rng_bytes => "rng_bytes",
-    rng_int => "rng_int",
+    entropy => "random_bytes",
+    seed => "rng_seed",
+    bytes => "rng_bytes",
+    int_between => "rng_int",
 });
 
 enabled_family!(EnvCapabilities {
-    getenv => "getenv",
+    get => "getenv",
 });
 
 enabled_family!(TimeCapabilities {
     epoch => "epoch",
-    epoch_ms => "epoch_ms",
-    monotonic_ms => "monotonic_ms",
+    now => "epoch_ms",
+    monotonic_now => "monotonic_ms",
     sleep => "sleep",
 });
 
 enabled_family!(PathCapabilities {
-    path_join => "path_join",
+    join => "path_join",
 });
 
 folder_family!(FilesystemCapabilities {
-    read_file => "read_file",
-    read_file_bytes => "read_file_bytes",
-    write_file => "write_file",
-    file_exists => "file_exists",
-    list_dir => "list_dir",
-    remove_file => "remove_file",
-    create_dir => "create_dir",
-    is_dir => "is_dir",
-    is_file => "is_file",
-    glob => "glob",
-    walk_dir => "walk_dir",
+    read_text => "read_file",
+    read_bytes => "read_file_bytes",
+    write_text => "write_file",
+    exists => "file_exists",
+    list_entries => "list_dir",
+    remove => "remove_file",
+    create_directory => "create_dir",
+    is_directory => "is_dir",
+    is_regular_file => "is_file",
+    glob_matches => "glob",
+    walk => "walk_dir",
 });
 
-http_family!(HttpCapabilities {
-    http_get => "http_get",
-    http => "http",
-    http_json => "http_json",
-    http_msgpack => "http_msgpack",
-    http_bytes => "http_bytes",
+http_family!(HttpClientCapabilities {
+    get => "http_get",
+    request => "http",
+    request_json => "http_json",
+    request_msgpack => "http_msgpack",
+    request_bytes => "http_bytes",
 });
+
+/// HTTP keys nest one level: `capabilities.http.client.<leaf>`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HttpCapabilities {
+    #[serde(default)]
+    client: HttpClientCapabilities,
+}
+
+impl HttpCapabilities {
+    fn apply(&self, builder: VMBuilder) -> VMBuilder {
+        self.client.apply(builder)
+    }
+
+    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
+        self.client.extend_enabled(out);
+    }
+
+    fn emit(&self, out: &mut String) {
+        self.client.emit(out);
+    }
+}
 
 enabled_family!(SystemCapabilities {
     exit => "exit",
+    panic => "panic",
 });
 
 enabled_family!(TestingCapabilities {
-    panic => "panic",
-    assert => "assert",
-    assert_eq => "assert_eq",
+    check => "assert",
+    equal => "assert_eq",
 });
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ExecCapabilities {
-    exec: Option<ExecLeaf>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ProcessCapabilities {
-    spawn: Option<EnabledLeaf>,
-    await_process: Option<EnabledLeaf>,
-    cancel: Option<EnabledLeaf>,
-    wait_any: Option<EnabledLeaf>,
-}
-
-impl ProcessCapabilities {
-    fn apply(&self, mut builder: VMBuilder) -> VMBuilder {
-        if self.spawn.as_ref().is_some_and(|leaf| leaf.enabled) {
-            builder = builder.register_builtin_name("spawn");
-        }
-        if self.await_process.as_ref().is_some_and(|leaf| leaf.enabled) {
-            builder = builder
-                .register_builtin_name("await_process")
-                .register_builtin_name("await_process_result");
-        }
-        if self.cancel.as_ref().is_some_and(|leaf| leaf.enabled) {
-            builder = builder.register_builtin_name("cancel");
-        }
-        if self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled) {
-            builder = builder.register_builtin_name("wait_any");
-        }
-        builder
-    }
-
-    fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        if self.spawn.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.insert("spawn");
-        }
-        if self.await_process.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.insert("await_process");
-            out.insert("await_process_result");
-        }
-        if self.cancel.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.insert("cancel");
-        }
-        if self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.insert("wait_any");
-        }
-    }
-
-    fn emit(&self, out: &mut String) {
-        if self.spawn.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.push_str("            .register_builtin_name(\"spawn\")\n");
-        }
-        if self.await_process.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.push_str("            .register_builtin_name(\"await_process\")\n");
-            out.push_str("            .register_builtin_name(\"await_process_result\")\n");
-        }
-        if self.cancel.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.push_str("            .register_builtin_name(\"cancel\")\n");
-        }
-        if self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled) {
-            out.push_str("            .register_builtin_name(\"wait_any\")\n");
-        }
-    }
+    run: Option<ExecLeaf>,
 }
 
 impl ExecCapabilities {
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
-        if let Some(leaf) = &self.exec
+        if let Some(leaf) = &self.run
             && leaf.enabled
         {
             #[cfg(feature = "builtin-exec")]
@@ -539,7 +548,7 @@ impl ExecCapabilities {
     }
 
     fn emit(&self, out: &mut String) {
-        if let Some(leaf) = &self.exec
+        if let Some(leaf) = &self.run
             && leaf.enabled
         {
             let rules: Vec<String> = leaf
@@ -565,20 +574,11 @@ impl ExecCapabilities {
     }
 
     fn extend_enabled(&self, out: &mut BTreeSet<&'static str>) {
-        if let Some(leaf) = &self.exec
+        if let Some(leaf) = &self.run
             && leaf.enabled
         {
             out.insert("exec");
         }
-    }
-}
-
-impl ProcessCapabilities {
-    fn requires_runtime(&self) -> bool {
-        self.spawn.as_ref().is_some_and(|leaf| leaf.enabled)
-            || self.await_process.as_ref().is_some_and(|leaf| leaf.enabled)
-            || self.cancel.as_ref().is_some_and(|leaf| leaf.enabled)
-            || self.wait_any.as_ref().is_some_and(|leaf| leaf.enabled)
     }
 }
 
@@ -588,15 +588,19 @@ pub struct Capabilities {
     #[serde(default)]
     pub stdio: StdioCapabilities,
     #[serde(default)]
-    pub convert: ConvertCapabilities,
+    pub int: IntCapabilities,
+    #[serde(default)]
+    pub float: FloatCapabilities,
+    #[serde(default)]
+    pub char: CharCapabilities,
+    #[serde(default)]
+    pub word: WordCapabilities,
     #[serde(default)]
     pub string: StringCapabilities,
     #[serde(default)]
     pub regex: RegexCapabilities,
     #[serde(default)]
     pub json: JsonCapabilities,
-    #[serde(default)]
-    pub math: MathCapabilities,
     #[serde(default)]
     pub bytes: BytesCapabilities,
     #[serde(default)]
@@ -607,8 +611,6 @@ pub struct Capabilities {
     pub env: EnvCapabilities,
     #[serde(default)]
     pub time: TimeCapabilities,
-    #[serde(default)]
-    pub process: ProcessCapabilities,
     #[serde(default)]
     pub fiber: FiberCapabilities,
     #[serde(default)]
@@ -632,17 +634,18 @@ impl Capabilities {
             builder = builder.register_builtin_name(name);
         }
         let builder = self.stdio.apply(builder);
-        let builder = self.convert.apply(builder);
+        let builder = self.int.apply(builder);
+        let builder = self.float.apply(builder);
+        let builder = self.char.apply(builder);
+        let builder = self.word.apply(builder);
         let builder = self.string.apply(builder);
         let builder = self.regex.apply(builder);
         let builder = self.json.apply(builder);
-        let builder = self.math.apply(builder);
         let builder = self.bytes.apply(builder);
         let builder = self.hash.apply(builder);
         let builder = self.random.apply(builder);
         let builder = self.env.apply(builder);
         let builder = self.time.apply(builder);
-        let builder = self.process.apply(builder);
         let builder = self.fiber.apply(builder);
         let builder = self.path.apply(builder);
         let builder = self.filesystem.apply(builder);
@@ -657,17 +660,18 @@ impl Capabilities {
             out.push_str(&format!("            .register_builtin_name({name:?})\n"));
         }
         self.stdio.emit(out);
-        self.convert.emit(out);
+        self.int.emit(out);
+        self.float.emit(out);
+        self.char.emit(out);
+        self.word.emit(out);
         self.string.emit(out);
         self.regex.emit(out);
         self.json.emit(out);
-        self.math.emit(out);
         self.bytes.emit(out);
         self.hash.emit(out);
         self.random.emit(out);
         self.env.emit(out);
         self.time.emit(out);
-        self.process.emit(out);
         self.fiber.emit(out);
         self.path.emit(out);
         self.filesystem.emit(out);
@@ -680,17 +684,18 @@ impl Capabilities {
     fn enabled_builtin_names(&self) -> BTreeSet<&'static str> {
         let mut out: BTreeSet<_> = unrestricted_runtime_builtin_names().collect();
         self.stdio.extend_enabled(&mut out);
-        self.convert.extend_enabled(&mut out);
+        self.int.extend_enabled(&mut out);
+        self.float.extend_enabled(&mut out);
+        self.char.extend_enabled(&mut out);
+        self.word.extend_enabled(&mut out);
         self.string.extend_enabled(&mut out);
         self.regex.extend_enabled(&mut out);
         self.json.extend_enabled(&mut out);
-        self.math.extend_enabled(&mut out);
         self.bytes.extend_enabled(&mut out);
         self.hash.extend_enabled(&mut out);
         self.random.extend_enabled(&mut out);
         self.env.extend_enabled(&mut out);
         self.time.extend_enabled(&mut out);
-        self.process.extend_enabled(&mut out);
         self.fiber.extend_enabled(&mut out);
         self.path.extend_enabled(&mut out);
         self.filesystem.extend_enabled(&mut out);
@@ -702,12 +707,7 @@ impl Capabilities {
     }
 
     fn requires_runtime(&self) -> bool {
-        self.process.requires_runtime()
-            || self
-                .fiber
-                .fiber_await_all
-                .as_ref()
-                .is_some_and(|leaf| leaf.enabled)
+        self.fiber.requires_runtime()
     }
 }
 
@@ -735,20 +735,20 @@ fn validate_config_paths(config: &RunConfig) -> Result<(), String> {
     }
 
     let filesystem_families = [
-        config.capabilities.filesystem.read_file.as_ref(),
-        config.capabilities.filesystem.read_file_bytes.as_ref(),
-        config.capabilities.filesystem.write_file.as_ref(),
-        config.capabilities.filesystem.file_exists.as_ref(),
-        config.capabilities.filesystem.list_dir.as_ref(),
-        config.capabilities.filesystem.remove_file.as_ref(),
-        config.capabilities.filesystem.create_dir.as_ref(),
-        config.capabilities.filesystem.is_dir.as_ref(),
-        config.capabilities.filesystem.is_file.as_ref(),
-        config.capabilities.filesystem.glob.as_ref(),
-        config.capabilities.filesystem.walk_dir.as_ref(),
+        config.capabilities.filesystem.read_text.as_ref(),
+        config.capabilities.filesystem.read_bytes.as_ref(),
+        config.capabilities.filesystem.write_text.as_ref(),
+        config.capabilities.filesystem.exists.as_ref(),
+        config.capabilities.filesystem.list_entries.as_ref(),
+        config.capabilities.filesystem.remove.as_ref(),
+        config.capabilities.filesystem.create_directory.as_ref(),
+        config.capabilities.filesystem.is_directory.as_ref(),
+        config.capabilities.filesystem.is_regular_file.as_ref(),
+        config.capabilities.filesystem.glob_matches.as_ref(),
+        config.capabilities.filesystem.walk.as_ref(),
     ];
 
-    if let Some(exec) = &config.capabilities.exec.exec {
+    if let Some(exec) = &config.capabilities.exec.run {
         for rule in &exec.allow {
             if rule.argv.is_empty() || rule.argv[0].is_empty() {
                 return Err("exec allow rules need a command: argv must not be empty".into());
@@ -797,11 +797,109 @@ impl Default for RunConfig {
     }
 }
 
+/// Former capability keys and their #186 replacements, used only to explain
+/// a failed policy parse. There are no compatibility aliases: old keys fail.
+const RENAMED_CAPABILITY_KEYS: &[(&str, &str)] = &[
+    ("capabilities.bytes.bytes_get", "capabilities.bytes.get"),
+    ("capabilities.bytes.bytes_length", "capabilities.bytes.length"),
+    ("capabilities.bytes.bytes_slice", "capabilities.bytes.slice"),
+    ("capabilities.bytes.bytes_to_string", "capabilities.bytes.to_string"),
+    ("capabilities.bytes.string_to_bytes", "capabilities.bytes.of_string"),
+    ("capabilities.convert.char_to_int", "capabilities.char.to_int"),
+    ("capabilities.convert.float_to_string", "capabilities.float.to_string"),
+    ("capabilities.convert.int_to_char", "capabilities.char.of_int"),
+    ("capabilities.convert.int_to_float", "capabilities.float.of_int"),
+    ("capabilities.convert.int_to_string", "capabilities.int.to_string"),
+    ("capabilities.convert.int_to_word", "capabilities.word.of_int"),
+    ("capabilities.convert.string_to_int", "capabilities.int.of_string"),
+    ("capabilities.convert.string_to_word", "capabilities.word.of_string"),
+    ("capabilities.convert.word_to_int", "capabilities.word.to_int"),
+    ("capabilities.convert.word_to_string", "capabilities.word.to_string"),
+    ("capabilities.env.getenv", "capabilities.env.get"),
+    ("capabilities.exec.exec", "capabilities.exec.run"),
+    ("capabilities.fiber.fiber_await_all", "capabilities.fiber.join_all"),
+    ("capabilities.filesystem.create_dir", "capabilities.filesystem.create_directory"),
+    ("capabilities.filesystem.file_exists", "capabilities.filesystem.exists"),
+    ("capabilities.filesystem.glob", "capabilities.filesystem.glob_matches"),
+    ("capabilities.filesystem.is_dir", "capabilities.filesystem.is_directory"),
+    ("capabilities.filesystem.is_file", "capabilities.filesystem.is_regular_file"),
+    ("capabilities.filesystem.list_dir", "capabilities.filesystem.list_entries"),
+    ("capabilities.filesystem.read_file", "capabilities.filesystem.read_text"),
+    ("capabilities.filesystem.read_file_bytes", "capabilities.filesystem.read_bytes"),
+    ("capabilities.filesystem.remove_file", "capabilities.filesystem.remove"),
+    ("capabilities.filesystem.walk_dir", "capabilities.filesystem.walk"),
+    ("capabilities.filesystem.write_file", "capabilities.filesystem.write_text"),
+    ("capabilities.hash.blake3", "capabilities.hash.blake3.hash"),
+    ("capabilities.http.http", "capabilities.http.client.request"),
+    ("capabilities.http.http_bytes", "capabilities.http.client.request_bytes"),
+    ("capabilities.http.http_get", "capabilities.http.client.get"),
+    ("capabilities.http.http_json", "capabilities.http.client.request_json"),
+    ("capabilities.http.http_msgpack", "capabilities.http.client.request_msgpack"),
+    ("capabilities.json.json_get", "capabilities.json.get"),
+    ("capabilities.json.json_keys", "capabilities.json.keys"),
+    ("capabilities.json.json_length", "capabilities.json.length"),
+    ("capabilities.json.json_parse", "capabilities.json.parse"),
+    ("capabilities.json.json_to_string", "capabilities.json.to_string"),
+    ("capabilities.math.abs_float", "capabilities.float.abs"),
+    ("capabilities.math.abs_int", "capabilities.int.abs"),
+    ("capabilities.math.ceil", "capabilities.float.ceil"),
+    ("capabilities.math.floor", "capabilities.float.floor"),
+    ("capabilities.math.sqrt", "capabilities.float.sqrt"),
+    ("capabilities.path.path_join", "capabilities.path.join"),
+    ("capabilities.process.await_process", "capabilities.fiber.join_or_fail"),
+    ("capabilities.process.cancel", "capabilities.fiber.cancel"),
+    ("capabilities.process.spawn", "capabilities.fiber.spawn"),
+    ("capabilities.process.wait_any", "capabilities.fiber.wait_any"),
+    ("capabilities.random.random_bytes", "capabilities.random.entropy"),
+    ("capabilities.random.rng_bytes", "capabilities.random.bytes"),
+    ("capabilities.random.rng_int", "capabilities.random.int_between"),
+    ("capabilities.random.rng_seed", "capabilities.random.seed"),
+    ("capabilities.regex.regex_match", "capabilities.regex.matches"),
+    ("capabilities.regex.regex_replace", "capabilities.regex.replace"),
+    ("capabilities.string.string_contains", "capabilities.string.contains"),
+    ("capabilities.string.string_join", "capabilities.string.join"),
+    ("capabilities.string.string_length", "capabilities.string.length"),
+    ("capabilities.string.string_replace", "capabilities.string.replace"),
+    ("capabilities.string.to_lower", "capabilities.string.lower"),
+    ("capabilities.string.to_upper", "capabilities.string.upper"),
+    ("capabilities.testing.assert", "capabilities.testing.check"),
+    ("capabilities.testing.assert_eq", "capabilities.testing.equal"),
+    ("capabilities.testing.panic", "capabilities.system.panic"),
+    ("capabilities.time.epoch_ms", "capabilities.time.now"),
+    ("capabilities.time.monotonic_ms", "capabilities.time.monotonic_now"),
+];
+
+/// Guidance for a policy that still names pre-#186 capability keys.
+fn old_capability_key_guidance(text: &str) -> Option<String> {
+    if text.contains("capabilities.date.") {
+        return Some(
+            "the capabilities.date family was removed; date operations need no capability".into(),
+        );
+    }
+    let renames: Vec<String> = RENAMED_CAPABILITY_KEYS
+        .iter()
+        .filter(|(old, _)| text.contains(old))
+        .take(3)
+        .map(|(old, new)| format!("{old} is now {new}"))
+        .collect();
+    if renames.is_empty() {
+        None
+    } else {
+        Some(renames.join("; "))
+    }
+}
+
 impl RunConfig {
     /// Parse a run config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, String> {
-        let config: Self =
-            toml::from_str(text).map_err(|e| hiko_compile::compiler::toml_error_text(&e, text))?;
+        let config: Self = toml::from_str(text).map_err(|e| {
+            let mut message = hiko_compile::compiler::toml_error_text(&e, text);
+            if let Some(guidance) = old_capability_key_guidance(text) {
+                message.push_str("; ");
+                message.push_str(&guidance);
+            }
+            message
+        })?;
         validate_config_paths(&config)?;
         Ok(config)
     }
@@ -1146,7 +1244,7 @@ mod tests {
     fn bulk_join_policy_is_independent_default_off_and_codegen_preserves_storage_limit() {
         let denied = RunConfig::from_toml("").unwrap();
         assert!(!denied.enabled_builtin_names().contains("fiber_await_all"));
-        let config = RunConfig::from_toml("[limits]\nmax_join_group_bytes = 12345\n[capabilities.fiber.fiber_await_all]\nenabled = true\n").unwrap();
+        let config = RunConfig::from_toml("[limits]\nmax_join_group_bytes = 12345\n[capabilities.fiber.join_all]\nenabled = true\n").unwrap();
         assert!(config.requires_runtime());
         let enabled = config.enabled_builtin_names();
         assert!(enabled.contains("fiber_await_all"));
@@ -1173,7 +1271,7 @@ mod tests {
             r#"
 entry = "scripts/read.hml"
 
-[capabilities.filesystem.read_file]
+[capabilities.filesystem.read_text]
 enabled = true
 folders = ["."]
 "#,
@@ -1184,7 +1282,7 @@ folders = ["."]
         let leaf = config
             .capabilities
             .filesystem
-            .read_file
+            .read_text
             .expect("filesystem read_file config missing");
         assert!(leaf.enabled);
         assert_eq!(leaf.folders, vec![".".to_string()]);
@@ -1412,7 +1510,7 @@ entry = "../scripts/read.hml"
     fn reject_filesystem_folder_with_parent_dir_component() {
         let err = RunConfig::from_toml(
             r#"
-[capabilities.filesystem.read_file]
+[capabilities.filesystem.read_text]
 enabled = true
 folders = ["../content"]
 "#,

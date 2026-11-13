@@ -375,7 +375,7 @@ fn policy_io_limit_keys_reach_the_vm() {
 #[test]
 fn exec_leaf_no_longer_accepts_timeout_seconds() {
     let err = RunConfig::from_toml(
-        "[capabilities.exec.exec]\nenabled = true\nallowed_commands = [\"ls\"]\ntimeout = 30\n",
+        "[capabilities.exec.run]\nenabled = true\nallowed_commands = [\"ls\"]\ntimeout = 30\n",
     )
     .unwrap_err();
     assert!(err.contains("timeout"), "{err}");

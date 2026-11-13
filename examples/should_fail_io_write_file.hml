@@ -1,4 +1,4 @@
 (* Expected to fail under policies/should-fail-io.policy.toml before creating the file. *)
 import Std.Filesystem
 
-val _ = Filesystem.write_text "target/should_fail_io_output.txt" "abcdef"
+val _ = Filesystem.run (fn () => Filesystem.write_text "target/should_fail_io_output.txt" "abcdef")

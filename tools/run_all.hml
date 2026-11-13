@@ -33,7 +33,7 @@ import Std.Time
 (* Milliseconds from the monotonic clock, for interval arithmetic. *)
 fun now_ms () = case Time.monotonic_now () of Time.Monotonic ms => ms
 
-val examples = Filesystem.glob_matches "examples/*.hml"
+val examples = Filesystem.run (fn () => Filesystem.glob_matches "examples/*.hml")
 
 val cwd = Env.get "PWD"
 
@@ -56,7 +56,7 @@ val runtime_runner_root = "./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-
 
 val runtime_runner_local = "./target/release/hiko-vm-hiko-run-all-policy"
 
-fun example_exec file = if Filesystem.exists runtime_runner_root then (runtime_runner_root, [file]) else if Filesystem.exists runtime_runner_local then (runtime_runner_local, [file]) else ("./target/release/hiko-cli", ["run", file])
+fun example_exec file = if Filesystem.run (fn () => Filesystem.exists runtime_runner_root) then (runtime_runner_root, [file]) else if Filesystem.run (fn () => Filesystem.exists runtime_runner_local) then (runtime_runner_local, [file]) else ("./target/release/hiko-cli", ["run", file])
 
 fun run_example file = let
     val name = display_name file

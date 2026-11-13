@@ -8,31 +8,31 @@ import Std.String
 (* Find all Rust source files *)
 val _ = Stdio.println "=== Rust files in crates/ ==="
 
-val rs_files = Filesystem.glob_matches "crates/**/*.rs"
+val rs_files = Filesystem.run (fn () => Filesystem.glob_matches "crates/**/*.rs")
 
 val _ = List.map Stdio.println rs_files
 
 (* Find all hml files in examples *)
 val _ = Stdio.println "\n=== Example scripts ==="
 
-val examples = Filesystem.glob_matches "examples/*.hml"
+val examples = Filesystem.run (fn () => Filesystem.glob_matches "examples/*.hml")
 
 val _ = Stdio.println (Int.to_string (List.length examples) ^ " examples found")
 
 (* Recursive directory walk *)
 val _ = Stdio.println "\n=== All files under libraries/Std-v0.1.0/ ==="
 
-val stdlib_files = Filesystem.walk "libraries/Std-v0.1.0"
+val stdlib_files = Filesystem.run (fn () => Filesystem.walk "libraries/Std-v0.1.0")
 
 val _ = List.map Stdio.println stdlib_files
 
 (* Combine glob with file reading *)
 val _ = Stdio.println "\n=== Cargo.toml files ==="
 
-val toml_files = Filesystem.glob_matches "crates/*/Cargo.toml"
+val toml_files = Filesystem.run (fn () => Filesystem.glob_matches "crates/*/Cargo.toml")
 
 val _ = List.map (fn f => let
-  val content = Filesystem.read_text f
+  val content = Filesystem.run (fn () => Filesystem.read_text f)
   val lines = String.split "\n" content
   val name_line =
     case List.filter (fn l => String.starts_with "name" l) lines of

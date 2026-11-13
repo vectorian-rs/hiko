@@ -87,6 +87,8 @@ enabled = true
 enabled = true
 
 [capabilities.fiber.join_or_fail]
+enabled = true
+
 [capabilities.fiber.join]
 enabled = true
 
