@@ -122,26 +122,22 @@ fn desugar_structure(
     // `print`). `fun` and `val rec` members stay mutually visible, except
     // for `reserved` names, which always resolve outside the structure.
     let mut pending: HashSet<Symbol> = scope.values.keys().copied().collect();
+    let mut union = HashSet::new();
     for decl in decls {
-        let own_scope = collect_module_scope(
-            std::slice::from_ref(&decl),
-            module_path,
-            interner,
-            signature.is_some(),
-        );
-        let mut skip = reserved.clone();
-        if matches!(decl.kind, DeclKind::Val(_, _)) {
-            skip.extend(pending.iter().copied());
-        }
-        let renamed = rename_module_decl(
-            decl,
-            &scope,
-            &skip,
-            signature.is_some(),
-            signature.is_none(),
-        );
-        for name in own_scope.values.keys() {
-            pending.remove(name);
+        let skip = if matches!(decl.kind, DeclKind::Val(_, _)) {
+            union.clear();
+            union.extend(reserved.iter().copied());
+            union.extend(pending.iter().copied());
+            &union
+        } else {
+            reserved
+        };
+        let mut bound = Vec::new();
+        bound_value_names(&decl, &mut bound);
+        let renamed =
+            rename_module_decl(decl, &scope, skip, signature.is_some(), signature.is_none());
+        for name in bound {
+            pending.remove(&name);
         }
         out.extend(renamed);
     }
@@ -159,6 +155,38 @@ fn desugar_structure(
         ));
     }
     out
+}
+
+/// The value names a member declaration binds, without the qualified-symbol
+/// interning `collect_module_scope` does.
+fn bound_value_names(decl: &Decl, out: &mut Vec<Symbol>) {
+    match &decl.kind {
+        DeclKind::Val(pat, _) => pat_value_names(pat, out),
+        DeclKind::ValRec(name, _) => out.push(*name),
+        DeclKind::Fun(bindings) => out.extend(bindings.iter().map(|binding| binding.name)),
+        DeclKind::Local(_, body) => body.iter().for_each(|decl| bound_value_names(decl, out)),
+        _ => {}
+    }
+}
+
+fn pat_value_names(pat: &Pat, out: &mut Vec<Symbol>) {
+    match &pat.kind {
+        PatKind::Var(name) => out.push(*name),
+        PatKind::As(name, inner) => {
+            out.push(*name);
+            pat_value_names(inner, out);
+        }
+        PatKind::Tuple(items) | PatKind::List(items) => {
+            items.iter().for_each(|item| pat_value_names(item, out));
+        }
+        PatKind::Constructor(_, Some(payload)) => pat_value_names(payload, out),
+        PatKind::Cons(head, tail) => {
+            pat_value_names(head, out);
+            pat_value_names(tail, out);
+        }
+        PatKind::Ann(inner, _) | PatKind::Paren(inner) => pat_value_names(inner, out),
+        _ => {}
+    }
 }
 
 fn collect_module_scope(

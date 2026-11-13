@@ -12,9 +12,15 @@ fn repo_root() -> PathBuf {
 
 /// Populate the repository's `.hiko-cache` from `libraries/`, exactly as
 /// `hiko install` would from the local registry, so example runs resolve
-/// named imports without network or machine-global state. Idempotent.
+/// named imports without network or machine-global state. Once per process.
 #[cfg(all(feature = "cli-lock", feature = "loader-named-imports"))]
 fn populate_module_cache() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(populate_module_cache_now);
+}
+
+#[cfg(all(feature = "cli-lock", feature = "loader-named-imports"))]
+fn populate_module_cache_now() {
     let root = repo_root();
     let cache = root.join(".hiko-cache");
     for package in std::fs::read_dir(root.join("libraries")).unwrap() {
@@ -39,17 +45,15 @@ fn populate_module_cache() {
                 if path.extension().is_none_or(|e| e != "hml") {
                     continue;
                 }
-                let bytes = std::fs::read(&path).unwrap();
-                let hash = hiko_common::blake3_hex(&bytes);
+                let source = std::fs::read_to_string(&path).unwrap();
+                let hash = hiko_common::blake3_hex(source.as_bytes());
                 let relative = path
                     .strip_prefix(&modules)
                     .unwrap()
                     .to_string_lossy()
                     .replace('\\', "/");
                 let url = format!("{base}/{relative}");
-                let target = hiko_compile::compiler::module_cache_path(&cache, &url, &hash);
-                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-                std::fs::write(target, bytes).unwrap();
+                hiko_compile::compiler::store_cached_module(&cache, &url, &hash, &source).unwrap();
             }
         }
     }

@@ -339,16 +339,9 @@ enabled_family!(FiberCapabilities {
 
 impl FiberCapabilities {
     fn requires_runtime(&self) -> bool {
-        [
-            &self.spawn,
-            &self.join,
-            &self.join_or_fail,
-            &self.join_all,
-            &self.cancel,
-            &self.wait_any,
-        ]
-        .into_iter()
-        .any(|leaf| leaf.as_ref().is_some_and(|leaf| leaf.enabled))
+        let mut enabled = BTreeSet::new();
+        self.extend_enabled(&mut enabled);
+        !enabled.is_empty()
     }
 }
 
@@ -797,213 +790,99 @@ impl Default for RunConfig {
     }
 }
 
-/// Former capability keys and their #186 replacements, used only to explain
-/// a failed policy parse. There are no compatibility aliases: old keys fail.
+/// Former capability keys and the builtin each one gated, used only to
+/// explain a failed policy parse; the replacement key is read from the
+/// builtin metadata, so this table cannot drift from the live keys.
+/// There are no compatibility aliases: old keys fail.
 const RENAMED_CAPABILITY_KEYS: &[(&str, &str)] = &[
-    ("capabilities.bytes.bytes_get", "capabilities.bytes.get"),
-    (
-        "capabilities.bytes.bytes_length",
-        "capabilities.bytes.length",
-    ),
-    ("capabilities.bytes.bytes_slice", "capabilities.bytes.slice"),
-    (
-        "capabilities.bytes.bytes_to_string",
-        "capabilities.bytes.to_string",
-    ),
-    (
-        "capabilities.bytes.string_to_bytes",
-        "capabilities.bytes.of_string",
-    ),
-    (
-        "capabilities.convert.char_to_int",
-        "capabilities.char.to_int",
-    ),
-    (
-        "capabilities.convert.float_to_string",
-        "capabilities.float.to_string",
-    ),
-    (
-        "capabilities.convert.int_to_char",
-        "capabilities.char.of_int",
-    ),
-    (
-        "capabilities.convert.int_to_float",
-        "capabilities.float.of_int",
-    ),
-    (
-        "capabilities.convert.int_to_string",
-        "capabilities.int.to_string",
-    ),
-    (
-        "capabilities.convert.int_to_word",
-        "capabilities.word.of_int",
-    ),
-    (
-        "capabilities.convert.string_to_int",
-        "capabilities.int.of_string",
-    ),
-    (
-        "capabilities.convert.string_to_word",
-        "capabilities.word.of_string",
-    ),
-    (
-        "capabilities.convert.word_to_int",
-        "capabilities.word.to_int",
-    ),
-    (
-        "capabilities.convert.word_to_string",
-        "capabilities.word.to_string",
-    ),
-    ("capabilities.env.getenv", "capabilities.env.get"),
-    ("capabilities.exec.exec", "capabilities.exec.run"),
-    (
-        "capabilities.fiber.fiber_await_all",
-        "capabilities.fiber.join_all",
-    ),
-    (
-        "capabilities.filesystem.create_dir",
-        "capabilities.filesystem.create_directory",
-    ),
-    (
-        "capabilities.filesystem.file_exists",
-        "capabilities.filesystem.exists",
-    ),
-    (
-        "capabilities.filesystem.glob",
-        "capabilities.filesystem.glob_matches",
-    ),
-    (
-        "capabilities.filesystem.is_dir",
-        "capabilities.filesystem.is_directory",
-    ),
-    (
-        "capabilities.filesystem.is_file",
-        "capabilities.filesystem.is_regular_file",
-    ),
-    (
-        "capabilities.filesystem.list_dir",
-        "capabilities.filesystem.list_entries",
-    ),
-    (
-        "capabilities.filesystem.read_file",
-        "capabilities.filesystem.read_text",
-    ),
-    (
-        "capabilities.filesystem.read_file_bytes",
-        "capabilities.filesystem.read_bytes",
-    ),
-    (
-        "capabilities.filesystem.remove_file",
-        "capabilities.filesystem.remove",
-    ),
-    (
-        "capabilities.filesystem.walk_dir",
-        "capabilities.filesystem.walk",
-    ),
-    (
-        "capabilities.filesystem.write_file",
-        "capabilities.filesystem.write_text",
-    ),
-    ("capabilities.hash.blake3", "capabilities.hash.blake3.hash"),
-    ("capabilities.http.http", "capabilities.http.client.request"),
-    (
-        "capabilities.http.http_bytes",
-        "capabilities.http.client.request_bytes",
-    ),
-    ("capabilities.http.http_get", "capabilities.http.client.get"),
-    (
-        "capabilities.http.http_json",
-        "capabilities.http.client.request_json",
-    ),
-    (
-        "capabilities.http.http_msgpack",
-        "capabilities.http.client.request_msgpack",
-    ),
-    ("capabilities.json.json_get", "capabilities.json.get"),
-    ("capabilities.json.json_keys", "capabilities.json.keys"),
-    ("capabilities.json.json_length", "capabilities.json.length"),
-    ("capabilities.json.json_parse", "capabilities.json.parse"),
-    (
-        "capabilities.json.json_to_string",
-        "capabilities.json.to_string",
-    ),
-    ("capabilities.math.abs_float", "capabilities.float.abs"),
-    ("capabilities.math.abs_int", "capabilities.int.abs"),
-    ("capabilities.math.ceil", "capabilities.float.ceil"),
-    ("capabilities.math.floor", "capabilities.float.floor"),
-    ("capabilities.math.sqrt", "capabilities.float.sqrt"),
-    ("capabilities.path.path_join", "capabilities.path.join"),
-    (
-        "capabilities.process.await_process",
-        "capabilities.fiber.join_or_fail",
-    ),
-    ("capabilities.process.cancel", "capabilities.fiber.cancel"),
-    ("capabilities.process.spawn", "capabilities.fiber.spawn"),
-    (
-        "capabilities.process.wait_any",
-        "capabilities.fiber.wait_any",
-    ),
-    (
-        "capabilities.random.random_bytes",
-        "capabilities.random.entropy",
-    ),
-    ("capabilities.random.rng_bytes", "capabilities.random.bytes"),
-    (
-        "capabilities.random.rng_int",
-        "capabilities.random.int_between",
-    ),
-    ("capabilities.random.rng_seed", "capabilities.random.seed"),
-    (
-        "capabilities.regex.regex_match",
-        "capabilities.regex.matches",
-    ),
-    (
-        "capabilities.regex.regex_replace",
-        "capabilities.regex.replace",
-    ),
-    (
-        "capabilities.string.string_contains",
-        "capabilities.string.contains",
-    ),
-    (
-        "capabilities.string.string_join",
-        "capabilities.string.join",
-    ),
-    (
-        "capabilities.string.string_length",
-        "capabilities.string.length",
-    ),
-    (
-        "capabilities.string.string_replace",
-        "capabilities.string.replace",
-    ),
-    ("capabilities.string.to_lower", "capabilities.string.lower"),
-    ("capabilities.string.to_upper", "capabilities.string.upper"),
-    ("capabilities.testing.assert", "capabilities.testing.check"),
-    (
-        "capabilities.testing.assert_eq",
-        "capabilities.testing.equal",
-    ),
-    ("capabilities.testing.panic", "capabilities.system.panic"),
-    ("capabilities.time.epoch_ms", "capabilities.time.now"),
-    (
-        "capabilities.time.monotonic_ms",
-        "capabilities.time.monotonic_now",
-    ),
+    ("capabilities.bytes.bytes_get", "bytes_get"),
+    ("capabilities.bytes.bytes_length", "bytes_length"),
+    ("capabilities.bytes.bytes_slice", "bytes_slice"),
+    ("capabilities.bytes.bytes_to_string", "bytes_to_string"),
+    ("capabilities.bytes.string_to_bytes", "string_to_bytes"),
+    ("capabilities.convert.char_to_int", "char_to_int"),
+    ("capabilities.convert.float_to_string", "float_to_string"),
+    ("capabilities.convert.int_to_char", "int_to_char"),
+    ("capabilities.convert.int_to_float", "int_to_float"),
+    ("capabilities.convert.int_to_string", "int_to_string"),
+    ("capabilities.convert.int_to_word", "int_to_word"),
+    ("capabilities.convert.string_to_int", "string_to_int"),
+    ("capabilities.convert.string_to_word", "string_to_word"),
+    ("capabilities.convert.word_to_int", "word_to_int"),
+    ("capabilities.convert.word_to_string", "word_to_string"),
+    ("capabilities.env.getenv", "getenv"),
+    ("capabilities.exec.exec", "exec"),
+    ("capabilities.fiber.fiber_await_all", "fiber_await_all"),
+    ("capabilities.filesystem.create_dir", "create_dir"),
+    ("capabilities.filesystem.file_exists", "file_exists"),
+    ("capabilities.filesystem.glob", "glob"),
+    ("capabilities.filesystem.is_dir", "is_dir"),
+    ("capabilities.filesystem.is_file", "is_file"),
+    ("capabilities.filesystem.list_dir", "list_dir"),
+    ("capabilities.filesystem.read_file", "read_file"),
+    ("capabilities.filesystem.read_file_bytes", "read_file_bytes"),
+    ("capabilities.filesystem.remove_file", "remove_file"),
+    ("capabilities.filesystem.walk_dir", "walk_dir"),
+    ("capabilities.filesystem.write_file", "write_file"),
+    ("capabilities.hash.blake3", "blake3"),
+    ("capabilities.http.http", "http"),
+    ("capabilities.http.http_bytes", "http_bytes"),
+    ("capabilities.http.http_get", "http_get"),
+    ("capabilities.http.http_json", "http_json"),
+    ("capabilities.http.http_msgpack", "http_msgpack"),
+    ("capabilities.json.json_get", "json_get"),
+    ("capabilities.json.json_keys", "json_keys"),
+    ("capabilities.json.json_length", "json_length"),
+    ("capabilities.json.json_parse", "json_parse"),
+    ("capabilities.json.json_to_string", "json_to_string"),
+    ("capabilities.math.abs_float", "abs_float"),
+    ("capabilities.math.abs_int", "abs_int"),
+    ("capabilities.math.ceil", "ceil"),
+    ("capabilities.math.floor", "floor"),
+    ("capabilities.math.sqrt", "sqrt"),
+    ("capabilities.path.path_join", "path_join"),
+    ("capabilities.process.await_process", "await_process"),
+    ("capabilities.process.await_process", "await_process_result"),
+    ("capabilities.process.cancel", "cancel"),
+    ("capabilities.process.spawn", "spawn"),
+    ("capabilities.process.wait_any", "wait_any"),
+    ("capabilities.random.random_bytes", "random_bytes"),
+    ("capabilities.random.rng_bytes", "rng_bytes"),
+    ("capabilities.random.rng_int", "rng_int"),
+    ("capabilities.random.rng_seed", "rng_seed"),
+    ("capabilities.regex.regex_match", "regex_match"),
+    ("capabilities.regex.regex_replace", "regex_replace"),
+    ("capabilities.string.string_contains", "string_contains"),
+    ("capabilities.string.string_join", "string_join"),
+    ("capabilities.string.string_length", "string_length"),
+    ("capabilities.string.string_replace", "string_replace"),
+    ("capabilities.string.to_lower", "to_lower"),
+    ("capabilities.string.to_upper", "to_upper"),
+    ("capabilities.testing.assert", "assert"),
+    ("capabilities.testing.assert_eq", "assert_eq"),
+    ("capabilities.testing.panic", "panic"),
+    ("capabilities.time.epoch_ms", "epoch_ms"),
+    ("capabilities.time.monotonic_ms", "monotonic_ms"),
 ];
 
-/// Guidance for a policy that still names pre-#186 capability keys.
-fn old_capability_key_guidance(text: &str) -> Option<String> {
-    if text.contains("capabilities.date.") {
+/// Guidance when a policy parse failed on a pre-#186 capability key. The
+/// serde error names the unknown field; only old keys containing that exact
+/// segment are suggested, so unrelated parse errors stay unchanged.
+fn old_capability_key_guidance(message: &str) -> Option<String> {
+    let field = message.split("unknown field `").nth(1)?.split('`').next()?;
+    if field == "date" {
         return Some(
             "the capabilities.date family was removed; date operations need no capability".into(),
         );
     }
     let renames: Vec<String> = RENAMED_CAPABILITY_KEYS
         .iter()
-        .filter(|(old, _)| text.contains(old))
+        .filter(|(old, _)| old.split('.').any(|segment| segment == field))
+        .filter_map(|(old, builtin)| {
+            let new = meta_capability_path_for_builtin(builtin)?;
+            Some(format!("{old} is now {new}"))
+        })
         .take(3)
-        .map(|(old, new)| format!("{old} is now {new}"))
         .collect();
     if renames.is_empty() {
         None
@@ -1017,7 +896,7 @@ impl RunConfig {
     pub fn from_toml(text: &str) -> Result<Self, String> {
         let config: Self = toml::from_str(text).map_err(|e| {
             let mut message = hiko_compile::compiler::toml_error_text(&e, text);
-            if let Some(guidance) = old_capability_key_guidance(text) {
+            if let Some(guidance) = old_capability_key_guidance(&message) {
                 message.push_str("; ");
                 message.push_str(&guidance);
             }

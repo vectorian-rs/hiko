@@ -683,18 +683,10 @@ fn validate_package_name(package_name: &str, context: &str) -> Result<(), Compil
 }
 
 /// Split `Package.Module` or `Package.Nested.Module` into the package name
-/// and the dotted module path. `__Builtin` modules stay single-leaf.
+/// and the dotted module path, with segments validated as identifiers by
+/// [`crate::package::import_path`]. `__Builtin` modules stay single-leaf.
 fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
-    let Some((package, module)) = module_name.split_once('.') else {
-        return Err(CompileError::codegen(format!(
-            "named import '{module_name}' must use the shape Package.Module"
-        )));
-    };
-    if module.is_empty() || module.split('.').any(str::is_empty) {
-        return Err(CompileError::codegen(format!(
-            "named import '{module_name}' must use the shape Package.Module"
-        )));
-    }
+    let (package, module) = crate::package::import_path(module_name)?;
     if is_internal_builtin_package(package) {
         if module.contains('.') {
             return Err(CompileError::codegen(format!(
@@ -1090,6 +1082,9 @@ pub struct Compiler {
     base_dir: PathBuf,
     /// Provenance of the source being inferred or compiled, including cached ASTs.
     source_owner: Option<PackageOwner>,
+    /// Builtin names, interned once for builtin-module desugaring. The
+    /// interner is shared across imports, so the set never invalidates.
+    reserved_builtin_names: Option<std::collections::HashSet<Symbol>>,
     /// Entry file for file-based compilation. External named-import loader state is derived lazily from this.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     entry_file: Option<PathBuf>,
@@ -1269,6 +1264,7 @@ impl Compiler {
             entry_package_owner(entry_file.as_deref(), loader_options.embedded.is_some());
         let mut c = Compiler {
             functions: Vec::new(),
+            reserved_builtin_names: None,
             func_stack: vec![FuncCtx::new(None, 0)],
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
@@ -1619,14 +1615,10 @@ impl Compiler {
     }
 
     fn is_private_builtin(&self, name: &str) -> bool {
-        // Any compiler-owned module may name module-only builtins; several
-        // internal modules share primitives (exit, panic). Ordinary and
-        // extension source stay outside this boundary.
-        self.compiling_builtin.is_some()
-            && matches!(
-                hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
-                Some(BuiltinSurface::ModuleOnly { .. })
-            )
+        self.compiling_builtin.is_some_and(|module| {
+            matches!(hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
+                Some(BuiltinSurface::ModuleOnly { owners, .. }) if owners.contains(&module.import_name))
+        })
     }
 
     /// Start a new top-level binding of `name`: later references resolve to
@@ -2087,14 +2079,11 @@ impl Compiler {
         module_path: &str,
     ) -> Result<ResolvedImport, CompileError> {
         let Some(owner) = self.source_owner.clone() else {
-            return Err(CompileError::codegen(format!(
-                "import {module_name} requires an owning package; create hiko.toml"
-            )));
+            return Err(crate::package::missing_project(module_name));
         };
         if let Some(root) = owner.project_source_root() {
-            let relative = Path::new("src").join(crate::package::module_file(module_path)?);
             let canonical =
-                crate::package::checked_module_file(root, &relative, module_name, owner.name())?;
+                crate::package::project_module_file(root, module_path, module_name, owner.name())?;
             return Ok(ResolvedImport::File {
                 canonical,
                 display_name: module_name.to_string(),
@@ -2264,7 +2253,10 @@ impl Compiler {
         let module_url = format!(
             "{}/modules/{}.hml",
             package.base_url.trim_end_matches('/'),
-            leaf_module.replace('.', "/")
+            crate::package::module_file(leaf_module)?
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/")
         );
         let cache_path = module_cache_path(cache_dir, &module_url, &expected_hash);
 
@@ -2468,10 +2460,15 @@ impl Compiler {
         let program = match builtin_module {
             Some(_) => {
                 let mut program = program;
-                let reserved = hiko_builtin_meta::builtins()
-                    .map(|meta| program.interner.intern(meta.name))
-                    .collect();
-                hiko_syntax::desugar::desugar_program_reserving(program, &reserved)
+                if self.reserved_builtin_names.is_none() {
+                    self.reserved_builtin_names = Some(
+                        hiko_builtin_meta::builtins()
+                            .map(|meta| program.interner.intern(meta.name))
+                            .collect(),
+                    );
+                }
+                let reserved = self.reserved_builtin_names.as_ref().unwrap();
+                hiko_syntax::desugar::desugar_program_reserving(program, reserved)
             }
             None => hiko_syntax::desugar::desugar_program(program),
         };
@@ -4737,7 +4734,7 @@ mod tests {
 
     #[cfg(feature = "builtin-json")]
     #[test]
-    fn compile_json_raw_aliases_are_monomorphic() {
+    fn compile_json_alias_members_are_monomorphic() {
         for source in [
             "val x : int = BuiltinJson.parse \"[]\"",
             "val s = BuiltinJson.to_string (fn (x : int) => x)",

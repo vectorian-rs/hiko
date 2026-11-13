@@ -281,11 +281,7 @@ impl ModuleCatalog {
         import: &str,
     ) -> Result<ResolvedModule<'_>, CompileError> {
         let (package, module) = import_path(import)?;
-        let owner = owner.ok_or_else(|| {
-            CompileError::codegen(format!(
-                "import {import} requires an owning package; create hiko.toml"
-            ))
-        })?;
+        let owner = owner.ok_or_else(|| missing_project(import))?;
         let importer = self.owners.get(owner).ok_or_else(|| {
             CompileError::codegen(format!(
                 "importing package {:?} is not in this catalog",
@@ -335,11 +331,10 @@ impl ModuleCatalog {
                 let OwnerIdentity::Project(root) = definition.owner.0.as_ref() else {
                     unreachable!("catalog source kind was validated");
                 };
-                let relative = Path::new("src").join(module_file(module)?);
-                checked_module_file(root, &relative, import, target.name())?;
+                project_module_file(root, module, import, target.name())?;
                 ModuleTarget::Local {
                     root,
-                    relative,
+                    relative: Path::new("src").join(module_file(module)?),
                     hash: None,
                 }
             }
@@ -514,7 +509,7 @@ fn validate_package(name: &str) -> Result<(), CompileError> {
     Ok(())
 }
 
-fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
+pub(crate) fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
     let Some((package, module)) = import.split_once('.') else {
         return Err(CompileError::codegen(format!(
             "named import '{import}' must use Package.Module[.Module...]"
@@ -551,6 +546,26 @@ fn normalized_hash(hash: &str) -> Result<String, CompileError> {
         ));
     }
     Ok(hash)
+}
+
+/// The error for an import with no owning package, shared by the catalog and
+/// the compiler's live `Proj` resolution.
+pub(crate) fn missing_project(import: &str) -> CompileError {
+    CompileError::codegen(format!(
+        "import {import} requires an owning package; create hiko.toml"
+    ))
+}
+
+/// A project owner's module file for `module` under `root`/src, with the
+/// exact-spelling and symlink checks both resolution paths share.
+pub(crate) fn project_module_file(
+    root: &Path,
+    module: &str,
+    import: &str,
+    owner: &str,
+) -> Result<PathBuf, CompileError> {
+    let relative = Path::new("src").join(module_file(module)?);
+    checked_module_file(root, &relative, import, owner)
 }
 
 /// Check each written component rather than accepting case-folding or symlinks.

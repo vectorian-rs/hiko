@@ -3,6 +3,9 @@ use crate::intern::{StringInterner, Symbol};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
+const IMPORT_POSITION: &str =
+    "import must come before the first declaration; move it to the top of the file";
+
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
@@ -367,7 +370,7 @@ impl Parser {
             );
             if is_import && seen_non_import {
                 return Err(ParseError {
-                    message: "import must come before the first declaration; move it to the top of the file".into(),
+                    message: IMPORT_POSITION.into(),
                     span: decl.span,
                 });
             }
@@ -1730,7 +1733,7 @@ fn check_decl_nesting(decl: &Decl, depth: u32) -> Result<(), ParseError> {
         DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) => {
             if depth > 1 {
                 Err(ParseError {
-                    message: "import must come before the first declaration; move it to the top of the file".into(),
+                    message: IMPORT_POSITION.into(),
                     span: decl.span,
                 })
             } else {

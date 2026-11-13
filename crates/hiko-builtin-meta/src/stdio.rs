@@ -4,37 +4,37 @@ pub const BUILTINS: &[BuiltinMeta] = &[
     BuiltinMeta::module_only(
         "print",
         "capabilities.stdio.print",
-        "__Builtin.Stdio",
+        &["__Builtin.Stdio"],
         "Std.Stdio.print",
     ),
     BuiltinMeta::module_only(
         "println",
         "capabilities.stdio.println",
-        "__Builtin.Stdio",
+        &["__Builtin.Stdio"],
         "Std.Stdio.println",
     ),
     BuiltinMeta::module_only(
         "eprint",
         "capabilities.stdio.eprint",
-        "__Builtin.Stdio",
+        &["__Builtin.Stdio"],
         "Std.Stdio.eprint",
     ),
     BuiltinMeta::module_only(
         "eprintln",
         "capabilities.stdio.eprintln",
-        "__Builtin.Stdio",
+        &["__Builtin.Stdio"],
         "Std.Stdio.eprintln",
     ),
     BuiltinMeta::module_only(
         "read_line",
         "capabilities.stdio.read_line",
-        "__Builtin.Stdio",
+        &["__Builtin.Stdio"],
         "Std.Stdio.read_line",
     ),
     BuiltinMeta::module_only(
         "read_stdin",
         "capabilities.stdio.read_stdin",
-        "__Builtin.Stdio",
+        &["__Builtin.Stdio"],
         "Std.Stdio.read_stdin",
     ),
 ];

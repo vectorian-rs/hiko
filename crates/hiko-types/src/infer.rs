@@ -994,21 +994,24 @@ impl InferCtx {
             }
         }
         let mut previous = Vec::new();
-        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
-            // Any compiler-owned module may name module-only builtins; several
-            // internal modules share primitives (exit, panic). Ordinary and
-            // extension source stay outside this boundary.
-            let _ = &module;
-            if matches!(
-                hiko_builtin_meta::builtin_meta(name).unwrap().surface,
-                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
-            ) {
-                let scheme = self
-                    .parse_builtin_scheme(sig)
-                    .expect("valid internal builtin signature");
-                let old = self.scopes.last_mut().unwrap().insert(name.into(), scheme);
-                previous.push((name, old));
+        for meta in hiko_builtin_meta::builtins() {
+            let hiko_builtin_meta::BuiltinSurface::ModuleOnly { owners, .. } = meta.surface else {
+                continue;
+            };
+            if !owners.contains(&module.import_name) {
+                continue;
             }
+            let sig = hiko_builtin_meta::builtin_type_signature(meta.name)
+                .expect("module-only builtins have signatures");
+            let scheme = self
+                .parse_builtin_scheme(sig)
+                .expect("valid internal builtin signature");
+            let old = self
+                .scopes
+                .last_mut()
+                .unwrap()
+                .insert(meta.name.into(), scheme);
+            previous.push((meta.name, old));
         }
         // Ordinary inference handles the desugared structure's Local block,
         // checks payloads/constructors and records the runtime ABI tags.
