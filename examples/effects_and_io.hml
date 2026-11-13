@@ -10,17 +10,21 @@
 import Std.Json
 import Std.List
 import Std.Result
+import Std.Filesystem
+import Std.Int
+import Std.Stdio
+import Std.String
 
 (* ── Result: recoverable errors around I/O ──────────────── *)
 (* Read a file, return Err with a nice message if empty *)
 fun read_nonempty path =
   let
-    val contents = read_file path
+    val contents = Filesystem.run (fn () => Filesystem.read_text path)
   in
-    if string_length contents = 0 then Result.Err ("file is empty: " ^ path) else Result.Ok contents
+    if String.length contents = 0 then Result.Err ("file is empty: " ^ path) else Result.Ok contents
   end
 
-val _ = println "--- Result errors wrapping I/O ---"
+val _ = Stdio.println "--- Result errors wrapping I/O ---"
 
 val nonempty_path = "target/hiko_demo_nonempty.txt"
 
@@ -28,27 +32,27 @@ val empty_path = "target/hiko_demo_empty.txt"
 
 val log_path = "target/hiko_log_test.txt"
 
-val _ = write_file (nonempty_path, "hello")
+val _ = Filesystem.run (fn () => Filesystem.write_text nonempty_path "hello")
 
-val _ = write_file (empty_path, "")
+val _ = Filesystem.run (fn () => Filesystem.write_text empty_path "")
 
 val r1 = read_nonempty nonempty_path
 
 val _ =
   case r1 of
-      Result.Ok s => println ("Read: " ^ s)
-    | Result.Err e => println ("Failed: " ^ e)
+      Result.Ok s => Stdio.println ("Read: " ^ s)
+    | Result.Err e => Stdio.println ("Failed: " ^ e)
 
 val r2 = read_nonempty empty_path
 
 val _ =
   case r2 of
-      Result.Ok s => println ("Read: " ^ s)
-    | Result.Err e => println ("Failed: " ^ e)
+      Result.Ok s => Stdio.println ("Read: " ^ s)
+    | Result.Err e => Stdio.println ("Failed: " ^ e)
 
-val _ = remove_file nonempty_path
+val _ = Filesystem.run (fn () => Filesystem.remove nonempty_path)
 
-val _ = remove_file empty_path
+val _ = Filesystem.run (fn () => Filesystem.remove empty_path)
 
 (* ── Effect: a log provider around I/O ─────────────────── *)
 (* The code that logs does not decide where the log goes. The provider
@@ -61,7 +65,7 @@ fun with_console_log f =
   with
     return x => x
   | Log msg k => let
-      val _ = println ("  [log] " ^ msg)
+      val _ = Stdio.println ("  [log] " ^ msg)
     in
       resume k ()
     end
@@ -69,25 +73,25 @@ fun with_console_log f =
 fun process_files () =
   let
     val _ = perform Log "starting"
-    val _ = write_file (log_path, "data")
+    val _ = Filesystem.run (fn () => Filesystem.write_text log_path "data")
     val _ = perform Log "wrote file"
-    val contents = read_file log_path
+    val contents = Filesystem.run (fn () => Filesystem.read_text log_path)
     val _ = perform Log ("read back: " ^ contents)
-    val _ = remove_file log_path
+    val _ = Filesystem.run (fn () => Filesystem.remove log_path)
     val _ = perform Log "cleaned up"
   in
     ()
   end
 
-val _ = println "\n--- Log effect interleaved with I/O ---"
+val _ = Stdio.println "\n--- Log effect interleaved with I/O ---"
 
 val _ = with_console_log process_files
 
 (* ── Counting needs no effect: it is a function of the list ─ *)
-val _ = println "\n--- Counting list_dir entries ---"
+val _ = Stdio.println "\n--- Counting list_dir entries ---"
 
-val file_count = List.length (list_dir ".")
+val file_count = List.length (Filesystem.run (fn () => Filesystem.list_entries "."))
 
-val _ = println ("Entries in .: " ^ int_to_string file_count)
+val _ = Stdio.println ("Entries in .: " ^ Int.to_string file_count)
 
-val _ = println "\nAll effects + I/O demos passed."
+val _ = Stdio.println "\nAll effects + I/O demos passed."

@@ -138,7 +138,7 @@ const THREADED_LEAF_WORK: usize = 4;
 fn leaf(work: usize) -> String {
     let sum = vec!["k"; 100].join(" + ");
     let work: String = (0..work).map(|_| format!("val _ = {sum}\n")).collect();
-    format!("(let val k = 1\n{work}in sleep 0 end)")
+    format!("(let val k = 1\n{work}in BuiltinTime.sleep 0 end)")
 }
 
 /// Wrap `body` in `depth` nested children, each awaiting the next with `wrap`.
@@ -150,10 +150,13 @@ fn nest(depth: usize, body: &str, wrap: impl Fn(usize, &str) -> String) -> Strin
 fn nested_raw_await_chain_propagates_deepest_panic() {
     // root -> c1 -> c2 -> c3 -> c4 -> c5; c5 panics. A raw await of a failed
     // child fails the awaiting process, so every level fails in turn.
-    let chain = nest(5, "panic \"deep boom\"", |_, inner| {
-        format!("await_process (spawn (fn () => {inner}))")
+    let chain = nest(5, "BuiltinTesting.panic \"deep boom\"", |_, inner| {
+        format!("BuiltinFiber.await (BuiltinFiber.spawn (fn () => {inner}))")
     });
-    let source = format!("val _ = {chain}\nval _ = println \"unreachable\"\n");
+    let source = format!(
+        "import __Builtin.Fiber\nimport __Builtin.Testing\nimport __Builtin.Stdio\n\
+         val _ = {chain}\nval _ = BuiltinStdio.println \"unreachable\"\n"
+    );
     let status = nest(5, "RuntimeError(\"deep boom\")", |_, inner| {
         format!("ChildProcessFailed({inner})")
     });
@@ -168,16 +171,19 @@ fn nested_raw_await_chain_propagates_deepest_panic() {
 #[test]
 fn process_result_types_preserve_polymorphic_join_wrappers() {
     let source = r#"
-        import __Builtin.Process
-        fun join (p : 'a pid) = case BuiltinProcess.await_result_raw p of
-            BuiltinProcess.Ok v => v
-          | BuiltinProcess.Err _ => panic "unexpected failure"
+        import __Builtin.Fiber
+        import __Builtin.Testing
+        import __Builtin.Stdio
+        import __Builtin.Int
+        fun join (p : 'a pid) = case BuiltinFiber.await_result p of
+            BuiltinFiber.Ok v => v
+          | BuiltinFiber.Err _ => BuiltinTesting.panic "unexpected failure"
         fun sum xs = case xs of [] => 0 | x :: rest => x + sum rest
-        val _ = println (int_to_string (join (spawn (fn () => 42))))
-        val _ = println (join (spawn (fn () => "text")))
-        val _ = println (int_to_string (sum (join (spawn (fn () => [1, 2, 3])))))
-        val f = join (spawn (fn () => fn (x : int) => x + 1))
-        val _ = println (int_to_string (f 6))
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (join (BuiltinFiber.spawn (fn () => 42))))
+        val _ = BuiltinStdio.println (join (BuiltinFiber.spawn (fn () => "text")))
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (sum (join (BuiltinFiber.spawn (fn () => [1, 2, 3])))))
+        val f = join (BuiltinFiber.spawn (fn () => fn (x : int) => x + 1))
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (f 6))
     "#;
     assert_scenario(
         |_| source.into(),
@@ -190,12 +196,14 @@ fn process_result_types_preserve_polymorphic_join_wrappers() {
 #[test]
 fn process_result_types_do_not_allow_joining_a_dead_parents_child() {
     let source = r#"
-        import __Builtin.Process
-        val q = await_process (spawn (fn () => spawn (fn () => 41)))
-        val _ = case await_process_result q of
-            BuiltinProcess.Err BuiltinProcess.AlreadyJoined => println "reaped"
-          | _ => panic "a grandchild must not be joined"
-        val _ = await_process q
+        import __Builtin.Fiber
+        import __Builtin.Testing
+        import __Builtin.Stdio
+        val q = BuiltinFiber.await (BuiltinFiber.spawn (fn () => BuiltinFiber.spawn (fn () => 41)))
+        val _ = case BuiltinFiber.await_result q of
+            BuiltinFiber.Err BuiltinFiber.AlreadyJoined => BuiltinStdio.println "reaped"
+          | _ => BuiltinTesting.panic "a grandchild must not be joined"
+        val _ = BuiltinFiber.await q
     "#;
     let program = compile(source);
     let assert_rejected = |report: Report| {
@@ -224,15 +232,19 @@ fn process_result_types_do_not_allow_joining_a_live_parents_child() {
     // The sibling is live until it tries to await the root's child. Its
     // failure is observed by the actual parent, which can still join q.
     let source = r#"
-        import __Builtin.Process
-        val q = spawn (fn () => 41)
-        val sibling = spawn (fn () => await_process q)
-        val _ = case await_process_result sibling of
-            BuiltinProcess.Err (BuiltinProcess.RuntimeError m) =>
-                if string_contains (m, "not a child") then println "foreign"
-                else panic m
-          | _ => panic "a sibling must not join another parent's child"
-        val _ = println (int_to_string (await_process q))
+        import __Builtin.Fiber
+        import __Builtin.String
+        import __Builtin.Testing
+        import __Builtin.Stdio
+        import __Builtin.Int
+        val q = BuiltinFiber.spawn (fn () => 41)
+        val sibling = BuiltinFiber.spawn (fn () => BuiltinFiber.await q)
+        val _ = case BuiltinFiber.await_result sibling of
+            BuiltinFiber.Err (BuiltinFiber.RuntimeError m) =>
+                if BuiltinString.contains (m, "not a child") then BuiltinStdio.println "foreign"
+                else BuiltinTesting.panic m
+          | _ => BuiltinTesting.panic "a sibling must not join another parent's child"
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await q))
     "#;
     assert_scenario(|_| source.into(), Io::Real, &["foreign\n", "41\n"], "Done");
 }
@@ -241,22 +253,24 @@ fn process_result_types_do_not_allow_joining_a_live_parents_child() {
 fn nested_result_await_chain_returns_err_at_every_level() {
     // root -> c4 -> c3 -> c2 -> c1 -> c0; c0 panics. Every level sees `Err`
     // and fails with its own message, which its parent sees as `Err`.
-    let chain = nest(4, "panic \"deep boom\"", |level, inner| {
+    let chain = nest(4, "BuiltinTesting.panic \"deep boom\"", |level, inner| {
         format!(
-            "(case await_process_result (spawn (fn () => {inner})) of\n\
-               BuiltinProcess.Ok v => v\n\
-             | BuiltinProcess.Err (BuiltinProcess.RuntimeError msg) =>\n\
-                 panic (\"level {level} <- \" ^ msg)\n\
-             | BuiltinProcess.Err _ => panic \"unexpected error\")"
+            "(case BuiltinFiber.await_result (BuiltinFiber.spawn (fn () => {inner})) of\n\
+               BuiltinFiber.Ok v => v\n\
+             | BuiltinFiber.Err (BuiltinFiber.RuntimeError msg) =>\n\
+                 BuiltinTesting.panic (\"level {level} <- \" ^ msg)\n\
+             | BuiltinFiber.Err _ => BuiltinTesting.panic \"unexpected error\")"
         )
     });
     let source = format!(
-        "import __Builtin.Process\n\
+        "import __Builtin.Fiber\n\
+         import __Builtin.Testing\n\
+         import __Builtin.Stdio\n\
          val _ =\n\
-           case await_process_result (spawn (fn () => {chain})) of\n\
-               BuiltinProcess.Ok _ => println \"unexpected ok\"\n\
-             | BuiltinProcess.Err (BuiltinProcess.RuntimeError msg) => println msg\n\
-             | BuiltinProcess.Err _ => println \"unexpected error\"\n"
+           case BuiltinFiber.await_result (BuiltinFiber.spawn (fn () => {chain})) of\n\
+               BuiltinFiber.Ok _ => BuiltinStdio.println \"unexpected ok\"\n\
+             | BuiltinFiber.Err (BuiltinFiber.RuntimeError msg) => BuiltinStdio.println msg\n\
+             | BuiltinFiber.Err _ => BuiltinStdio.println \"unexpected error\"\n"
     );
     assert_scenario(
         |_| source.clone(),
@@ -274,16 +288,18 @@ fn parent_cancelled_while_awaiting_child_doing_io() {
     // otherwise c runs forever and the run never ends.
     let source = |leaf: &str| {
         format!(
-            "import __Builtin.Process\n\
-         val p = spawn (fn () => await_process (spawn (fn () => {leaf})))\n\
-         val d = spawn (fn () => 0)\n\
-         val _ = await_process d\n\
-         val _ = cancel p\n\
+            "import __Builtin.Fiber\n\
+         import __Builtin.Stdio\n\
+         import __Builtin.Time\n\
+         val p = BuiltinFiber.spawn (fn () => BuiltinFiber.await (BuiltinFiber.spawn (fn () => {leaf})))\n\
+         val d = BuiltinFiber.spawn (fn () => 0)\n\
+         val _ = BuiltinFiber.await d\n\
+         val _ = BuiltinFiber.cancel p\n\
          val _ =\n\
-           case await_process_result p of\n\
-               BuiltinProcess.Ok _ => println \"ok\"\n\
-             | BuiltinProcess.Err BuiltinProcess.Cancelled => println \"cancelled\"\n\
-             | BuiltinProcess.Err _ => println \"other\"\n"
+           case BuiltinFiber.await_result p of\n\
+               BuiltinFiber.Ok _ => BuiltinStdio.println \"ok\"\n\
+             | BuiltinFiber.Err BuiltinFiber.Cancelled => BuiltinStdio.println \"cancelled\"\n\
+             | BuiltinFiber.Err _ => BuiltinStdio.println \"other\"\n"
         )
     };
     assert_scenario(source, Io::Stuck, &["cancelled\n"], "Done");
@@ -293,26 +309,30 @@ fn parent_cancelled_while_awaiting_child_doing_io() {
 fn wait_any_over_failed_cancelled_and_successful_children() {
     let source = |leaf: &str| {
         format!(
-            "import __Builtin.Process\n\
+            "import __Builtin.Fiber\n\
+         import __Builtin.Testing\n\
+         import __Builtin.Stdio\n\
+         import __Builtin.Int\n\
+         import __Builtin.Time\n\
          fun show r =\n\
            case r of\n\
-               BuiltinProcess.Ok v => \"ok \" ^ int_to_string v\n\
-             | BuiltinProcess.Err (BuiltinProcess.RuntimeError m) => \"err \" ^ m\n\
-             | BuiltinProcess.Err BuiltinProcess.Cancelled => \"cancelled\"\n\
-             | BuiltinProcess.Err BuiltinProcess.AlreadyJoined => \"already joined\"\n\
-             | BuiltinProcess.Err _ => \"other\"\n\
-         val f = spawn (fn () => (panic \"wait boom\" : int))\n\
-         val c = spawn (fn () => let val _ = {leaf} in 0 end)\n\
-         val s = spawn (fn () => 42)\n\
-         val _ = cancel c\n\
-         val w = wait_any [f, c, s]\n\
-         val _ = println (if w = f orelse w = c orelse w = s then \"winner listed\" else \"winner unknown\")\n\
-         val _ = println (show (await_process_result f))\n\
-         val _ = println (show (await_process_result c))\n\
-         val _ = println (show (await_process_result s))\n\
-         val w2 = wait_any [c, s, f]\n\
-         val _ = println (if w2 = c then \"joined children count as complete\" else \"bad\")\n\
-         val _ = println (show (await_process_result s))\n"
+               BuiltinFiber.Ok v => \"ok \" ^ BuiltinInt.to_string v\n\
+             | BuiltinFiber.Err (BuiltinFiber.RuntimeError m) => \"err \" ^ m\n\
+             | BuiltinFiber.Err BuiltinFiber.Cancelled => \"cancelled\"\n\
+             | BuiltinFiber.Err BuiltinFiber.AlreadyJoined => \"already joined\"\n\
+             | BuiltinFiber.Err _ => \"other\"\n\
+         val f = BuiltinFiber.spawn (fn () => (BuiltinTesting.panic \"wait boom\" : int))\n\
+         val c = BuiltinFiber.spawn (fn () => let val _ = {leaf} in 0 end)\n\
+         val s = BuiltinFiber.spawn (fn () => 42)\n\
+         val _ = BuiltinFiber.cancel c\n\
+         val w = BuiltinFiber.wait_any [f, c, s]\n\
+         val _ = BuiltinStdio.println (if w = f orelse w = c orelse w = s then \"winner listed\" else \"winner unknown\")\n\
+         val _ = BuiltinStdio.println (show (BuiltinFiber.await_result f))\n\
+         val _ = BuiltinStdio.println (show (BuiltinFiber.await_result c))\n\
+         val _ = BuiltinStdio.println (show (BuiltinFiber.await_result s))\n\
+         val w2 = BuiltinFiber.wait_any [c, s, f]\n\
+         val _ = BuiltinStdio.println (if w2 = c then \"joined children count as complete\" else \"bad\")\n\
+         val _ = BuiltinStdio.println (show (BuiltinFiber.await_result s))\n"
         )
     };
     assert_scenario(
@@ -337,23 +357,27 @@ fn wait_any_blocks_until_a_child_fails_or_is_cancelled() {
     // failure in `nested`.
     let source = |leaf: &str| {
         format!(
-            "val slow = spawn (fn () => {leaf})\n\
-         val cancelled = spawn (fn () => {leaf})\n\
-         val other = spawn (fn () => {leaf})\n\
-         val nested = spawn (fn () =>\n\
+            "import __Builtin.Fiber\n\
+         import __Builtin.Testing\n\
+         import __Builtin.Stdio\n\
+         import __Builtin.Time\n\
+         val slow = BuiltinFiber.spawn (fn () => {leaf})\n\
+         val cancelled = BuiltinFiber.spawn (fn () => {leaf})\n\
+         val other = BuiltinFiber.spawn (fn () => {leaf})\n\
+         val nested = BuiltinFiber.spawn (fn () =>\n\
            let\n\
-             val a = spawn (fn () => {leaf})\n\
-             val b = spawn (fn () => panic \"inner\")\n\
-             val w = wait_any [a, b]\n\
+             val a = BuiltinFiber.spawn (fn () => {leaf})\n\
+             val b = BuiltinFiber.spawn (fn () => BuiltinTesting.panic \"inner\")\n\
+             val w = BuiltinFiber.wait_any [a, b]\n\
            in\n\
              if w = b then 1 else 0\n\
            end)\n\
-         val _ = cancel cancelled\n\
-         val w = wait_any [slow, cancelled, other]\n\
-         val _ = println (if w = cancelled then \"cancelled child won\" else \"bad\")\n\
-         val _ = cancel slow\n\
-         val _ = cancel other\n\
-         val _ = println (if await_process nested = 1 then \"failed child won\" else \"bad\")\n"
+         val _ = BuiltinFiber.cancel cancelled\n\
+         val w = BuiltinFiber.wait_any [slow, cancelled, other]\n\
+         val _ = BuiltinStdio.println (if w = cancelled then \"cancelled child won\" else \"bad\")\n\
+         val _ = BuiltinFiber.cancel slow\n\
+         val _ = BuiltinFiber.cancel other\n\
+         val _ = BuiltinStdio.println (if BuiltinFiber.await nested = 1 then \"failed child won\" else \"bad\")\n"
         )
     };
     assert_scenario(
@@ -371,15 +395,19 @@ fn parent_exit_cancels_unawaited_children() {
     // of them, or the run never ends.
     let source = |leaf: &str| {
         format!(
-            "val p = spawn (fn () =>\n\
+            "import __Builtin.Fiber\n\
+         import __Builtin.Stdio\n\
+         import __Builtin.Int\n\
+         import __Builtin.Time\n\
+         val p = BuiltinFiber.spawn (fn () =>\n\
            let\n\
-             val _ = spawn (fn () => {leaf})\n\
-             val _ = spawn (fn () => {leaf})\n\
+             val _ = BuiltinFiber.spawn (fn () => {leaf})\n\
+             val _ = BuiltinFiber.spawn (fn () => {leaf})\n\
            in\n\
              7\n\
            end)\n\
-         val _ = spawn (fn () => {leaf})\n\
-         val _ = println (int_to_string (await_process p))\n"
+         val _ = BuiltinFiber.spawn (fn () => {leaf})\n\
+         val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await p))\n"
         )
     };
     assert_scenario(source, Io::Stuck, &["7\n"], "Done");
@@ -390,18 +418,21 @@ fn child_failing_during_io_is_observed_by_awaiters() {
     // On the threaded runtime the failure arrives as an I/O completion; on
     // the single-threaded runtime the builtin fails inline.
     let source = "\
-        import __Builtin.Process\n\
+        import __Builtin.Fiber\n\
+        import __Builtin.String\n\
+        import __Builtin.Filesystem\n\
+        import __Builtin.Stdio\n\
         fun show r =\n\
           case r of\n\
-              BuiltinProcess.Ok _ => \"ok\"\n\
-            | BuiltinProcess.Err (BuiltinProcess.RuntimeError m) =>\n\
-                if string_contains (m, \"read_file\") then \"io error\" else \"other error: \" ^ m\n\
-            | BuiltinProcess.Err _ => \"other\"\n\
-        val direct = spawn (fn () => read_file \"/definitely/not/here.txt\")\n\
-        val _ = println (show (BuiltinProcess.await_result_raw direct))\n\
-        val nested = spawn (fn () => await_process (spawn (fn () => read_file \"/definitely/not/here.txt\")))\n\
-        val _ = println (show (BuiltinProcess.await_result_raw nested))\n\
-        val _ = await_process (spawn (fn () => read_file \"/definitely/not/here.txt\"))\n";
+              BuiltinFiber.Ok _ => \"ok\"\n\
+            | BuiltinFiber.Err (BuiltinFiber.RuntimeError m) =>\n\
+                if BuiltinString.contains (m, \"read_file\") then \"io error\" else \"other error: \" ^ m\n\
+            | BuiltinFiber.Err _ => \"other\"\n\
+        val direct = BuiltinFiber.spawn (fn () => BuiltinFilesystem.read_text \"/definitely/not/here.txt\")\n\
+        val _ = BuiltinStdio.println (show (BuiltinFiber.await_result direct))\n\
+        val nested = BuiltinFiber.spawn (fn () => BuiltinFiber.await (BuiltinFiber.spawn (fn () => BuiltinFilesystem.read_text \"/definitely/not/here.txt\")))\n\
+        val _ = BuiltinStdio.println (show (BuiltinFiber.await_result nested))\n\
+        val _ = BuiltinFiber.await (BuiltinFiber.spawn (fn () => BuiltinFilesystem.read_text \"/definitely/not/here.txt\"))\n";
     let program = compile(source);
     let single = run_single(&program);
     assert_eq!(single.output, vec!["io error\n", "io error\n"]);
@@ -424,26 +455,37 @@ fn child_failing_during_io_is_observed_by_awaiters() {
 /// Spawn and await 100,000 children in sequence, alternating raw and
 /// Result awaits.
 const SPAWN_AWAIT_LOOP: &str = "\
+    import __Builtin.Fiber\n\
+    import __Builtin.Stdio\n\
     fun loop n =\n\
       if n = 0 then ()\n\
       else\n\
         let\n\
-          val c = spawn (fn () => n)\n\
-          val _ = if n mod 2 = 0 then await_process c else let val _ = await_process_result c in 0 end\n\
+          val c = BuiltinFiber.spawn (fn () => n)\n\
+          val _ = if n mod 2 = 0 then BuiltinFiber.await c else let val _ = BuiltinFiber.await_result c in 0 end\n\
         in\n\
           loop (n - 1)\n\
         end\n\
     val _ = loop 100000\n\
-    val _ = println \"done\"\n";
+    val _ = BuiltinStdio.println \"done\"\n";
 
-/// A VM with only the builtins `SPAWN_AWAIT_LOOP` uses. Spawning copies the
+/// A VM with only the builtins behind the `__Builtin` modules that
+/// `SPAWN_AWAIT_LOOP` imports. Spawning copies the
 /// parent's builtin table, so this keeps 100,000 spawns cheap in debug builds.
 fn spawn_await_loop_vm() -> crate::vm::VM {
     crate::builder::VMBuilder::new(compile(SPAWN_AWAIT_LOOP))
+        .register_builtin_name("print")
         .register_builtin_name("println")
+        .register_builtin_name("eprint")
+        .register_builtin_name("eprintln")
+        .register_builtin_name("read_line")
+        .register_builtin_name("read_stdin")
         .register_builtin_name("spawn")
         .register_builtin_name("await_process")
         .register_builtin_name("await_process_result")
+        .register_builtin_name("fiber_await_all")
+        .register_builtin_name("cancel")
+        .register_builtin_name("wait_any")
         .build()
 }
 
@@ -485,30 +527,38 @@ fn spawn_await_loop_keeps_tombstones_bounded_threaded() {
 const SLEEP_CANCEL_PROGRAMS: &[(&str, &str)] = &[
     (
         "explicit cancel, then join",
-        "import __Builtin.Process\n\
-         val c = spawn (fn () => sleep 60000)\n\
-         val d = spawn (fn () => 0)\n\
-         val _ = await_process d\n\
-         val _ = cancel c\n\
+        "import __Builtin.Fiber\n\
+         import __Builtin.Time\n\
+         import __Builtin.Stdio\n\
+         val c = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 60000)\n\
+         val d = BuiltinFiber.spawn (fn () => 0)\n\
+         val _ = BuiltinFiber.await d\n\
+         val _ = BuiltinFiber.cancel c\n\
          val _ =\n\
-           case BuiltinProcess.await_result_raw c of\n\
-               BuiltinProcess.Err BuiltinProcess.Cancelled => println \"cancelled\"\n\
-             | _ => println \"other\"\n",
+           case BuiltinFiber.await_result c of\n\
+               BuiltinFiber.Err BuiltinFiber.Cancelled => BuiltinStdio.println \"cancelled\"\n\
+             | _ => BuiltinStdio.println \"other\"\n",
     ),
     (
         "abandoned at scope exit",
-        "val _ = spawn (fn () => sleep 60000)\n\
-         val d = spawn (fn () => 0)\n\
-         val _ = await_process d\n\
-         val _ = println \"cancelled\"\n",
+        "import __Builtin.Fiber\n\
+         import __Builtin.Time\n\
+         import __Builtin.Stdio\n\
+         val _ = BuiltinFiber.spawn (fn () => BuiltinTime.sleep 60000)\n\
+         val d = BuiltinFiber.spawn (fn () => 0)\n\
+         val _ = BuiltinFiber.await d\n\
+         val _ = BuiltinStdio.println \"cancelled\"\n",
     ),
     (
         "grandchild sleeping under a cancelled child",
-        "val c = spawn (fn () => await_process (spawn (fn () => sleep 60000)))\n\
-         val d = spawn (fn () => 0)\n\
-         val _ = await_process d\n\
-         val _ = cancel c\n\
-         val _ = println \"cancelled\"\n",
+        "import __Builtin.Fiber\n\
+         import __Builtin.Time\n\
+         import __Builtin.Stdio\n\
+         val c = BuiltinFiber.spawn (fn () => BuiltinFiber.await (BuiltinFiber.spawn (fn () => BuiltinTime.sleep 60000)))\n\
+         val d = BuiltinFiber.spawn (fn () => 0)\n\
+         val _ = BuiltinFiber.await d\n\
+         val _ = BuiltinFiber.cancel c\n\
+         val _ = BuiltinStdio.println \"cancelled\"\n",
     ),
 ];
 
@@ -581,15 +631,17 @@ fn cancelling_a_process_blocked_on_io_wakes_its_parent_and_cancels_the_io() {
     // The backend never completes, so the run can only end if cancellation
     // terminates the blocked child and wakes its awaiting parent.
     let source = "\
-        import __Builtin.Process\n\
-        val c = spawn (fn () => read_file \"/never/completes.txt\")\n\
-        val d = spawn (fn () => 0)\n\
-        val _ = await_process d\n\
-        val _ = cancel c\n\
+        import __Builtin.Fiber\n\
+        import __Builtin.Filesystem\n\
+        import __Builtin.Stdio\n\
+        val c = BuiltinFiber.spawn (fn () => BuiltinFilesystem.read_text \"/never/completes.txt\")\n\
+        val d = BuiltinFiber.spawn (fn () => 0)\n\
+        val _ = BuiltinFiber.await d\n\
+        val _ = BuiltinFiber.cancel c\n\
         val _ =\n\
-          case BuiltinProcess.await_result_raw c of\n\
-              BuiltinProcess.Err BuiltinProcess.Cancelled => println \"cancelled\"\n\
-            | _ => println \"other\"\n";
+          case BuiltinFiber.await_result c of\n\
+              BuiltinFiber.Err BuiltinFiber.Cancelled => BuiltinStdio.println \"cancelled\"\n\
+            | _ => BuiltinStdio.println \"other\"\n";
     let program = compile(source);
     for run in 0..THREADED_RUNS {
         let backend = Arc::new(StuckIoBackend::default());
@@ -626,6 +678,9 @@ fn assert_child_output(source: &str, expected: &[&str]) {
 #[test]
 fn child_calls_top_level_functions_and_constructors() {
     let source = "\
+        import __Builtin.Fiber\n\
+        import __Builtin.Stdio\n\
+        import __Builtin.Int\n\
         datatype shape = Sq of int | Pt\n\
         fun fact n = if n = 0 then 1 else n * fact (n - 1)\n\
         fun even n = if n = 0 then true else odd (n - 1)\n\
@@ -636,30 +691,33 @@ fn child_calls_top_level_functions_and_constructors() {
         val names = [\"a\", \"b\", \"c\"]\n\
         fun len xs = case xs of [] => 0 | _ :: rest => 1 + len rest\n\
         val add5 = let val k = 5 in fn x => x + k end\n\
-        val show = int_to_string\n\
+        val show = BuiltinInt.to_string\n\
         structure M = struct fun sq (x : int) = x * x end\n\
-        fun show_pid p = show (await_process p)\n\
-        val _ = println (show_pid (spawn (fn () => fact 5)))\n\
-        val _ = println (show_pid (spawn (fn () => if even 10 then 1 else 0)))\n\
-        val _ = println (show_pid (spawn (fn () => twice 3)))\n\
-        val _ = println (show_pid (spawn (fn () => area (Sq 4) + area Pt)))\n\
-        val _ = println (show_pid (spawn (fn () => base + len names)))\n\
-        val _ = println (show_pid (spawn (fn () => add5 1)))\n\
-        val _ = println (show_pid (spawn (fn () => M.sq 9)))\n\
-        val _ = println (await_process (spawn (fn () => show 42)))\n";
+        fun show_pid p = show (BuiltinFiber.await p)\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => fact 5)))\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => if even 10 then 1 else 0)))\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => twice 3)))\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => area (Sq 4) + area Pt)))\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => base + len names)))\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => add5 1)))\n\
+        val _ = BuiltinStdio.println (show_pid (BuiltinFiber.spawn (fn () => M.sq 9)))\n\
+        val _ = BuiltinStdio.println (BuiltinFiber.await (BuiltinFiber.spawn (fn () => show 42)))\n";
     assert_child_output(source, &["120", "1", "12", "16", "103", "6", "81", "42"]);
 }
 
 #[test]
 fn child_receives_closures_in_captures_and_spawns_grandchildren() {
     let source = "\
+        import __Builtin.Fiber\n\
+        import __Builtin.Stdio\n\
+        import __Builtin.Int\n\
         fun fact n = if n = 0 then 1 else n * fact (n - 1)\n\
         fun run () =\n\
           let val k = 10\n\
               val f = fn x => fact x + k\n\
-              val p = spawn (fn () => await_process (spawn (fn () => f 3)))\n\
-          in await_process p end\n\
-        val _ = println (int_to_string (run ()))\n";
+              val p = BuiltinFiber.spawn (fn () => BuiltinFiber.await (BuiltinFiber.spawn (fn () => f 3)))\n\
+          in BuiltinFiber.await p end\n\
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (run ()))\n";
     assert_child_output(source, &["16"]);
 }
 
@@ -668,43 +726,54 @@ fn child_sees_bindings_defined_before_the_spawn() {
     // The first spawn happens before `late` is defined; each spawn sees the
     // globals defined up to that point.
     let source = "\
+        import __Builtin.Fiber\n\
+        import __Builtin.Stdio\n\
+        import __Builtin.Int\n\
         fun early () = 1\n\
-        val p = spawn (fn () => early ())\n\
+        val p = BuiltinFiber.spawn (fn () => early ())\n\
         fun late () = early () + 1\n\
-        val q = spawn (fn () => late ())\n\
-        val _ = println (int_to_string (await_process p + await_process q))\n";
+        val q = BuiltinFiber.spawn (fn () => late ())\n\
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await p + BuiltinFiber.await q))\n";
     assert_child_output(source, &["3"]);
 }
 
 #[test]
 fn child_sees_the_binding_in_scope_where_it_was_spawned() {
     let source = "\
+        import __Builtin.Fiber\n\
+        import __Builtin.Stdio\n\
+        import __Builtin.Int\n\
         val x = 1\n\
         fun f () = x\n\
         val x = \"two\"\n\
-        val p = spawn (fn () => f () + 1)\n\
-        val _ = println (x ^ \" \" ^ int_to_string (await_process p))\n";
+        val p = BuiltinFiber.spawn (fn () => f () + 1)\n\
+        val _ = BuiltinStdio.println (x ^ \" \" ^ BuiltinInt.to_string (BuiltinFiber.await p))\n";
     assert_child_output(source, &["two 2"]);
 }
 
 #[test]
 fn child_uses_program_binding_that_rebinds_a_builtin_name() {
     let source = "\
+        import __Builtin.Fiber\n\
+        import __Builtin.Stdio\n\
         fun int_to_string (n : int) = \"n\"\n\
-        val _ = println (await_process (spawn (fn () => int_to_string 1)))\n";
+        val _ = BuiltinStdio.println (BuiltinFiber.await (BuiltinFiber.spawn (fn () => int_to_string 1)))\n";
     assert_child_output(source, &["n"]);
 }
 
 #[test]
 fn child_reading_an_unsendable_global_fails_with_its_name() {
     let source = "\
-        import __Builtin.Process\n\
-        val r = rng_seed (string_to_bytes \"seed\")\n\
+        import __Builtin.Fiber\n\
+        import __Builtin.Random\n\
+        import __Builtin.Bytes\n\
+        import __Builtin.Stdio\n\
+        val r = BuiltinRandom.seed (BuiltinBytes.of_string \"seed\")\n\
         fun use_rng () = let val _ = r in 1 end\n\
         val _ =\n\
-          case BuiltinProcess.await_result_raw (spawn (fn () => use_rng ())) of\n\
-              BuiltinProcess.Err (BuiltinProcess.RuntimeError msg) => println msg\n\
-            | _ => println \"other\"\n";
+          case BuiltinFiber.await_result (BuiltinFiber.spawn (fn () => use_rng ())) of\n\
+              BuiltinFiber.Err (BuiltinFiber.RuntimeError msg) => BuiltinStdio.println msg\n\
+            | _ => BuiltinStdio.println \"other\"\n";
     assert_child_output(
         source,
         &[

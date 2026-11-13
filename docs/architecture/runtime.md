@@ -262,13 +262,17 @@ Includes:
 
 ### API
 
-The raw runtime builtins are:
+The raw runtime builtins are `spawn`, `wait_any`, `cancel`, `await_process`
+and `await_process_result`. Since #186 ordinary source reaches them through
+`Std.Fiber` (or, for exact raw shapes, `import __Builtin.Fiber`):
 
 ```sml
-val pid = spawn (fn () => http_get url)
-val winner = wait_any [pid]
-val _ = cancel pid
-val res = await_process pid
+import __Builtin.Fiber
+
+val pid = BuiltinFiber.spawn (fn () => compute ())
+val winner = BuiltinFiber.wait_any [pid]
+val _ = BuiltinFiber.cancel pid
+val res = BuiltinFiber.await pid
 ```
 
 `wait_any` uses deterministic list-order semantics. `wait_any [p1, p2, ..., pn]` blocks until at least one listed child has completed, then returns the leftmost PID in the original input list whose child is complete. If several children complete concurrently, input list order breaks ties; the child that wakes the parent is only a notification, not automatically the winner.
@@ -352,7 +356,7 @@ Quota, host-work and transfer-allocation failures fail the parent after cleanup;
 they are not recoverable typed quota errors. Partial result construction remains
 rooted and is never published as a successful partial list.
 
-`capabilities.fiber.fiber_await_all` is a default-off bulk capability under
+`capabilities.fiber.join_all` is a default-off bulk capability under
 `builtin-process`. It grants await/cancel/reap authority only over accepted
 children; spawn requires its own grant. Individual await/cancel/wait-any leaves
 may remain denied. Protected process wrappers resolve each leaf lazily, so a
@@ -408,7 +412,7 @@ any reaped pid:
 A pid that belongs to another parent and is still live or unconsumed is
 rejected as "not a child"; a pid that was never allocated as "unknown".
 
-For example, `val q = await_process (spawn (fn () => spawn (fn () => 41)))`
+For example, `val q = BuiltinFiber.await (BuiltinFiber.spawn (fn () => BuiltinFiber.spawn (fn () => 41)))`
 returns a grandchild's pid after its parent exits. Once q is reaped,
 `await_process q` fails with "child result already consumed", and
 `await_process_result q` returns

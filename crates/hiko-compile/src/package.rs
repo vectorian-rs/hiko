@@ -98,6 +98,29 @@ impl PackageOwner {
             OwnerIdentity::Builtin => "__Builtin",
         }
     }
+
+    /// The canonical root whose `src/` holds a project owner's `Proj` modules.
+    pub(crate) fn project_source_root(&self) -> Option<&Path> {
+        match self.0.as_ref() {
+            OwnerIdentity::Project(root) => Some(root),
+            _ => None,
+        }
+    }
+
+    /// The package namespace `Proj` selects for a non-project owner, if any.
+    pub(crate) fn owned_package_name(&self) -> Option<&str> {
+        match self.0.as_ref() {
+            OwnerIdentity::Locked { name, .. } | OwnerIdentity::EmbeddedPackage(name) => Some(name),
+            OwnerIdentity::Extension { package, .. } => Some(package),
+            OwnerIdentity::Project(_) | OwnerIdentity::EmbeddedProject | OwnerIdentity::Builtin => {
+                None
+            }
+        }
+    }
+
+    pub(crate) fn is_embedded_project(&self) -> bool {
+        matches!(self.0.as_ref(), OwnerIdentity::EmbeddedProject)
+    }
 }
 
 /// Logical identity shared by an owner's qualified and Proj imports.
@@ -258,11 +281,7 @@ impl ModuleCatalog {
         import: &str,
     ) -> Result<ResolvedModule<'_>, CompileError> {
         let (package, module) = import_path(import)?;
-        let owner = owner.ok_or_else(|| {
-            CompileError::codegen(format!(
-                "import {import} requires an owning package; create hiko.toml"
-            ))
-        })?;
+        let owner = owner.ok_or_else(|| missing_project(import))?;
         let importer = self.owners.get(owner).ok_or_else(|| {
             CompileError::codegen(format!(
                 "importing package {:?} is not in this catalog",
@@ -312,11 +331,10 @@ impl ModuleCatalog {
                 let OwnerIdentity::Project(root) = definition.owner.0.as_ref() else {
                     unreachable!("catalog source kind was validated");
                 };
-                let relative = Path::new("src").join(module_file(module)?);
-                checked_module_file(root, &relative, import, target.name())?;
+                project_module_file(root, module, import, target.name())?;
                 ModuleTarget::Local {
                     root,
-                    relative,
+                    relative: Path::new("src").join(module_file(module)?),
                     hash: None,
                 }
             }
@@ -491,7 +509,7 @@ fn validate_package(name: &str) -> Result<(), CompileError> {
     Ok(())
 }
 
-fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
+pub(crate) fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
     let Some((package, module)) = import.split_once('.') else {
         return Err(CompileError::codegen(format!(
             "named import '{import}' must use Package.Module[.Module...]"
@@ -506,7 +524,7 @@ fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
     Ok((package, module))
 }
 
-fn module_file(module: &str) -> Result<PathBuf, CompileError> {
+pub(crate) fn module_file(module: &str) -> Result<PathBuf, CompileError> {
     let mut path = PathBuf::new();
     for segment in module.split('.') {
         if !identifier(segment) {
@@ -530,8 +548,28 @@ fn normalized_hash(hash: &str) -> Result<String, CompileError> {
     Ok(hash)
 }
 
+/// The error for an import with no owning package, shared by the catalog and
+/// the compiler's live `Proj` resolution.
+pub(crate) fn missing_project(import: &str) -> CompileError {
+    CompileError::codegen(format!(
+        "import {import} requires an owning package; create hiko.toml"
+    ))
+}
+
+/// A project owner's module file for `module` under `root`/src, with the
+/// exact-spelling and symlink checks both resolution paths share.
+pub(crate) fn project_module_file(
+    root: &Path,
+    module: &str,
+    import: &str,
+    owner: &str,
+) -> Result<PathBuf, CompileError> {
+    let relative = Path::new("src").join(module_file(module)?);
+    checked_module_file(root, &relative, import, owner)
+}
+
 /// Check each written component rather than accepting case-folding or symlinks.
-fn checked_module_file(
+pub(crate) fn checked_module_file(
     root: &Path,
     relative: &Path,
     import: &str,

@@ -1,16 +1,20 @@
 import Std.List
 import Std.Result
 import Std.Log
+import Std.Int
+import Std.Stdio
+import Std.System
+import Std.Testing
 
-fun check (actual, expected) = assert_eq (actual, expected, "stack-safe stdlib regression")
+fun check (actual, expected) = Testing.equal actual expected "stack-safe stdlib regression"
 fun range (n, acc) = if n = 0 then acc else range (n - 1, n :: acc)
 val input = range (100000, [])
 val _ = check (List.length input, 100000)
 val _ = check (List.length [], 0)
 val _ = check (List.map (fn x => x + 1) [], [])
-val _ = check (List.filter (fn _ => panic "empty predicate") [], [])
+val _ = check (List.filter (fn _ => System.panic "empty predicate") [], [])
 val _ = check (List.filter (fn _ => false) [1, 2], [])
-val _ = check (List.foldr (fn _ => panic "empty fold") 7 [], 7)
+val _ = check (List.foldr (fn _ => System.panic "empty fold") 7 [], 7)
 val _ = check (List.append [] [4], [4])
 val _ = check (List.append [1, 2] [3, 4], [1, 2, 3, 4])
 val _ = check (List.take 0 [1, 2, 3], [])
@@ -22,9 +26,9 @@ val _ = check (List.zip [1, 2] [3], [(1, 3)])
 val _ = check (List.zip [1] [2, 3], [(1, 2)])
 val _ = check (Result.all [], Result.Ok [])
 val _ = check (Result.sequence [], Result.Ok [])
-val _ = check (Result.traverse (fn _ => panic "empty traverse") [], Result.Ok [])
+val _ = check (Result.traverse (fn _ => System.panic "empty traverse") [], Result.Ok [])
 val _ = check (Result.validate_all [], Result.Ok [])
-val _ = check (Result.validate_traverse (fn _ => panic "empty validate") [], Result.Ok [])
+val _ = check (Result.validate_traverse (fn _ => System.panic "empty validate") [], Result.Ok [])
 val _ = check (Result.all [Result.Err "first", Result.Err "second"], Result.Err "first")
 val _ = check (Result.sequence [Result.Ok 1, Result.Err "first", Result.Err "second"], Result.Err "first")
 val _ = check (Result.all [Result.Ok 1, Result.Ok 2], Result.Ok [1, 2])
@@ -35,16 +39,16 @@ val _ = check (Log.kv "m" [], "m")
 val _ = check (Log.field_parts [("a", "1"), ("b", "2")], [" ", "a", "=", "1", " ", "b", "=", "2"])
 val _ = check (Log.kv "m" [("a", "1"), ("b", "2")], "m a=1 b=2")
 
-fun visit x = let val _ = println (int_to_string x) in x end
-val _ = println "map"
+fun visit x = let val _ = Stdio.println (Int.to_string x) in x end
+val _ = Stdio.println "map"
 val _ = check (List.map visit [1, 2, 3], [1, 2, 3])
-val _ = println "filter"
+val _ = Stdio.println "filter"
 val _ = check (List.filter (fn x => visit x mod 2 = 1) [1, 2, 3], [1, 3])
-val _ = println "foldr"
+val _ = Stdio.println "foldr"
 val _ = check (List.foldr (fn (x, acc) => visit x :: acc) [] [1, 2, 3], [1, 2, 3])
-val _ = println "traverse"
+val _ = Stdio.println "traverse"
 val _ = check (Result.traverse (fn x => if visit x = 2 then Result.Err x else Result.Ok x) [1, 2, 3], Result.Err 2)
-val _ = println "validate"
+val _ = Stdio.println "validate"
 val _ = check (Result.validate_traverse (fn x => if visit x mod 2 = 1 then Result.Err x else Result.Ok x) [1, 2, 3, 4, 5], Result.Err [1, 3, 5])
 
 (* Resumable callback effects remain in input order and execute exactly once. *)
@@ -52,6 +56,6 @@ effect Visit of int
 fun with_visits f =
   handle f () with
     return result => result
-  | Visit x k => let val _ = println (int_to_string x) in resume k x end
-val _ = println "effect-map"
+  | Visit x k => let val _ = Stdio.println (Int.to_string x) in resume k x end
+val _ = Stdio.println "effect-map"
 val _ = check (with_visits (fn () => List.map (fn x => perform Visit x) [1, 2, 3]), [1, 2, 3])

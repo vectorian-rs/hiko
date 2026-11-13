@@ -1,8 +1,28 @@
 use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta::core("random_bytes", "capabilities.random.random_bytes"),
-    BuiltinMeta::core("rng_seed", "capabilities.random.rng_seed"),
-    BuiltinMeta::core("rng_bytes", "capabilities.random.rng_bytes"),
-    BuiltinMeta::core("rng_int", "capabilities.random.rng_int"),
+    BuiltinMeta::module_only(
+        "random_bytes",
+        "capabilities.random.entropy",
+        &["__Builtin.Random"],
+        "Std.Random.entropy",
+    ),
+    BuiltinMeta::module_only(
+        "rng_seed",
+        "capabilities.random.seed",
+        &["__Builtin.Random"],
+        "Std.Random.seed",
+    ),
+    BuiltinMeta::module_only(
+        "rng_bytes",
+        "capabilities.random.bytes",
+        &["__Builtin.Random"],
+        "Std.Random.bytes",
+    ),
+    BuiltinMeta::module_only(
+        "rng_int",
+        "capabilities.random.int_between",
+        &["__Builtin.Random"],
+        "Std.Random.int_between",
+    ),
 ];

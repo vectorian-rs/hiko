@@ -1,7 +1,22 @@
 use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta::core("panic", "capabilities.testing.panic"),
-    BuiltinMeta::core("assert", "capabilities.testing.assert"),
-    BuiltinMeta::core("assert_eq", "capabilities.testing.assert_eq"),
+    BuiltinMeta::module_only(
+        "panic",
+        "capabilities.system.panic",
+        &["__Builtin.Testing", "__Builtin.SystemPanic"],
+        "Std.System.panic",
+    ),
+    BuiltinMeta::module_only(
+        "assert",
+        "capabilities.testing.check",
+        &["__Builtin.Testing"],
+        "Std.Testing.check",
+    ),
+    BuiltinMeta::module_only(
+        "assert_eq",
+        "capabilities.testing.equal",
+        &["__Builtin.Testing"],
+        "Std.Testing.equal",
+    ),
 ];

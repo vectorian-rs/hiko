@@ -308,11 +308,13 @@ fn nested_options(extension: &'static Extension) -> ModuleLoaderOptions {
 
 #[test]
 fn an_import_in_a_let_is_checked_when_the_script_loaded_it_first() {
+    // Imports are top-level only since #186; the undeclared import is still
+    // checked even when the script already loaded the same module.
     static NESTED: Extension = Extension {
         name: "nested",
         types: &[],
         builtins: &[],
-        modules: &[("Nested.M", "val n = let import Std.Result in 1 end\n")],
+        modules: &[("Nested.M", "import Std.Result\nval n = 1\n")],
         requires: &[],
         configure: |_| Ok(std::sync::Arc::new(())),
     };
@@ -342,16 +344,11 @@ fn a_use_in_a_let_is_refused_when_the_script_used_the_file_first() {
     };
     let dir = temp_dir("nested-use");
     std::fs::write(dir.join("helper.hml"), "val helper = 1\n").unwrap();
-    let err = compile_in(
-        &dir,
-        "use \"./helper.hml\"\nimport Nested.M",
-        nested_options(&NESTED),
-    )
-    .unwrap_err();
+    let err = compile_in(&dir, "import Nested.M", nested_options(&NESTED)).unwrap_err();
     assert_eq!(
         err,
         codegen(
-            "module Nested.M of extension 'nested' declares use './helper.hml'; an extension module cannot use a file"
+            "parse error in 'Nested.M': use was removed; use import Proj.<Module> for local modules under src/"
         )
     );
 }
@@ -373,10 +370,7 @@ fn a_required_internal_builtin_needs_no_project() {
 
 #[test]
 fn a_required_internal_builtin_needs_no_embedded_copy() {
-    static NOTHING: EmbeddedSources = EmbeddedSources {
-        modules: &[],
-        files: None,
-    };
+    static NOTHING: EmbeddedSources = EmbeddedSources { modules: &[] };
     let options = ModuleLoaderOptions {
         embedded: Some(&NOTHING),
         ..nested_options(&PATHS)
@@ -592,7 +586,6 @@ fn an_embedded_module_failing_its_hash_names_the_extension_and_the_fix() {
             blake3: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             source: include_str!("../../../libraries/Std-v0.1.0/modules/Result.hml"),
         }],
-        files: None,
     };
     let options = ModuleLoaderOptions {
         embedded: Some(&WRONG),
@@ -612,10 +605,7 @@ fn an_embedded_module_failing_its_hash_names_the_extension_and_the_fix() {
 #[test]
 fn a_sealed_artifact_without_std_result_is_an_error_naming_the_extension() {
     // What `build-vm --ext aws` without `--lock` embeds: no modules.
-    static NOTHING: EmbeddedSources = EmbeddedSources {
-        modules: &[],
-        files: None,
-    };
+    static NOTHING: EmbeddedSources = EmbeddedSources { modules: &[] };
     let options = ModuleLoaderOptions {
         embedded: Some(&NOTHING),
         ..s3_options()

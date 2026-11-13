@@ -1,6 +1,16 @@
 use crate::BuiltinMeta;
 
 pub const BUILTINS: &[BuiltinMeta] = &[
-    BuiltinMeta::core("regex_match", "capabilities.regex.regex_match"),
-    BuiltinMeta::core("regex_replace", "capabilities.regex.regex_replace"),
+    BuiltinMeta::module_only(
+        "regex_match",
+        "capabilities.regex.matches",
+        &["__Builtin.Regex"],
+        "Std.Regex.matches",
+    ),
+    BuiltinMeta::module_only(
+        "regex_replace",
+        "capabilities.regex.replace",
+        &["__Builtin.Regex"],
+        "Std.Regex.replace",
+    ),
 ];

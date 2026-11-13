@@ -1,4 +1,7 @@
 (* Option type and operations *)
+import Std.Int
+import Std.Stdio
+
 datatype 'a option =
     None
   | Some of 'a
@@ -17,4 +20,4 @@ val x = map_option (fn n => n + 1) (Some 41)
 
 val n = get_or x 0
 
-val _ = println (int_to_string n)
+val _ = Stdio.println (Int.to_string n)

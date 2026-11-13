@@ -3,5 +3,5 @@ version = "0.1.0"
 
 [modules]
 Health = "blake3:b170a67c852fee1e5358338e502ca016708b9532f9fd5dbe47e3472b65bdc1c4"
-Report = "blake3:ba7cd65f5709241f391a4a0bf68488efcc68657101b36d735f26a34d05102af7"
+Report = "blake3:a57e3fc9db0538960d2efdbf18b239809b911e700967366f7b2e9222cf35a369"
 CloudWatchAlarms = "blake3:a2960fc340ec8d16210fca2d5e6d3d805018f3bb8e65a08dbaf666efdb594dcd"

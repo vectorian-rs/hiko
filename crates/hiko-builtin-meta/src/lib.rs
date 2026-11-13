@@ -25,10 +25,11 @@ mod time;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSurface {
-    Public,
     RuntimeOnly,
     ModuleOnly {
-        owner: &'static str,
+        /// The compiler-owned modules that may name this builtin; shared
+        /// primitives (exit, panic) list every module aliasing them.
+        owners: &'static [&'static str],
         replacement: &'static str,
     },
 }
@@ -47,34 +48,46 @@ impl BuiltinMeta {
     const fn module_only(
         name: &'static str,
         capability_path: &'static str,
-        owner: &'static str,
+        owners: &'static [&'static str],
         replacement: &'static str,
     ) -> Self {
         Self {
             name,
             capability_path: Some(capability_path),
             in_core_default: true,
-            surface: BuiltinSurface::ModuleOnly { owner, replacement },
+            surface: BuiltinSurface::ModuleOnly {
+                owners,
+                replacement,
+            },
         }
     }
 
-    /// Public builtin that the core-only VM registers by default.
-    const fn core(name: &'static str, capability_path: &'static str) -> Self {
-        Self {
-            name,
-            capability_path: Some(capability_path),
-            in_core_default: true,
-            surface: BuiltinSurface::Public,
-        }
-    }
-
-    /// Public builtin that is only registered when a policy enables it.
-    const fn opt_in(name: &'static str, capability_path: &'static str) -> Self {
+    /// Module-only builtin outside the core default; a policy enables it, and
+    /// only its owning compiler modules may name it.
+    const fn module_only_opt_in(
+        name: &'static str,
+        capability_path: &'static str,
+        owners: &'static [&'static str],
+        replacement: &'static str,
+    ) -> Self {
         Self {
             name,
             capability_path: Some(capability_path),
             in_core_default: false,
-            surface: BuiltinSurface::Public,
+            surface: BuiltinSurface::ModuleOnly {
+                owners,
+                replacement,
+            },
+        }
+    }
+
+    /// Runtime-only builtin gated by a policy leaf of its own.
+    const fn runtime_gated(name: &'static str, capability_path: &'static str) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: true,
+            surface: BuiltinSurface::RuntimeOnly,
         }
     }
 

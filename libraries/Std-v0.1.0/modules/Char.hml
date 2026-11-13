@@ -3,7 +3,7 @@ import __Builtin.Char
 (* Unicode scalar conversions; of_int rejects negative, surrogate and
    out-of-range values. Grants remain capabilities.convert.* leaves. *)
 structure Char = struct
-  fun of_int value = BuiltinChar.of_int_raw value
+  fun of_int value = BuiltinChar.of_int value
 
-  fun to_int value = BuiltinChar.to_int_raw value
+  fun to_int value = BuiltinChar.to_int value
 end

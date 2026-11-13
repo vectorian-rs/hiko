@@ -485,7 +485,11 @@ fn a_configured_entry_in_another_project_requires_explicit_config() {
 #[test]
 fn run_requires_policy_but_check_stays_non_executing() {
     let dir = empty_dir("no-policy");
-    fs::write(dir.join("a.hml"), "val _ = panic \"must not execute\"\n").unwrap();
+    fs::write(
+        dir.join("a.hml"),
+        "import __Builtin.Testing\nval _ = BuiltinTesting.panic \"must not execute\"\n",
+    )
+    .unwrap();
     let output = hiko(&dir, &["run", "a.hml"]);
     assert!(!output.status.success());
     let message = stderr(&output);
@@ -598,7 +602,9 @@ fn explicit_policy_keeps_the_scripts_lockfile_and_cache() {
     )).unwrap();
     fs::write(
         scripts.join("a.hml"),
-        "import Demo.Value\nval _ = if Value.answer = 42 then () else panic \"wrong project\"\n",
+        // Division by zero fails the run if the wrong project's module is used,
+        // without needing any capability grant from the empty policy.
+        "import Demo.Value\nval _ = if Value.answer = 42 then 1 else 1 / 0\n",
     )
     .unwrap();
     for command in ["run", "check"] {

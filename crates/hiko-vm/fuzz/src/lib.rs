@@ -16,11 +16,13 @@ const MAX_LEN: usize = 1 << 16;
 /// Builtins a fuzzed program may call: the ones with no host access.
 /// `print` and `println` write to a sink that drops the text.
 const SAFE_FAMILIES: &[&str] = &[
-    "capabilities.convert.",
+    "capabilities.int.",
+    "capabilities.float.",
+    "capabilities.char.",
+    "capabilities.word.",
     "capabilities.string.",
     "capabilities.regex.",
     "capabilities.json.",
-    "capabilities.math.",
     "capabilities.bytes.",
     "capabilities.hash.",
     "capabilities.stdio.print",

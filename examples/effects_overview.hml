@@ -15,16 +15,19 @@
  *)
 import Std.Option
 import Std.Result
+import Std.Int
+import Std.Stdio
+import Std.Testing
 
 (* ── Errors are values, not effects ────────────────────────── *)
 fun divide a b = if b = 0 then Result.Err "division by zero" else Result.Ok (a / b)
 
-val _ = println "--- Error handling with Result ---"
+val _ = Stdio.println "--- Error handling with Result ---"
 
 val _ =
   case divide 10 0 of
-      Result.Ok n => println ("Unexpected: " ^ int_to_string n)
-    | Result.Err e => println ("Caught: " ^ e)
+      Result.Ok n => Stdio.println ("Unexpected: " ^ Int.to_string n)
+    | Result.Err e => Stdio.println ("Caught: " ^ e)
 
 (* ── 1. Provider ───────────────────────────────────────────── *)
 effect Config of string
@@ -44,17 +47,17 @@ fun with_config table f =
     return x => x
   | Config key k => resume k (lookup key table)
 
-val _ = println "\n--- Provider ---"
+val _ = Stdio.println "\n--- Provider ---"
 
 val english = with_config [("greeting", "hello"), ("name", "world")] greeting
 
 val japanese = with_config [("greeting", "konnichiwa"), ("name", "sekai")] greeting
 
-val _ = println english
+val _ = Stdio.println english
 
-val _ = println japanese
+val _ = Stdio.println japanese
 
-val _ = assert_eq (english, "hello, world", "provider")
+val _ = Testing.equal english "hello, world" "provider"
 
 (* ── 2. Abort ──────────────────────────────────────────────── *)
 effect Found of int
@@ -76,13 +79,13 @@ fun first_negative xs =
     return x => x
   | Found n _ => Option.Some n
 
-val _ = println "\n--- Abort ---"
+val _ = Stdio.println "\n--- Abort ---"
 
 val _ =
   case first_negative [3, 1, ~4, 1, ~5] of
-      Option.Some n => println ("First negative: " ^ int_to_string n)
-    | Option.None => println "No negative number"
+      Option.Some n => Stdio.println ("First negative: " ^ Int.to_string n)
+    | Option.None => Stdio.println "No negative number"
 
-val _ = assert_eq (first_negative [3, 1, ~4, 1, ~5], Option.Some (~4), "abort")
+val _ = Testing.equal (first_negative [3, 1, ~4, 1, ~5]) (Option.Some (~4)) "abort"
 
-val _ = assert_eq (first_negative [1, 2], Option.None, "no abort")
+val _ = Testing.equal (first_negative [1, 2]) Option.None "no abort"

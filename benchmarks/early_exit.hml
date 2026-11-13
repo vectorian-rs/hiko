@@ -5,6 +5,10 @@
  * Input: 5,000 attempts => 5,000 (kept under the 100M default fuel cap)
  *)
 
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 effect Fail of int
 
 fun dive n =
@@ -21,5 +25,5 @@ fun loop i acc =
   else loop (i - 1) (acc + attempt 1000)
 
 val result = loop 5000 0
-val _ = assert_eq (result, 5000, "early_exit")
-val _ = println ("early_exit = " ^ int_to_string result)
+val _ = Testing.equal result 5000 "early_exit"
+val _ = Stdio.println ("early_exit = " ^ Int.to_string result)

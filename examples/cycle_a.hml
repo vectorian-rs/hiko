@@ -1,4 +1,4 @@
-(* Must fail: cycle_a.hml and cycle_b.hml `use` each other, which the loader rejects. *)
-use "./cycle_b.hml"
+(* Must fail: CycleA and CycleB in src/ import each other, which the loader rejects. *)
+import Proj.CycleB
 
 val a = 1

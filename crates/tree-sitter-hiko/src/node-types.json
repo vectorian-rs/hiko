@@ -74,10 +74,6 @@
         "named": true
       },
       {
-        "type": "use_declaration",
-        "named": true
-      },
-      {
         "type": "value_declaration",
         "named": true
       },
@@ -1119,7 +1115,7 @@
         ]
       },
       "module": {
-        "multiple": false,
+        "multiple": true,
         "required": true,
         "types": [
           {
@@ -2038,22 +2034,6 @@
     "fields": {}
   },
   {
-    "type": "use_declaration",
-    "named": true,
-    "fields": {
-      "path": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "string_literal",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "value_declaration",
     "named": true,
     "fields": {
@@ -2388,10 +2368,6 @@
   {
     "type": "upper_identifier",
     "named": true
-  },
-  {
-    "type": "use",
-    "named": false
   },
   {
     "type": "val",

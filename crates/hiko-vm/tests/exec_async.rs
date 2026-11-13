@@ -24,9 +24,13 @@ fn exec_vm(source: &str) -> VMBuilder {
 fn failed_child_cancels_a_sixty_second_exec_sibling_promptly() {
     for workers in [1, 4] {
         let vm = exec_vm(
-            "val slow = spawn (fn () => exec (\"/bin/sleep\", [\"60\"]))
-             val failed = spawn (fn () => let val _ = sleep 100 in panic \"expected failure\" end)
-             val _ = await_process failed",
+            "import __Builtin.Exec
+             import __Builtin.Fiber
+             import __Builtin.Testing
+             import __Builtin.Time
+             val slow = BuiltinFiber.spawn (fn () => BuiltinExec.exec (\"/bin/sleep\", [\"60\"]))
+             val failed = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 100 in BuiltinTesting.panic \"expected failure\" end)
+             val _ = BuiltinFiber.await failed",
         )
         .build();
         let runtime = ThreadedRuntime::new(workers);
@@ -44,7 +48,7 @@ fn failed_child_cancels_a_sixty_second_exec_sibling_promptly() {
 #[test]
 fn threaded_exec_preserves_output_and_cumulative_limits() {
     for workers in [1, 4] {
-        let source = "val result = exec (\"/usr/bin/printf\", [\"123456789\"])";
+        let source = "import __Builtin.Exec\nval result = BuiltinExec.exec (\"/usr/bin/printf\", [\"123456789\"])";
         for (output_limit, io_limit, expected) in [
             (8, 100, "max_exec_output_bytes"),
             (100, 8, "io limit exceeded"),
@@ -66,14 +70,18 @@ fn threaded_exec_preserves_output_and_cumulative_limits() {
 fn late_exec_completion_cannot_resume_a_cancelled_child() {
     for workers in [1, 4] {
         let vm = exec_vm(
-            "val child = spawn (fn () => let
-                 val _ = exec (\"/bin/sleep\", [\"60\"])
-                 val _ = println \"must not resume\"
+            "import __Builtin.Exec
+             import __Builtin.Fiber
+             import __Builtin.Stdio
+             import __Builtin.Time
+             val child = BuiltinFiber.spawn (fn () => let
+                 val _ = BuiltinExec.exec (\"/bin/sleep\", [\"60\"])
+                 val _ = BuiltinStdio.println \"must not resume\"
              in 1 end)
-             val _ = sleep 50
-             val _ = cancel child
-             val _ = sleep 50
-             val _ = println \"done\"",
+             val _ = BuiltinTime.sleep 50
+             val _ = BuiltinFiber.cancel child
+             val _ = BuiltinTime.sleep 50
+             val _ = BuiltinStdio.println \"done\"",
         )
         .build();
         let runtime = ThreadedRuntime::new(workers);
@@ -87,11 +95,16 @@ fn late_exec_completion_cannot_resume_a_cancelled_child() {
 fn exec_does_not_block_a_vm_worker_or_unrelated_timer() {
     for workers in [1, 4] {
         let program = common::compile_source(
-            "val started = monotonic_ms ()
-             val slow = spawn (fn () => exec (\"/bin/sleep\", [\"1\"]))
-             val timer = spawn (fn () => let val _ = sleep 10 in monotonic_ms () - started end)
-             val _ = println (int_to_string (await_process timer))
-             val _ = await_process slow",
+            "import __Builtin.Exec
+             import __Builtin.Fiber
+             import __Builtin.Int
+             import __Builtin.Stdio
+             import __Builtin.Time
+             val started = BuiltinTime.monotonic_ms ()
+             val slow = BuiltinFiber.spawn (fn () => BuiltinExec.exec (\"/bin/sleep\", [\"1\"]))
+             val timer = BuiltinFiber.spawn (fn () => let val _ = BuiltinTime.sleep 10 in BuiltinTime.monotonic_ms () - started end)
+             val _ = BuiltinStdio.println (BuiltinInt.to_string (BuiltinFiber.await timer))
+             val _ = BuiltinFiber.await slow",
         );
         let vm = VMBuilder::new(program)
             .with_core()

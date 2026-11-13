@@ -1,8 +1,10 @@
-(* Local file inclusion with `use`; a repeated `use` of the same file is included once. *)
-use "./math.hml"
+(* Project-module import with `Proj`; a repeated import executes the module once. *)
+import Proj.Math
+import Proj.Math
 
-use "./math.hml"
+import Std.Int
+import Std.Stdio
 
-val _ = println (int_to_string (square 5))
+val _ = Stdio.println (Int.to_string (Math.square 5))
 
-val _ = println (int_to_string (double 7))
+val _ = Stdio.println (Int.to_string (Math.double 7))

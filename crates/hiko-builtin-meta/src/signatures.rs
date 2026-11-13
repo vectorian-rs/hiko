@@ -143,8 +143,8 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         // Process
         "spawn" => return poly_a("(unit -> 'a) -> 'a pid"),
         "await_process" => return poly_a("'a pid -> 'a"),
-        "await_process_result" => return poly_a("'a pid -> 'a BuiltinProcess.await_result"),
-        "fiber_await_all" => return poly_a("'a pid list -> 'a list BuiltinProcess.await_result"),
+        "await_process_result" => return poly_a("'a pid -> 'a BuiltinFiber.await_result"),
+        "fiber_await_all" => return poly_a("'a pid list -> 'a list BuiltinFiber.await_result"),
         "cancel" => return poly_a("'a pid -> unit"),
         "wait_any" => return poly_a("'a pid list -> 'a pid"),
 

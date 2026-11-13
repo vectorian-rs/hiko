@@ -61,32 +61,32 @@ enabled = true
 enabled = true
 
 # Conversion builtins.
-[capabilities.convert.int_to_string]
+[capabilities.int.to_string]
 enabled = true
 
-[capabilities.convert.float_to_string]
+[capabilities.float.to_string]
 enabled = true
 
-[capabilities.convert.string_to_int]
+[capabilities.int.of_string]
 enabled = true
 
-[capabilities.convert.char_to_int]
+[capabilities.char.to_int]
 enabled = true
 
-[capabilities.convert.int_to_char]
+[capabilities.char.of_int]
 enabled = true
 
-[capabilities.convert.int_to_float]
+[capabilities.float.of_int]
 enabled = true
 
 # String/text builtins.
-[capabilities.string.string_length]
+[capabilities.string.length]
 enabled = true
 
 [capabilities.string.substring]
 enabled = true
 
-[capabilities.string.string_contains]
+[capabilities.string.contains]
 enabled = true
 
 [capabilities.string.trim]
@@ -95,7 +95,7 @@ enabled = true
 [capabilities.string.split]
 enabled = true
 
-[capabilities.string.string_replace]
+[capabilities.string.replace]
 enabled = true
 
 [capabilities.string.starts_with]
@@ -104,161 +104,164 @@ enabled = true
 [capabilities.string.ends_with]
 enabled = true
 
-[capabilities.string.to_upper]
+[capabilities.string.upper]
 enabled = true
 
-[capabilities.string.to_lower]
+[capabilities.string.lower]
 enabled = true
 
-[capabilities.string.string_join]
+[capabilities.string.join]
 enabled = true
 
 # Regex builtins.
-[capabilities.regex.regex_match]
+[capabilities.regex.matches]
 enabled = true
 
-[capabilities.regex.regex_replace]
+[capabilities.regex.replace]
 enabled = true
 
 # JSON builtins.
-[capabilities.json.json_parse]
+[capabilities.json.parse]
 enabled = true
 
-[capabilities.json.json_to_string]
+[capabilities.json.to_string]
 enabled = true
 
-[capabilities.json.json_get]
+[capabilities.json.get]
 enabled = true
 
-[capabilities.json.json_keys]
+[capabilities.json.keys]
 enabled = true
 
-[capabilities.json.json_length]
+[capabilities.json.length]
 enabled = true
 
 # Math builtins.
-[capabilities.math.sqrt]
+[capabilities.float.sqrt]
 enabled = true
 
-[capabilities.math.abs_int]
+[capabilities.int.abs]
 enabled = true
 
-[capabilities.math.abs_float]
+[capabilities.float.abs]
 enabled = true
 
-[capabilities.math.floor]
+[capabilities.float.floor]
 enabled = true
 
-[capabilities.math.ceil]
+[capabilities.float.ceil]
 enabled = true
 
 # Bytes builtins.
-[capabilities.bytes.bytes_length]
+[capabilities.bytes.length]
 enabled = true
 
-[capabilities.bytes.bytes_to_string]
+[capabilities.bytes.to_string]
 enabled = true
 
-[capabilities.bytes.string_to_bytes]
+[capabilities.bytes.of_string]
 enabled = true
 
-[capabilities.bytes.bytes_get]
+[capabilities.bytes.get]
 enabled = true
 
-[capabilities.bytes.bytes_slice]
+[capabilities.bytes.slice]
 enabled = true
 
 # Hash and randomness builtins.
-[capabilities.hash.blake3]
+[capabilities.hash.blake3.hash]
 enabled = true
 
-[capabilities.random.random_bytes]
+[capabilities.random.entropy]
 enabled = true
 
-[capabilities.random.rng_seed]
+[capabilities.random.seed]
 enabled = true
 
-[capabilities.random.rng_bytes]
+[capabilities.random.bytes]
 enabled = true
 
-[capabilities.random.rng_int]
+[capabilities.random.int_between]
 enabled = true
 
 # Environment and time builtins.
-[capabilities.env.getenv]
+[capabilities.env.get]
 enabled = true
 
 [capabilities.time.epoch]
 enabled = true
 
-[capabilities.time.epoch_ms]
+[capabilities.time.now]
 enabled = true
 
-[capabilities.time.monotonic_ms]
+[capabilities.time.monotonic_now]
 enabled = true
 
 [capabilities.time.sleep]
 enabled = true
 
 # Structured concurrency builtins.
-[capabilities.process.spawn]
+[capabilities.fiber.spawn]
 enabled = true
 
 # Bulk joins grant only accepted-child await/cancel/reap authority.
-[capabilities.fiber.fiber_await_all]
+[capabilities.fiber.join_all]
 enabled = true
 
-[capabilities.process.await_process]
+[capabilities.fiber.join_or_fail]
+enabled = true
+
+[capabilities.fiber.join]
 enabled = true
 
 # Pure path helper builtin.
-[capabilities.path.path_join]
+[capabilities.path.join]
 enabled = true
 
 # Filesystem builtins.
 # `folders` are recursive directory allowlists for that builtin.
 
-[capabilities.filesystem.read_file]
+[capabilities.filesystem.read_text]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.read_file_bytes]
+[capabilities.filesystem.read_bytes]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.write_file]
+[capabilities.filesystem.write_text]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.file_exists]
+[capabilities.filesystem.exists]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.list_dir]
+[capabilities.filesystem.list_entries]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.remove_file]
+[capabilities.filesystem.remove]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.create_dir]
+[capabilities.filesystem.create_directory]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.is_dir]
+[capabilities.filesystem.is_directory]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.is_file]
+[capabilities.filesystem.is_regular_file]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.glob]
+[capabilities.filesystem.glob_matches]
 enabled = true
 folders = ["./workspace"]
 
-[capabilities.filesystem.walk_dir]
+[capabilities.filesystem.walk]
 enabled = true
 folders = ["./workspace"]
 
@@ -269,23 +272,23 @@ folders = ["./workspace"]
 # IPv6 address such as "[::1]"; write internationalized names in punycode
 # ("xn--..."). Other forms, such as percent-encoded hosts, are refused.
 
-[capabilities.http.http_get]
+[capabilities.http.client.get]
 enabled = true
 allowed_hosts = ["api.example.com"]
 
-[capabilities.http.http]
+[capabilities.http.client.request]
 enabled = true
 allowed_hosts = ["api.example.com"]
 
-[capabilities.http.http_json]
+[capabilities.http.client.request_json]
 enabled = true
 allowed_hosts = ["api.example.com"]
 
-[capabilities.http.http_msgpack]
+[capabilities.http.client.request_msgpack]
 enabled = true
 allowed_hosts = ["api.example.com"]
 
-[capabilities.http.http_bytes]
+[capabilities.http.client.request_bytes]
 enabled = true
 allowed_hosts = ["api.example.com"]
 
@@ -295,14 +298,14 @@ allowed_hosts = ["api.example.com"]
 # prefix). See "Exec policy" in builtins.md.
 # The timeout is `[limits] exec_timeout_ms`.
 
-[capabilities.exec.exec]
+[capabilities.exec.run]
 enabled = true
 allowed_commands = ["git", "cargo"]
 
-[[capabilities.exec.exec.allow]]
+[[capabilities.exec.run.allow]]
 argv = ["terraform", "plan", "-input=false"]
 
-[[capabilities.exec.exec.allow]]
+[[capabilities.exec.run.allow]]
 argv = ["terraform", "show", "--"]
 rest = "any"
 
@@ -310,11 +313,11 @@ rest = "any"
 [capabilities.system.exit]
 enabled = true
 
-[capabilities.testing.panic]
+[capabilities.system.panic]
 enabled = true
 
-[capabilities.testing.assert]
+[capabilities.testing.check]
 enabled = true
 
-[capabilities.testing.assert_eq]
+[capabilities.testing.equal]
 enabled = true

@@ -1664,15 +1664,13 @@ mod tests {
 
     #[test]
     fn strict_violations_reports_disabled_builtin() {
-        let program = compile_program(r#"val _ = exec ("echo", [])"#);
+        let program =
+            compile_program("import __Builtin.Exec\nval _ = BuiltinExec.exec (\"echo\", [])");
         let allowed: BTreeSet<&'static str> = core_builtin_names().collect();
         let violations = strict_violations(&program, &allowed).expect("scan should succeed");
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].builtin, "exec");
-        assert_eq!(
-            violations[0].capability_path,
-            Some("capabilities.exec.exec")
-        );
+        assert_eq!(violations[0].capability_path, Some("capabilities.exec.run"));
     }
 
     #[test]
@@ -1690,10 +1688,23 @@ val _ = exec ("echo", [])
 
     #[test]
     fn strict_validation_uses_run_config_surface() {
-        let program = compile_program(r#"val _ = println "ok""#);
+        let program =
+            compile_program("import __Builtin.Stdio\nval _ = BuiltinStdio.println \"ok\"");
+        // The imported __Builtin.Stdio module body names every stdio
+        // builtin, so the strict surface needs each leaf.
         let config = RunConfig::from_toml(
             r#"
+[capabilities.stdio.print]
+enabled = true
 [capabilities.stdio.println]
+enabled = true
+[capabilities.stdio.eprint]
+enabled = true
+[capabilities.stdio.eprintln]
+enabled = true
+[capabilities.stdio.read_line]
+enabled = true
+[capabilities.stdio.read_stdin]
 enabled = true
 "#,
         )
@@ -1819,7 +1830,7 @@ name = "demo"
     fn strict_message_includes_layer_and_policy_context() {
         let violation = super::StrictViolation {
             builtin: "exec".to_string(),
-            capability_path: Some("capabilities.exec.exec"),
+            capability_path: Some("capabilities.exec.run"),
             span: None,
         };
         let surface = RuntimeSurface::Policy(ResolvedPolicy {
@@ -1831,7 +1842,7 @@ name = "demo"
         let message = strict_message(&violation, &surface);
         assert!(message.contains("RunConfig::build_vm"), "got: {message}");
         assert!(message.contains("policy 'dev'"), "got: {message}");
-        assert!(message.contains("capabilities.exec.exec"), "got: {message}");
+        assert!(message.contains("capabilities.exec.run"), "got: {message}");
     }
 
     #[test]
@@ -1844,6 +1855,6 @@ name = "demo"
         };
         let message = runtime_error_message("undefined global: exec", &policy);
         assert!(message.contains("policy 'core'"), "got: {message}");
-        assert!(message.contains("capabilities.exec.exec"), "got: {message}");
+        assert!(message.contains("capabilities.exec.run"), "got: {message}");
     }
 }

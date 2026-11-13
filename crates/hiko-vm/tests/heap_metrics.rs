@@ -27,23 +27,23 @@ fn single_and_threaded_runtime_lifecycle_summaries_include_every_heap() {
     std::fs::create_dir_all(root).unwrap();
     let fixtures = [
         (
-            "val p = spawn (fn () => (1, 2))\nval _ = await_process p",
+            "import __Builtin.Fiber\nval p = BuiltinFiber.spawn (fn () => (1, 2))\nval _ = BuiltinFiber.await p",
             2,
         ),
         (
-            "fun go n = if n = 0 then () else let val p = spawn (fn () => (1, 2)) val _ = await_process p in go (n - 1) end\nval _ = go 20",
+            "import __Builtin.Fiber\nfun go n = if n = 0 then () else let val p = BuiltinFiber.spawn (fn () => (1, 2)) val _ = BuiltinFiber.await p in go (n - 1) end\nval _ = go 20",
             21,
         ),
         (
-            "fun loop n = loop (n + 1)\nval p = spawn (fn () => loop 0)\nval _ = cancel p",
+            "import __Builtin.Fiber\nfun loop n = loop (n + 1)\nval p = BuiltinFiber.spawn (fn () => loop 0)\nval _ = BuiltinFiber.cancel p",
             2,
         ),
         (
-            "fun loop n = loop (n + 1)\nval p = spawn (fn () => loop 0)",
+            "import __Builtin.Fiber\nfun loop n = loop (n + 1)\nval p = BuiltinFiber.spawn (fn () => loop 0)",
             2,
         ),
         (
-            "val p = spawn (fn () => panic \"handled\")\nval _ = await_process_result p",
+            "import __Builtin.Fiber\nimport __Builtin.Testing\nval p = BuiltinFiber.spawn (fn () => BuiltinTesting.panic \"handled\")\nval _ = BuiltinFiber.await_result p",
             2,
         ),
     ];

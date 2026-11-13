@@ -1,33 +1,36 @@
 (* regex_demo.hml -- Regular expression matching and replacement *)
 import Std.List
+import Std.Regex
+import Std.Stdio
+import Std.String
 
 (* Simple matching *)
-val _ = println "=== Regex match ==="
+val _ = Stdio.println "=== Regex match ==="
 
-val _ = println (if regex_match ("hello world", "^hello") then "starts with hello" else "no match")
+val _ = Stdio.println (if Regex.matches "^hello" "hello world" then "starts with hello" else "no match")
 
-val _ = println (if regex_match ("foo@bar.com", "[a-z]+@[a-z]+\\.[a-z]+") then "looks like email" else "not email")
+val _ = Stdio.println (if Regex.matches "[a-z]+@[a-z]+\\.[a-z]+" "foo@bar.com" then "looks like email" else "not email")
 
-val _ = println (if regex_match ("12345", "^\\d+$") then "all digits" else "not all digits")
+val _ = Stdio.println (if Regex.matches "^\\d+$" "12345" then "all digits" else "not all digits")
 
-val _ = println (if regex_match ("hello", "^\\d+$") then "all digits" else "not all digits")
+val _ = Stdio.println (if Regex.matches "^\\d+$" "hello" then "all digits" else "not all digits")
 
 (* Replacement *)
-val _ = println "\n=== Regex replace ==="
+val _ = Stdio.println "\n=== Regex replace ==="
 
-val _ = println (regex_replace ("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})", "$2/$3/$1"))
+val _ = Stdio.println (Regex.replace "(\\d{4})-(\\d{2})-(\\d{2})" "$2/$3/$1" "2024-01-15")
 
-val _ = println (regex_replace ("foo  bar   baz", "\\s+", " "))
+val _ = Stdio.println (Regex.replace "\\s+" " " "foo  bar   baz")
 
-val _ = println (regex_replace ("camelCase", "([a-z])([A-Z])", "$1_$2"))
+val _ = Stdio.println (Regex.replace "([a-z])([A-Z])" "$1_$2" "camelCase")
 
 (* Filter lines matching a pattern *)
-val _ = println "\n=== Filter with regex ==="
+val _ = Stdio.println "\n=== Filter with regex ==="
 
 val code = "fun foo x = x + 1\nval bar = 42\nfun baz y = y * 2\nval qux = true"
 
-val lines = split (code, "\n")
+val lines = String.split "\n" code
 
-val funs = List.filter (fn l => regex_match (l, "^fun ")) lines
+val funs = List.filter (fn l => Regex.matches "^fun " l) lines
 
-val _ = List.map println funs
+val _ = List.map Stdio.println funs

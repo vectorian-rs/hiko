@@ -11,11 +11,11 @@ end
 structure Random :> RANDOM = struct
   type t = rng
 
-  fun entropy count = BuiltinRandom.random_bytes_raw count
+  fun entropy count = BuiltinRandom.random_bytes count
 
-  fun seed bytes = BuiltinRandom.seed_raw bytes
+  fun seed bytes = BuiltinRandom.seed bytes
 
-  fun bytes count rng = BuiltinRandom.bytes_raw (rng, count)
+  fun bytes count rng = BuiltinRandom.bytes (rng, count)
 
-  fun int_between bound rng = BuiltinRandom.int_raw (rng, bound)
+  fun int_between bound rng = BuiltinRandom.int (rng, bound)
 end

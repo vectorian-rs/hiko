@@ -5,6 +5,10 @@
  * asks for it, so a generator can be infinite. It needs only a datatype and
  * closures, and runs in constant stack.
  *)
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 datatype 'a stream =
     Done
   | Next of 'a * (unit -> 'a stream)
@@ -33,30 +37,30 @@ fun sfold f acc s =
 fun show xs =
   case xs of
       [] => ""
-    | [x] => int_to_string x
-    | x :: rest => int_to_string x ^ ", " ^ show rest
+    | [x] => Int.to_string x
+    | x :: rest => Int.to_string x ^ ", " ^ show rest
 
 val generated = take 100 (range 1 10)
 
-val _ = println ("Generated 1..10: " ^ show generated)
+val _ = Stdio.println ("Generated 1..10: " ^ show generated)
 
-val _ = assert_eq (generated, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "range")
+val _ = Testing.equal generated ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) "range"
 
 val total = sfold (fn (acc, x) => acc + x) 0 (range 1 10)
 
-val _ = println ("Sum: " ^ int_to_string total)
+val _ = Stdio.println ("Sum: " ^ Int.to_string total)
 
-val _ = assert_eq (total, 55, "sum")
+val _ = Testing.equal total 55 "sum"
 
 (* An infinite generator: only the items taken are computed *)
 val fibs = take 10 (fib_from 0 1)
 
-val _ = println ("First 10 Fibonacci numbers: " ^ show fibs)
+val _ = Stdio.println ("First 10 Fibonacci numbers: " ^ show fibs)
 
-val _ = assert_eq (fibs, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34], "fibonacci")
+val _ = Testing.equal fibs ([0, 1, 1, 2, 3, 5, 8, 13, 21, 34]) "fibonacci"
 
 val squares = take 5 (smap (fn x => x * x) (range 1 100))
 
-val _ = println ("Squares: " ^ show squares)
+val _ = Stdio.println ("Squares: " ^ show squares)
 
-val _ = assert_eq (squares, [1, 4, 9, 16, 25], "squares")
+val _ = Testing.equal squares ([1, 4, 9, 16, 25]) "squares"

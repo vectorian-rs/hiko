@@ -1,14 +1,22 @@
 (* benchmark.hml -- Walk .git recursively, hash every file. *)
 import Std.Filesystem
+import Hash.Blake3
+import Std.Bytes
+import Std.Int
+import Std.Stdio
+import Std.Time
+
+(* Milliseconds from the monotonic clock, for interval arithmetic. *)
+fun now_ms () = case Time.monotonic_now () of Time.Monotonic ms => ms
 
 val target_dir = ".git"
 
 fun hash_file path =
   let
     val bytes = Filesystem.read_bytes path
-    val hash = blake3 bytes
+    val hash = Blake3.hash bytes
   in
-    hash ^ "  " ^ int_to_string (bytes_length bytes) ^ "  " ^ path
+    hash ^ "  " ^ Int.to_string (Bytes.length bytes) ^ "  " ^ path
   end
 
 fun print_hashes_count files count =
@@ -16,12 +24,12 @@ fun print_hashes_count files count =
       [] => count
     | path :: rest =>
       let
-        val _ = println (hash_file path)
+        val _ = Stdio.println (hash_file path)
       in
         print_hashes_count rest (count + 1)
       end
 
-val t0 = monotonic_ms ()
+val t0 = now_ms ()
 
 val count = Filesystem.run (fn () => let
   val files = Filesystem.walk target_dir
@@ -29,6 +37,6 @@ in
   print_hashes_count files 0
 end)
 
-val elapsed = monotonic_ms () - t0
+val elapsed = now_ms () - t0
 
-val _ = println ("  " ^ int_to_string count ^ " files, " ^ int_to_string elapsed ^ " ms")
+val _ = Stdio.println ("  " ^ Int.to_string count ^ " files, " ^ Int.to_string elapsed ^ " ms")

@@ -3,6 +3,10 @@
  * Input: 8 => 92 solutions
  *)
 
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 fun safe (x : int, d, qs) = case qs of
     [] => true
   | q :: rest =>
@@ -21,5 +25,5 @@ and count_cols (n, row, placed, col, acc) =
   in count_cols (n, row, placed, col + 1, acc + next) end
 
 val result = count_queens (8, 1, [])
-val _ = assert_eq (result, 92, "nqueens(8)")
-val _ = println ("nqueens(8) = " ^ int_to_string result)
+val _ = Testing.equal result 92 "nqueens(8)"
+val _ = Stdio.println ("nqueens(8) = " ^ Int.to_string result)

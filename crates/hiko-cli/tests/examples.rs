@@ -10,8 +10,63 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Populate the repository's `.hiko-cache` from `libraries/`, exactly as
+/// `hiko install` would from the local registry, so example runs resolve
+/// named imports without network or machine-global state. Once per process.
+#[cfg(all(feature = "cli-lock", feature = "loader-named-imports"))]
+fn populate_module_cache() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(populate_module_cache_now);
+}
+
+#[cfg(all(feature = "cli-lock", feature = "loader-named-imports"))]
+fn populate_module_cache_now() {
+    let root = repo_root();
+    let cache = root.join(".hiko-cache");
+    for package in std::fs::read_dir(root.join("libraries")).unwrap() {
+        let package = package.unwrap();
+        let name = package.file_name().to_string_lossy().into_owned();
+        let Some((_, _version)) = name.split_once("-v") else {
+            continue; // _assets and loose files are not packages
+        };
+        let modules = package.path().join("modules");
+        if !modules.is_dir() {
+            continue;
+        }
+        let base = format!("http://127.0.0.1:8000/{name}/modules");
+        let mut pending = vec![modules.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "hml") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let hash = hiko_common::blake3_hex(source.as_bytes());
+                let relative = path
+                    .strip_prefix(&modules)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let url = format!("{base}/{relative}");
+                hiko_compile::compiler::store_cached_module(&cache, &url, &hash, &source).unwrap();
+            }
+        }
+    }
+}
+
+/// Without the loader features the cache cannot be read either; the example
+/// runs that need it are feature-gated with the binary surface they test.
+#[cfg(not(all(feature = "cli-lock", feature = "loader-named-imports")))]
+fn populate_module_cache() {}
+
 /// Runs `script` under `policy` with `stdin` and returns (success, stderr).
 fn run(script: &str, policy: &str, stdin: &[u8]) -> (bool, String) {
+    populate_module_cache();
     let mut child = Command::new(env!("CARGO_BIN_EXE_hiko-cli"))
         .current_dir(repo_root())
         .env("NO_COLOR", "1")
@@ -159,7 +214,7 @@ mod thin_modules {
             (
                 "panic",
                 "System.panic \"sentinel\"",
-                "[capabilities.testing.panic]\nenabled = true",
+                "[capabilities.system.panic]\nenabled = true",
                 None,
                 "error: sentinel",
             ),
@@ -213,12 +268,12 @@ mod thin_modules {
             ),
             (
                 "strict-system-panic",
-                "[capabilities.testing.panic]\nenabled = true",
+                "[capabilities.system.panic]\nenabled = true",
                 false,
             ),
             (
                 "strict-system-both",
-                "[capabilities.system.exit]\nenabled = true\n[capabilities.testing.panic]\nenabled = true",
+                "[capabilities.system.exit]\nenabled = true\n[capabilities.system.panic]\nenabled = true",
                 true,
             ),
         ] {
@@ -242,44 +297,54 @@ mod thin_modules {
 
     #[test]
     fn strict_noun_import_checks_every_unused_leaf() {
-        let cases: &[(&str, &str, &[&str], bool)] = &[
+        type NounCase = (&'static str, &'static [(&'static str, &'static str)], bool);
+        let cases: &[NounCase] = &[
             (
                 "Int",
-                "convert",
-                &["string_to_int", "int_to_string"],
+                &[
+                    ("int.abs", "abs_int"),
+                    ("int.of_string", "string_to_int"),
+                    ("int.to_string", "int_to_string"),
+                ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
                 "Float",
-                "convert",
-                &["int_to_float", "float_to_string"],
+                &[
+                    ("float.abs", "abs_float"),
+                    ("float.ceil", "ceil"),
+                    ("float.floor", "floor"),
+                    ("float.of_int", "int_to_float"),
+                    ("float.sqrt", "sqrt"),
+                    ("float.to_string", "float_to_string"),
+                ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
                 "Char",
-                "convert",
-                &["int_to_char", "char_to_int"],
+                &[
+                    ("char.of_int", "int_to_char"),
+                    ("char.to_int", "char_to_int"),
+                ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
                 "Word",
-                "convert",
                 &[
-                    "int_to_word",
-                    "word_to_int",
-                    "string_to_word",
-                    "word_to_string",
+                    ("word.of_int", "int_to_word"),
+                    ("word.to_int", "word_to_int"),
+                    ("word.of_string", "string_to_word"),
+                    ("word.to_string", "word_to_string"),
                 ],
                 cfg!(feature = "builtin-convert"),
             ),
             (
                 "Path",
-                "path",
-                &["path_join"],
+                &[("path.join", "path_join")],
                 cfg!(feature = "builtin-path"),
             ),
         ];
-        for &(module, family, leaves, enabled) in cases {
+        for &(module, leaves, enabled) in cases {
             if !enabled {
                 continue;
             }
@@ -290,7 +355,7 @@ mod thin_modules {
                     .iter()
                     .enumerate()
                     .filter(|(index, _)| *index != omitted)
-                    .map(|(_, leaf)| format!("[capabilities.{family}.{leaf}]\nenabled = true\n"))
+                    .map(|(_, (key, _))| format!("[capabilities.{key}]\nenabled = true\n"))
                     .collect::<String>();
                 let project = Project::new(
                     &format!("strict-{module}-{omitted}"),
@@ -307,7 +372,7 @@ mod thin_modules {
                 );
                 if omitted < leaves.len() {
                     assert!(
-                        stderr(&output).contains(leaves[omitted]),
+                        stderr(&output).contains(leaves[omitted].1),
                         "{}",
                         stderr(&output)
                     );
@@ -327,7 +392,9 @@ mod thin_modules {
     fn all_thin_module_signatures_typecheck_from_installed_sources() {
         let project = Project::new(
             "signatures",
-            &["Int", "Float", "Char", "Word", "Path", "System"],
+            &[
+                "Int", "Float", "Char", "Word", "Path", "System", "Stdio", "Testing",
+            ],
             include_str!("../../../tests/run/test_thin_modules.hml"),
             "",
         );
@@ -368,7 +435,7 @@ mod thin_modules {
     #[cfg(feature = "builtin-process")]
     #[test]
     fn bulk_only_fiber_import_and_calls_do_not_grant_individual_leaves() {
-        let policy = "[capabilities.process.spawn]\nenabled = true\n[capabilities.fiber.fiber_await_all]\nenabled = true\n";
+        let policy = "[capabilities.fiber.spawn]\nenabled = true\n[capabilities.fiber.join_all]\nenabled = true\n";
         let source = "import Std.Fiber\nval result = case Fiber.all [fn () => 10, fn () => 20] of Result.Ok [10, 20] => 42 | _ => 1 / 0\nval both : (int * string, Fiber.error) Result.result = Fiber.both (fn () => 3, fn () => \"different type\")\n";
         let project = Project::new(
             "fiber-bulk-only",
@@ -391,7 +458,7 @@ mod thin_modules {
             "{}",
             stderr(&output)
         );
-        let spawn_only = "[capabilities.process.spawn]\nenabled = true\n";
+        let spawn_only = "[capabilities.fiber.spawn]\nenabled = true\n";
         for (name, call, expected, policy) in [
             (
                 "no-bulk",
@@ -438,14 +505,14 @@ mod thin_modules {
     #[test]
     fn bulk_ceiling_does_not_change_any_and_all_checks_before_first_spawn() {
         let limits = "[limits]\nmax_fuel = 1000000000\nmax_heap = 2000000\nmax_host_work = 100000000\nmax_live_processes = 20000\nmax_spawns = 10001\nmax_join_group_bytes = 0\n";
-        let leaves = "[capabilities.process.spawn]\nenabled = true\n[capabilities.process.await_process]\nenabled = true\n[capabilities.process.cancel]\nenabled = true\n[capabilities.process.wait_any]\nenabled = true\n[capabilities.testing.panic]\nenabled = true\n";
-        let build = "import Std.Fiber\nfun build n acc = if n = 0 then acc else build (n - 1) ((fn () => 1) :: acc)\n";
+        let leaves = "[capabilities.fiber.spawn]\nenabled = true\n[capabilities.fiber.join_or_fail]\nenabled = true\n[capabilities.fiber.join]\nenabled = true\n[capabilities.fiber.cancel]\nenabled = true\n[capabilities.fiber.wait_any]\nenabled = true\n[capabilities.system.panic]\nenabled = true\n";
+        let build = "import Std.Fiber\nimport Std.System\nfun build n acc = if n = 0 then acc else build (n - 1) ((fn () => 1) :: acc)\n";
         // No bulk grant, and zero group bytes: any retains its old policy.
         let project = Project::new(
             "fiber-any-10001",
-            &["Fiber", "Either", "Result"],
+            &["Fiber", "Either", "Result", "System"],
             &format!(
-                "{build}val result = case Fiber.any (build 10001 []) of Result.Ok 1 => 42 | _ => panic \"any failed\"\n"
+                "{build}val result = case Fiber.any (build 10001 []) of Result.Ok 1 => 42 | _ => System.panic \"any failed\"\n"
             ),
             &format!("{limits}{leaves}"),
         );
@@ -459,10 +526,10 @@ mod thin_modules {
         // input precheck before invoking spawn or reserving a group.
         let project = Project::new(
             "fiber-all-10001",
-            &["Fiber", "Either", "Result"],
+            &["Fiber", "Either", "Result", "System"],
             &format!("{build}val result = Fiber.all (build 10001 [])\n"),
             &format!(
-                "{}{}[capabilities.fiber.fiber_await_all]\nenabled = true\n",
+                "{}{}[capabilities.fiber.join_all]\nenabled = true\n",
                 limits.replace("max_spawns = 10001", "max_spawns = 0"),
                 leaves
             ),
@@ -483,12 +550,12 @@ mod thin_modules {
         // and existing spawn/work/heap policies all permit it.
         let project = Project::new(
             "fiber-all-10000",
-            &["Fiber", "Either", "Result"],
+            &["Fiber", "Either", "Result", "System"],
             &format!(
-                "{build}fun count xs n = case xs of [] => n | _ :: rest => count rest (n + 1)\nval result = case Fiber.all (build 10000 []) of Result.Ok values => if count values 0 = 10000 then 42 else panic \"length\" | _ => panic \"all failed\"\n"
+                "{build}fun count xs n = case xs of [] => n | _ :: rest => count rest (n + 1)\nval result = case Fiber.all (build 10000 []) of Result.Ok values => if count values 0 = 10000 then 42 else System.panic \"length\" | _ => System.panic \"all failed\"\n"
             ),
             &format!(
-                "{}{}[capabilities.fiber.fiber_await_all]\nenabled = true\n",
+                "{}{}[capabilities.fiber.join_all]\nenabled = true\n",
                 limits.replace(
                     "max_join_group_bytes = 0",
                     "max_join_group_bytes = 67108864"
@@ -512,13 +579,16 @@ mod thin_modules {
     #[test]
     fn strict_fiber_registration_checks_every_leaf_including_bulk() {
         let leaves = [
-            ("process.spawn", "spawn"),
-            ("process.await_process", "await_process"),
-            ("process.cancel", "cancel"),
-            ("process.wait_any", "wait_any"),
-            ("fiber.fiber_await_all", "fiber_await_all"),
-            ("testing.panic", "panic"),
-            ("convert.int_to_string", "int_to_string"),
+            ("fiber.spawn", "spawn"),
+            ("fiber.join_or_fail", "await_process"),
+            ("fiber.join", "await_process_result"),
+            ("fiber.cancel", "cancel"),
+            ("fiber.wait_any", "wait_any"),
+            ("fiber.join_all", "fiber_await_all"),
+            ("system.panic", "panic"),
+            ("int.abs", "abs_int"),
+            ("int.of_string", "string_to_int"),
+            ("int.to_string", "int_to_string"),
         ];
         for omitted in 0..=leaves.len() {
             let policy = leaves
@@ -557,7 +627,7 @@ mod thin_modules {
                 "missing-system-feature",
                 &["System"],
                 "import Std.System\nval x = 1",
-                "[capabilities.system.exit]\nenabled = true\n[capabilities.testing.panic]\nenabled = true",
+                "[capabilities.system.exit]\nenabled = true\n[capabilities.system.panic]\nenabled = true",
             );
             let output = project.hiko(&["run", "main.hml"]);
             let message = stderr(&output);

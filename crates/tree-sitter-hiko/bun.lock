@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "tree-sitter-hiko",
+      "devDependencies": {
+        "tree-sitter-cli": "^0.24.7",
+      },
+    },
+  },
+  "packages": {
+    "tree-sitter-cli": ["tree-sitter-cli@0.24.7", "", { "bin": { "tree-sitter": "cli.js" } }, "sha512-o4gnE82pVmMMhJbWwD6+I9yr4lXii5Ci5qEQ2pFpUbVy1YiD8cizTJaqdcznA0qEbo7l2OneI1GocChPrI4YGQ=="],
+  }
+}

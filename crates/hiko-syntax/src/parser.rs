@@ -3,6 +3,9 @@ use crate::intern::{StringInterner, Symbol};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
+const IMPORT_POSITION: &str =
+    "import must come before the first declaration; move it to the top of the file";
+
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
@@ -354,12 +357,26 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut decls = Vec::new();
+        let mut seen_non_import = false;
         while !matches!(self.peek(), TokenKind::Eof) {
             let decl = match self.peek() {
                 TokenKind::Signature => self.parse_signature_decl()?,
                 TokenKind::Structure => self.parse_structure_decl()?,
                 _ => self.parse_decl()?,
             };
+            let is_import = matches!(
+                decl.kind,
+                DeclKind::Import(_) | DeclKind::ImportWithNames(_, _)
+            );
+            if is_import && seen_non_import {
+                return Err(ParseError {
+                    message: IMPORT_POSITION.into(),
+                    span: decl.span,
+                });
+            }
+            if !is_import {
+                seen_non_import = true;
+            }
             decls.push(decl);
         }
         for decl in &decls {
@@ -391,7 +408,7 @@ impl Parser {
             TokenKind::Effect => self.parse_effect_decl(),
             _ => {
                 Err(self
-                    .err("expected declaration (val, fun, datatype, type, local, import, use, signature, structure, or effect)"))
+                    .err("expected declaration (val, fun, datatype, type, local, import, signature, structure, or effect)"))
             }
         }
     }
@@ -588,24 +605,7 @@ impl Parser {
     }
 
     fn parse_use_decl(&mut self) -> Result<Decl, ParseError> {
-        let start = self.span();
-        self.advance(); // consume `use`
-        if matches!(self.peek(), TokenKind::StringLit(_)) {
-            let end = self.span();
-            let path = self.take_string_lit();
-            if !(path.starts_with("./") || path.starts_with("../")) {
-                return Err(
-                    self.err("use expects an explicit relative path beginning with './' or '../'")
-                );
-            }
-            let span = start.merge(end);
-            Ok(Decl {
-                kind: DeclKind::Use(path),
-                span,
-            })
-        } else {
-            Err(self.err("expected string literal after 'use'"))
-        }
+        Err(self.err("use was removed; use import Proj.<Module> for local modules under src/"))
     }
 
     fn parse_import_decl(&mut self) -> Result<Decl, ParseError> {
@@ -614,14 +614,19 @@ impl Parser {
         let (package, _) = self.expect_import_package_name()?;
         self.expect(&TokenKind::Dot, ".")?;
         let (module, mut end) = self.expect_upper_ident()?;
-        if matches!(self.peek(), TokenKind::Dot) {
-            return Err(self.err("import expects exactly two segments: Package.Module"));
-        }
-        let name = self.interner.intern(&format!(
+        let mut full = format!(
             "{}.{}",
             self.interner.resolve(package),
             self.interner.resolve(module)
-        ));
+        );
+        while matches!(self.peek(), TokenKind::Dot) {
+            self.advance(); // consume `.`
+            let (segment, segment_end) = self.expect_upper_ident()?;
+            full.push('.');
+            full.push_str(self.interner.resolve(segment));
+            end = segment_end;
+        }
+        let name = self.interner.intern(&full);
 
         // Check for optional (Name1, Name2, ...) exposure list
         if matches!(self.peek(), TokenKind::LParen) {
@@ -1725,10 +1730,17 @@ fn check_decl_nesting(decl: &Decl, depth: u32) -> Result<(), ParseError> {
             .try_for_each(|decl| check_decl_nesting(decl, inner)),
         DeclKind::ExportVal { ty, .. } => check_type_nesting(ty, inner),
         DeclKind::Effect(_, ty) => ty.iter().try_for_each(|ty| check_type_nesting(ty, inner)),
-        DeclKind::Import(_)
-        | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
-        | DeclKind::AbstractType(_) => Ok(()),
+        DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) => {
+            if depth > 1 {
+                Err(ParseError {
+                    message: IMPORT_POSITION.into(),
+                    span: decl.span,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        DeclKind::AbstractType(_) => Ok(()),
     }
 }
 
@@ -2024,9 +2036,12 @@ mod tests {
     }
 
     #[test]
-    fn test_use_decl() {
-        let prog = parse(r#"use "./foo.hml""#);
-        assert!(matches!(&prog.decls[0].kind, DeclKind::Use(path) if path == "./foo.hml"));
+    fn test_use_decl_reports_removal_guidance() {
+        let err = parse_err(r#"use "./foo.hml""#);
+        assert_eq!(
+            err,
+            "use was removed; use import Proj.<Module> for local modules under src/"
+        );
     }
 
     #[test]
@@ -2065,9 +2080,35 @@ mod tests {
     }
 
     #[test]
-    fn test_import_decl_rejects_deep_names() {
-        let err = parse_err("import Std.List.Extras");
-        assert!(err.contains("exactly two segments"));
+    fn test_import_decl_accepts_nested_names() {
+        let prog = parse("import Proj.Net.Client");
+        assert!(
+            matches!(&prog.decls[0].kind, DeclKind::Import(name) if prog.interner.resolve(*name) == "Proj.Net.Client")
+        );
+    }
+
+    #[test]
+    fn test_import_after_declaration_rejected() {
+        let err = parse_err("val x = 1\nimport Std.List");
+        assert!(err.contains("import must come before the first declaration"));
+    }
+
+    #[test]
+    fn test_import_inside_let_rejected() {
+        let err = parse_err("val x = let import Std.List in 1 end");
+        assert!(err.contains("import must come before the first declaration"));
+    }
+
+    #[test]
+    fn test_import_inside_local_rejected() {
+        let err = parse_err("local import Std.List in val x = 1 end");
+        assert!(err.contains("import must come before the first declaration"));
+    }
+
+    #[test]
+    fn test_import_inside_structure_rejected() {
+        let err = parse_err("structure S = struct import Std.List\nval x = 1 end");
+        assert!(err.contains("import must come before the first declaration"));
     }
 
     #[test]
@@ -2107,9 +2148,9 @@ mod tests {
     }
 
     #[test]
-    fn test_use_decl_requires_explicit_relative_path() {
-        let err = parse_err(r#"use "foo.hml""#);
-        assert!(err.contains("explicit relative path"));
+    fn test_use_decl_rejected_in_nested_position() {
+        let err = parse_err(r#"val x = let use "./foo.hml" in 1 end"#);
+        assert!(err.contains("use was removed"));
     }
 
     #[test]
@@ -2531,7 +2572,7 @@ mod tests {
         ] {
             assert_eq!(
                 parse_err(src),
-                "expected declaration (val, fun, datatype, type, local, import, use, signature, structure, or effect)",
+                "expected declaration (val, fun, datatype, type, local, import, signature, structure, or effect)",
                 "{src}"
             );
         }

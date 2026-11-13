@@ -177,7 +177,7 @@ fn program_from_bytes(bytes: &[u8]) -> String {
         scope: Vec::new(),
         lets: 0,
         calls: false,
-        out: String::new(),
+        out: String::from("import __Builtin.Stdio\nimport __Builtin.Int\n"),
     };
     for f in 0..g.arities.len() {
         let params: Vec<String> = (0..g.arities[f]).map(|i| format!("p{i}")).collect();
@@ -201,7 +201,8 @@ fn program_from_bytes(bytes: &[u8]) -> String {
     g.scope.clear();
     g.calls = false;
     for _ in 0..1 + g.choices.below(3) {
-        g.out.push_str("val _ = println (int_to_string ");
+        g.out
+            .push_str("val _ = BuiltinStdio.println (BuiltinInt.to_string ");
         let counter = g.choices.below(7).to_string();
         g.call(1, &counter);
         g.out.push_str(")\n");
@@ -331,7 +332,7 @@ pub fn check_bytes(bytes: &[u8]) -> Result<(), String> {
     check(&program, *seed).map_err(|diff| format!("{diff}\nprogram:\n{src}"))
 }
 
-// Generated programs print with `println` and `int_to_string`.
+// Generated programs print with `BuiltinStdio.println` and `BuiltinInt.to_string`.
 #[cfg(all(test, feature = "builtin-stdio", feature = "builtin-convert"))]
 mod tests {
     use super::*;
@@ -363,9 +364,19 @@ mod tests {
                 .collect();
             let program = compile(&program_from_bytes(&bytes)).expect("compiles");
             let code = RegisterCode::translate(&program);
-            total += program.functions.len();
+            // Count only the generated `f<n>` functions: the __Builtin module
+            // members the imports add are alias shapes, not generated ones.
+            let generated = |i: usize| {
+                program.functions[i]
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with('f') && !name.contains('.'))
+            };
+            total += (0..program.functions.len())
+                .filter(|&i| generated(i))
+                .count();
             translated += (0..program.functions.len())
-                .filter(|&i| code.get(i).is_some())
+                .filter(|&i| generated(i) && code.get(i).is_some())
                 .count();
         }
         eprintln!("{translated} of {total} generated functions translate");

@@ -1,34 +1,40 @@
 (* rng_demo.hml -- Deterministic random number generation *)
 
 (* Seed from bytes *)
-val r0 = rng_seed (string_to_bytes "hello world")
+import Std.Bytes
+import Std.Int
+import Std.Random
+import Std.Stdio
+import Std.Testing
+
+val r0 = Random.seed (Bytes.of_string "hello world")
 
 (* Generate random integers 0-99 *)
-val (a, r1) = rng_int (r0, 100)
+val (a, r1) = Random.int_between 100 r0
 
-val (b, r2) = rng_int (r1, 100)
+val (b, r2) = Random.int_between 100 r1
 
-val (c, r3) = rng_int (r2, 100)
+val (c, r3) = Random.int_between 100 r2
 
-val _ = println ("Random ints: " ^ int_to_string a ^ ", " ^ int_to_string b ^ ", " ^ int_to_string c)
+val _ = Stdio.println ("Random ints: " ^ Int.to_string a ^ ", " ^ Int.to_string b ^ ", " ^ Int.to_string c)
 
 (* Same seed => same sequence *)
-val r0b = rng_seed (string_to_bytes "hello world")
+val r0b = Random.seed (Bytes.of_string "hello world")
 
-val (a2, _) = rng_int (r0b, 100)
+val (a2, _) = Random.int_between 100 r0b
 
-val _ = assert (a = a2, "same seed produces same value")
+val _ = Testing.check (a = a2) "same seed produces same value"
 
-val _ = println "Determinism check passed"
+val _ = Stdio.println "Determinism check passed"
 
 (* Generate random bytes *)
-val (random_bytes, r4) = rng_bytes (r3, 8)
+val (random_bytes, r4) = Random.bytes 8 r3
 
-val _ = println ("Random bytes length: " ^ int_to_string (bytes_length random_bytes))
+val _ = Stdio.println ("Random bytes length: " ^ Int.to_string (Bytes.length random_bytes))
 
 (* Different seed => different sequence *)
-val r_other = rng_seed (string_to_bytes "different seed")
+val r_other = Random.seed (Bytes.of_string "different seed")
 
-val (d, _) = rng_int (r_other, 100)
+val (d, _) = Random.int_between 100 r_other
 
-val _ = println ("Different seed: " ^ int_to_string d)
+val _ = Stdio.println ("Different seed: " ^ Int.to_string d)

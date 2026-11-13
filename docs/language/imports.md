@@ -1,42 +1,19 @@
 # Imports And Packages
 
-How Hiko programs pull in local files and named library modules, and how named
-modules are resolved, fetched, locked, cached, and verified. For `structure`
-and `signature`, see [modules.md](modules.md).
+How Hiko programs import local project modules and named library modules, and
+how named modules are resolved, fetched, locked, cached, and verified. For
+`structure` and `signature`, see [modules.md](modules.md).
 
-## `use` And `import`
+## `import`
 
-Hiko needs two distinct composition mechanisms:
-
-- `use "./file.hml"` for **explicit local file inclusion**
-- `import Std.List` for **named library/module imports**
-
-They are deliberately different.
-
-### `use`
-
-`use` is for local source composition only:
+`import` is the single composition mechanism. `use` was removed by #186;
+it stays a reserved word, and the parser reports
+`use was removed; use import Proj.<Module> for local modules under src/`.
 
 ```sml
-use "./helpers.hml"
-use "../shared/math.hml"
-```
-
-Properties:
-
-- path-based
-- explicit
-- resolved relative to the importing file
-- intended for local project source, not packages
-- not locked or BLAKE3-verified through `hiko.lock.toml` today
-
-### `import`
-
-`import` is for named modules:
-
-```sml
+import Proj.Util
+import Proj.Net.Client
 import Std.List
-import Std.Prelude
 import Std.Option (Some, None)
 ```
 
@@ -44,19 +21,15 @@ The parenthesized form also brings the listed names into scope unqualified.
 
 Properties:
 
-- exactly two segments: `Package.Module`
-- both segments are single identifiers
+- two or more upper-case identifier segments; the first names the package
+- `Proj` names the package that owns the importing source: a project file
+  resolves under that project's `src/`, a library under its own `modules/`
+- top-level only, before the first declaration; imports evaluate in source
+  order, and a repeated import executes a module once
 - logical name, not path syntax
-- resolved through project metadata and lock data
-- fetched over HTTP
-- verified before use
-- cached for reuse
-
-So the intended split is:
-
-- `use` = local file mechanism
-- `import` = named library mechanism
-- modules themselves still provide namespace and abstraction
+- library imports resolve through project metadata and lock data,
+  fetched over HTTP at install time, verified before use, cached for reuse
+- project (`Proj`) modules read mutable project source without package pins
 
 ## HTTP-Backed Library Loading
 
@@ -94,13 +67,12 @@ The source does not embed:
 
 Those belong in project metadata and lock data.
 
-Nested module hierarchies are not supported for named imports. If something feels like it wants a third segment, use:
-
-- a compound module name such as `ListExtras` or `ClientTls`
-- a sibling module
-- internal `structure` declarations inside the module body
-
-The resolver only needs to split on the first `.`.
+Nested module names are supported: `Acme.Net.Client` has lock key
+`"Net.Client"` and lives at `modules/Net/Client.hml` in its package;
+`Proj.Net.Client` in a project maps to `src/Net/Client.hml`. The resolver
+splits on the first `.` for the package and keeps the rest as the module
+path. Filesystem resolution requires exact spelling and refuses symlinks
+below the owner's source root.
 
 ### Published Shape
 
@@ -125,13 +97,12 @@ This means:
 - modules remain individually addressable
 - tooling can browse a package root without downloading everything eagerly
 
-Module names do not nest. Published modules live in one flat directory:
+Published modules live under `modules/`, nesting with their dotted names:
 
 - `Std.List` -> `Std-v0.1.0/modules/List.hml`
-- `Std.Map` -> `Std-v0.1.0/modules/Map.hml`
-- `Std.ListExtras` -> `Std-v0.1.0/modules/ListExtras.hml`
+- `Acme.Net.Client` -> `Acme-v0.1.0/modules/Net/Client.hml`
 
-Listing the `modules/` directory should show the entire package surface at a glance.
+Listing the `modules/` tree shows the entire package surface at a glance.
 
 ### Manifest, Locking, And Integrity
 
@@ -321,16 +292,16 @@ Integrity is checked at both boundaries:
 
 That means cached content is not trusted just because it already exists locally.
 
-Pinned modules cannot contain local `use` declarations, including inside `let`,
-`local`, functions, or structures. Their tokens are checked before parsing,
-type inference, or reuse of an inferred module, so a separate parse/type error
-does not hide the refusal. Comments and string contents do not count as declarations.
-This rule also applies to transitive imports, verified local package sources,
-and modules embedded by `build-vm`. Ordinary project files can still use local files.
+Pinned modules cannot contain the removed `use` keyword, including inside
+`let`, `local`, functions, or structures. Their tokens are checked before
+parsing, type inference, or reuse of an inferred module, so the refusal names
+the module rather than hiding behind a parse error. Comments and string
+contents do not count. This rule also applies to transitive imports, verified
+local package sources, and modules embedded by `build-vm`.
 
-Verified modules have a separate compiler-cache identity from local `use`
-files, even at the same canonical path. Loading a cache file as project source
-cannot make a later named import reuse that unverified program.
+Verified modules have a separate compiler-cache identity from mutable project
+(`Proj`) modules, even at the same canonical path, so loading one as project
+source cannot make a later named import reuse an unverified program.
 
 Failure behavior should be explicit:
 
@@ -374,10 +345,11 @@ hiko build-vm run.toml --lock hiko.lock.toml --script main.hml  # exactly this p
   normal loader and checked against its BLAKE3 hash. In the artifact, named
   imports resolve only from these modules, and each is checked again when it
   is imported.
-- `--script` also embeds the entry script and the local files it `use`s. The
-  binary runs only that program and refuses any argument. `build-vm` compiles
-  the program once against exactly the embedded sources, so a missing module
-  or file fails at generation time, not in the artifact.
+- `--script` also embeds the entry script. The binary runs only that program
+  and refuses any argument. `build-vm` compiles the program once against
+  exactly the embedded sources, so a missing module fails at generation time,
+  not in the artifact. Project (`Proj`) modules are not embedded yet; a sealed
+  program that imports them is refused explicitly at generation time.
 - The generated `src/embedded.rs` lists every module with its hash, and the
   generated `build.rs` refuses to build if a module no longer matches it.
 - The generated crate uses `hiko-compile` without the HTTP loader
@@ -401,13 +373,12 @@ module theory:
   module missing from it falls through to the installed cache
 - embed only the modules a `--script` program imports, not the whole lockfile
 
-## Approved Package Contract — Not Yet Active
+## Package Contract
 
-[#210 rev 5](https://github.com/vectorian-rs/hiko/issues/210) prepares the owner
-metadata and resolver interfaces below. The current syntax, manifest/lockfile
-formats, and loading rules above stay in force until
-[#186](https://github.com/vectorian-rs/hiko/issues/186) activates this contract
-and migrates the repository in one change.
+[#210 rev 5](https://github.com/vectorian-rs/hiko/issues/210) prepared the
+owner metadata and resolver interfaces below;
+[#186](https://github.com/vectorian-rs/hiko/issues/186) activated them and
+migrated the repository in one change.
 
 ### Names And Ownership
 
@@ -458,10 +429,10 @@ read mutable project source without package pins.
 
 ### Public Cutover And Acceptance Matrix
 
-#186 makes imports top-level and before the first declaration. Imports evaluate
+#186 made imports top-level and before the first declaration. Imports evaluate
 in source order. `use` remains a reserved word and reports removal guidance;
 there is no compatibility inclusion path. Parser, EBNF, tree-sitter, formatter,
-metadata writers, sealed artifacts, programs and hashes migrate together there.
+metadata writers, sealed artifacts, programs and hashes migrated together.
 
 | Preparation evidence in #210 | Public integration evidence in #186 |
 | --- | --- |

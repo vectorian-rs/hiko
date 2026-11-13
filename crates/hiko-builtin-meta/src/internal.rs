@@ -1,11 +1,9 @@
 pub const INTERNAL_BUILTIN_PACKAGE: &str = "__Builtin";
 
 /// Nominal process types whose constructor layout is owned by the runtime.
-/// Reserve them even before the embedded `__Builtin.Process` module is imported.
-pub const PROCESS_RUNTIME_TYPES: &[(&str, usize)] = &[
-    ("BuiltinProcess.error", 0),
-    ("BuiltinProcess.await_result", 1),
-];
+/// Reserve them even before the embedded `__Builtin.Fiber` module is imported.
+pub const PROCESS_RUNTIME_TYPES: &[(&str, usize)] =
+    &[("BuiltinFiber.error", 0), ("BuiltinFiber.await_result", 1)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InternalBuiltinModule {
@@ -19,7 +17,7 @@ pub struct InternalBuiltinModule {
 impl InternalBuiltinModule {
     pub fn owned_types(&self) -> &'static [(&'static str, usize)] {
         match self.leaf_name {
-            "Process" => PROCESS_RUNTIME_TYPES,
+            "Fiber" => PROCESS_RUNTIME_TYPES,
             "Json" => &[("BuiltinJson.json", 0)],
             _ => &[],
         }
@@ -39,22 +37,22 @@ pub fn runtime_type_owner(name: &str) -> Option<&'static InternalBuiltinModule> 
 }
 
 const FILESYSTEM_SOURCE: &str = r#"structure BuiltinFilesystem = struct
-  val read_text_raw = read_file
-  val read_bytes_raw = read_file_bytes
-  val write_text_raw = write_file
-  val exists_raw = file_exists
-  val list_entries_raw = list_dir
-  val remove_raw = remove_file
-  val create_directory_raw = create_dir
-  val is_directory_raw = is_dir
-  val is_regular_file_raw = is_file
-  val glob_raw = glob
-  val walk_raw = walk_dir
+  fun read_text value = read_file value
+  fun read_bytes value = read_file_bytes value
+  fun write_text value = write_file value
+  fun exists value = file_exists value
+  fun list_entries value = list_dir value
+  fun remove value = remove_file value
+  fun create_directory value = create_dir value
+  fun is_directory value = is_dir value
+  fun is_regular_file value = is_file value
+  fun glob value = glob value
+  fun walk value = walk_dir value
 end
 "#;
 
 const PATH_SOURCE: &str = r#"structure BuiltinPath = struct
-  val join_raw = path_join
+  fun join value = path_join value
 end
 "#;
 
@@ -68,89 +66,89 @@ const JSON_SOURCE: &str = r#"structure BuiltinJson = struct
     | JArray of json list
     | JObject of (string * json) list
 
-  val parse_raw = json_parse
-  val to_string_raw = json_to_string
-  val get_raw = json_get
-  val keys_raw = json_keys
-  val length_raw = json_length
+  fun parse value = json_parse value
+  fun to_string value = json_to_string value
+  fun get value = json_get value
+  fun keys value = json_keys value
+  fun length value = json_length value
 end
 "#;
 
 const STRING_SOURCE: &str = r#"structure BuiltinString = struct
-  val length_raw = string_length
-  val substring_raw = substring
-  val contains_raw = string_contains
-  val starts_with_raw = starts_with
-  val ends_with_raw = ends_with
-  val trim_raw = trim
-  val split_raw = split
-  val replace_raw = string_replace
-  val join_raw = string_join
-  val upper_raw = to_upper
-  val lower_raw = to_lower
+  fun length value = string_length value
+  fun substring value = substring value
+  fun contains value = string_contains value
+  fun starts_with value = starts_with value
+  fun ends_with value = ends_with value
+  fun trim value = trim value
+  fun split value = split value
+  fun replace value = string_replace value
+  fun join value = string_join value
+  fun upper value = to_upper value
+  fun lower value = to_lower value
 end
 "#;
 
 const BYTES_SOURCE: &str = r#"structure BuiltinBytes = struct
-  val length_raw = bytes_length
-  val to_string_raw = bytes_to_string
-  val of_string_raw = string_to_bytes
-  val get_raw = bytes_get
-  val slice_raw = bytes_slice
+  fun length value = bytes_length value
+  fun to_string value = bytes_to_string value
+  fun of_string value = string_to_bytes value
+  fun get value = bytes_get value
+  fun slice value = bytes_slice value
 end
 "#;
 
 const RANDOM_SOURCE: &str = r#"structure BuiltinRandom = struct
-  val random_bytes_raw = random_bytes
-  val seed_raw = rng_seed
-  val bytes_raw = rng_bytes
-  val int_raw = rng_int
+  fun random_bytes value = random_bytes value
+  fun seed value = rng_seed value
+  fun bytes value = rng_bytes value
+  fun int value = rng_int value
 end
 "#;
 
 const REGEX_SOURCE: &str = r#"structure BuiltinRegex = struct
-  val match_raw = regex_match
-  val replace_raw = regex_replace
+  fun match value = regex_match value
+  fun replace value = regex_replace value
 end
 "#;
 
 const ENV_SOURCE: &str = r#"structure BuiltinEnv = struct
-  val get_raw = getenv
+  fun get value = getenv value
 end
 "#;
 
 const TESTING_SOURCE: &str = r#"structure BuiltinTesting = struct
-  val assert_raw = assert
-  val assert_eq_raw = assert_eq
-  val panic_raw = panic
+  fun assert value = assert value
+  fun assert_eq value = assert_eq value
+  fun panic value = panic value
 end
 "#;
 
 const HASH_SOURCE: &str = r#"structure BuiltinHash = struct
-  val blake3_raw = blake3
+  fun blake3 value = blake3 value
 end
 "#;
 
 const STDIO_SOURCE: &str = r#"structure BuiltinStdio = struct
-  val print_raw = print
-  val println_raw = println
-  val eprint_raw = eprint
-  val eprintln_raw = eprintln
-  val read_line_raw = read_line
-  val read_stdin_raw = read_stdin
+  fun print value = print value
+  fun println value = println value
+  fun eprint value = eprint value
+  fun eprintln value = eprintln value
+  fun read_line value = read_line value
+  fun read_stdin value = read_stdin value
 end
 "#;
 
 const HTTP_SOURCE: &str = r#"structure BuiltinHttp = struct
-  val get_raw = http_get
-  val request_raw = http
-  val request_json_raw = http_json
-  val request_msgpack_raw = http_msgpack
-  val request_bytes_raw = http_bytes
+  fun get value = http_get value
+  fun request value = http value
+  fun request_json value = http_json value
+  fun request_msgpack value = http_msgpack value
+  fun request_bytes value = http_bytes value
 end
 "#;
 
-const PROCESS_SOURCE: &str = r#"structure BuiltinProcess = struct
+const PROCESS_SOURCE: &str = r#"structure BuiltinFiber = struct
   datatype error =
       RuntimeError of string
     | Cancelled
@@ -163,142 +161,147 @@ const PROCESS_SOURCE: &str = r#"structure BuiltinProcess = struct
       Ok of 'a
     | Err of error
 
-  fun spawn_raw f = spawn f
-  fun await_raw pid = await_process pid
-  fun await_result_raw pid = await_process_result pid
-  fun await_all_raw pids = fiber_await_all pids
-  fun cancel_raw pid = cancel pid
-  fun wait_any_raw pids = wait_any pids
+  fun spawn f = spawn f
+  fun await pid = await_process pid
+  fun await_result pid = await_process_result pid
+  fun await_all pids = fiber_await_all pids
+  fun cancel pid = cancel pid
+  fun wait_any pids = wait_any pids
 end
 "#;
 
 const EXEC_SOURCE: &str = r#"structure BuiltinExec = struct
-  val exec_raw = exec
+  fun exec value = exec value
 end
 "#;
 
 const SYSTEM_SOURCE: &str = r#"structure BuiltinSystem = struct
-  val exit_raw = exit
+  fun exit value = exit value
 end
 "#;
 
 const TIME_SOURCE: &str = r#"structure BuiltinTime = struct
-  val epoch_raw = epoch
-  val epoch_ms_raw = epoch_ms
-  val monotonic_ms_raw = monotonic_ms
-  val sleep_raw = sleep
+  fun epoch value = epoch value
+  fun epoch_ms value = epoch_ms value
+  fun monotonic_ms value = monotonic_ms value
+  fun sleep value = sleep value
 end
 "#;
 
 const NUMERIC_SOURCE: &str = r#"structure BuiltinNumeric = struct
-  val int32_min_value_raw = numeric_int32_min_value
-  val int32_max_value_raw = numeric_int32_max_value
-  val int32_of_int_raw = numeric_int32_of_int
-  val int32_checked_of_int_raw = numeric_int32_checked_of_int
-  val int32_to_int_raw = numeric_int32_to_int
-  val int32_add_raw = numeric_int32_add
-  val int32_checked_add_raw = numeric_int32_checked_add
-  val int32_wrapping_add_raw = numeric_int32_wrapping_add
-  val int32_saturating_add_raw = numeric_int32_saturating_add
-  val int32_sub_raw = numeric_int32_sub
-  val int32_mul_raw = numeric_int32_mul
-  val int32_div_raw = numeric_int32_div
-  val int32_rem_raw = numeric_int32_rem
-  val int32_neg_raw = numeric_int32_neg
+  fun int32_min_value value = numeric_int32_min_value value
+  fun int32_max_value value = numeric_int32_max_value value
+  fun int32_of_int value = numeric_int32_of_int value
+  fun int32_checked_of_int value = numeric_int32_checked_of_int value
+  fun int32_to_int value = numeric_int32_to_int value
+  fun int32_add value = numeric_int32_add value
+  fun int32_checked_add value = numeric_int32_checked_add value
+  fun int32_wrapping_add value = numeric_int32_wrapping_add value
+  fun int32_saturating_add value = numeric_int32_saturating_add value
+  fun int32_sub value = numeric_int32_sub value
+  fun int32_mul value = numeric_int32_mul value
+  fun int32_div value = numeric_int32_div value
+  fun int32_rem value = numeric_int32_rem value
+  fun int32_neg value = numeric_int32_neg value
 
-  val word32_min_value_raw = numeric_word32_min_value
-  val word32_max_value_raw = numeric_word32_max_value
-  val word32_of_word_raw = numeric_word32_of_word
-  val word32_checked_of_word_raw = numeric_word32_checked_of_word
-  val word32_of_int_raw = numeric_word32_of_int
-  val word32_checked_of_int_raw = numeric_word32_checked_of_int
-  val word32_to_word_raw = numeric_word32_to_word
-  val word32_to_int_raw = numeric_word32_to_int
-  val word32_add_raw = numeric_word32_add
-  val word32_checked_add_raw = numeric_word32_checked_add
-  val word32_saturating_add_raw = numeric_word32_saturating_add
-  val word32_sub_raw = numeric_word32_sub
-  val word32_mul_raw = numeric_word32_mul
-  val word32_div_raw = numeric_word32_div
-  val word32_rem_raw = numeric_word32_rem
+  fun word32_min_value value = numeric_word32_min_value value
+  fun word32_max_value value = numeric_word32_max_value value
+  fun word32_of_word value = numeric_word32_of_word value
+  fun word32_checked_of_word value = numeric_word32_checked_of_word value
+  fun word32_of_int value = numeric_word32_of_int value
+  fun word32_checked_of_int value = numeric_word32_checked_of_int value
+  fun word32_to_word value = numeric_word32_to_word value
+  fun word32_to_int value = numeric_word32_to_int value
+  fun word32_add value = numeric_word32_add value
+  fun word32_checked_add value = numeric_word32_checked_add value
+  fun word32_saturating_add value = numeric_word32_saturating_add value
+  fun word32_sub value = numeric_word32_sub value
+  fun word32_mul value = numeric_word32_mul value
+  fun word32_div value = numeric_word32_div value
+  fun word32_rem value = numeric_word32_rem value
 
-  val float32_of_float_raw = numeric_float32_of_float
-  val float32_to_float_raw = numeric_float32_to_float
-  val float32_neg_raw = numeric_float32_neg
-  val float32_add_raw = numeric_float32_add
-  val float32_sub_raw = numeric_float32_sub
-  val float32_mul_raw = numeric_float32_mul
-  val float32_div_raw = numeric_float32_div
+  fun float32_of_float value = numeric_float32_of_float value
+  fun float32_to_float value = numeric_float32_to_float value
+  fun float32_neg value = numeric_float32_neg value
+  fun float32_add value = numeric_float32_add value
+  fun float32_sub value = numeric_float32_sub value
+  fun float32_mul value = numeric_float32_mul value
+  fun float32_div value = numeric_float32_div value
 end
 "#;
 
 const DATE_SOURCE: &str = r#"structure BuiltinDate = struct
-  val utc_tz_raw = date_utc_tz
-  val local_tz_raw = date_local_tz
-  val timezone_of_raw = date_timezone_of
-  val fixed_offset_raw = date_fixed_offset
-  val utc_now_raw = date_utc_now
-  val now_in_raw = date_now_in
-  val from_instant_raw = date_from_instant
-  val to_epoch_ms_raw = date_to_epoch_ms
-  val to_timezone_raw = date_to_timezone
-  val in_timezone_raw = date_in_timezone
-  val year_raw = date_year
-  val month_raw = date_month
-  val day_raw = date_day
-  val hour_raw = date_hour
-  val minute_raw = date_minute
-  val second_raw = date_second
-  val millisecond_raw = date_millisecond
-  val weekday_raw = date_weekday
-  val to_rfc3339_raw = date_to_rfc3339
-  val to_rfc2822_raw = date_to_rfc2822
-  val format_raw = date_format
-  val parse_rfc3339_raw = date_parse_rfc3339
-  val parse_rfc9557_raw = date_parse_rfc9557
+  fun utc_tz value = date_utc_tz value
+  fun local_tz value = date_local_tz value
+  fun timezone_of value = date_timezone_of value
+  fun fixed_offset value = date_fixed_offset value
+  fun utc_now value = date_utc_now value
+  fun now_in value = date_now_in value
+  fun from_instant value = date_from_instant value
+  fun to_epoch_ms value = date_to_epoch_ms value
+  fun to_timezone value = date_to_timezone value
+  fun in_timezone value = date_in_timezone value
+  fun year value = date_year value
+  fun month value = date_month value
+  fun day value = date_day value
+  fun hour value = date_hour value
+  fun minute value = date_minute value
+  fun second value = date_second value
+  fun millisecond value = date_millisecond value
+  fun weekday value = date_weekday value
+  fun to_rfc3339 value = date_to_rfc3339 value
+  fun to_rfc2822 value = date_to_rfc2822 value
+  fun format value = date_format value
+  fun parse_rfc3339 value = date_parse_rfc3339 value
+  fun parse_rfc9557 value = date_parse_rfc9557 value
 end
 "#;
 
 // New forwarders are lazy: importing a noun must not resolve unused policy
 // leaves. Keep the existing eager module sources above unchanged.
 const INT_SOURCE: &str = r#"structure BuiltinInt = struct
-  fun of_string_raw text = string_to_int text
-  fun to_string_raw value = int_to_string value
+  fun abs value = abs_int value
+  fun of_string text = string_to_int text
+  fun to_string value = int_to_string value
 end
 "#;
 
 const FLOAT_SOURCE: &str = r#"structure BuiltinFloat = struct
-  fun of_int_raw value = int_to_float value
-  fun to_string_raw value = float_to_string value
+  fun abs value = abs_float value
+  fun ceil value = ceil value
+  fun floor value = floor value
+  fun of_int value = int_to_float value
+  fun sqrt value = sqrt value
+  fun to_string value = float_to_string value
 end
 "#;
 
 const CHAR_SOURCE: &str = r#"structure BuiltinChar = struct
-  fun of_int_raw value = int_to_char value
-  fun to_int_raw value = char_to_int value
+  fun of_int value = int_to_char value
+  fun to_int value = char_to_int value
 end
 "#;
 
 const WORD_SOURCE: &str = r#"structure BuiltinWord = struct
-  fun of_int_raw value = int_to_word value
-  fun to_int_raw value = word_to_int value
-  fun of_string_raw text = string_to_word text
-  fun to_string_raw value = word_to_string value
+  fun of_int value = int_to_word value
+  fun to_int value = word_to_int value
+  fun of_string text = string_to_word text
+  fun to_string value = word_to_string value
 end
 "#;
 
 const PATH_JOIN_SOURCE: &str = r#"structure BuiltinPathJoin = struct
-  fun join_raw parts = path_join parts
+  fun join parts = path_join parts
 end
 "#;
 
 const SYSTEM_EXIT_SOURCE: &str = r#"structure BuiltinSystemExit = struct
-  fun exit_raw code = exit code
+  fun exit code = exit code
 end
 "#;
 
 const SYSTEM_PANIC_SOURCE: &str = r#"structure BuiltinSystemPanic = struct
-  fun panic_raw text = panic text
+  fun panic text = panic text
 end
 "#;
 
@@ -329,7 +332,7 @@ const MODULES: &[InternalBuiltinModule] = &[
     module!("Hash", "builtin-hash", HASH_SOURCE),
     module!("Stdio", "builtin-stdio", STDIO_SOURCE),
     module!("Http", "builtin-http", HTTP_SOURCE),
-    module!("Process", "builtin-process", PROCESS_SOURCE),
+    module!("Fiber", "builtin-process", PROCESS_SOURCE),
     module!("Exec", "builtin-exec", EXEC_SOURCE),
     module!("System", "builtin-system", SYSTEM_SOURCE),
     module!("Time", "builtin-time", TIME_SOURCE),
