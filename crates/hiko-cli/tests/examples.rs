@@ -193,6 +193,37 @@ mod thin_modules {
         String::from_utf8_lossy(&output.stderr).into_owned()
     }
 
+    #[cfg(feature = "builtin-convert")]
+    #[test]
+    fn runtime_aliases_are_private_and_cannot_be_replaced_by_user_bindings() {
+        for import in ["", "import __Builtin.Numeric\n"] {
+            let project = Project::new(
+                "runtime-alias-private",
+                &[],
+                &format!("{import}val stolen = numeric_int32_add"),
+                "",
+            );
+            let output = project.hiko(&["check", "main.hml"]);
+            assert!(!output.status.success(), "raw alias was accepted");
+            assert!(
+                stderr(&output).contains("import Std.Int32"),
+                "{}",
+                stderr(&output)
+            );
+        }
+        let project = Project::new(
+            "runtime-alias-shadow",
+            &[],
+            "import __Builtin.Numeric\n\
+             val numeric_int32_add = fn (x : int) => x\n\
+             val answer = BuiltinNumeric.int32_add (2, 3)\n\
+             val _ = if answer = 5 then () else let val fail = 1 / 0 in () end",
+            "",
+        );
+        let output = project.hiko(&["run", "main.hml"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+
     #[cfg(all(feature = "builtin-system", feature = "builtin-testing"))]
     #[test]
     fn system_exit_and_panic_preserve_host_and_policy_outcomes() {
@@ -429,6 +460,62 @@ mod thin_modules {
                 );
             }
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(feature = "builtin-process")]
+    #[test]
+    fn internal_fiber_forwarders_require_their_own_policy_leaf() {
+        for (name, call, leaf, sibling, builtin) in [
+            (
+                "join",
+                "BuiltinFiber.await_result (BuiltinFiber.spawn (fn () => 7))",
+                "join",
+                "join_or_fail",
+                "await_process_result",
+            ),
+            (
+                "join-or-fail",
+                "BuiltinFiber.await (BuiltinFiber.spawn (fn () => 7))",
+                "join_or_fail",
+                "join",
+                "await_process",
+            ),
+            (
+                "join-all",
+                "BuiltinFiber.await_all []",
+                "join_all",
+                "join",
+                "fiber_await_all",
+            ),
+        ] {
+            for granted in [leaf, sibling] {
+                let project = Project::new(
+                    &format!("internal-fiber-{name}-{granted}"),
+                    &[],
+                    &format!("import __Builtin.Fiber\nval result = {call}"),
+                    &format!(
+                        "[capabilities.fiber.spawn]\nenabled = true\n[capabilities.fiber.{granted}]\nenabled = true\n"
+                    ),
+                );
+                for workers in ["1", "4"] {
+                    let output = hiko_bounded(&project, &["run", "--workers", workers, "main.hml"]);
+                    assert_eq!(
+                        output.status.success(),
+                        granted == leaf,
+                        "{name}/{granted}: {}",
+                        stderr(&output)
+                    );
+                    if granted != leaf {
+                        assert!(
+                            stderr(&output)
+                                .contains(&format!("builtin '{builtin}' was not registered")),
+                            "{}",
+                            stderr(&output)
+                        );
+                    }
+                }
+            }
         }
     }
 

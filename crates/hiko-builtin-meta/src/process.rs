@@ -15,8 +15,18 @@ pub const BUILTINS: &[BuiltinMeta] = &[
     ),
     // Runtime companion with its own leaf since the #186 key split: `join`
     // returns the typed result, `join_or_fail` panics on failure.
-    BuiltinMeta::runtime_gated("await_process_result", "capabilities.fiber.join"),
-    BuiltinMeta::runtime_gated("fiber_await_all", "capabilities.fiber.join_all"),
+    BuiltinMeta::runtime_gated(
+        "await_process_result",
+        "capabilities.fiber.join",
+        "__Builtin.Fiber",
+        "Std.Fiber.join",
+    ),
+    BuiltinMeta::runtime_gated(
+        "fiber_await_all",
+        "capabilities.fiber.join_all",
+        "__Builtin.Fiber",
+        "Std.Fiber.join_all",
+    ),
     BuiltinMeta::module_only(
         "cancel",
         "capabilities.fiber.cancel",

@@ -384,9 +384,12 @@ mod tests {
                     continue;
                 };
                 let rhs = rhs.split_whitespace().next().unwrap();
+                let meta = crate::builtin_meta(rhs).unwrap_or_else(|| {
+                    panic!("{} aliases undeclared builtin {rhs}", module.import_name)
+                });
                 assert!(
-                    crate::builtin_meta(rhs).is_some(),
-                    "{} aliases undeclared builtin {rhs}",
+                    meta.surface.is_owned_by(module.import_name),
+                    "{} aliases builtin {rhs} owned by another module",
                     module.import_name
                 );
             }

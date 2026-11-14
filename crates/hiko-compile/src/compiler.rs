@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use hiko_builtin_meta::{
-    BuiltinSurface, InternalBuiltinModule, internal_builtin_module, is_internal_builtin_package,
+    InternalBuiltinModule, internal_builtin_module, is_internal_builtin_package,
 };
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_common::blake3_hex;
@@ -1616,8 +1616,8 @@ impl Compiler {
 
     fn is_private_builtin(&self, name: &str) -> bool {
         self.compiling_builtin.is_some_and(|module| {
-            matches!(hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
-                Some(BuiltinSurface::ModuleOnly { owners, .. }) if owners.contains(&module.import_name))
+            hiko_builtin_meta::builtin_meta(name)
+                .is_some_and(|meta| meta.surface.is_owned_by(module.import_name))
         })
     }
 
@@ -4717,6 +4717,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_rejects_global_runtime_only_builtins() {
+        let cases: &[(&str, &str, &str)] = &[
+            #[cfg(feature = "builtin-convert")]
+            ("numeric_int32_add", "__Builtin.Numeric", "Std.Int32.add"),
+            #[cfg(feature = "builtin-date")]
+            ("date_utc_tz", "__Builtin.Date", "Std.Date.utc"),
+            #[cfg(feature = "builtin-process")]
+            ("await_process_result", "__Builtin.Fiber", "Std.Fiber.join"),
+            #[cfg(feature = "builtin-process")]
+            ("fiber_await_all", "__Builtin.Fiber", "Std.Fiber.join_all"),
+        ];
+        for &(name, owner, replacement) in cases {
+            for import in [String::new(), format!("import {owner}\n")] {
+                let message = compile_error(&format!("{import}val stolen = {name}"));
+                let (module, _) = replacement.rsplit_once('.').unwrap();
+                assert!(message.contains(&format!("import {module}")), "{message}");
+                assert!(
+                    message.contains(replacement.split_once('.').unwrap().1),
+                    "{message}"
+                );
+            }
+        }
+    }
+
     #[cfg(feature = "builtin-json")]
     #[test]
     fn compile_rejects_global_json_converters() {
@@ -4765,6 +4790,28 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[cfg(feature = "builtin-convert")]
+    #[test]
+    fn compile_does_not_trust_extension_source_named_builtin_numeric() {
+        let options = ModuleLoaderOptions {
+            extensions: ExtensionSurface {
+                modules: vec![(
+                    "__Builtin.Numeric",
+                    internal_builtin_module("Numeric").unwrap().source,
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error =
+            Compiler::compile_with_options(parse_program("import __Builtin.Numeric"), options)
+                .unwrap_err();
+        assert!(
+            format!("{error:?}").contains("import Std.Int32"),
+            "{error:?}"
+        );
     }
 
     #[cfg(feature = "builtin-json")]

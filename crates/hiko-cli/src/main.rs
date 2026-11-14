@@ -956,7 +956,7 @@ fn strict_message(violation: &StrictViolation, surface: &RuntimeSurface) -> Stri
             ),
         }
     } else if builtin_meta(&violation.builtin)
-        .is_some_and(|meta| meta.surface == BuiltinSurface::RuntimeOnly)
+        .is_some_and(|meta| matches!(meta.surface, BuiltinSurface::RuntimeOnly { .. }))
     {
         match surface {
             RuntimeSurface::CheckOnly => format!(
@@ -989,7 +989,7 @@ fn runtime_error_message(message: &str, policy: &ResolvedPolicy) -> String {
             path
         );
     }
-    if meta.surface == BuiltinSurface::RuntimeOnly {
+    if matches!(meta.surface, BuiltinSurface::RuntimeOnly { .. }) {
         return format!(
             "runtime builtin '{}' was not registered by the active policy-filtered VM (layer: internal builtin alias / RunConfig::build_vm; {}). This usually means the supporting public capability family is missing from the active policy.",
             name,

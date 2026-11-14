@@ -390,23 +390,7 @@ impl InferCtx {
         for (name, arity) in hiko_builtin_meta::runtime_type_arities() {
             ctx.type_arities.insert(name.into(), arity);
         }
-        ctx.bind_builtin_type_signatures();
         ctx
-    }
-
-    fn bind_builtin_type_signatures(&mut self) {
-        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
-            if matches!(
-                hiko_builtin_meta::builtin_meta(name).unwrap().surface,
-                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
-            ) {
-                continue;
-            }
-            let scheme = self
-                .parse_builtin_scheme(sig)
-                .unwrap_or_else(|err| panic!("invalid builtin type signature for {name}: {err}"));
-            self.bind(name.to_string(), scheme);
-        }
     }
 
     /// Declare an opaque type named `name`, for values an extension creates
@@ -995,10 +979,7 @@ impl InferCtx {
         }
         let mut previous = Vec::new();
         for meta in hiko_builtin_meta::builtins() {
-            let hiko_builtin_meta::BuiltinSurface::ModuleOnly { owners, .. } = meta.surface else {
-                continue;
-            };
-            if !owners.contains(&module.import_name) {
+            if !meta.surface.is_owned_by(module.import_name) {
                 continue;
             }
             let sig = hiko_builtin_meta::builtin_type_signature(meta.name)
@@ -2552,7 +2533,10 @@ fn unbound_message(name: &str) -> String {
             "builtin `{name}` is not in this build of hiko; enable cargo feature `{feature}`"
         ),
         None => match hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface) {
-            Some(hiko_builtin_meta::BuiltinSurface::ModuleOnly { replacement, .. }) => {
+            Some(
+                hiko_builtin_meta::BuiltinSurface::ModuleOnly { replacement, .. }
+                | hiko_builtin_meta::BuiltinSurface::RuntimeOnly { replacement, .. },
+            ) => {
                 // `Std.Json.parse` names both the import and the call form.
                 let import = replacement
                     .rsplit_once('.')
@@ -2802,20 +2786,44 @@ mod tests {
     }
 
     #[test]
-    fn infer_ctx_contains_all_metadata_builtins() {
+    fn infer_ctx_hides_all_metadata_builtins() {
         let ctx = InferCtx::new();
-        for meta in builtins().filter(|meta| {
-            !matches!(
-                meta.surface,
-                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
-            )
-        }) {
+        for meta in builtins() {
             assert!(
-                ctx.lookup_type(meta.name).is_some(),
-                "missing builtin in InferCtx: {}",
+                ctx.lookup_type(meta.name).is_none(),
+                "raw builtin leaked into ordinary inference: {}",
                 meta.name
             );
         }
+    }
+
+    #[cfg(feature = "builtin-convert")]
+    #[test]
+    fn runtime_alias_scope_is_owned_and_restored() {
+        let numeric = hiko_builtin_meta::internal_builtin_module("Numeric").unwrap();
+        let other = hiko_builtin_meta::internal_builtin_module("Int").unwrap();
+        let mut ctx = InferCtx::new();
+        let tokens = Lexer::new("val captured = numeric_int32_add", 0)
+            .tokenize()
+            .unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        ctx.interner = program.interner;
+        // A different compiler-owned module does not gain Numeric authority.
+        assert!(ctx.infer_builtin_module(other, &program.decls).is_err());
+        assert!(ctx.lookup_type("numeric_int32_add").is_none());
+        ctx.infer_builtin_module(numeric, &program.decls).unwrap();
+        assert!(ctx.lookup_type("captured").is_some());
+        assert!(ctx.lookup_type("numeric_int32_add").is_none());
+
+        // Restore an existing user binding even after an inference failure.
+        let mut ctx = infer("val numeric_int32_add = fn (x : int) => x");
+        let tokens = Lexer::new("val bad = missing", 0).tokenize().unwrap();
+        let program = Parser::with_interner(tokens, ctx.interner.clone())
+            .parse_program()
+            .unwrap();
+        ctx.interner = program.interner;
+        assert!(ctx.infer_builtin_module(numeric, &program.decls).is_err());
+        assert_eq!(type_of(&ctx, "numeric_int32_add"), "int -> int");
     }
 
     /// The VM builds `BuiltinFiber.await_result` and `BuiltinFiber.error`
