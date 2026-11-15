@@ -1,8 +1,7 @@
-//! Package ownership and resolution prepared by #210.
+//! Package ownership, dependency authorization and source resolution.
 //!
-//! The language parser and manifest/lockfile writers do not use this catalog
-//! until #186. Definitions arrive from the operator's metadata or linked
-//! extensions; imported source never supplies its own identity or permissions.
+//! Definitions arrive from the operator's metadata or linked extensions;
+//! imported source never supplies its own identity or permissions.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -32,7 +31,6 @@ enum OwnerIdentity {
         provider: String,
         package: String,
     },
-    EmbeddedPackage(String),
     EmbeddedProject,
     Builtin,
 }
@@ -76,14 +74,20 @@ impl PackageOwner {
         }))
     }
 
-    // Current sealed artifacts carry package names but not lock identities.
-    // The future catalog instead retains the full locked identity with embedded
-    // sources. No format inference or filesystem fallback is introduced here.
-    pub(crate) fn embedded(package: Option<&str>) -> Self {
-        Self(Arc::new(match package {
-            Some(name) => OwnerIdentity::EmbeddedPackage(name.into()),
-            None => OwnerIdentity::EmbeddedProject,
-        }))
+    pub(crate) fn embedded_project() -> Self {
+        Self(Arc::new(OwnerIdentity::EmbeddedProject))
+    }
+
+    /// Locked provenance, retained unchanged when a module is sealed.
+    pub fn locked_identity(&self) -> Option<(&str, &str, &str)> {
+        match self.0.as_ref() {
+            OwnerIdentity::Locked {
+                name,
+                version,
+                base_url,
+            } => Some((name, version, base_url)),
+            _ => None,
+        }
     }
 
     pub(crate) fn builtin() -> Self {
@@ -93,7 +97,7 @@ impl PackageOwner {
     pub fn name(&self) -> &str {
         match self.0.as_ref() {
             OwnerIdentity::Project(_) | OwnerIdentity::EmbeddedProject => "Proj",
-            OwnerIdentity::Locked { name, .. } | OwnerIdentity::EmbeddedPackage(name) => name,
+            OwnerIdentity::Locked { name, .. } => name,
             OwnerIdentity::Extension { package, .. } => package,
             OwnerIdentity::Builtin => "__Builtin",
         }
@@ -110,11 +114,30 @@ impl PackageOwner {
     /// The package namespace `Proj` selects for a non-project owner, if any.
     pub(crate) fn owned_package_name(&self) -> Option<&str> {
         match self.0.as_ref() {
-            OwnerIdentity::Locked { name, .. } | OwnerIdentity::EmbeddedPackage(name) => Some(name),
+            OwnerIdentity::Locked { name, .. } => Some(name),
             OwnerIdentity::Extension { package, .. } => Some(package),
             OwnerIdentity::Project(_) | OwnerIdentity::EmbeddedProject | OwnerIdentity::Builtin => {
                 None
             }
+        }
+    }
+
+    /// Shared authorization for the catalog and live compiler adapters.
+    /// Installing a package in the consumer never grants its peers access.
+    pub(crate) fn check_dependency<'a>(
+        &self,
+        import: &str,
+        dependencies: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), CompileError> {
+        let (package, _) = import_path(import)?;
+        if package == "Proj"
+            || package == "__Builtin"
+            || package == self.name()
+            || dependencies.into_iter().any(|name| name == package)
+        {
+            Ok(())
+        } else {
+            Err(denied(self, import, package))
         }
     }
 
@@ -208,7 +231,7 @@ impl ModuleCatalog {
                 }
             }
             if !matches!(owner.0.as_ref(), OwnerIdentity::Project(_)) {
-                validate_package(owner.name())?;
+                validate_package_name(owner.name())?;
             }
             if let OwnerIdentity::Locked {
                 version, base_url, ..
@@ -261,7 +284,7 @@ impl ModuleCatalog {
         for owner in catalog.names.values() {
             let definition = &catalog.owners[owner];
             for dependency in &definition.dependencies {
-                validate_package(dependency)?;
+                validate_package_name(dependency)?;
                 if !catalog.names.contains_key(dependency) {
                     return Err(CompileError::codegen(format!(
                         "package {} declares unavailable dependency {dependency}; declare and install it in hiko.toml or provide its extension",
@@ -309,9 +332,7 @@ impl ModuleCatalog {
                 .get(package)
                 .ok_or_else(|| denied(owner, import, package))?
         };
-        if target != owner && !importer.dependencies.contains(package) {
-            return Err(denied(owner, import, package));
-        }
+        owner.check_dependency(import, importer.dependencies.iter().map(String::as_str))?;
         let definition = &self.owners[target];
         if target != owner && !matches!(definition.sources, ModuleSources::Extension { .. }) {
             check_requires(importer, import)?;
@@ -500,10 +521,11 @@ fn identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\'')
 }
 
-fn validate_package(name: &str) -> Result<(), CompileError> {
+/// Validate a published, dependency or extension package name.
+pub fn validate_package_name(name: &str) -> Result<(), CompileError> {
     if name == "Proj" || name.starts_with("__") || !identifier(name) {
         return Err(CompileError::codegen(format!(
-            "package name '{name}' is invalid or reserved; choose an upper-case package name other than Proj or __Builtin"
+            "invalid or reserved package name '{name}'; choose an upper-case package name other than Proj or __Builtin"
         )));
     }
     Ok(())
@@ -524,7 +546,8 @@ pub(crate) fn import_path(import: &str) -> Result<(&str, &str), CompileError> {
     Ok((package, module))
 }
 
-pub(crate) fn module_file(module: &str) -> Result<PathBuf, CompileError> {
+/// Validated path below a package's module directory, including `.hml`.
+pub fn module_file(module: &str) -> Result<PathBuf, CompileError> {
     let mut path = PathBuf::new();
     for segment in module.split('.') {
         if !identifier(segment) {

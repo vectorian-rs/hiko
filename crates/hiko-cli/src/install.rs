@@ -36,6 +36,7 @@ use hiko_compile::compiler::{
 struct PackageManifest {
     name: String,
     version: String,
+    dependencies: Vec<String>,
     modules: BTreeMap<String, String>,
 }
 
@@ -153,7 +154,7 @@ fn resolve_package(
 ) -> Result<ModuleLockPackage, String> {
     let dependency = &manifest.dependencies[name];
     // Both become part of a URL and of the lockfile's table names.
-    check_name(name, "package name", manifest_path)?;
+    hiko_compile::package::validate_package_name(name).map_err(compile_error)?;
     check_version(&dependency.version, name, manifest_path)?;
     let registry = manifest
         .registries
@@ -181,9 +182,15 @@ fn resolve_package(
     if package.modules.is_empty() {
         return Err(format!("'{package_url}' lists no modules"));
     }
+    let mut dependencies = package.dependencies;
+    for dependency in &dependencies {
+        hiko_compile::package::validate_package_name(dependency).map_err(compile_error)?;
+    }
+    dependencies.sort();
+    dependencies.dedup();
     let mut modules = BTreeMap::new();
     for (module, hash) in package.modules {
-        check_name(&module, "module name", Path::new(&package_url))?;
+        hiko_compile::package::module_file(&module).map_err(compile_error)?;
         let hex = parse_blake3(&hash)
             .ok_or_else(|| format!("'{package_url}': module {module} has invalid hash '{hash}'"))?;
         modules.insert(module, format!("blake3:{hex}"));
@@ -191,6 +198,7 @@ fn resolve_package(
     Ok(ModuleLockPackage {
         version: dependency.version.clone(),
         base_url,
+        dependencies,
         modules,
     })
 }
@@ -203,7 +211,11 @@ fn download_modules(lockfile: &ModuleLockfile, cache_dir: &Path) -> Result<Vec<D
     for (name, package) in &lockfile.packages {
         for (module, hash) in &package.modules {
             let hex = normalize_blake3(hash);
-            let url = format!("{}/modules/{module}.hml", package.base_url);
+            let url = format!(
+                "{}/modules/{}.hml",
+                package.base_url,
+                module.replace('.', "/")
+            );
             let cached = fs::read(module_cache_path(cache_dir, &url, &hex));
             if cached.is_ok_and(|bytes| blake3_hex(&bytes) == hex) {
                 continue;
@@ -235,23 +247,6 @@ fn compile_error(e: CompileError) -> String {
 fn fetch(url: &str) -> Result<String, String> {
     http_get_text_limited(url, LOCK_VERIFY_TIMEOUT, LOCK_VERIFY_MAX_BYTES)
         .map_err(|e| format!("cannot fetch '{url}': {e}"))
-}
-
-/// Package and module names become parts of URLs, file names and TOML
-/// keys, so they must be identifiers: a letter, then letters, digits or
-/// `_`. `source` is where the name was read.
-fn check_name(name: &str, what: &str, source: &Path) -> Result<(), String> {
-    let mut chars = name.chars();
-    let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if valid {
-        Ok(())
-    } else {
-        Err(format!(
-            "'{}': invalid {what} '{name}'; use a letter, then letters, digits or '_'",
-            source.display()
-        ))
-    }
 }
 
 /// A version is part of the package URL: letters, digits, `.`, `-` and
@@ -304,6 +299,14 @@ fn describe_changes(old: Option<&ModuleLockfile>, new: &ModuleLockfile) -> Vec<S
                 ))
             }
             Some(_) => {}
+        }
+        if let Some(previous) = previous
+            && previous.dependencies != package.dependencies
+        {
+            lines.push(format!(
+                "~ {name} dependencies {:?} -> {:?}",
+                previous.dependencies, package.dependencies
+            ));
         }
         let old_modules = previous.map_or(&no_modules, |p| &p.modules);
         for (module, hash) in &package.modules {
@@ -404,16 +407,17 @@ mod tests {
         let registry = temp_dir(&format!("{name}-registry"));
         let package = registry.join("Pkg-v0.1.0");
         fs::create_dir_all(package.join("modules")).unwrap();
-        let mut manifest = "name = \"Pkg\"\nversion = \"0.1.0\"\n\n[modules]\n".to_string();
+        let mut manifest =
+            "name = \"Pkg\"\nversion = \"0.1.0\"\ndependencies = []\n\n[modules]\n".to_string();
         for (module, source) in modules {
-            fs::write(
-                package.join("modules").join(format!("{module}.hml")),
-                source,
-            )
-            .unwrap();
+            let path = package
+                .join("modules")
+                .join(format!("{}.hml", module.replace('.', "/")));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
             let _ = writeln!(
                 manifest,
-                "{module} = \"blake3:{}\"",
+                "{module:?} = \"blake3:{}\"",
                 blake3_hex(source.as_bytes())
             );
         }
@@ -523,7 +527,7 @@ mod tests {
         fs::write(
             package.join("package.toml"),
             format!(
-                "name = \"Pkg\"\nversion = \"0.1.0\"\n\n[modules]\nA = \"blake3:{}\"\n",
+                "name = \"Pkg\"\nversion = \"0.1.0\"\ndependencies = []\n\n[modules]\nA = \"blake3:{}\"\n",
                 blake3_hex(source.as_bytes())
             ),
         )
@@ -564,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_pins_supply_the_owner_relative_catalog_without_changing_the_format() {
+    fn installed_pins_supply_the_owner_relative_catalog() {
         use hiko_compile::package::{
             ModuleCatalog, ModuleSources, PackageDefinition, PackageOwner, PinnedSource,
         };
@@ -579,7 +583,7 @@ mod tests {
         let owner = PackageOwner::locked("Pkg", &pinned.version, &pinned.base_url);
         let catalog = ModuleCatalog::new(vec![PackageDefinition {
             owner: owner.clone(),
-            dependencies: Default::default(),
+            dependencies: pinned.dependencies.iter().cloned().collect(),
             sources: ModuleSources::Pinned {
                 hashes: pinned.modules.clone(),
                 source: PinnedSource::Cache(project.join("cache")),
@@ -598,6 +602,68 @@ mod tests {
     }
 
     #[test]
+    fn nested_modules_are_installed_using_the_resolvers_layout() {
+        let source = "structure Answer = struct val value = 42 end";
+        let (project, _) = setup("nested-modules", &[("Net.Answer", source)]);
+        install(&project.join("hiko.toml"), false).unwrap();
+        let lock = load_module_lockfile(&project.join("hiko.lock.toml")).unwrap();
+        let package = &lock.packages["Pkg"];
+        let cached = module_cache_path(
+            &project.join("cache"),
+            &format!("{}/modules/Net/Answer.hml", package.base_url),
+            &blake3_hex(source.as_bytes()),
+        );
+        assert_eq!(fs::read_to_string(cached).unwrap(), source);
+        assert!(package.modules.contains_key("Net.Answer"));
+    }
+
+    #[test]
+    fn dependency_only_changes_are_reviewed_and_written() {
+        let (project, package) = setup("dependency-metadata", &[("A", "val a = 1\n")]);
+        let manifest = project.join("hiko.toml");
+        install(&manifest, false).unwrap();
+        let lock = project.join("hiko.lock.toml");
+        let before = fs::read(&lock).unwrap();
+        let published = package.join("package.toml");
+        let text = fs::read_to_string(&published).unwrap();
+        fs::write(
+            &published,
+            text.replace("dependencies = []", "dependencies = ['Host']"),
+        )
+        .unwrap();
+        let error = install(&manifest, true).unwrap_err();
+        assert!(error.contains("out of date"), "{error}");
+        assert_eq!(fs::read(&lock).unwrap(), before, "--check must not write");
+        install(&manifest, false).unwrap();
+        assert_eq!(
+            load_module_lockfile(&lock).unwrap().packages["Pkg"].dependencies,
+            ["Host"]
+        );
+        install(&manifest, true).unwrap();
+    }
+
+    #[test]
+    fn published_dependency_metadata_is_required_and_validated() {
+        let (project, package) = setup("invalid-dependency-metadata", &[("A", "val a = 1\n")]);
+        let published = package.join("package.toml");
+        let text = fs::read_to_string(&published).unwrap();
+        for replacement in [
+            "",
+            "dependencies = ['Proj']\n",
+            "dependencies = ['__Builtin']\n",
+            "dependencies = ['../Other']\n",
+        ] {
+            fs::write(&published, text.replace("dependencies = []\n", replacement)).unwrap();
+            let error = install(&project.join("hiko.toml"), false).unwrap_err();
+            assert!(
+                error.contains("dependencies") || error.contains("package name"),
+                "{error}"
+            );
+            assert!(!project.join("hiko.lock.toml").exists());
+        }
+    }
+
+    #[test]
     fn a_package_manifest_for_another_package_is_refused() {
         let (project, package) = setup("wrong-name", &[("A", "val a = 1\n")]);
         let text = fs::read_to_string(package.join("package.toml")).unwrap();
@@ -613,10 +679,11 @@ mod tests {
     #[test]
     fn names_must_be_identifiers_and_versions_plain() {
         let p = Path::new("p");
-        assert!(check_name("Result", "module name", p).is_ok());
-        assert!(check_name("Int32", "module name", p).is_ok());
+        for good in ["Result", "Int32", "Net.Client"] {
+            assert!(hiko_compile::package::module_file(good).is_ok(), "{good:?}");
+        }
         for bad in ["", "../x", "a/b", "1x", "x.y", "x y", "a]"] {
-            assert!(check_name(bad, "module name", p).is_err(), "{bad:?}");
+            assert!(hiko_compile::package::module_file(bad).is_err(), "{bad:?}");
         }
         for good in ["0.1.0", "1.0.0-rc.1", "2.0.0+build"] {
             assert!(check_version(good, "Pkg", p).is_ok(), "{good:?}");
@@ -671,6 +738,7 @@ mod tests {
                 ModuleLockPackage {
                     version: "0.1.0".to_string(),
                     base_url: "https://example.com/Pkg-v0.1.0".to_string(),
+                    dependencies: Vec::new(),
                     modules,
                 },
             )]),

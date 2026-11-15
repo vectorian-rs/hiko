@@ -1,5 +1,6 @@
 name = "Http"
 version = "0.1.0"
+dependencies = []
 
 [modules]
 Client = "blake3:90b39cf110ad4c01f30cb4aa4c26d821e25eade2cc255bfbe837981667e436e9"

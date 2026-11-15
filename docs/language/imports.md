@@ -170,8 +170,26 @@ A `hiko.toml` or lockfile that does not parse gives its path, line, column and
 reason, and no source line, so an error cannot print a line of a file the path
 reaches. The reason can still quote a value, as in `invalid type: string "x"`.
 
-The lockfile (`hiko.lock.toml`) records exact resolved package roots and module
-hashes:
+A published `package.toml` names its allowed dependency packages explicitly,
+including any extension packages it imports. An empty list is required when it
+has no dependencies:
+
+```toml
+name = "Acme"
+version = "0.1.0"
+dependencies = ["Std", "Github"]
+
+[modules]
+"Net.Client" = "blake3:..."
+```
+
+These names grant import access, not runtime capabilities. The root project still
+pins every installed library's version and registry; installation does not solve
+or fetch transitive dependencies. Extensions must be supplied by the selected
+host configuration when an imported module needs them.
+
+The lockfile (`hiko.lock.toml`) records exact resolved package roots, per-owner
+dependency lists and module hashes:
 
 ```toml
 schema_version = 1
@@ -179,6 +197,7 @@ schema_version = 1
 [packages.Std]
 version = "0.1.0"
 base_url = "https://modules.example.com/Std-v0.1.0"
+dependencies = []
 
 [packages.Std.modules]
 Prelude = "blake3:..."
@@ -193,6 +212,14 @@ Resolution is **strict**:
 - dependency versions must match between `hiko.toml` and `hiko.lock.toml`
 - dependency registries must exist in `hiko.toml`
 - the locked package `base_url` must match `<registry-url>/<Package>-v<version>`
+- every package manifest and lock entry requires `dependencies`, even when empty;
+  missing metadata is an error, never permission to inherit the root's dependencies
+- a library may import itself, compiler-owned modules and packages in its own
+  dependency list; a root-only pin does not authorize another library's imports
+- package names are upper-case identifiers other than `Proj` or `__Builtin`;
+  lock/embedded packages cannot shadow linked extension packages
+- sealed modules retain their locked version, base URL and dependency list, so
+  embedded imports enforce the same boundary without reading a lockfile
 - the compiler does not silently resolve, rewrite, or update the lockfile during ordinary builds
 
 Important points:
@@ -218,12 +245,12 @@ hiko install --check    # write nothing; fail if the lockfile is out of date
 For each `[dependencies]` entry it:
 
 1. fetches `<registry url>/<Package>-v<version>/package.toml` and checks that
-   it names that package and version;
+   it names that package and version and has a valid explicit dependency list;
 2. downloads every module the package lists and checks each against the
    package's BLAKE3 hash;
 3. stores each module in the module cache, where the loader finds it.
 
-Then it writes every module of every dependency to the lockfile, and prints
+Then it records each package's dependency list and every module in the lockfile, and prints
 one line per difference from the lockfile it replaces (`+` added, `-` removed,
 `~` changed). If any package or module fails to download or verify, nothing is
 written. If storing a module in the cache fails, the lockfile is not written;
@@ -243,7 +270,10 @@ unchanged registry manifest, repairing the cache leaves the lockfile pins unchan
 
 `--check` is for CI: it reads only the package manifests, compares the
 lockfile they give with the one on disk, writes nothing, and exits nonzero if
-they differ. `hiko lock verify` checks the modules themselves.
+they differ, including changes only to a package's dependency list. `hiko lock
+verify` checks the modules themselves. To migrate an older lockfile, publish an
+explicit `dependencies` list in every package manifest and run `hiko install`;
+ordinary compilation never upgrades missing metadata implicitly.
 
 ### Cache Model
 
@@ -366,12 +396,17 @@ lockfile too. See "Library modules an extension needs" in
 
 ## What Is Next
 
-The remaining library/import work is operational hardening rather than deeper
-module theory:
+The remaining library/import work includes public integration blockers and
+operational hardening:
 
 - make `local_package_root` (used by `build-vm` and tests) exclusive: today a
   module missing from it falls through to the installed cache
 - embed only the modules a `--script` program imports, not the whole lockfile
+- isolate library inference/value environments from the importer: dependency
+  lists now authorize import declarations, but a library can still see a binding
+  imported earlier by its caller without declaring its own import. This is an
+  open #186 package-isolation blocker, not a capability-policy grant or an
+  accepted relaxation of the package contract below
 
 ## Package Contract
 

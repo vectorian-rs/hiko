@@ -1,5 +1,6 @@
 name = "Sre"
 version = "0.1.0"
+dependencies = ["Aws", "Std"]
 
 [modules]
 Health = "blake3:b170a67c852fee1e5358338e502ca016708b9532f9fd5dbe47e3472b65bdc1c4"

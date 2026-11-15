@@ -64,6 +64,7 @@ pub(crate) struct ModuleLockfile {
 pub(crate) struct ModuleLockPackage {
     pub(crate) version: String,
     pub(crate) base_url: String,
+    pub(crate) dependencies: Vec<String>,
     #[serde(default)]
     pub(crate) modules: BTreeMap<String, String>,
 }
@@ -133,8 +134,9 @@ fn verify_locked_modules(lockfile: &ModuleLockfile) -> Result<(), String> {
     for (package_name, package) in &lockfile.packages {
         for (module_name, expected_hash) in &package.modules {
             let module_url = format!(
-                "{}/modules/{module_name}.hml",
-                package.base_url.trim_end_matches('/')
+                "{}/modules/{}.hml",
+                package.base_url.trim_end_matches('/'),
+                module_name.replace('.', "/")
             );
             match verify_locked_module(package_name, module_name, &module_url, expected_hash) {
                 Ok(()) => println!("OK {package_name}.{module_name}"),
@@ -194,6 +196,12 @@ pub(crate) fn validate_module_lockfile(
         ));
     }
     for (package_name, package) in &lockfile.packages {
+        hiko_compile::package::validate_package_name(package_name)
+            .map_err(hiko_compile::compiler::codegen_message)?;
+        for dependency in &package.dependencies {
+            hiko_compile::package::validate_package_name(dependency)
+                .map_err(hiko_compile::compiler::codegen_message)?;
+        }
         validate_remote_base_url(package_name, &package.base_url, path)?;
         if package.version.trim().is_empty() {
             return Err(format!(
@@ -202,6 +210,8 @@ pub(crate) fn validate_module_lockfile(
             ));
         }
         for (module_name, expected_hash) in &package.modules {
+            hiko_compile::package::module_file(module_name)
+                .map_err(hiko_compile::compiler::codegen_message)?;
             if module_name.trim().is_empty() || expected_hash.trim().is_empty() {
                 return Err(format!(
                     "package '{package_name}' in '{}' has an empty module name or hash",

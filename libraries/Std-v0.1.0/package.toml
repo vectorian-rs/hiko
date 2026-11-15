@@ -1,5 +1,6 @@
 name = "Std"
 version = "0.1.0"
+dependencies = []
 
 [modules]
 List = "blake3:dbfb909326b85b2961ce6ff76053bb6681bdb4baca6c9644a5db3922535ef1e4"

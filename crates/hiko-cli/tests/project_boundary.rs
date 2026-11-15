@@ -598,7 +598,7 @@ fn explicit_policy_keeps_the_scripts_lockfile_and_cache() {
     )
     .unwrap();
     fs::write(scripts.join("hiko.lock.toml"), format!(
-        "schema_version = 1\n[packages.Demo]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:1/Demo-v0.1.0\"\n[packages.Demo.modules]\nValue = \"blake3:{hash}\"\n"
+        "schema_version = 1\n[packages.Demo]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:1/Demo-v0.1.0\"\n[packages.Demo.modules]\nValue = \"blake3:{hash}\"\n"
     )).unwrap();
     fs::write(
         scripts.join("a.hml"),

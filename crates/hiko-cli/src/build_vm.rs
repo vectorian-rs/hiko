@@ -342,19 +342,32 @@ fn collect_sealed(
 /// artifact.
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> Result<(), String> {
-    let Some(source) = &sealed.script else {
-        return Ok(());
-    };
+    // Validate embedded/extension namespaces even for an unsealed entry.
+    let source = sealed.script.as_deref().unwrap_or("");
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
     let modules: Vec<EmbeddedModule> = sealed
         .modules
         .iter()
-        .map(|m| EmbeddedModule {
-            import_name: leak(&m.import_name),
-            blake3: leak(&m.blake3),
-            source: leak(&m.source),
+        .map(|m| {
+            let (_, version, base_url) = m.owner.locked_identity().ok_or_else(|| {
+                format!("sealed module {} has no locked provenance", m.import_name)
+            })?;
+            Ok(EmbeddedModule {
+                import_name: leak(&m.import_name),
+                version: leak(version),
+                base_url: leak(base_url),
+                dependencies: Box::leak(
+                    m.dependencies
+                        .iter()
+                        .map(|name| leak(name))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
+                blake3: leak(&m.blake3),
+                source: leak(&m.source),
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     let embedded: &'static EmbeddedSources = Box::leak(Box::new(EmbeddedSources {
         modules: Box::leak(modules.into_boxed_slice()),
     }));
@@ -411,10 +424,14 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
     for (i, m) in sealed.modules.iter().enumerate() {
         let file = format!("sealed/modules/{i}.hml");
         write(&out_dir.join(&file), &m.source)?;
+        let (_, version, base_url) = m
+            .owner
+            .locked_identity()
+            .ok_or_else(|| format!("sealed module {} has no locked provenance", m.import_name))?;
         writeln!(
             rs,
-            "        EmbeddedModule {{ import_name: {:?}, blake3: {:?}, source: include_str!(\"../{file}\") }},",
-            m.import_name, m.blake3
+            "        EmbeddedModule {{ import_name: {:?}, version: {:?}, base_url: {:?}, dependencies: &{:?}, blake3: {:?}, source: include_str!(\"../{file}\") }},",
+            m.import_name, version, base_url, m.dependencies, m.blake3
         )
         .unwrap();
     }
@@ -659,6 +676,9 @@ mod tests {
         let embedded = read(out.join("src/embedded.rs"));
         let option_hash = "blake3:bfef3fd8c6aa36f674c79e39ce0948dfbfe7f15cf69adeb8231c51b79ee56a84";
         assert!(embedded.contains(&format!("| `Std.Option` | `{option_hash}` |")));
+        assert!(embedded.contains("version: \"0.1.0\""));
+        assert!(embedded.contains("base_url: \"http://127.0.0.1:8000/Std-v0.1.0\""));
+        assert!(embedded.contains("dependencies: &[\"Aws\", \"Std\"]"));
         assert_eq!(
             read(module_file(&out, "Std.Option")),
             read(repo().join("libraries/Std-v0.1.0/modules/Option.hml"))
@@ -685,7 +705,7 @@ mod tests {
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
-    fn sealing_keeps_package_identity_for_the_future_catalog() {
+    fn sealing_keeps_package_identity_and_dependencies() {
         use hiko_compile::package::{
             ModuleCatalog, ModuleSources, PackageDefinition, PackageOwner, PinnedSource,
         };

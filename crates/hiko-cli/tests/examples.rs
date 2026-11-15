@@ -151,7 +151,7 @@ mod thin_modules {
             fs::write(root.join("policy.toml"), policy).unwrap();
             let base = "http://127.0.0.1:9/Std-v0.1.0";
             let mut lock = format!(
-                "schema_version = 1\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = {base:?}\n[packages.Std.modules]\n"
+                "schema_version = 1\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = {base:?}\n[packages.Std.modules]\n"
             );
             for module in modules {
                 let module_source = fs::read(format!(

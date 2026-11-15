@@ -41,7 +41,7 @@ fn project(name: &str, modules: &[&str]) -> PathBuf {
         "[defaults]\nlockfile = \"hiko.lock.toml\"\n\n[registries.local]\nurl = \"http://127.0.0.1:8000\"\n\n[dependencies]\nStd = { version = \"0.1.0\", registry = \"local\" }\n",
     )
     .unwrap();
-    let mut lock = "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:8000/Std-v0.1.0\"\n\n[packages.Std.modules]\n".to_string();
+    let mut lock = "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:8000/Std-v0.1.0\"\n\n[packages.Std.modules]\n".to_string();
     for module in modules {
         let hash = package["modules"][*module].as_str().unwrap();
         lock.push_str(&format!("{module} = \"{hash}\"\n"));
@@ -244,7 +244,7 @@ fn a_loader_error_about_another_package_keeps_its_own_message() {
     let lock = std::fs::read_to_string(dir.join("hiko.lock.toml")).unwrap();
     std::fs::write(
         dir.join("hiko.lock.toml"),
-        format!("{lock}\n[packages.Other]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:8000/Other-v0.1.0\"\n\n[packages.Other.modules]\n"),
+        format!("{lock}\n[packages.Other]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:8000/Other-v0.1.0\"\n\n[packages.Other.modules]\n"),
     )
     .unwrap();
     let err = compile_in(&dir, "import Aws.S3", s3_options()).unwrap_err();
@@ -583,6 +583,9 @@ fn an_embedded_module_failing_its_hash_names_the_extension_and_the_fix() {
     static WRONG: EmbeddedSources = EmbeddedSources {
         modules: &[EmbeddedModule {
             import_name: "Std.Result",
+            version: "0.1.0",
+            base_url: "http://127.0.0.1:8000/Std-v0.1.0",
+            dependencies: &[],
             blake3: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             source: include_str!("../../../libraries/Std-v0.1.0/modules/Result.hml"),
         }],

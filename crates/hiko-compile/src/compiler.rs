@@ -124,6 +124,8 @@ fn remote_use_refused(path: &str) -> CompileError {
 pub struct LockedModuleSource {
     /// Locked package provenance, preserved independently of transport.
     pub owner: PackageOwner,
+    /// Explicit dependency authority from the reviewed lock entry.
+    pub dependencies: Vec<String>,
     pub import_name: String,
     /// The lockfile hash, as written there.
     pub blake3: String,
@@ -138,6 +140,10 @@ pub struct LockedModuleSource {
 pub struct EmbeddedModule {
     /// Import name, such as `Std.List`.
     pub import_name: &'static str,
+    /// Locked provenance and dependency authority, never inferred from bytes.
+    pub version: &'static str,
+    pub base_url: &'static str,
+    pub dependencies: &'static [&'static str],
     /// Lockfile hash, `blake3:<hex>` or `<hex>`.
     pub blake3: &'static str,
     pub source: &'static str,
@@ -525,6 +531,9 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
             )));
         }
         validate_remote_base_url(package_name, &package.base_url, path)?;
+        for dependency in &package.dependencies {
+            crate::package::validate_package_name(dependency)?;
+        }
         for (module_name, hash) in &package.modules {
             if module_name.trim().is_empty() {
                 return Err(CompileError::codegen(format!(
@@ -538,6 +547,7 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
                     path.display()
                 )));
             }
+            crate::package::module_file(module_name)?;
             if hash.trim().is_empty() {
                 return Err(CompileError::codegen(format!(
                     "module '{package_name}.{module_name}' in '{}' is missing a BLAKE3 hash",
@@ -679,7 +689,7 @@ fn validate_package_name(package_name: &str, context: &str) -> Result<(), Compil
             "{context} uses reserved package name '{package_name}'; names starting with '__' are reserved"
         )));
     }
-    Ok(())
+    crate::package::validate_package_name(package_name)
 }
 
 /// Split `Package.Module` or `Package.Nested.Module` into the package name
@@ -693,7 +703,7 @@ fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
                 "named import '{module_name}' cannot nest; compiler-owned modules are single names"
             )));
         }
-    } else {
+    } else if package != "Proj" {
         validate_package_name(package, &format!("named import '{module_name}'"))?;
     }
     Ok((package, module))
@@ -752,7 +762,11 @@ fn resolve_embedded_module(
     })?;
     Ok(ResolvedImport::Embedded {
         key: ImportSourceKey::Synthetic(module.import_name),
-        owner: PackageOwner::embedded(module.import_name.split_once('.').map(|(name, _)| name)),
+        owner: PackageOwner::locked(
+            split_import_name(module.import_name)?.0,
+            module.version,
+            module.base_url,
+        ),
         display_name: module_name.to_string(),
         source: module.source,
         base_dir: PathBuf::new(),
@@ -924,6 +938,8 @@ struct ImportLockfile {
 struct LockedPackage {
     version: String,
     base_url: String,
+    // Deliberately required: old metadata must fail closed.
+    dependencies: Vec<String>,
     #[serde(default)]
     modules: HashMap<String, String>,
 }
@@ -944,7 +960,7 @@ struct ImportKey {
 
 fn entry_package_owner(entry: Option<&Path>, embedded: bool) -> Option<PackageOwner> {
     if embedded {
-        return Some(PackageOwner::embedded(None));
+        return Some(PackageOwner::embedded_project());
     }
     entry
         .and_then(Path::parent)
@@ -1215,6 +1231,9 @@ impl Compiler {
             };
             sources.push(LockedModuleSource {
                 owner,
+                dependencies: c.import_lockfile.as_ref().unwrap().packages[package_name]
+                    .dependencies
+                    .clone(),
                 import_name,
                 digest: normalize_blake3(&blake3),
                 blake3,
@@ -1318,6 +1337,7 @@ impl Compiler {
                 source: ImportSourceKey::File(entry.clone()),
             });
         }
+        c.validate_package_metadata()?;
         let surface = &c.loader_options.extensions;
         for ty in &surface.types {
             c.infer_ctx
@@ -2035,8 +2055,137 @@ impl Compiler {
 
     // ── Local and named import handling ─────────────────────────────
 
+    /// Validate supplied metadata before any module can shadow a namespace.
+    fn validate_package_metadata(&self) -> Result<(), CompileError> {
+        let mut extensions = HashMap::new();
+        let mut extension_modules = HashSet::new();
+        for (name, _) in &self.loader_options.extensions.modules {
+            if !extension_modules.insert(name) {
+                return Err(CompileError::codegen(format!(
+                    "duplicate extension module {name}"
+                )));
+            }
+            let (package, _) = split_import_name(name)?;
+            crate::package::validate_package_name(package)?;
+            let provider = self
+                .loader_options
+                .extensions
+                .requires_for(name)
+                .map_or(package, |requires| requires.extension);
+            if let Some(previous) = extensions.insert(package, provider)
+                && previous != provider
+            {
+                return Err(CompileError::codegen(format!(
+                    "package name {package} collides between extensions {previous} and {provider}"
+                )));
+            }
+        }
+        if let Some(embedded) = self.loader_options.embedded {
+            let mut packages: HashMap<&str, &EmbeddedModule> = HashMap::new();
+            let mut modules = HashSet::new();
+            for module in embedded.modules {
+                let (package, _) = split_import_name(module.import_name)?;
+                crate::package::validate_package_name(package)?;
+                if extensions.contains_key(package) {
+                    return Err(CompileError::codegen(format!(
+                        "package name {package} collides between embedded package and extension"
+                    )));
+                }
+                if module.version.is_empty() || module.base_url.is_empty() {
+                    return Err(CompileError::codegen(format!(
+                        "embedded package {package} needs a locked version and base URL"
+                    )));
+                }
+                for dependency in module.dependencies {
+                    crate::package::validate_package_name(dependency)?;
+                }
+                if !modules.insert(module.import_name) {
+                    return Err(CompileError::codegen(format!(
+                        "duplicate embedded module {}",
+                        module.import_name
+                    )));
+                }
+                if let Some(previous) = packages.insert(package, module)
+                    && (previous.version != module.version
+                        || previous.base_url != module.base_url
+                        || previous.dependencies != module.dependencies)
+                {
+                    return Err(CompileError::codegen(format!(
+                        "embedded package {package} has conflicting owner/dependency metadata"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_package_dependency(&mut self, import: &str) -> Result<(), CompileError> {
+        let Some(owner) = self.source_owner.clone() else {
+            return Ok(());
+        };
+        let Some((package, _, _)) = owner.locked_identity() else {
+            return Ok(());
+        };
+        if let Some(embedded) = self.loader_options.embedded {
+            let metadata = embedded
+                .modules
+                .iter()
+                .find(|module| {
+                    module
+                        .import_name
+                        .split_once('.')
+                        .is_some_and(|(name, _)| name == package)
+                })
+                .ok_or_else(|| {
+                    CompileError::codegen(format!(
+                        "package {package} has no embedded dependency metadata"
+                    ))
+                })?;
+            return owner.check_dependency(import, metadata.dependencies.iter().copied());
+        }
+        #[cfg(feature = "loader-integrity-blake3")]
+        {
+            let (lockfile, _, _) = self.ensure_import_loader(import, None)?;
+            let metadata = lockfile.packages.get(package).ok_or_else(|| {
+                CompileError::codegen(format!(
+                    "package {package} has no locked dependency metadata"
+                ))
+            })?;
+            owner.check_dependency(import, metadata.dependencies.iter().map(String::as_str))
+        }
+        #[cfg(not(feature = "loader-integrity-blake3"))]
+        Err(CompileError::codegen(format!(
+            "package {package} needs dependency metadata; enable cargo feature 'loader-integrity-blake3'"
+        )))
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn check_extension_collisions<'a>(
+        &self,
+        packages: impl Iterator<Item = &'a str>,
+    ) -> Result<(), CompileError> {
+        for package in packages {
+            if self
+                .loader_options
+                .extensions
+                .modules
+                .iter()
+                .any(|(name, _)| {
+                    name.split_once('.')
+                        .is_some_and(|(prefix, _)| prefix == package)
+                })
+            {
+                return Err(CompileError::codegen(format!(
+                    "package name {package} collides between lockfile and extension"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
+        self.check_package_dependency(module_name)?;
         if package_name == "Proj" {
             return self.resolve_proj_import(module_name, leaf_module);
         }
@@ -2046,6 +2195,21 @@ impl Compiler {
             self.check_extension_import(&requires, importer, module_name)?;
         }
         if let Some((import_name, source)) = self.loader_options.extensions.module(module_name) {
+            // Check names even for an extension-first entry. Missing or
+            // malformed lock diagnostics still belong to the actual library
+            // import, which supplies the extension's requires/install guidance.
+            // This preflight never loads source or grants dependency authority.
+            #[cfg(feature = "loader-integrity-blake3")]
+            if self.loader_options.embedded.is_none()
+                && self.import_lockfile.is_none()
+                && let Some(entry) = self.entry_file.as_deref()
+                && let Ok(path) = Compiler::project_lockfile_path(entry)
+                && let Ok(text) = std::fs::read_to_string(path)
+                && let Ok(table) = toml::from_str::<toml::Table>(&text)
+                && let Some(packages) = table.get("packages").and_then(toml::Value::as_table)
+            {
+                self.check_extension_collisions(packages.keys().map(String::as_str))?;
+            }
             return Ok(ResolvedImport::Synthetic {
                 import_name,
                 display_name: module_name.to_string(),
@@ -2341,6 +2505,7 @@ impl Compiler {
                 ))
             })?;
             validate_lockfile(&lockfile, lockfile_path)?;
+            self.check_extension_collisions(lockfile.packages.keys().map(String::as_str))?;
             validate_lockfile_against_manifest(
                 &lockfile,
                 lockfile_path,
@@ -3986,6 +4151,9 @@ mod tests {
         };
         let modules = Box::leak(Box::new([EmbeddedModule {
             import_name: "Pkg.Greet",
+            version: "0.1.0",
+            base_url: "https://example.com/Pkg-v0.1.0",
+            dependencies: &[],
             blake3,
             source: leak(module_source.to_string()),
         }]));
@@ -4809,7 +4977,7 @@ mod tests {
             Compiler::compile_with_options(parse_program("import __Builtin.Numeric"), options)
                 .unwrap_err();
         assert!(
-            format!("{error:?}").contains("import Std.Int32"),
+            format!("{error:?}").contains("reserved package name '__Builtin'"),
             "{error:?}"
         );
     }
@@ -4833,7 +5001,7 @@ mod tests {
                     .unwrap_err();
             let message = format!("{error:?}");
             assert!(
-                message.contains("runtime-owned type") || message.contains("import Std.Json"),
+                message.contains("reserved package name '__Builtin'"),
                 "{message}"
             );
         }
@@ -4897,12 +5065,8 @@ mod tests {
         };
         let err = Compiler::compile_with_options(parse_program("import __Builtin.Fiber"), options)
             .unwrap_err();
-        let CompileError::Type(err) = err else {
-            panic!("expected type error: {err:?}")
-        };
         assert!(
-            err.message
-                .contains("runtime-owned type 'BuiltinFiber.await_result'"),
+            format!("{err:?}").contains("reserved package name '__Builtin'"),
             "{err:?}"
         );
     }
@@ -4948,7 +5112,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -4987,7 +5151,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5046,7 +5210,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5093,7 +5257,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5132,7 +5296,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5168,6 +5332,7 @@ val result = Box.get (Box.make 41)
             r#"schema_version = 1
 
 [packages.Std]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Std-v0.1.0"
 
@@ -5206,6 +5371,7 @@ Prelude = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.Test]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Test-v0.1.0"
 
@@ -5240,7 +5406,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://example.com/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://example.com/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(&entry_path, "import Test.Answer\nval result = answer\n");
@@ -5294,7 +5460,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5334,7 +5500,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
         (project_dir, entry_path, cache_path)
@@ -5512,7 +5678,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:deadbeef\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:deadbeef\"\n"
             ),
         );
         write_file(
@@ -5544,7 +5710,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:9/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{locked_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:9/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{locked_hash}\"\n"
             ),
         );
         let entry_path = project_dir.join("main.hml");
@@ -5684,6 +5850,31 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
+    fn extension_first_import_cannot_shadow_a_locked_package() {
+        let source = "structure Answer = struct val value = 42 end";
+        let (root, entry) = write_local_package_project(source, &blake3_hex(source.as_bytes()));
+        let options = ModuleLoaderOptions {
+            extensions: ExtensionSurface {
+                modules: vec![("Test.Answer", "structure Answer = struct val value = 0 end")],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = Compiler::compile_file_with_options(
+            parse_program("import Test.Answer\nval result = Answer.value"),
+            &entry,
+            options,
+        );
+        let error = format!("{:?}", result.unwrap_err());
+        assert!(
+            error.contains("collides between lockfile and extension"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
     fn named_import_rejects_local_package_module_with_bad_blake3() {
         let module_source = "structure Answer = struct\n  val value = 42\nend\n";
         let (project_dir, entry_path) = write_local_package_project(module_source, "deadbeef");
@@ -5774,7 +5965,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n[packages.Test.modules]\nCache = \"blake3:{hash}\"\n"
+                "schema_version = 1\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n[packages.Test.modules]\nCache = \"blake3:{hash}\"\n"
             ),
         );
         write_file(&entry_path, "import Test.Cache\nval answer = Cache.value\n");
@@ -5805,6 +5996,7 @@ Answer = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.Other]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Other-v0.1.0"
 
@@ -5838,6 +6030,7 @@ List = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.Std]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Std-v0.1.0"
 
@@ -5986,6 +6179,7 @@ Prelude = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.__Builtin]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/__Builtin-v0.1.0"
 
