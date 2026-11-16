@@ -64,7 +64,13 @@ fn test_stdlib_log() {
     run_hiko_file("../../tests/run/test_log.hml");
 }
 
-#[cfg(feature = "builtin-convert")]
+// Format imports the numeric and string bridges; the runtime policy below
+// still grants only string.join, not those bridges' unused peers.
+#[cfg(all(
+    feature = "builtin-convert",
+    feature = "builtin-math",
+    feature = "builtin-string"
+))]
 #[test]
 fn format_join_forwarders_preserve_text_and_empty_inputs() {
     let source = r#"
@@ -86,7 +92,11 @@ val result =
     ));
 }
 
-#[cfg(feature = "builtin-convert")]
+#[cfg(all(
+    feature = "builtin-convert",
+    feature = "builtin-math",
+    feature = "builtin-string"
+))]
 #[test]
 fn format_join_forwarders_need_only_the_invoked_policy_leaf() {
     run_thin_source("import Std.Format\nval x = 1", "").unwrap();
