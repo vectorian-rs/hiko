@@ -2382,11 +2382,13 @@ impl Compiler {
         let owner = PackageOwner::locked(package_name, &package.version, &package.base_url);
 
         if let Some(root) = &local_package_root {
-            let local_path = root
-                .join(format!("{package_name}-v{}", package.version))
+            let relative = PathBuf::from(format!("{package_name}-v{}", package.version))
                 .join("modules")
                 .join(crate::package::module_file(leaf_module)?);
-            if local_path.is_file() {
+            if let Some(local_path) =
+                crate::package::optional_module_file(root, &relative, module_name, package_name)
+                    .map_err(load_failed(REPAIR_MODULE_FILE))?
+            {
                 let source = std::fs::read_to_string(&local_path)
                     .map_err(|e| {
                         CompileError::codegen(format!(
@@ -5846,6 +5848,140 @@ Answer = "blake3:deadbeef"
         );
 
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn local_path_fixture(nested: bool) -> (PathBuf, PathBuf, PathBuf) {
+        let source = "structure Answer = struct val value = 42 end";
+        let hash = blake3_hex(source.as_bytes());
+        let (root, entry) = write_local_package_project(source, &hash);
+        let module = if nested { "Net.Answer" } else { "Answer" };
+        if nested {
+            let modules = root.join("libraries/Test-v0.1.0/modules");
+            std::fs::create_dir(modules.join("Net")).unwrap();
+            std::fs::rename(modules.join("Answer.hml"), modules.join("Net/Answer.hml")).unwrap();
+            write_file(&entry, "import Test.Net.Answer\nval result = Answer.value");
+            let lock = root.join("hiko.lock.toml");
+            let text = std::fs::read_to_string(&lock).unwrap();
+            write_file(&lock, &text.replace("Answer =", "\"Net.Answer\" ="));
+        }
+        let url = format!(
+            "http://127.0.0.1:9/Test-v0.1.0/modules/{}.hml",
+            module.replace('.', "/")
+        );
+        let cache = module_cache_path(&root.join(".test-lib-cache"), &url, &hash);
+        write_file(&cache, source);
+        (root, entry, cache)
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn assert_local_path_refused(root: &Path, entry: &Path, reason: &str) {
+        let error = format!("{:?}", compile_with_local_root(root, entry).unwrap_err());
+        assert!(error.contains(reason) && error.contains("Test"), "{error}");
+        let options = ModuleLoaderOptions {
+            local_package_root: Some(root.join("libraries")),
+            cache_dir: Some(root.join(".test-lib-cache")),
+            ..Default::default()
+        };
+        let error = format!(
+            "{:?}",
+            Compiler::locked_module_sources(entry, options).unwrap_err()
+        );
+        assert!(error.contains(reason) && error.contains("Test"), "{error}");
+    }
+
+    #[cfg(all(unix, feature = "loader-integrity-blake3"))]
+    #[test]
+    fn local_package_paths_reject_symlinks_before_cache_fallback() {
+        use std::os::unix::fs::symlink;
+        for component in [
+            "package",
+            "modules",
+            "nested",
+            "file",
+            "dangling",
+            "inside-file",
+        ] {
+            let nested = component == "nested";
+            let (root, entry, cache) = local_path_fixture(nested);
+            let package = root.join("libraries/Test-v0.1.0");
+            let path = match component {
+                "package" => package,
+                "modules" => package.join("modules"),
+                "nested" => package.join("modules/Net"),
+                _ => package.join("modules/Answer.hml"),
+            };
+            let destination = if component == "inside-file" {
+                path.with_file_name("Real.hml")
+            } else {
+                root.join("outside")
+            };
+            if component == "dangling" {
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                std::fs::rename(&path, &destination).unwrap();
+            }
+            symlink(&destination, &path).unwrap();
+            let before = std::fs::read(&cache).unwrap();
+            assert_local_path_refused(&root, &entry, "symlink");
+            assert_eq!(std::fs::read(&cache).unwrap(), before);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn local_package_paths_require_exact_spelling_before_cache_fallback() {
+        for component in ["package", "modules", "nested", "file"] {
+            let (root, entry, cache) = local_path_fixture(component == "nested");
+            let package = root.join("libraries/Test-v0.1.0");
+            let path = match component {
+                "package" => package,
+                "modules" => package.join("modules"),
+                "nested" => package.join("modules/Net"),
+                _ => package.join("modules/Answer.hml"),
+            };
+            let wrong_case = match component {
+                "modules" => "Modules",
+                "nested" => "net",
+                "file" => "answer.hml",
+                _ => "test-v0.1.0",
+            };
+            std::fs::rename(&path, path.with_file_name(wrong_case)).unwrap();
+            let before = std::fs::read(&cache).unwrap();
+            assert_local_path_refused(&root, &entry, "exact spelling");
+            assert_eq!(std::fs::read(&cache).unwrap(), before);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn local_package_paths_keep_plain_nested_reads_and_missing_override_cache_fallback() {
+        for missing in ["none", "nested-none", "file", "package", "root"] {
+            let (root, entry, cache) = local_path_fixture(missing == "nested-none");
+            match missing {
+                "file" => {
+                    std::fs::remove_file(root.join("libraries/Test-v0.1.0/modules/Answer.hml"))
+                        .unwrap()
+                }
+                "package" => std::fs::remove_dir_all(root.join("libraries/Test-v0.1.0")).unwrap(),
+                "root" => std::fs::remove_dir_all(root.join("libraries")).unwrap(),
+                _ => (),
+            }
+            let before = std::fs::read(&cache).unwrap();
+            compile_with_local_root(&root, &entry).unwrap();
+            let options = ModuleLoaderOptions {
+                local_package_root: Some(root.join("libraries")),
+                cache_dir: Some(root.join(".test-lib-cache")),
+                ..Default::default()
+            };
+            let sources = Compiler::locked_module_sources(&entry, options).unwrap();
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0].source.as_bytes(), before);
+            assert_eq!(std::fs::read(&cache).unwrap(), before);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(feature = "loader-integrity-blake3")]

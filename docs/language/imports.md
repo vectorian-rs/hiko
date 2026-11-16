@@ -322,6 +322,15 @@ Integrity is checked at both boundaries:
 
 That means cached content is not trusted just because it already exists locally.
 
+For an embedder's `ModuleLoaderOptions::local_package_root`, the live loader and
+`build-vm` source collection also check every component below that configured
+root: the versioned package directory, `modules/`, nested directories and file.
+Spelling must match exactly; symlinks (including dangling links and links whose
+target stays inside the root) are refused before reading source or falling
+back to the cache. A wrong-case local path is also an error, even if a valid
+cached copy exists. A genuinely absent local module still falls through to the
+verified installed cache; this option is not an exclusive source selection.
+
 Pinned modules cannot contain the removed `use` keyword, including inside
 `let`, `local`, functions, or structures. Their tokens are checked before
 parsing, type inference, or reuse of an inferred module, so the refusal names
