@@ -267,7 +267,12 @@ fn prepared(
     }
     assert!(vm.pending_runtime_request.is_none());
     assert!(vm.handlers.is_empty() && vm.hidden_handlers.is_empty());
-    assert!(!vm.cancelled && vm.fuel_lease.is_none() && vm.fuel_budget.is_none());
+    assert!(
+        !vm.cancelled
+            && vm.fuel_remaining.is_none()
+            && vm.fuel_entry.is_none()
+            && vm.fuel_budget.is_none()
+    );
     #[cfg(feature = "register-vm")]
     assert_eq!(vm.register_paid, 0);
     // Only a completed main frame may be discarded; no suspended call state.

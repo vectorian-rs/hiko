@@ -681,11 +681,7 @@ impl VM {
                 let Some(&(op, weight)) = func.code.get(pc) else {
                     fail!(error("unexpected end of register code"));
                 };
-                if let Some(fuel) = self
-                    .fuel_lease
-                    .as_mut()
-                    .and_then(|lease| lease.remaining.as_mut())
-                {
+                if let Some(fuel) = &mut self.fuel_remaining {
                     // An instruction worth more than the fuel left is paid
                     // in part now and the rest after the yield, so every
                     // slice makes progress and the total charged is exactly
