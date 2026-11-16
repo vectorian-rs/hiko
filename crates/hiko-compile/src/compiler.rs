@@ -2381,39 +2381,40 @@ impl Compiler {
         let expected_hash = normalize_blake3(expected_hash);
         let owner = PackageOwner::locked(package_name, &package.version, &package.base_url);
 
-        if let Some(root) = &local_package_root {
-            let relative = PathBuf::from(format!("{package_name}-v{}", package.version))
-                .join("modules")
-                .join(crate::package::module_file(leaf_module)?);
-            if let Some(local_path) =
-                crate::package::optional_module_file(root, &relative, module_name, package_name)
-                    .map_err(load_failed(REPAIR_MODULE_FILE))?
-            {
-                let source = std::fs::read_to_string(&local_path)
-                    .map_err(|e| {
-                        CompileError::codegen(format!(
-                            "cannot read local module '{}': {e}",
-                            local_path.display()
-                        ))
-                    })
-                    .map_err(load_failed(REPAIR_MODULE_FILE))?;
-                verify_blake3(
-                    source.as_bytes(),
-                    &expected_hash,
-                    &format!(
-                        "local named import '{module_name}' ({})",
+        if let Some(root) = &local_package_root
+            && let Some(local_path) = crate::package::local_package_module_file(
+                root,
+                package_name,
+                &package.version,
+                leaf_module,
+                module_name,
+            )
+            .map_err(load_failed(REPAIR_MODULE_FILE))?
+        {
+            let source = std::fs::read_to_string(&local_path)
+                .map_err(|e| {
+                    CompileError::codegen(format!(
+                        "cannot read local module '{}': {e}",
                         local_path.display()
-                    ),
-                )
-                .map_err(load_failed(HASH_DIFFERS_FROM_PIN))?;
-                let canonical = std::fs::canonicalize(&local_path).unwrap_or(local_path);
-                return Ok(ResolvedImport::VerifiedFile {
-                    canonical,
-                    display_name: module_name.to_string(),
-                    source,
-                    owner,
-                });
-            }
+                    ))
+                })
+                .map_err(load_failed(REPAIR_MODULE_FILE))?;
+            verify_blake3(
+                source.as_bytes(),
+                &expected_hash,
+                &format!(
+                    "local named import '{module_name}' ({})",
+                    local_path.display()
+                ),
+            )
+            .map_err(load_failed(HASH_DIFFERS_FROM_PIN))?;
+            let canonical = std::fs::canonicalize(&local_path).unwrap_or(local_path);
+            return Ok(ResolvedImport::VerifiedFile {
+                canonical,
+                display_name: module_name.to_string(),
+                source,
+                owner,
+            });
         }
 
         let module_url = format!(
@@ -4366,13 +4367,17 @@ mod tests {
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
+        // The clock alone collides across parallel tests; the counter alone
+        // repeats across runs that reuse a pid.
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "hiko-compile-{label}-{}-{nanos}",
-            std::process::id()
+            "hiko-compile-{label}-{}-{nanos}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
@@ -5729,12 +5734,17 @@ Answer = "blake3:deadbeef"
         entry_path: &Path,
     ) -> Result<(CompiledProgram, Vec<hiko_types::infer::Warning>), CompileError> {
         let source = std::fs::read_to_string(entry_path).expect("read source");
-        let options = ModuleLoaderOptions {
+        let options = local_root_options(project_dir);
+        Compiler::compile_file_with_options(parse_program(&source), entry_path, options)
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn local_root_options(project_dir: &Path) -> ModuleLoaderOptions {
+        ModuleLoaderOptions {
             cache_dir: Some(project_dir.join(".test-lib-cache")),
             local_package_root: Some(project_dir.join("libraries")),
             ..Default::default()
-        };
-        Compiler::compile_file_with_options(parse_program(&source), entry_path, options)
+        }
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
@@ -5875,19 +5885,31 @@ Answer = "blake3:deadbeef"
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
+    fn local_component_path(root: &Path, component: &str) -> PathBuf {
+        let package = root.join("libraries/Test-v0.1.0");
+        match component {
+            "package" => package,
+            "modules" => package.join("modules"),
+            "nested" => package.join("modules/Net"),
+            _ => package.join("modules/Answer.hml"),
+        }
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
     fn assert_local_path_refused(root: &Path, entry: &Path, reason: &str) {
         let error = format!("{:?}", compile_with_local_root(root, entry).unwrap_err());
-        assert!(error.contains(reason) && error.contains("Test"), "{error}");
-        let options = ModuleLoaderOptions {
-            local_package_root: Some(root.join("libraries")),
-            cache_dir: Some(root.join(".test-lib-cache")),
-            ..Default::default()
-        };
+        assert!(
+            error.contains(reason) && error.contains("package Test"),
+            "{error}"
+        );
         let error = format!(
             "{:?}",
-            Compiler::locked_module_sources(entry, options).unwrap_err()
+            Compiler::locked_module_sources(entry, local_root_options(root)).unwrap_err()
         );
-        assert!(error.contains(reason) && error.contains("Test"), "{error}");
+        assert!(
+            error.contains(reason) && error.contains("package Test"),
+            "{error}"
+        );
     }
 
     #[cfg(all(unix, feature = "loader-integrity-blake3"))]
@@ -5904,13 +5926,7 @@ Answer = "blake3:deadbeef"
         ] {
             let nested = component == "nested";
             let (root, entry, cache) = local_path_fixture(nested);
-            let package = root.join("libraries/Test-v0.1.0");
-            let path = match component {
-                "package" => package,
-                "modules" => package.join("modules"),
-                "nested" => package.join("modules/Net"),
-                _ => package.join("modules/Answer.hml"),
-            };
+            let path = local_component_path(&root, component);
             let destination = if component == "inside-file" {
                 path.with_file_name("Real.hml")
             } else {
@@ -5934,13 +5950,7 @@ Answer = "blake3:deadbeef"
     fn local_package_paths_require_exact_spelling_before_cache_fallback() {
         for component in ["package", "modules", "nested", "file"] {
             let (root, entry, cache) = local_path_fixture(component == "nested");
-            let package = root.join("libraries/Test-v0.1.0");
-            let path = match component {
-                "package" => package,
-                "modules" => package.join("modules"),
-                "nested" => package.join("modules/Net"),
-                _ => package.join("modules/Answer.hml"),
-            };
+            let path = local_component_path(&root, component);
             let wrong_case = match component {
                 "modules" => "Modules",
                 "nested" => "net",
@@ -5967,19 +5977,19 @@ Answer = "blake3:deadbeef"
                 }
                 "package" => std::fs::remove_dir_all(root.join("libraries/Test-v0.1.0")).unwrap(),
                 "root" => std::fs::remove_dir_all(root.join("libraries")).unwrap(),
-                _ => (),
+                // A present local file must be read without the cache.
+                _ => std::fs::remove_file(&cache).unwrap(),
             }
-            let before = std::fs::read(&cache).unwrap();
+            let before = std::fs::read(&cache).ok();
             compile_with_local_root(&root, &entry).unwrap();
-            let options = ModuleLoaderOptions {
-                local_package_root: Some(root.join("libraries")),
-                cache_dir: Some(root.join(".test-lib-cache")),
-                ..Default::default()
-            };
-            let sources = Compiler::locked_module_sources(&entry, options).unwrap();
+            let sources =
+                Compiler::locked_module_sources(&entry, local_root_options(&root)).unwrap();
             assert_eq!(sources.len(), 1);
-            assert_eq!(sources[0].source.as_bytes(), before);
-            assert_eq!(std::fs::read(&cache).unwrap(), before);
+            assert_eq!(
+                sources[0].source,
+                "structure Answer = struct val value = 42 end"
+            );
+            assert_eq!(std::fs::read(&cache).ok(), before);
             std::fs::remove_dir_all(root).unwrap();
         }
     }

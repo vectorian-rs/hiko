@@ -606,16 +606,21 @@ pub(crate) fn checked_module_file(
     })
 }
 
-/// An absent local override may use the verified cache, but a present path must
-/// obey the same spelling/symlink rules as project and catalog module sources.
+/// A locked package's module file under an embedder's local package root. An
+/// absent override may use the verified cache, but a present path must obey the
+/// same spelling/symlink rules as project and catalog module sources.
 #[cfg(feature = "loader-integrity-blake3")]
-pub(crate) fn optional_module_file(
+pub(crate) fn local_package_module_file(
     root: &Path,
-    relative: &Path,
+    package: &str,
+    version: &str,
+    module: &str,
     import: &str,
-    owner: &str,
 ) -> Result<Option<PathBuf>, CompileError> {
-    checked_module_path(root, relative, import, owner, true)
+    let relative = Path::new(&format!("{package}-v{version}"))
+        .join("modules")
+        .join(module_file(module)?);
+    checked_module_path(root, &relative, import, package, true)
 }
 
 fn checked_module_path(
@@ -660,12 +665,11 @@ fn checked_module_path(
                 found = Some(entry);
                 break;
             }
-            if allow_missing {
-                wrong_case |= entry
+            wrong_case |= allow_missing
+                && entry
                     .file_name()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&wanted.to_string_lossy());
-            }
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(wanted.as_encoded_bytes());
         }
         if allow_missing && found.is_none() && !wrong_case {
             return Ok(None);
