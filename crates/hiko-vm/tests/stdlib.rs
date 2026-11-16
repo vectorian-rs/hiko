@@ -64,6 +64,40 @@ fn test_stdlib_log() {
     run_hiko_file("../../tests/run/test_log.hml");
 }
 
+#[cfg(feature = "builtin-convert")]
+#[test]
+fn format_join_forwarders_preserve_text_and_empty_inputs() {
+    let source = r#"
+import Std.Format
+val result =
+  (Format.row [], Format.row ["a"], Format.row ["a", "b"], Format.row ["é", "λ"],
+   Format.lines [], Format.lines ["a"], Format.lines ["a", "b"], Format.lines ["a", "", "λ"])
+  = ("", "a", "a  b", "é  λ", "", "a", "a\nb", "a\n\nλ")
+"#;
+    let program = compile_thin_source(source).unwrap();
+    let config =
+        hiko_vm::config::RunConfig::from_toml("[capabilities.string.join]\nenabled = true\n")
+            .unwrap();
+    let mut vm = config.build_vm(program);
+    vm.run().unwrap();
+    assert!(matches!(
+        vm.get_global("result"),
+        Some(hiko_vm::value::Value::Bool(true))
+    ));
+}
+
+#[cfg(feature = "builtin-convert")]
+#[test]
+fn format_join_forwarders_need_only_the_invoked_policy_leaf() {
+    run_thin_source("import Std.Format\nval x = 1", "").unwrap();
+    for call in ["Format.row [\"a\", \"b\"]", "Format.lines [\"a\", \"b\"]"] {
+        let source = format!("import Std.Format\nval x = {call}");
+        run_thin_source(&source, "[capabilities.string.join]\nenabled = true\n").unwrap();
+        let denied = run_thin_source(&source, "").unwrap_err();
+        assert!(denied.contains("undefined global: string_join"), "{denied}");
+    }
+}
+
 fn compile_thin_source(source: &str) -> Result<hiko_compile::chunk::CompiledProgram, String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/run/test_thin_modules.hml");

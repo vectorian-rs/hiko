@@ -57,9 +57,9 @@ structure Format = struct
     else if BuiltinString.length text >= width then text
     else column width (text ^ " ")
 
-  fun row cells = string_join (cells, "  ")
+  fun row cells = BuiltinString.join (cells, "  ")
 
-  fun lines rows = string_join (rows, "\n")
+  fun lines rows = BuiltinString.join (rows, "\n")
 
   fun row_with_widths widths cells =
     case (widths, cells) of
