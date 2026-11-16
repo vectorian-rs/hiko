@@ -885,21 +885,6 @@ impl Heap {
         Ok(())
     }
 
-    pub(crate) fn allocation_would_exceed_limits(&self, object_bytes: usize) -> bool {
-        if let Some(max) = self.max_objects {
-            let live = self.live_count();
-            if live >= max {
-                return true;
-            }
-        }
-        if let Some(limit_bytes) = self.max_bytes()
-            && self.tree_bytes().saturating_add(object_bytes) > limit_bytes
-        {
-            return true;
-        }
-        false
-    }
-
     pub fn alloc_host_resource(
         &mut self,
         resource: HostResource,

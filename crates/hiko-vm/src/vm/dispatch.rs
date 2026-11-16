@@ -130,7 +130,7 @@ impl VM {
                                 Value::Heap(cached)
                             } else {
                                 // Only clone the constant on the first load.
-                                let obj = HeapObject::String(s.clone().into());
+                                let obj = HeapObject::String(Arc::from(s.as_str()));
                                 self.allocation_safepoint(1, obj.estimated_bytes())?;
                                 let v = self.alloc(obj)?;
                                 if let Value::Heap(r) = v {
@@ -792,10 +792,8 @@ impl VM {
     fn make_rec_closures(&mut self, fi: usize) -> Result<(), RuntimeError> {
         let n_closures = self.read_u8()? as usize;
         if n_closures != 0 {
-            let bytes = n_closures
-                .checked_mul(std::mem::size_of::<HeapObject>())
-                .ok_or_else(|| error("MakeRecClosures: allocation size overflow"))?;
-            self.allocation_safepoint(n_closures, bytes)?;
+            // `n_closures` is a byte, so this cannot overflow.
+            self.allocation_safepoint(n_closures, n_closures * std::mem::size_of::<HeapObject>())?;
         }
         let base = self.stack.len();
         let mut pending: Vec<RecClosurePatch> = Vec::new();

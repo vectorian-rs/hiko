@@ -86,8 +86,8 @@ impl VM {
             })
         };
         // Whole-instruction limit pressure wins even when cadence is also due.
-        let forced = self.heap.allocation_would_exceed_limits(bytes)
-            || (objects > 1 && object_limit(&self.heap).is_some());
+        let forced = object_limit(&self.heap).is_some()
+            || self.heap.ensure_can_allocate_bytes(bytes).is_err();
         if forced || self.heap.should_collect() {
             self.gc_collect_checked(&[], forced)?;
         }
