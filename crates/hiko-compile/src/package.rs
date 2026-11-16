@@ -598,17 +598,62 @@ pub(crate) fn checked_module_file(
     import: &str,
     owner: &str,
 ) -> Result<PathBuf, CompileError> {
+    checked_module_path(root, relative, import, owner, false)?.ok_or_else(|| {
+        CompileError::codegen(format!(
+            "module {import} is missing from package {owner}: expected {} (exact spelling required)",
+            root.join(relative).display()
+        ))
+    })
+}
+
+/// A locked package's module file under an embedder's local package root. An
+/// absent override may use the verified cache, but a present path must obey the
+/// same spelling/symlink rules as project and catalog module sources.
+#[cfg(feature = "loader-integrity-blake3")]
+pub(crate) fn local_package_module_file(
+    root: &Path,
+    package: &str,
+    version: &str,
+    module: &str,
+    import: &str,
+) -> Result<Option<PathBuf>, CompileError> {
+    let relative = Path::new(&format!("{package}-v{version}"))
+        .join("modules")
+        .join(module_file(module)?);
+    checked_module_path(root, &relative, import, package, true)
+}
+
+fn checked_module_path(
+    root: &Path,
+    relative: &Path,
+    import: &str,
+    owner: &str,
+    allow_missing: bool,
+) -> Result<Option<PathBuf>, CompileError> {
     let expected = root.join(relative);
     let mut path = root.to_path_buf();
     for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(CompileError::codegen(format!(
+                "module {import} in package {owner} has an invalid source path '{}'; use a plain path under the package source root",
+                relative.display()
+            )));
+        }
         let wanted = component.as_os_str();
-        let entries = std::fs::read_dir(&path).map_err(|e| {
-            CompileError::codegen(format!(
-                "cannot resolve module {import} in package {owner}: expected {}: {e}",
-                expected.display()
-            ))
-        })?;
+        let entries = match std::fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(CompileError::codegen(format!(
+                    "cannot resolve module {import} in package {owner}: expected {}: {error}",
+                    expected.display()
+                )));
+            }
+        };
         let mut found = None;
+        let mut wrong_case = false;
         for entry in entries {
             let entry = entry.map_err(|e| {
                 CompileError::codegen(format!(
@@ -620,6 +665,14 @@ pub(crate) fn checked_module_file(
                 found = Some(entry);
                 break;
             }
+            wrong_case |= allow_missing
+                && entry
+                    .file_name()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(wanted.as_encoded_bytes());
+        }
+        if allow_missing && found.is_none() && !wrong_case {
+            return Ok(None);
         }
         let entry = found.ok_or_else(|| CompileError::codegen(format!(
             "module {import} is missing from package {owner}: expected {} (exact spelling required)", expected.display()
@@ -644,5 +697,5 @@ pub(crate) fn checked_module_file(
             expected.display()
         )));
     }
-    Ok(path)
+    Ok(Some(path))
 }
