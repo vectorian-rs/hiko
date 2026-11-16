@@ -8,7 +8,10 @@ inventory and triage, not a plan that has been executed. Nothing listed as
 
 ## Delivery checkpoint (2026-11-08)
 
-Merge status refreshed 2026-11-12; the inventory below keeps its snapshot date.
+Merge status refreshed 2026-11-16 at `5f95feb`; the inventory below keeps its
+snapshot date. Earlier paragraphs describe their recorded heads and attempts;
+the [current closeout](#current-closeout-2026-11-16) distinguishes merged code
+from outstanding acceptance.
 
 [PR #221](https://github.com/vectorian-rs/hiko/pull/221) completed
 [#183](https://github.com/vectorian-rs/hiko/issues/183) and merged at `e980d88`.
@@ -137,7 +140,9 @@ supported-host run, a same-commit self-comparison and a slowdown negative
 control — were refused on bounded-load failures or left incomplete by a
 physical AC-to-battery transition. Earlier workspace checks and the timeout
 fix review ran at earlier heads; neither they nor the merge supply the
-measurement evidence the public cutover in #186 still requires.
+measurement evidence. Later successful certification is recorded in the
+[current closeout](#current-closeout-2026-11-16); the earlier refusals remain
+historical evidence, not successful runs.
 
 [PR #246](https://github.com/vectorian-rs/hiko/pull/246) completed
 [#245](https://github.com/vectorian-rs/hiko/issues/245) and merged at `c0ad09c`
@@ -155,6 +160,63 @@ merged at `b31997e` on 2026-11-12, with final head `7206f27`. Its earlier
 independent review at `943088a` is not relabeled as a review of the later prose
 changes. All five final-head hosted checks passed; neither this documentation
 merge nor PR #246 supplies missing performance acceptance for #198 or #242.
+
+### Current closeout (2026-11-16)
+
+The following updates supersede earlier delivery-status statements, not their
+retained evidence. Merging an implementation does not waive unmet acceptance.
+
+- **#198, gate tooling:** implementation merged in PR #244. Subsequent real
+  [self-comparison](https://github.com/vectorian-rs/hiko/issues/198#issuecomment-6834141272)
+  passed all eight workload/profile cells, and the
+  [slowdown negative control](https://github.com/vectorian-rs/hiko/issues/198#issuecomment-6834236720)
+  correctly rejected the injected slowdown. The issue remains open pending
+  reconciliation of these certification records with its stale body; a new
+  run is not required merely to refresh that body. This does not certify other
+  changes or erase prior refused attempts.
+- **#242, sliced boundaries:** [PR #247](https://github.com/vectorian-rs/hiko/pull/247)
+  merged at `f246684` on 2026-11-16, verified source head `7f7ed55`. The later
+  [canonical-gate pass](https://github.com/vectorian-rs/hiko/issues/242#issuecomment-6838366061)
+  is distinct from the original twelve-cell, nine-pair, no-warmup, 10% acceptance
+  protocol. The plan owner and maintainer must reconcile that evidence or
+  authorize the missing original-protocol measurement before closing #242.
+- **#186, public cutover:** [PR #251](https://github.com/vectorian-rs/hiko/pull/251)
+  merged at `da44ff6` on 2026-11-16, verified source head `6e15b8f`. Module-only
+  builtins, policy-key migration and explicit per-package dependency allowlists
+  are implemented. The
+  [remaining boundary findings](https://github.com/vectorian-rs/hiko/issues/186#issuecomment-6888445426)
+  concern ambient caller bindings, escaping local-package symlinks and sealing
+  reached project modules. Full package isolation is not established. Ambient
+  environment isolation needs a reviewed design/approval before implementation.
+  Cross-cutover timing remains unmet after two load-refused authorized attempts;
+  [attempt 2](https://github.com/vectorian-rs/hiko/issues/186#issuecomment-6894330367)
+  produced no builds or timing rows. Final independent reviews also remain open.
+- **#206, allocation safepoints:** [PR #250](https://github.com/vectorian-rs/hiko/pull/250)
+  merged at `5f95feb` on 2026-11-16, verified source head `03b127c`. Its
+  [verification record](https://github.com/vectorian-rs/hiko/issues/206#issuecomment-6904810556)
+  includes seven-family limit/fuel controls, under-reservation mutations, VM
+  default/register/all-features and workspace default/all-features tests, lint
+  and five passing CI jobs. Separate
+  [untimed evidence](https://github.com/vectorian-rs/hiko/issues/206#issuecomment-6906372730)
+  passes fourteen comparisons against original #201 baseline `a9501fe`: seven
+  frozen fixtures in both profiles have identical absolute estimated lifetime
+  peaks, with zero setup peaks. These are not RSS or timing results. Required
+  counter-free timing and author-independent reviews remain outstanding;
+  self-review is not a substitute.
+
+Remaining plans and trackers have no blanket implementation approval:
+
+| Issue | Next action and remaining work |
+| --- | --- |
+| [#155](https://github.com/vectorian-rs/hiko/issues/155) | Refresh/review rev 6 against current main and obtain Gate 1 before scalar/allocating register coverage, differential/fuzz/GC tests and both-mode performance evidence. |
+| [#207](https://github.com/vectorian-rs/hiko/issues/207) | Resolve virtual frame/structural-limit behavior, fuel/checkpoint/span mapping and eligibility/cap decisions; review the revised plan before Gate 1. No inlining implementation is authorized by its older weighting decision. |
+| [#205](https://github.com/vectorian-rs/hiko/issues/205) | Refresh the finding-to-owner ledger: repeated JSON parsing, UTF-8 prefix scans, urgency sorting, residual compiler scans/clones and uncharged passes each need a narrow child or an explicit measured accepted bound. #206 is merged, not fully accepted. |
+| [#213](https://github.com/vectorian-rs/hiko/issues/213) | Reconcile roadmap checkboxes/claims with these merges and evidence; do not mark unresolved acceptance complete or create duplicate implementation PRs for merged code. |
+
+No issue is closed or acceptance waived by this documentation update. Fresh
+measurement attempts require explicit bounded authorization; expired grants and
+failed/refused histories are not reset. Keep unrelated implementation concerns
+in focused, unstacked PRs rather than a blanket optimization batch.
 
 [Roadmap #213](https://github.com/vectorian-rs/hiko/issues/213) tracks current
 delivery and evidence. The inventory below retains its original snapshot.
