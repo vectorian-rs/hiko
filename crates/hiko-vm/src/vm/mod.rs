@@ -38,6 +38,8 @@ mod gc_tests;
 #[cfg(feature = "register-vm")]
 #[doc(hidden)]
 pub mod register_check;
+#[cfg(all(test, feature = "builtin-default"))]
+mod report_order_tests;
 mod runtime_bridge;
 #[cfg(test)]
 mod stdlib_growth_tests;
