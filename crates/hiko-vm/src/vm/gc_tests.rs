@@ -490,6 +490,84 @@ fn recursive_group_preflight_checks_all_members_before_publishing_any() {
 }
 
 #[test]
+fn spilled_fields_preflight_exact_capacity_before_consuming_operands() {
+    let fields = Fields::from_slice(&[Value::Unit; 6]);
+    assert!(fields.spilled());
+    let footprint = HeapObject::Tuple(fields).estimated_bytes();
+    assert!(footprint > std::mem::size_of::<HeapObject>());
+    for data in [false, true] {
+        for limit in [footprint - 1, footprint, footprint + 1] {
+            let mut vm = machine("val unused = 0");
+            let mut code = vec![Op::Unit as u8; 6];
+            if data {
+                code.extend([Op::MakeData as u8, 3, 0, 6]);
+            } else {
+                code.extend([Op::MakeTuple as u8, 6]);
+            }
+            code.push(Op::Halt as u8);
+            Arc::make_mut(&mut vm.main_chunk).code = code;
+            vm.startup_error = None;
+            #[cfg(feature = "register-vm")]
+            {
+                vm.register_code = Arc::new(RegisterCode::default());
+            }
+            vm.set_max_memory_bytes(limit);
+            if limit < footprint {
+                assert_quota_refusal(vm.run().unwrap_err(), true);
+                // An under-sized preflight would consume the operands and only
+                // fail at Heap::alloc; the instruction must refuse before that.
+                assert_eq!(vm.stack.len(), 6);
+                assert_eq!(vm.heap.successful_allocations(), 0);
+            } else {
+                vm.run().unwrap();
+                assert_eq!(vm.stack.len(), 1);
+                assert_eq!(vm.heap.live_bytes(), footprint);
+                assert_eq!(vm.heap.successful_allocations(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn recursive_group_limit_pressure_is_forced_when_one_member_would_fit() {
+    for bytes in [false, true] {
+        let mut vm = machine(GROUP);
+        garbage(&mut vm, 1024);
+        if bytes {
+            vm.set_max_memory_bytes(vm.heap.live_bytes() + std::mem::size_of::<HeapObject>());
+        } else {
+            vm.set_max_heap(1025);
+        }
+        vm.set_fuel(100_000);
+        vm.gc_test_trace = Some(Vec::new());
+        vm.run().unwrap();
+        assert!(matches!(vm.get_global("result"), Some(Value::Int(7))));
+        assert!(
+            vm.gc_test_trace
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|(_, units)| units.is_some())
+        );
+        // Scheduled-only GC is uncharged. With insufficient persistent fuel,
+        // whole-group pressure must fail before publishing a member.
+        let mut short = machine(GROUP);
+        garbage(&mut short, 1024);
+        if bytes {
+            short.set_max_memory_bytes(short.heap.live_bytes() + std::mem::size_of::<HeapObject>());
+        } else {
+            short.set_max_heap(1025);
+        }
+        // Enough for instruction dispatch, but not a forced arena scan.
+        short.set_fuel(100);
+        assert!(short.run().unwrap_err().is_fuel_exhausted());
+        assert!(short.gc_failure.is_some());
+        assert_eq!(short.heap.successful_allocations(), 1024);
+        assert_eq!(short.heap.live_count(), 1024);
+    }
+}
+
+#[test]
 fn recursive_group_has_no_mid_group_scheduled_collection() {
     let mut vm = machine(GROUP);
     garbage(&mut vm, 1023);
