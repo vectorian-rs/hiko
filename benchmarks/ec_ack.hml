@@ -4,6 +4,10 @@
  * Input: (3, 7) => 1021
  *)
 
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 effect Ret of int
 
 fun callec f =
@@ -17,5 +21,5 @@ fun ack (m, n) =
   else ack (m - 1, callec (fn _ => ack (m, n - 1)))
 
 val result = callec (fn _ => ack (3, 7))
-val _ = assert_eq (result, 1021, "ec_ack(3,7)")
-val _ = println ("ec_ack(3,7) = " ^ int_to_string result)
+val _ = Testing.equal result 1021 "ec_ack(3,7)"
+val _ = Stdio.println ("ec_ack(3,7) = " ^ Int.to_string result)

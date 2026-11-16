@@ -258,8 +258,8 @@ impl<'a> BuiltinTypeParser<'a> {
                 ty = Type::list(ty);
             } else if self.consume_word("pid") {
                 ty = Type::pid(ty);
-            } else if self.consume_word("BuiltinProcess.await_result") {
-                ty = Type::App("BuiltinProcess.await_result".into(), vec![ty]);
+            } else if self.consume_word("BuiltinFiber.await_result") {
+                ty = Type::App("BuiltinFiber.await_result".into(), vec![ty]);
             } else if self.consume_word("Option.option") {
                 ty = Type::App("Option.option".into(), vec![ty]);
             } else {
@@ -390,23 +390,7 @@ impl InferCtx {
         for (name, arity) in hiko_builtin_meta::runtime_type_arities() {
             ctx.type_arities.insert(name.into(), arity);
         }
-        ctx.bind_builtin_type_signatures();
         ctx
-    }
-
-    fn bind_builtin_type_signatures(&mut self) {
-        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
-            if matches!(
-                hiko_builtin_meta::builtin_meta(name).unwrap().surface,
-                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
-            ) {
-                continue;
-            }
-            let scheme = self
-                .parse_builtin_scheme(sig)
-                .unwrap_or_else(|err| panic!("invalid builtin type signature for {name}: {err}"));
-            self.bind(name.to_string(), scheme);
-        }
     }
 
     /// Declare an opaque type named `name`, for values an extension creates
@@ -994,16 +978,21 @@ impl InferCtx {
             }
         }
         let mut previous = Vec::new();
-        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
-            if matches!(hiko_builtin_meta::builtin_meta(name).unwrap().surface,
-                hiko_builtin_meta::BuiltinSurface::ModuleOnly { owner, .. } if owner == module.import_name)
-            {
-                let scheme = self
-                    .parse_builtin_scheme(sig)
-                    .expect("valid internal builtin signature");
-                let old = self.scopes.last_mut().unwrap().insert(name.into(), scheme);
-                previous.push((name, old));
+        for meta in hiko_builtin_meta::builtins() {
+            if !meta.surface.is_owned_by(module.import_name) {
+                continue;
             }
+            let sig = hiko_builtin_meta::builtin_type_signature(meta.name)
+                .expect("module-only builtins have signatures");
+            let scheme = self
+                .parse_builtin_scheme(sig)
+                .expect("valid internal builtin signature");
+            let old = self
+                .scopes
+                .last_mut()
+                .unwrap()
+                .insert(meta.name.into(), scheme);
+            previous.push((meta.name, old));
         }
         // Ordinary inference handles the desugared structure's Local block,
         // checks payloads/constructors and records the runtime ABI tags.
@@ -1194,7 +1183,7 @@ impl InferCtx {
                 self.end_local_scope(result.is_ok());
                 result
             }
-            DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) | DeclKind::Use(_) => Ok(()),
+            DeclKind::Import(_) | DeclKind::ImportWithNames(_, _) => Ok(()),
             DeclKind::Signature(_) => unreachable!("signatures must be removed before inference"),
             DeclKind::Structure { .. } => {
                 unreachable!("structures must be flattened before inference")
@@ -2544,8 +2533,16 @@ fn unbound_message(name: &str) -> String {
             "builtin `{name}` is not in this build of hiko; enable cargo feature `{feature}`"
         ),
         None => match hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface) {
-            Some(hiko_builtin_meta::BuiltinSurface::ModuleOnly { replacement, .. }) => {
-                format!("builtin `{name}` is internal; import Std.Json and use {replacement}")
+            Some(
+                hiko_builtin_meta::BuiltinSurface::ModuleOnly { replacement, .. }
+                | hiko_builtin_meta::BuiltinSurface::RuntimeOnly { replacement, .. },
+            ) => {
+                // `Std.Json.parse` names both the import and the call form.
+                let import = replacement
+                    .rsplit_once('.')
+                    .map_or(replacement, |(module, _)| module);
+                let call = replacement.split_once('.').map_or(replacement, |(_, c)| c);
+                format!("builtin `{name}` is internal; import {import} and use {call}")
             }
             _ => format!("unbound variable: {name}"),
         },
@@ -2559,12 +2556,26 @@ mod tests {
     use hiko_syntax::lexer::Lexer;
     use hiko_syntax::parser::Parser;
 
+    /// A context with every builtin signature bound, including module-only
+    /// ones, as a compiler-owned module scope sees them. These tests exercise
+    /// the signatures; the public naming boundary has its own tests.
+    fn trusted_ctx(interner: StringInterner) -> InferCtx {
+        let mut ctx = InferCtx::new();
+        ctx.interner = interner;
+        for (name, sig) in hiko_builtin_meta::builtin_type_signatures() {
+            let scheme = ctx
+                .parse_builtin_scheme(sig)
+                .unwrap_or_else(|err| panic!("invalid builtin type signature for {name}: {err}"));
+            ctx.bind(name.to_string(), scheme);
+        }
+        ctx
+    }
+
     fn infer(input: &str) -> InferCtx {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let program = hiko_syntax::desugar::desugar_program(program);
-        let mut ctx = InferCtx::new();
-        ctx.interner = program.interner.clone();
+        let mut ctx = trusted_ctx(program.interner.clone());
         ctx.infer_program(&program).expect("type error");
         ctx
     }
@@ -2573,8 +2584,7 @@ mod tests {
         let tokens = Lexer::new(input, 0).tokenize().expect("lex error");
         let program = Parser::new(tokens).parse_program().expect("parse error");
         let program = hiko_syntax::desugar::desugar_program(program);
-        let mut ctx = InferCtx::new();
-        ctx.interner = program.interner.clone();
+        let mut ctx = trusted_ctx(program.interner.clone());
         ctx.infer_program(&program).unwrap_err().message
     }
 
@@ -2776,25 +2786,49 @@ mod tests {
     }
 
     #[test]
-    fn infer_ctx_contains_all_metadata_builtins() {
+    fn infer_ctx_hides_all_metadata_builtins() {
         let ctx = InferCtx::new();
-        for meta in builtins().filter(|meta| {
-            !matches!(
-                meta.surface,
-                hiko_builtin_meta::BuiltinSurface::ModuleOnly { .. }
-            )
-        }) {
+        for meta in builtins() {
             assert!(
-                ctx.lookup_type(meta.name).is_some(),
-                "missing builtin in InferCtx: {}",
+                ctx.lookup_type(meta.name).is_none(),
+                "raw builtin leaked into ordinary inference: {}",
                 meta.name
             );
         }
     }
 
-    /// The VM builds `BuiltinProcess.await_result` and `BuiltinProcess.error`
+    #[cfg(feature = "builtin-convert")]
+    #[test]
+    fn runtime_alias_scope_is_owned_and_restored() {
+        let numeric = hiko_builtin_meta::internal_builtin_module("Numeric").unwrap();
+        let other = hiko_builtin_meta::internal_builtin_module("Int").unwrap();
+        let mut ctx = InferCtx::new();
+        let tokens = Lexer::new("val captured = numeric_int32_add", 0)
+            .tokenize()
+            .unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        ctx.interner = program.interner;
+        // A different compiler-owned module does not gain Numeric authority.
+        assert!(ctx.infer_builtin_module(other, &program.decls).is_err());
+        assert!(ctx.lookup_type("numeric_int32_add").is_none());
+        ctx.infer_builtin_module(numeric, &program.decls).unwrap();
+        assert!(ctx.lookup_type("captured").is_some());
+        assert!(ctx.lookup_type("numeric_int32_add").is_none());
+
+        // Restore an existing user binding even after an inference failure.
+        let mut ctx = infer("val numeric_int32_add = fn (x : int) => x");
+        let tokens = Lexer::new("val bad = missing", 0).tokenize().unwrap();
+        let program = Parser::with_interner(tokens, ctx.interner.clone())
+            .parse_program()
+            .unwrap();
+        ctx.interner = program.interner;
+        assert!(ctx.infer_builtin_module(numeric, &program.decls).is_err());
+        assert_eq!(type_of(&ctx, "numeric_int32_add"), "int -> int");
+    }
+
+    /// The VM builds `BuiltinFiber.await_result` and `BuiltinFiber.error`
     /// values from the tags in `hiko_builtin_meta`; those tags must match the
-    /// declaration order of the datatypes in the `__Builtin.Process` source.
+    /// declaration order of the datatypes in the `__Builtin.Fiber` source.
     #[cfg(feature = "builtin-process")]
     #[test]
     fn builtin_process_constructor_tags_match_runtime_abi() {
@@ -2802,7 +2836,7 @@ mod tests {
             PROCESS_AWAIT_RESULT_CONSTRUCTORS, PROCESS_JOIN_ERROR_CONSTRUCTORS,
             internal_builtin_module,
         };
-        let module = internal_builtin_module("Process").expect("Process module");
+        let module = internal_builtin_module("Fiber").expect("Fiber module");
         let tokens = Lexer::new(module.source, 0).tokenize().unwrap();
         let program = Parser::new(tokens).parse_program().unwrap();
         let program = hiko_syntax::desugar::desugar_program(program);
@@ -2817,7 +2851,7 @@ mod tests {
             .iter()
             .chain(PROCESS_JOIN_ERROR_CONSTRUCTORS)
         {
-            let qualified = format!("BuiltinProcess.{name}");
+            let qualified = format!("BuiltinFiber.{name}");
             assert_eq!(ctx.constructor_tag(&qualified), Some(tag), "tag of {name}");
             let scheme = ctx
                 .constructor_scheme(&qualified)
@@ -3484,18 +3518,18 @@ mod tests {
     #[test]
     fn test_runtime_process_type_names_are_reserved() {
         for source in [
-            "structure BuiltinProcess = struct datatype 'a await_result = Forged of int end",
-            "structure BuiltinProcess = struct type 'a await_result = int end",
-            "structure BuiltinProcess = struct datatype error = Forged end",
-            "structure BuiltinProcess = struct type error = int end",
+            "structure BuiltinFiber = struct datatype 'a await_result = Forged of int end",
+            "structure BuiltinFiber = struct type 'a await_result = int end",
+            "structure BuiltinFiber = struct datatype error = Forged end",
+            "structure BuiltinFiber = struct type error = int end",
             "signature S = sig type 'a await_result end
-             structure BuiltinProcess :> S = struct type 'a await_result = int end",
+             structure BuiltinFiber :> S = struct type 'a await_result = int end",
             "signature S = sig type 'a await_result end
-             structure BuiltinProcess : S = struct type 'a await_result = int end",
+             structure BuiltinFiber : S = struct type 'a await_result = int end",
         ] {
             let msg = infer_err(source);
             assert!(
-                msg.contains("runtime-owned type 'BuiltinProcess."),
+                msg.contains("runtime-owned type 'BuiltinFiber."),
                 "{source}: {msg}"
             );
         }

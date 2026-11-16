@@ -77,21 +77,29 @@ const INPUTS: &[(&str, &[&str], &str)] = &[
         &["copies"],
         "val chunks = copies (\"abcdefghijklmnop\", N, [])",
     ),
-    ("text", &["chunks"], "val text = string_join (chunks, \"\")"),
+    (
+        "text",
+        &["chunks"],
+        "val text = BuiltinString.join (chunks, \"\")",
+    ),
     (
         "utext",
         &["copies"],
         // 16 bytes of characters whose case mapping is not ASCII.
-        "val utext = string_join (copies (\"ßﬃéüßﬃé\", N, []), \"\")",
+        "val utext = BuiltinString.join (copies (\"ßﬃéüßﬃé\", N, []), \"\")",
     ),
-    ("bytes", &["text"], "val bytes = string_to_bytes text"),
+    (
+        "bytes",
+        &["text"],
+        "val bytes = BuiltinBytes.of_string text",
+    ),
     (
         "json_array",
         &["copies"],
         // One-character tokens: the densest JSON, and the most expensive per
         // KiB, since parsing cost follows the number of tokens. 8 * N items
         // of 2 bytes make the text about the nominal size.
-        "val json_array = \"[\" ^ string_join (copies (\"1\", 8 * N, []), \",\") ^ \"]\"",
+        "val json_array = \"[\" ^ BuiltinString.join (copies (\"1\", 8 * N, []), \",\") ^ \"]\"",
     ),
     (
         "json_object",
@@ -101,12 +109,12 @@ const INPUTS: &[(&str, &[&str], &str)] = &[
     (
         "parsed",
         &["json_array"],
-        "val parsed = BuiltinJson.parse_raw json_array",
+        "val parsed = BuiltinJson.parse json_array",
     ),
     (
         "rng",
         &[],
-        "val rng = rng_seed (string_to_bytes \"calibration\")",
+        "val rng = BuiltinRandom.seed (BuiltinBytes.of_string \"calibration\")",
     ),
 ];
 
@@ -115,53 +123,62 @@ const LOOP: &str = "fun go (k, acc) = if k = 0 then acc else go (k - 1, let val 
 /// (builtin, call expression). The expression may use the inputs above and
 /// `SIZE`.
 const CALLS: &[(&str, &str)] = &[
-    ("string_length", "string_length text"),
-    ("substring", "substring (text, SIZE / 2, 8)"),
-    ("string_contains", "string_contains (text, \"zz\")"),
-    ("string_contains/needle", "string_contains (\"x\", text)"),
-    ("starts_with", "starts_with (text, \"abc\")"),
-    ("starts_with/long", "starts_with (text, text)"),
-    ("ends_with", "ends_with (text, \"nop\")"),
-    ("trim", "trim text"),
-    ("to_upper", "to_upper text"),
-    ("to_upper/unicode", "to_upper utext"),
-    ("to_lower", "to_lower text"),
-    ("to_lower/unicode", "to_lower utext"),
-    ("split", "split (text, \"p\")"),
-    ("string_replace", "string_replace (text, \"a\", \"b\")"),
+    ("string_length", "BuiltinString.length text"),
+    ("substring", "BuiltinString.substring (text, SIZE / 2, 8)"),
+    ("string_contains", "BuiltinString.contains (text, \"zz\")"),
+    (
+        "string_contains/needle",
+        "BuiltinString.contains (\"x\", text)",
+    ),
+    ("starts_with", "BuiltinString.starts_with (text, \"abc\")"),
+    ("starts_with/long", "BuiltinString.starts_with (text, text)"),
+    ("ends_with", "BuiltinString.ends_with (text, \"nop\")"),
+    ("trim", "BuiltinString.trim text"),
+    ("to_upper", "BuiltinString.upper text"),
+    ("to_upper/unicode", "BuiltinString.upper utext"),
+    ("to_lower", "BuiltinString.lower text"),
+    ("to_lower/unicode", "BuiltinString.lower utext"),
+    ("split", "BuiltinString.split (text, \"p\")"),
+    (
+        "string_replace",
+        "BuiltinString.replace (text, \"a\", \"b\")",
+    ),
     (
         "string_replace/grow",
-        "string_replace (text, \"a\", \"0123456789abcdef\")",
+        "BuiltinString.replace (text, \"a\", \"0123456789abcdef\")",
     ),
-    ("string_join", "string_join (chunks, \",\")"),
-    ("string_to_bytes", "string_to_bytes text"),
-    ("bytes_to_string", "bytes_to_string bytes"),
-    ("bytes_length", "bytes_length bytes"),
-    ("bytes_get", "bytes_get (bytes, SIZE / 2)"),
-    ("bytes_slice", "bytes_slice (bytes, 0, SIZE / 2)"),
-    ("blake3", "blake3 bytes"),
-    ("regex_match", "regex_match (text, \"z+\")"),
+    ("string_join", "BuiltinString.join (chunks, \",\")"),
+    ("string_to_bytes", "BuiltinBytes.of_string text"),
+    ("bytes_to_string", "BuiltinBytes.to_string bytes"),
+    ("bytes_length", "BuiltinBytes.length bytes"),
+    ("bytes_get", "BuiltinBytes.get (bytes, SIZE / 2)"),
+    ("bytes_slice", "BuiltinBytes.slice (bytes, 0, SIZE / 2)"),
+    ("blake3", "BuiltinHash.blake3 bytes"),
+    ("regex_match", "BuiltinRegex.match (text, \"z+\")"),
     // No literal to search for, so the matcher runs over every byte.
-    ("regex_match/class", "regex_match (text, \"[0-9]+x\")"),
+    (
+        "regex_match/class",
+        "BuiltinRegex.match (text, \"[0-9]+x\")",
+    ),
     // A pattern of SIZE bytes: compiling it is the cost.
-    ("regex_match/pattern", "regex_match (\"x\", text)"),
-    ("regex_replace", "regex_replace (text, \"a\", \"b\")"),
+    ("regex_match/pattern", "BuiltinRegex.match (\"x\", text)"),
+    ("regex_replace", "BuiltinRegex.replace (text, \"a\", \"b\")"),
     (
         "regex_replace/grow",
-        "regex_replace (text, \"a\", \"0123456789abcdef\")",
+        "BuiltinRegex.replace (text, \"a\", \"0123456789abcdef\")",
     ),
-    ("json_length", "json_length json_array"),
-    ("json_get", "json_get (json_object, \"k.0\")"),
+    ("json_length", "BuiltinJson.length json_array"),
+    ("json_get", "BuiltinJson.get (json_object, \"k.0\")"),
     (
         "json_parse",
-        "(BuiltinJson.parse_raw json_array : BuiltinJson.json)",
+        "(BuiltinJson.parse json_array : BuiltinJson.json)",
     ),
-    ("json_to_string", "BuiltinJson.to_string_raw parsed"),
-    ("random_bytes", "random_bytes SIZE"),
-    ("rng_bytes", "rng_bytes (rng, SIZE)"),
-    ("rng_seed", "rng_seed bytes"),
-    ("rng_int", "rng_int (rng, 1000)"),
-    ("json_keys", "json_keys json_object"),
+    ("json_to_string", "BuiltinJson.to_string parsed"),
+    ("random_bytes", "BuiltinRandom.random_bytes SIZE"),
+    ("rng_bytes", "BuiltinRandom.bytes (rng, SIZE)"),
+    ("rng_seed", "BuiltinRandom.seed bytes"),
+    ("rng_int", "BuiltinRandom.int (rng, 1000)"),
+    ("json_keys", "BuiltinJson.keys json_object"),
 ];
 
 struct Run {
@@ -241,8 +258,17 @@ fn program_for(call: &str, size: usize, k: usize) -> CompiledProgram {
             .replace("CALL", &call.replace("SIZE", &size.to_string()))
             .replace("(K, 0)", &format!("({k}, 0)")),
     );
-    if source.contains("BuiltinJson.") {
-        source.insert_str(0, "import __Builtin.Json\n");
+    for (needle, import) in [
+        ("BuiltinJson.", "import __Builtin.Json\n"),
+        ("BuiltinString.", "import __Builtin.String\n"),
+        ("BuiltinBytes.", "import __Builtin.Bytes\n"),
+        ("BuiltinHash.", "import __Builtin.Hash\n"),
+        ("BuiltinRegex.", "import __Builtin.Regex\n"),
+        ("BuiltinRandom.", "import __Builtin.Random\n"),
+    ] {
+        if source.contains(needle) {
+            source.insert_str(0, import);
+        }
     }
     compile(&source)
 }

@@ -4,6 +4,10 @@
  * Input: 25 => 75025
  *)
 
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 effect Ret of int
 
 fun callec f =
@@ -20,5 +24,5 @@ fun fib n =
   )
 
 val result = callec (fn _ => fib 30)
-val _ = assert_eq (result, 832040, "ec_fib(30)")
-val _ = println ("ec_fib(30) = " ^ int_to_string result)
+val _ = Testing.equal result 832040 "ec_fib(30)"
+val _ = Stdio.println ("ec_fib(30) = " ^ Int.to_string result)

@@ -17,10 +17,10 @@ const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 fn sre_report_needs_only_the_capabilities_it_lists() {
     let policy: String = [
         "stdio.println",
-        "convert.int_to_string",
-        "string.string_length",
-        "string.string_join",
-        "string.string_replace",
+        "int.to_string",
+        "string.length",
+        "string.join",
+        "string.replace",
     ]
     .iter()
     .map(|leaf| format!("[capabilities.{leaf}]\nenabled = true\n"))

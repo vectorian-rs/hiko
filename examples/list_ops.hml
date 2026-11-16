@@ -1,4 +1,7 @@
 (* Standard list operations *)
+import Std.Int
+import Std.Stdio
+
 fun map f xs =
   case xs of
       [] => []
@@ -27,8 +30,8 @@ val evens = filter (fn x => x mod 2 = 0) nums
 
 val sum = foldl (fn (acc, x) => acc + x) 0 nums
 
-val _ = println (int_to_string (length doubled))
+val _ = Stdio.println (Int.to_string (length doubled))
 
-val _ = println (int_to_string (length evens))
+val _ = Stdio.println (Int.to_string (length evens))
 
-val _ = println (int_to_string sum)
+val _ = Stdio.println (Int.to_string sum)

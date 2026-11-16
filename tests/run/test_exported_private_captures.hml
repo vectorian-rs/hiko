@@ -1,5 +1,7 @@
+import Std.Testing
+
 local val y = 9 in fun h () = y end
-val _ = assert_eq (h (), 9, "private scalar")
+val _ = Testing.equal (h ()) 9 "private scalar"
 
 local
     val offset = 7
@@ -12,36 +14,36 @@ in
 end
 val old_even = even
 val old_odd = odd
-val _ = assert_eq (even 6, 7, "mutual private function")
-val _ = assert_eq (odd 6, 8, "mutual private scalar")
-val _ = assert_eq (pair (2, 3), 12, "captured tuple parameter")
+val _ = Testing.equal (even 6) 7 "mutual private function"
+val _ = Testing.equal (odd 6) 8 "mutual private scalar"
+val _ = Testing.equal (pair (2, 3)) 12 "captured tuple parameter"
 val pair_value = pair
-val _ = assert_eq (pair_value (2, 3), 12, "captured tuple function as value")
-val _ = assert_eq (returned 2 3, 12, "returned closure")
+val _ = Testing.equal (pair_value (2, 3)) 12 "captured tuple function as value"
+val _ = Testing.equal (returned 2 3) 12 "returned closure"
 fun even (n : int) = 100 + n
 fun odd (n : int) = 200 + n
-val _ = assert_eq (old_even 6, 7, "old recursive group after rebinding")
-val _ = assert_eq (old_odd 6, 8, "old sibling after rebinding")
+val _ = Testing.equal (old_even 6) 7 "old recursive group after rebinding"
+val _ = Testing.equal (old_odd 6) 8 "old sibling after rebinding"
 
 val y = "outer"
 local val y = 9 in fun read_private () = y end
 val outer : string = y
-val _ = assert_eq (outer, "outer", "private type does not escape")
-val _ = assert_eq (read_private (), 9, "private value still captured")
+val _ = Testing.equal outer "outer" "private type does not escape"
+val _ = Testing.equal (read_private ()) 9 "private value still captured"
 
 local val y = 9 in val y = 42 fun read_public () = y end
-val _ = assert_eq (read_public (), 42, "export shadows private value")
+val _ = Testing.equal (read_public ()) 42 "export shadows private value"
 local fun same (n : int) = n + 100 in
     fun same (n : int) = if n = 0 then 0 else same (n - 1)
 end
-val _ = assert_eq (same 3, 0, "recursive export shadows private function")
+val _ = Testing.equal (same 3) 0 "recursive export shadows private function"
 
 local val a = 10 in
     local val b = 20 in fun nested () = a + b end
     fun still_outer () = a
 end
-val _ = assert_eq (nested (), 30, "nested private captures")
-val _ = assert_eq (still_outer (), 10, "nested cleanup preserves outer private slot")
+val _ = Testing.equal (nested ()) 30 "nested private captures"
+val _ = Testing.equal (still_outer ()) 10 "nested cleanup preserves outer private slot"
 
 local val y = 9 in
     fun local_export () =
@@ -50,7 +52,7 @@ local val y = 9 in
             local val y = 2 in val x = y end
         in x + y end
 end
-val _ = assert_eq (local_export (), 3, "function local private name stays hidden")
+val _ = Testing.equal (local_export ()) 3 "function local private name stays hidden"
 
 local val y = 9 in
     fun mixed n = if n = 0 then y else forward (n - 1)
@@ -60,23 +62,23 @@ local val y = 9 in
     fun shadow_case value = case value of y => y + 1
     fun nested_let () = let local val y = 12 in val y = 13 end in y end
 end
-val _ = assert_eq (forward 4, 9, "mixed captured and direct members")
-val _ = assert_eq (shadow_param 2, 3, "parameter shadows private")
-val _ = assert_eq (shadow_let (), 12, "let shadows private")
-val _ = assert_eq (shadow_case 2, 3, "case shadows private")
-val _ = assert_eq (nested_let (), 13, "nested local public binding")
+val _ = Testing.equal (forward 4) 9 "mixed captured and direct members"
+val _ = Testing.equal (shadow_param 2) 3 "parameter shadows private"
+val _ = Testing.equal (shadow_let ()) 12 "let shadows private"
+val _ = Testing.equal (shadow_case 2) 3 "case shadows private"
+val _ = Testing.equal (nested_let ()) 13 "nested local public binding"
 
 fun replaced (a : int, b : int) = a + b
 local val offset = 9 in
     fun replaced (a : int, b : int) = a + b + offset
 end
-val _ = assert_eq (replaced (1, 2), 12, "captured export replaces direct and flat targets")
+val _ = Testing.equal (replaced (1, 2)) 12 "captured export replaces direct and flat targets"
 
 local datatype hidden = Hidden of int in
     fun wrap (n : int) = Hidden n
     fun unwrap value = case value of Hidden n => n
 end
-val _ = assert_eq (unwrap (wrap 9), 9, "private constructor capture")
+val _ = Testing.equal (unwrap (wrap 9)) 9 "private constructor capture"
 
 val composed = 10 + local_export ()
-val _ = assert_eq (composed, 13, "private slots reclaimed inside expression")
+val _ = Testing.equal composed 13 "private slots reclaimed inside expression"

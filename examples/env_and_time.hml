@@ -1,24 +1,29 @@
 (* env_and_time.hml -- Demonstrates getenv and epoch builtins *)
 
 (* Read environment variables *)
-val home = getenv "HOME"
+import Std.Env
+import Std.Int
+import Std.Stdio
+import Std.Time
 
-val path = getenv "PATH"
+val home = Env.get "HOME"
 
-val user = getenv "USER"
+val path = Env.get "PATH"
 
-val _ = println ("HOME = " ^ home)
+val user = Env.get "USER"
 
-val _ = println ("USER = " ^ user)
+val _ = Stdio.println ("HOME = " ^ home)
 
-val _ = println ("PATH = " ^ path)
+val _ = Stdio.println ("USER = " ^ user)
+
+val _ = Stdio.println ("PATH = " ^ path)
 
 (* Missing env var returns empty string *)
-val missing = getenv "THIS_VAR_DOES_NOT_EXIST"
+val missing = Env.get "THIS_VAR_DOES_NOT_EXIST"
 
-val _ = println ("missing var: \"" ^ missing ^ "\"")
+val _ = Stdio.println ("missing var: \"" ^ missing ^ "\"")
 
 (* Unix epoch timestamp *)
-val now = epoch ()
+val now = Time.to_epoch_ms (Time.now ())
 
-val _ = println ("epoch seconds: " ^ int_to_string now)
+val _ = Stdio.println ("epoch seconds: " ^ Int.to_string now)

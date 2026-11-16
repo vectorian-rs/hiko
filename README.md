@@ -50,8 +50,10 @@ val yes = true
 val ch = #"A"
 val pair = (1, 2)
 val xs = [1, 2, 3]
-val _ = println "hello"
+val _ = Stdio.println "hello"
 ```
+
+Builtins live in modules: `import Std.Stdio` provides `Stdio.println`.
 
 ### Functions
 
@@ -135,7 +137,7 @@ effect Log of string
 fun with_console_log f =
   handle f ()
   with return x => x
-     | Log msg k => let val _ = println msg in resume k () end
+     | Log msg k => let val _ = Stdio.println msg in resume k () end
 
 effect Found of int
 
@@ -172,23 +174,25 @@ val msg = "a" ^ "b"      (* string concatenation: ^ *)
 ### Imports
 
 ```sml
-use "libraries/Std-v0.1.0/modules/List.hml"
-use "libraries/Std-v0.1.0/modules/Option.hml"
+import Std.List
+import Std.Option
 
 val xs = List.map (fn x => x * 2) [1, 2, 3]
 ```
 
+`import Proj.Util` names the current project's own `src/Util.hml`; package
+imports resolve through `hiko.toml` and the lockfile.
+
 ### Pipelines
 
 ```sml
-fun lines s = split (s, "\n")
+fun lines s = String.split "\n" s
 fun count xs = List.length xs
 
 val fn_count =
-  "examples/pipeline.hml"
-  |> read_file
+  Filesystem.run (fn () => Filesystem.read_text "examples/pipeline.hml")
   |> lines
-  |> List.filter (fn line => regex_match (line, "^fun "))
+  |> List.filter (Regex.matches "^fun ")
   |> count
 ```
 
@@ -196,19 +200,22 @@ val fn_count =
 
 ### Builtins
 
+Builtins are module functions; the bare aliases were removed by the #186
+cutover and name their replacement when used.
+
 | Function | Type | Description |
 |---|---|---|
-| `print` / `println` | `string -> unit` | Output to stdout |
-| `int_to_string` | `int -> string` | Convert int to string |
-| `float_to_string` | `float -> string` | Convert float to string |
-| `string_to_int` | `string -> int` | Parse string to int |
-| `string_length` | `string -> int` | Character count |
-| `substring` | `string * int * int -> string` | Extract substring |
-| `split` | `string * string -> string list` | Split by delimiter |
-| `trim` | `string -> string` | Trim whitespace |
-| `read_file` / `write_file` | `string -> string` / `string * string -> unit` | Read/write file contents |
-| `http_get` | `string -> int * (string * string) list * string` | HTTP GET returning `(status, headers, body)` |
-| `assert` / `assert_eq` | `bool * string -> unit` / `'a * 'a * string -> unit` | Runtime assertions |
+| `Stdio.print` / `Stdio.println` | `string -> unit` | Output to stdout |
+| `Int.to_string` | `int -> string` | Convert int to string |
+| `Float.to_string` | `float -> string` | Convert float to string |
+| `Int.of_string` | `string -> int` | Parse string to int |
+| `String.length` | `string -> int` | Character count |
+| `String.substring` | `int -> int -> string -> string` | Extract substring |
+| `String.split` | `string -> string -> string list` | Split by delimiter |
+| `String.trim` | `string -> string` | Trim whitespace |
+| `Filesystem.read_text` / `Filesystem.write_text` | effectful, under `Filesystem.run` | Read/write file contents |
+| `Client.get` (`Http.Client`) | `string -> int * (string * string) list * string` | HTTP GET returning `(status, headers, body)` |
+| `Testing.check` / `Testing.equal` | `bool -> string -> unit` / `'a -> 'a -> string -> unit` | Runtime assertions |
 
 ## Architecture
 

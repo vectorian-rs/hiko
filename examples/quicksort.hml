@@ -1,4 +1,7 @@
 (* Quicksort using pattern matching and list operations *)
+import Std.Int
+import Std.Stdio
+
 fun filter p xs =
   case xs of
       [] => []
@@ -25,7 +28,7 @@ fun print_list xs =
       [] => ()
     | x :: rest =>
       let
-        val _ = print (int_to_string x ^ " ")
+        val _ = Stdio.print (Int.to_string x ^ " ")
       in
         print_list rest
       end
@@ -34,14 +37,14 @@ val unsorted = [38, 27, 43, 3, 9, 82, 10]
 
 val sorted = sort unsorted
 
-val _ = print "Unsorted: "
+val _ = Stdio.print "Unsorted: "
 
 val _ = print_list unsorted
 
-val _ = println ""
+val _ = Stdio.println ""
 
-val _ = print "Sorted:   "
+val _ = Stdio.print "Sorted:   "
 
 val _ = print_list sorted
 
-val _ = println ""
+val _ = Stdio.println ""

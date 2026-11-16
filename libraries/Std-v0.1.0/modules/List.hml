@@ -1,3 +1,4 @@
+import __Builtin.SystemPanic
 (* List traversals use bounded VM call stack. Output-producing helpers build
    a reversed accumulator and reverse it; foldr reverses its input first.
    These temporary lists consume GC objects/estimated heap bytes: constant
@@ -49,14 +50,14 @@ structure List = struct
 
   fun nth xs n =
     case xs of
-        [] => panic "nth: index out of bounds"
+        [] => BuiltinSystemPanic.panic "nth: index out of bounds"
       | x :: rest => if n = 0 then x else nth rest (n - 1)
 
   fun last xs =
     case xs of
         x :: [] => x
       | _ :: rest => last rest
-      | [] => panic "last: empty list"
+      | [] => BuiltinSystemPanic.panic "last: empty list"
 
   (* A negative count consumes the whole finite input, as before. *)
   fun take n xs =
@@ -99,6 +100,6 @@ structure List = struct
 
   fun find p xs =
     case xs of
-        [] => panic "find: not found"
+        [] => BuiltinSystemPanic.panic "find: not found"
       | x :: xs => if p x then x else find p xs
 end

@@ -6,7 +6,7 @@ exec_timeout_ms = 30000
 [capabilities.stdio.println]
 enabled = true
 
-[capabilities.convert.int_to_string]
+[capabilities.int.to_string]
 enabled = true
 
 [capabilities.string.starts_with]
@@ -18,27 +18,27 @@ enabled = true
 [capabilities.string.substring]
 enabled = true
 
-[capabilities.string.string_length]
+[capabilities.string.length]
 enabled = true
 
 [capabilities.string.trim]
 enabled = true
 
-[capabilities.env.getenv]
+[capabilities.env.get]
 enabled = true
 
-[capabilities.time.monotonic_ms]
+[capabilities.time.monotonic_now]
 enabled = true
 
-[capabilities.filesystem.file_exists]
-enabled = true
-folders = ["."]
-
-[capabilities.filesystem.glob]
+[capabilities.filesystem.exists]
 enabled = true
 folders = ["."]
 
-[capabilities.exec.exec]
+[capabilities.filesystem.glob_matches]
+enabled = true
+folders = ["."]
+
+[capabilities.exec.run]
 enabled = true
 allowed_commands = [
   "./target/release/hiko-cli",
@@ -46,5 +46,5 @@ allowed_commands = [
   "./hiko-vm-hiko-run-all-policy/target/release/hiko-vm-hiko-run-all-policy",
 ]
 
-[capabilities.testing.panic]
+[capabilities.system.panic]
 enabled = true

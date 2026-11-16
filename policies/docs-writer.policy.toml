@@ -11,19 +11,19 @@ enabled = true
 [capabilities.stdio.read_stdin]
 enabled = true
 
-[capabilities.convert.int_to_string]
+[capabilities.int.to_string]
 enabled = true
 
-[capabilities.convert.string_to_int]
+[capabilities.int.of_string]
 enabled = true
 
-[capabilities.string.string_length]
+[capabilities.string.length]
 enabled = true
 
 [capabilities.string.substring]
 enabled = true
 
-[capabilities.string.string_contains]
+[capabilities.string.contains]
 enabled = true
 
 [capabilities.string.trim]
@@ -32,7 +32,7 @@ enabled = true
 [capabilities.string.split]
 enabled = true
 
-[capabilities.string.string_replace]
+[capabilities.string.replace]
 enabled = true
 
 [capabilities.string.starts_with]
@@ -41,79 +41,79 @@ enabled = true
 [capabilities.string.ends_with]
 enabled = true
 
-[capabilities.string.to_upper]
+[capabilities.string.upper]
 enabled = true
 
-[capabilities.string.to_lower]
+[capabilities.string.lower]
 enabled = true
 
-[capabilities.string.string_join]
+[capabilities.string.join]
 enabled = true
 
-[capabilities.regex.regex_match]
+[capabilities.regex.matches]
 enabled = true
 
-[capabilities.regex.regex_replace]
+[capabilities.regex.replace]
 enabled = true
 
-[capabilities.json.json_parse]
+[capabilities.json.parse]
 enabled = true
 
-[capabilities.json.json_to_string]
+[capabilities.json.to_string]
 enabled = true
 
-[capabilities.json.json_get]
+[capabilities.json.get]
 enabled = true
 
-[capabilities.json.json_keys]
+[capabilities.json.keys]
 enabled = true
 
-[capabilities.json.json_length]
+[capabilities.json.length]
 enabled = true
 
-[capabilities.hash.blake3]
+[capabilities.hash.blake3.hash]
 enabled = true
 
-[capabilities.path.path_join]
+[capabilities.path.join]
 enabled = true
 
-[capabilities.filesystem.read_file]
-enabled = true
-folders = ["."]
-
-[capabilities.filesystem.read_file_bytes]
+[capabilities.filesystem.read_text]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.file_exists]
+[capabilities.filesystem.read_bytes]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.list_dir]
+[capabilities.filesystem.exists]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.is_dir]
+[capabilities.filesystem.list_entries]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.is_file]
+[capabilities.filesystem.is_directory]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.glob]
+[capabilities.filesystem.is_regular_file]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.walk_dir]
+[capabilities.filesystem.glob_matches]
 enabled = true
 folders = ["."]
 
-[capabilities.filesystem.write_file]
+[capabilities.filesystem.walk]
+enabled = true
+folders = ["."]
+
+[capabilities.filesystem.write_text]
 enabled = true
 folders = ["./docs"]
 
-[capabilities.filesystem.create_dir]
+[capabilities.filesystem.create_directory]
 enabled = true
 folders = ["./docs"]
 

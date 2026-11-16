@@ -1,6 +1,8 @@
 import Std.Either
 import Std.Result (Ok, Err)
-import __Builtin.Process
+import __Builtin.Fiber
+import __Builtin.Int
+import __Builtin.SystemPanic
 
 structure FiberInternal = struct
   fun reverse_into values acc =
@@ -14,7 +16,7 @@ structure FiberInternal = struct
         case remaining of
             [] => reverse_into acc []
           | f :: rest =>
-            let val child = BuiltinProcess.spawn_raw f
+            let val child = BuiltinFiber.spawn f
             in spawn rest (child :: acc) end
     in
       spawn fs []
@@ -25,7 +27,7 @@ structure FiberInternal = struct
         [] => ()
       | fiber :: rest =>
         let
-          val _ = BuiltinProcess.cancel_raw fiber
+          val _ = BuiltinFiber.cancel fiber
         in
           cancel_all rest
         end
@@ -40,7 +42,7 @@ structure FiberInternal = struct
         [] => ()
       | fiber :: rest =>
         let
-          val _ = BuiltinProcess.await_result_raw fiber
+          val _ = BuiltinFiber.await_result fiber
         in
           reap_all rest
         end
@@ -51,47 +53,47 @@ structure Fiber = struct
   (* A fiber that returns an 'a: joining it gives back an 'a. *)
   type 'a t = 'a pid
 
-  type error = BuiltinProcess.error
+  type error = BuiltinFiber.error
 
   fun render_error err =
     case err of
-        BuiltinProcess.RuntimeError msg => msg
-      | BuiltinProcess.Cancelled => "cancelled"
-      | BuiltinProcess.FuelExhausted => "fuel exhausted"
-      | BuiltinProcess.AlreadyJoined => "result unavailable/reaped; ownership no longer known"
-      | BuiltinProcess.HeapObjectLimitExceeded (live, limit) => "heap limit exceeded: " ^ int_to_string live ^ " objects (max " ^ int_to_string limit ^ ")"
+        BuiltinFiber.RuntimeError msg => msg
+      | BuiltinFiber.Cancelled => "cancelled"
+      | BuiltinFiber.FuelExhausted => "fuel exhausted"
+      | BuiltinFiber.AlreadyJoined => "result unavailable/reaped; ownership no longer known"
+      | BuiltinFiber.HeapObjectLimitExceeded (live, limit) => "heap limit exceeded: " ^ BuiltinInt.to_string live ^ " objects (max " ^ BuiltinInt.to_string limit ^ ")"
 
-  fun spawn f = BuiltinProcess.spawn_raw f
+  fun spawn f = BuiltinFiber.spawn f
 
   fun join fiber =
-    case BuiltinProcess.await_result_raw fiber of
-        BuiltinProcess.Ok value => Ok value
-      | BuiltinProcess.Err err => Err err
+    case BuiltinFiber.await_result fiber of
+        BuiltinFiber.Ok value => Ok value
+      | BuiltinFiber.Err err => Err err
 
   fun join_or_fail fiber =
     case Fiber.join fiber of
         Ok value => value
-      | Err err => panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
+      | Err err => BuiltinSystemPanic.panic ("Fiber.join_or_fail: " ^ Fiber.render_error err)
 
-  fun cancel fiber = BuiltinProcess.cancel_raw fiber
+  fun cancel fiber = BuiltinFiber.cancel fiber
 
   (* Join every fiber, as they finish. The first failure cancels and reaps
      the others and is returned; otherwise the values, in the order of
      `fibers`. *)
   fun join_all fibers =
-    case BuiltinProcess.await_all_raw fibers of
-        BuiltinProcess.Ok values => Ok values
-      | BuiltinProcess.Err err => Err err
+    case BuiltinFiber.await_all fibers of
+        BuiltinFiber.Ok values => Ok values
+      | BuiltinFiber.Err err => Err err
 
   (* Run `f` and `g` at once. The first failure cancels the other. *)
   fun both (f, g) =
     let
-      val left = BuiltinProcess.spawn_raw (fn () => Either.Left (f ()))
-      val right = BuiltinProcess.spawn_raw (fn () => Either.Right (g ()))
+      val left = BuiltinFiber.spawn (fn () => Either.Left (f ()))
+      val right = BuiltinFiber.spawn (fn () => Either.Right (g ()))
     in
       case Fiber.join_all [left, right] of
           Ok [Either.Left left_value, Either.Right right_value] => Ok (left_value, right_value)
-        | Ok _ => panic "Fiber.both: results out of order"
+        | Ok _ => BuiltinSystemPanic.panic "Fiber.both: results out of order"
         | Err err => Err err
     end
 
@@ -102,7 +104,7 @@ structure Fiber = struct
         case remaining of
             [] => ()
           | _ :: rest =>
-            if count = 10000 then panic "Fiber.all: at most 10000 entries allowed"
+            if count = 10000 then BuiltinSystemPanic.panic "Fiber.all: at most 10000 entries allowed"
             else check rest (count + 1)
       val _ = check fs 0
     in
@@ -111,12 +113,12 @@ structure Fiber = struct
 
   fun first (f, g) =
     let
-      val left = BuiltinProcess.spawn_raw f
-      val right = BuiltinProcess.spawn_raw g
-      val winner = BuiltinProcess.wait_any_raw [left, right]
+      val left = BuiltinFiber.spawn f
+      val right = BuiltinFiber.spawn g
+      val winner = BuiltinFiber.wait_any [left, right]
       val loser = if winner = left then right else left
-      val _ = BuiltinProcess.cancel_raw loser
-      val _ = BuiltinProcess.await_result_raw loser
+      val _ = BuiltinFiber.cancel loser
+      val _ = BuiltinFiber.await_result loser
     in
       Fiber.join winner
     end
@@ -126,10 +128,10 @@ structure Fiber = struct
       val fibers = FiberInternal.spawn_all fs
     in
       case fibers of
-          [] => Err (BuiltinProcess.RuntimeError "Fiber.any: empty list")
+          [] => Err (BuiltinFiber.RuntimeError "Fiber.any: empty list")
         | _ =>
           let
-            val winner = BuiltinProcess.wait_any_raw fibers
+            val winner = BuiltinFiber.wait_any fibers
             val losers = FiberInternal.remove_first winner fibers
             val _ = FiberInternal.cancel_all losers
             val _ = FiberInternal.reap_all losers

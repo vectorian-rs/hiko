@@ -1,7 +1,8 @@
 import Std.Fiber
+import __Builtin.Testing
 
 val child = Fiber.spawn (fn () => 42)
-val _ = assert_eq (Fiber.join_or_fail child, 42, "policy: spawn/join")
+val _ = BuiltinTesting.assert_eq (Fiber.join_or_fail child, 42, "policy: spawn/join")
 
 (* Cancellation may race a finite child completing; both outcomes are valid.
    Joining afterwards exercises cleanup without a timer or an infinite loop. *)
@@ -14,4 +15,4 @@ val values =
   case Fiber.all [fn () => 1, fn () => 2, fn () => 3] of
       Result.Ok result => result
     | Result.Err _ => []
-val _ = assert_eq (values, [1, 2, 3], "policy: wait-any")
+val _ = BuiltinTesting.assert_eq (values, [1, 2, 3], "policy: wait-any")

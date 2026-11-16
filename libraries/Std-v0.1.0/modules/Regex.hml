@@ -6,7 +6,7 @@ signature REGEX = sig
 end
 
 structure Regex :> REGEX = struct
-  fun matches pattern text = BuiltinRegex.match_raw (text, pattern)
+  fun matches pattern text = BuiltinRegex.match (text, pattern)
 
-  fun replace pattern replacement text = BuiltinRegex.replace_raw (text, pattern, replacement)
+  fun replace pattern replacement text = BuiltinRegex.replace (text, pattern, replacement)
 end

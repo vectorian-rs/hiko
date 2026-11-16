@@ -1,13 +1,18 @@
 (* random_demo.hml -- OS entropy + deterministic PCG *)
 
 (* Cryptographically secure random bytes from OS *)
-val b = random_bytes 16
+import Std.Bytes
+import Std.Int
+import Std.Random
+import Std.Stdio
 
-val _ = println ("OS random bytes: " ^ int_to_string (bytes_length b) ^ " bytes")
+val b = Random.entropy 16
+
+val _ = Stdio.println ("OS random bytes: " ^ Int.to_string (Bytes.length b) ^ " bytes")
 
 (* Seed PCG from OS entropy for non-deterministic but fast RNG *)
-val r = rng_seed (random_bytes 8)
+val r = Random.seed (Random.entropy 8)
 
-val (n, _) = rng_int (r, 1000)
+val (n, _) = Random.int_between 1000 r
 
-val _ = println ("PCG seeded from OS entropy: " ^ int_to_string n)
+val _ = Stdio.println ("PCG seeded from OS entropy: " ^ Int.to_string n)

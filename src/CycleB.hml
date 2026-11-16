@@ -1,0 +1,4 @@
+(* Must fail: the other half of the import cycle in CycleA.hml. *)
+import Proj.CycleA
+
+val b = 2

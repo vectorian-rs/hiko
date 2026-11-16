@@ -300,20 +300,20 @@ struct BuiltinTable {
     async_fns: Vec<crate::extension::AsyncBuiltinFn>,
 }
 
-/// Reserved entry credit belongs to its granting Arc, not a later VM budget.
-struct FuelLease {
-    remaining: Option<u64>,
+/// Cold entry metadata. `Some` also marks an active, uncapped entry; the
+/// canonical remaining credit lives separately on VM for the dispatch hot path.
+struct ActiveFuel {
     grant: Option<Arc<crate::budget::SharedBudget>>,
 }
 
-impl FuelLease {
-    fn debit_gc(&mut self, cost: Option<u64>) -> Result<(), &'static str> {
+impl ActiveFuel {
+    fn debit_gc(&self, remaining: &mut Option<u64>, cost: Option<u64>) -> Result<(), &'static str> {
         if let Some(grant) = &self.grant {
             // FuelEntry always pairs a grant with a concrete reservation; an
             // unlimited-remaining lease with a grant is unconstructible.
-            debug_assert!(self.remaining.is_some());
+            debug_assert!(remaining.is_some());
             let cost = cost.ok_or(crate::process::FUEL_EXHAUSTED_MESSAGE)?;
-            let available = self.remaining.unwrap_or(0);
+            let available = remaining.unwrap_or(0);
             let local = available.min(cost);
             // Charge the deficit FIRST: a refusal leaves local credit refundable.
             let deficit = cost - local;
@@ -322,8 +322,8 @@ impl FuelLease {
                     .try_charge(deficit)
                     .map_err(|_| crate::process::FUEL_EXHAUSTED_MESSAGE)?;
             }
-            self.remaining = Some(available - local);
-        } else if let Some(remaining) = &mut self.remaining {
+            *remaining = Some(available - local);
+        } else if let Some(remaining) = remaining {
             // A quantum is not a persistent cap. Finish this synchronous block,
             // then the next dispatch observes zero and yields normally.
             *remaining = remaining.saturating_sub(cost.unwrap_or(u64::MAX));
@@ -331,14 +331,6 @@ impl FuelLease {
         Ok(())
     }
 }
-impl Drop for FuelLease {
-    fn drop(&mut self) {
-        if let Some(grant) = &self.grant {
-            grant.refund(self.remaining.unwrap_or(0));
-        }
-    }
-}
-
 /// Borrowing the VM through an entry guard permits a safe, unwind-proof refund
 /// without raw pointers, shared per-opcode atomics, or making VM !Send.
 struct FuelEntry<'a> {
@@ -358,13 +350,14 @@ impl<'a> FuelEntry<'a> {
         } else {
             quantum
         };
-        vm.fuel_lease = Some(FuelLease { remaining, grant });
+        vm.fuel_remaining = remaining;
+        vm.fuel_entry = Some(ActiveFuel { grant });
         Ok(Self { vm })
     }
 }
 impl Drop for FuelEntry<'_> {
     fn drop(&mut self) {
-        self.vm.fuel_lease.take();
+        self.vm.settle_fuel_entry();
     }
 }
 
@@ -408,12 +401,12 @@ pub struct VM {
     /// Reused buffer for `ConcatString`, so a concatenation allocates only
     /// the new string's shared payload.
     concat_buf: String,
-    /// Slice-local opcode budget for the currently active dispatch loop.
-    ///
-    /// This value is intentionally transient. `run_slice` installs it from the
-    /// scheduler's reduction grant, and `create_child` does not copy it into
-    /// child VMs.
-    fuel_lease: Option<FuelLease>,
+    /// Canonical hot remaining credit for the active dispatch entry. `None`
+    /// means uncapped dispatch, not necessarily an inactive entry.
+    fuel_remaining: Option<u64>,
+    /// Cold active-entry marker and original granting Arc. Neither this nor
+    /// remaining credit is inherited by children or retained across slices.
+    fuel_entry: Option<ActiveFuel>,
     /// First checked GC failure is terminal, even after cancellation/set_fuel.
     gc_failure: Option<String>,
     #[cfg(test)]
@@ -422,7 +415,7 @@ pub struct VM {
     gc_test_trace: Option<Vec<(crate::heap::GcStage, Option<u64>)>>,
     /// Persistent total fuel budget from `VMBuilder::max_fuel` / `set_fuel`.
     ///
-    /// Unlike `fuel`, this carries across scheduling slices. Child VMs share
+    /// Unlike `fuel_remaining`, this carries across scheduling slices. Child VMs share
     /// it, so the whole process tree draws from one budget.
     fuel_budget: Option<Arc<crate::budget::SharedBudget>>,
     /// This process's place in its tree's live-process count.
@@ -598,7 +591,8 @@ impl VM {
             #[cfg(feature = "opcode-stats")]
             last_op: crate::opcode_stats::START,
             concat_buf: String::new(),
-            fuel_lease: None,
+            fuel_remaining: None,
+            fuel_entry: None,
             gc_failure: None,
             #[cfg(test)]
             gc_test_fault: None,
@@ -675,8 +669,19 @@ impl VM {
     /// Set the fuel limit (max opcode executions).
     /// This remains as a compatibility alias for `set_max_work`.
     pub fn set_fuel(&mut self, fuel: u64) {
-        self.fuel_lease.take();
+        self.settle_fuel_entry();
         self.fuel_budget = Some(crate::budget::SharedBudget::new(fuel));
+    }
+
+    /// Clear both entry fields before refunding once to the original grant,
+    /// even if the persistent budget was replaced while this entry was active.
+    fn settle_fuel_entry(&mut self) {
+        let remaining = self.fuel_remaining.take();
+        if let Some(entry) = self.fuel_entry.take()
+            && let Some(grant) = entry.grant
+        {
+            grant.refund(remaining.unwrap_or(0));
+        }
     }
 
     /// Set the maximum number of spawned processes alive at once in this
@@ -891,9 +896,10 @@ impl VM {
     }
 }
 
-#[cfg(feature = "opcode-stats")]
 impl Drop for VM {
     fn drop(&mut self) {
+        self.settle_fuel_entry();
+        #[cfg(feature = "opcode-stats")]
         crate::opcode_stats::dump();
     }
 }
@@ -1304,7 +1310,8 @@ mod tests {
 
     #[test]
     fn test_rebinding_a_builtin_name_does_not_change_earlier_calls() {
-        let vm = run("fun f n = int_to_string n
+        let vm = run("import __Builtin.Int
+             fun f n = BuiltinInt.to_string n
              fun int_to_string (n : int) = \"shadowed\"
              val a = f 7
              val b = int_to_string 7
@@ -1659,9 +1666,10 @@ mod tests {
     #[test]
     fn test_boundary_gc_runs_before_async_suspend() {
         let program = compile_program(
-            "fun churn n = if n = 0 then () else let val _ = (n, n) in churn (n - 1) end
+            "import __Builtin.Time
+             fun churn n = if n = 0 then () else let val _ = (n, n) in churn (n - 1) end
              val _ = churn 600
-             val _ = sleep 1",
+             val _ = BuiltinTime.sleep 1",
         );
         let mut vm = VMBuilder::new(program).with_core().build();
         vm.set_async_io(true);
@@ -2005,8 +2013,9 @@ mod tests {
         // Perform pops the payload before the clause runs. A GC forced in
         // between must still treat the payload as live, or the clause sees a
         // freed (and possibly reused) heap slot.
-        let src = "effect Ask of string
-             fun f () = perform Ask (int_to_string 12345)
+        let src = "import __Builtin.Int
+             effect Ask of string
+             fun f () = perform Ask (BuiltinInt.to_string 12345)
              val result = handle f ()
                with return x => x | Ask s k => s";
         for max in 1..64 {
@@ -2227,14 +2236,15 @@ mod tests {
     fn test_provider_clause_survives_gc() {
         // The clause closure and the string it captures must stay alive
         // while the handler is installed, under constant collection.
-        let src = "effect Ask of unit
+        let src = "import __Builtin.Int
+             effect Ask of unit
              fun with_name name f = handle f () with return x => x | Ask _ k => resume k (name ^ \"!\")
              fun body () =
                let val a = perform Ask ()
-                   val junk = int_to_string 999
+                   val junk = BuiltinInt.to_string 999
                    val b = perform Ask ()
                in a ^ b end
-             val result = with_name (int_to_string 12345) body";
+             val result = with_name (BuiltinInt.to_string 12345) body";
         let mut completed = false;
         for max in 1..96 {
             let mut vm = compile_vm(src);
@@ -2259,10 +2269,11 @@ mod tests {
         // Low object limits force a collection on nearly every allocation:
         // just before Perform (the payload) and in the clause (the concat).
         // The payload must stay rooted while the stack is unwound.
-        let src = "effect Fail of string
+        let src = "import __Builtin.Int
+             effect Fail of string
              fun dive n =
-               if n = 0 then perform Fail (int_to_string 12345)
-               else let val s = int_to_string n in dive (n - 1) end
+               if n = 0 then perform Fail (BuiltinInt.to_string 12345)
+               else let val s = BuiltinInt.to_string n in dive (n - 1) end
              val result = handle dive 20
                with return x => x | Fail s _ => s ^ \"!\"";
         let mut completed = false;
@@ -2462,14 +2473,13 @@ mod tests {
     fn test_create_child_inherits_persistent_fuel_not_slice_fuel() {
         let mut vm = compile_vm("val x = 1");
         vm.set_fuel(42);
-        vm.fuel_lease = Some(FuelLease {
-            remaining: Some(3),
-            grant: None,
-        });
+        let child = {
+            let entry = FuelEntry::new(&mut vm, Some(3)).unwrap();
+            entry.vm.create_child()
+        };
 
-        let child = vm.create_child();
-
-        assert!(child.fuel_lease.is_none());
+        assert!(child.fuel_remaining.is_none());
+        assert!(child.fuel_entry.is_none());
         assert!(Arc::ptr_eq(
             vm.fuel_budget.as_ref().unwrap(),
             child.fuel_budget.as_ref().unwrap()
@@ -2544,7 +2554,10 @@ mod tests {
     #[test]
     fn test_output_sink_streams_print_and_println() {
         let sink = Arc::new(CaptureOutputSink::default());
-        let mut vm = compile_vm("val _ = print \"a\" val _ = println \"b\"");
+        let mut vm = compile_vm(
+            "import __Builtin.Stdio
+             val _ = BuiltinStdio.print \"a\" val _ = BuiltinStdio.println \"b\"",
+        );
         vm.enable_output_capture();
         vm.set_output_sink(sink.clone());
 
@@ -2557,7 +2570,7 @@ mod tests {
 
     #[test]
     fn test_io_limit_returns_runtime_error_on_stdout() {
-        let mut vm = compile_vm("val _ = println \"abcd\"");
+        let mut vm = compile_vm("import __Builtin.Stdio\nval _ = BuiltinStdio.println \"abcd\"");
         vm.enable_output_capture();
         vm.set_max_io_bytes(4);
 
@@ -2568,7 +2581,9 @@ mod tests {
 
     #[test]
     fn test_tracked_usage_reports_memory_and_io_bytes() {
-        let mut vm = compile_vm("val pair = (1, 2)\nval _ = println \"ok\"");
+        let mut vm = compile_vm(
+            "import __Builtin.Stdio\nval pair = (1, 2)\nval _ = BuiltinStdio.println \"ok\"",
+        );
         vm.enable_output_capture();
 
         vm.run().unwrap();
@@ -2580,7 +2595,10 @@ mod tests {
 
     #[test]
     fn test_read_stdin_uses_injected_buffer_once() {
-        let mut vm = compile_vm("val first = read_stdin () val second = read_stdin ()");
+        let mut vm = compile_vm(
+            "import __Builtin.Stdio
+             val first = BuiltinStdio.read_stdin () val second = BuiltinStdio.read_stdin ()",
+        );
         vm.set_stdin_override("{\"path\":\"src/main.rs\"}".to_string());
 
         vm.run().unwrap();
@@ -2645,7 +2663,7 @@ mod tests {
         fs::set_permissions(&script, perms).unwrap();
 
         let program = compile_program(&format!(
-            "val (code, out, err) = exec ({:?}, [])",
+            "import __Builtin.Exec\nval (code, out, err) = BuiltinExec.exec ({:?}, [])",
             script.to_string_lossy()
         ));
         let mut vm = VMBuilder::new(program)
@@ -2683,7 +2701,7 @@ mod tests {
         }
 
         let program = compile_program(&format!(
-            "val _ = exec ({:?}, [])",
+            "import __Builtin.Exec\nval _ = BuiltinExec.exec ({:?}, [])",
             denied.to_string_lossy()
         ));
         let mut vm = VMBuilder::new(program)
@@ -2705,14 +2723,18 @@ mod tests {
     #[test]
     fn test_fs_root_rejects_list_dir_traversal() {
         let root = temp_dir("fs-root-list");
-        let program = compile_program("val _ = list_dir \"../\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.list_entries \"../\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2726,14 +2748,18 @@ mod tests {
     #[test]
     fn test_fs_root_allows_create_dir_for_missing_nested_child() {
         let root = temp_dir("fs-root-create");
-        let program = compile_program("val _ = create_dir \"nested/a/b\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.create_directory \"nested/a/b\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
-                allow_read: false,
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
+                allow_read: true,
                 allow_write: true,
-                allow_delete: false,
+                allow_delete: true,
             })
             .build();
 
@@ -2747,14 +2773,17 @@ mod tests {
     #[test]
     fn test_fs_root_rejects_glob_traversal() {
         let root = temp_dir("fs-root-glob");
-        let program = compile_program("val _ = glob \"../*\"");
+        let program =
+            compile_program("import __Builtin.Filesystem\nval _ = BuiltinFilesystem.glob \"../*\"");
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2778,14 +2807,17 @@ mod tests {
         fs::write(outside.join("secret.txt"), "secret").unwrap();
         symlink(&outside, root.join("link")).unwrap();
 
-        let program = compile_program("val _ = walk_dir \".\"");
+        let program =
+            compile_program("import __Builtin.Filesystem\nval _ = BuiltinFilesystem.walk \".\"");
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2804,14 +2836,18 @@ mod tests {
         fs::write(root.join("a").join("b.txt"), "b").unwrap();
         fs::write(root.join("b.txt"), "b").unwrap();
 
-        let program = compile_program("val files = walk_dir \".\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval files = BuiltinFilesystem.walk \".\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2841,14 +2877,18 @@ mod tests {
         fs::write(root.join("file.txt"), "ok").unwrap();
         symlink(&root, root.join("loop")).unwrap();
 
-        let program = compile_program("val files = walk_dir \".\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval files = BuiltinFilesystem.walk \".\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 

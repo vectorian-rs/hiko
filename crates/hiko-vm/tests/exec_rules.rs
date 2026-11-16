@@ -1,4 +1,4 @@
-//! `[[capabilities.exec.exec.allow]]`: commands allowed only with given
+//! `[[capabilities.exec.run.allow]]`: commands allowed only with given
 //! arguments, and the ways a script might try to get around them.
 #![cfg(all(unix, feature = "builtin-exec"))]
 
@@ -62,8 +62,13 @@ fn config(argv: &[&str], rest: Option<&str>) -> RunConfig {
     let rest = rest.map(|r| format!("rest = {r:?}\n")).unwrap_or_default();
     RunConfig::from_toml(&format!(
         "[capabilities.stdio.print]\nenabled = true\n\
-         [capabilities.exec.exec]\nenabled = true\n\
-         [[capabilities.exec.exec.allow]]\nargv = {}\n{rest}",
+         [capabilities.stdio.println]\nenabled = true\n\
+         [capabilities.stdio.eprint]\nenabled = true\n\
+         [capabilities.stdio.eprintln]\nenabled = true\n\
+         [capabilities.stdio.read_line]\nenabled = true\n\
+         [capabilities.stdio.read_stdin]\nenabled = true\n\
+         [capabilities.exec.run]\nenabled = true\n\
+         [[capabilities.exec.run.allow]]\nargv = {}\n{rest}",
         quoted_list(argv)
     ))
     .expect("config")
@@ -72,7 +77,7 @@ fn config(argv: &[&str], rest: Option<&str>) -> RunConfig {
 /// Run `exec (command, args)` under `config`: the stdout, or the error.
 fn run(config: &RunConfig, command: &str, args: &[&str]) -> Result<String, String> {
     let program = compile(&format!(
-        "val (code, out, err) = exec ({command:?}, {})\nval _ = print out",
+        "import __Builtin.Exec\nimport __Builtin.Stdio\nval (code, out, err) = BuiltinExec.exec ({command:?}, {})\nval _ = BuiltinStdio.print out",
         quoted_list(args)
     ));
     let mut vm = config.apply_to_builder(VMBuilder::new(program)).build();
@@ -108,7 +113,7 @@ fn a_changed_file_is_reported_only_when_a_rule_allows_the_arguments() {
     let tool = tool(&dir, "tool");
     let config = config(&[&tool, "ok"], None);
     let program = compile(&format!(
-        "val (code, out, err) = exec ({tool:?}, {})\nval _ = print out",
+        "import __Builtin.Exec\nimport __Builtin.Stdio\nval (code, out, err) = BuiltinExec.exec ({tool:?}, {})\nval _ = BuiltinStdio.print out",
         quoted_list(&["no"])
     ));
     let mut vm = config.apply_to_builder(VMBuilder::new(program)).build();
@@ -212,7 +217,7 @@ fn allowed_commands_still_allow_any_arguments() {
     let tool = tool(&dir, "tool");
     let config = RunConfig::from_toml(&format!(
         "[capabilities.stdio.print]\nenabled = true\n\
-         [capabilities.exec.exec]\nenabled = true\nallowed_commands = [{tool:?}]\n"
+         [capabilities.exec.run]\nenabled = true\nallowed_commands = [{tool:?}]\n"
     ))
     .unwrap();
     assert_eq!(run(&config, &tool, &["x", "y"]).unwrap(), "[x]\n[y]\n");
@@ -229,7 +234,7 @@ fn bad_rules_are_config_errors() {
         ("rest = \"any\"\n", "missing field `argv`"),
     ] {
         let err = RunConfig::from_toml(&format!(
-            "[capabilities.exec.exec]\nenabled = true\n[[capabilities.exec.exec.allow]]\n{rule}"
+            "[capabilities.exec.run]\nenabled = true\n[[capabilities.exec.run.allow]]\n{rule}"
         ))
         .unwrap_err();
         assert!(err.contains(expected), "{rule}: {err}");
@@ -263,18 +268,19 @@ fn a_spawned_child_has_the_same_rules() {
     let dir = temp_dir("child");
     let tool = tool(&dir, "tool");
     let config = RunConfig::from_toml(&format!(
-        "[capabilities.exec.exec]\nenabled = true\n\
-         [[capabilities.exec.exec.allow]]\nargv = [{tool:?}, \"ok\"]\n\
-         [capabilities.process.spawn]\nenabled = true\n\
-         [capabilities.process.await_process]\nenabled = true\n\
+        "[capabilities.exec.run]\nenabled = true\n\
+         [[capabilities.exec.run.allow]]\nargv = [{tool:?}, \"ok\"]\n\
+         [capabilities.fiber.spawn]\nenabled = true\n\
+         [capabilities.fiber.join_or_fail]\nenabled = true\n[capabilities.fiber.join]\nenabled = true\n\
          [capabilities.stdio.println]\nenabled = true\n"
     ))
     .unwrap();
     let program = compile(&format!(
-        "val allowed = spawn (fn () => let val (_, out, _) = exec ({tool:?}, [\"ok\"]) in out end)\n\
-         val _ = println (await_process allowed)\n\
-         val refused = spawn (fn () => let val (_, out, _) = exec ({tool:?}, [\"no\"]) in out end)\n\
-         val _ = println (await_process refused)"
+        "import __Builtin.Exec\nimport __Builtin.Fiber\nimport __Builtin.Stdio\n\
+         val allowed = BuiltinFiber.spawn (fn () => let val (_, out, _) = BuiltinExec.exec ({tool:?}, [\"ok\"]) in out end)\n\
+         val _ = BuiltinStdio.println (BuiltinFiber.await allowed)\n\
+         val refused = BuiltinFiber.spawn (fn () => let val (_, out, _) = BuiltinExec.exec ({tool:?}, [\"no\"]) in out end)\n\
+         val _ = BuiltinStdio.println (BuiltinFiber.await refused)"
     ));
     let mut vm = config.apply_to_builder(VMBuilder::new(program)).build();
     let sink = Arc::new(Captured::default());

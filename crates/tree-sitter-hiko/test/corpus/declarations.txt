@@ -2,8 +2,8 @@
 Imports and values
 ==================
 
-use "./local.hml"
 import Std.Option
+import Proj.Net.Client
 import __Builtin.Filesystem
 import Std.Result (Ok, Err, map)
 val answer = 42
@@ -12,9 +12,11 @@ val rec inc = fn x => x + 1
 ---
 
 (source_file
-  (use_declaration
-    (string_literal))
   (import_declaration
+    (upper_identifier)
+    (upper_identifier))
+  (import_declaration
+    (upper_identifier)
     (upper_identifier)
     (upper_identifier))
   (import_declaration

@@ -1,0 +1,4 @@
+(* Must fail: CycleA and CycleB import each other, which the loader rejects. *)
+import Proj.CycleB
+
+val a = 1

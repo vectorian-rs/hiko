@@ -17,6 +17,7 @@ import Aws.CloudWatch
 import Sre.Health
 import Sre.Report
 import Sre.CloudWatchAlarms
+import Std.System
 
 val profile = "dev"
 
@@ -28,4 +29,4 @@ val status =
     | Result.Err message =>
         Report.print ("cloudwatch", [("cloudwatch", Health.Unknown, "", message)])
 
-val _ = exit (Health.exit_code status)
+val _ = System.exit (Health.exit_code status)

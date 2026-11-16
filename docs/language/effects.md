@@ -59,7 +59,7 @@ Perform an effect:
 
 ```hiko
 val limit = perform Ask ()
-val _ = perform Log ("limit is " ^ int_to_string limit)
+val _ = perform Log ("limit is " ^ Int.to_string limit)
 ```
 
 Handle effects:

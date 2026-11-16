@@ -8,11 +8,13 @@
  *   grammar productions below.
  * - Some contextual restrictions are enforced by the parser/typechecker rather
  *   than by EBNF alone.
- * - Named imports are exactly two segments: Package.Module.
- * - `use` paths must be explicit relative paths beginning with "./" or "../".
+ * - Named imports are two or more upper-case segments: Package.Module or
+ *   Package.Nested.Module. `Proj` names the importing source's own package.
+ * - Imports are top-level only and must come before the first declaration.
+ * - `use` is a reserved word; the parser reports removal guidance.
  *)
 
-program            ::= { decl } ;
+program            ::= { import_decl } { decl } ;
 
 
 (* ── Declarations ─────────────────────────────────────────────── *)
@@ -23,8 +25,6 @@ decl               ::= val_decl
                      | datatype_decl
                      | type_alias_decl
                      | local_decl
-                     | import_decl
-                     | use_decl
                      | signature_decl
                      | structure_decl
                      | effect_decl ;
@@ -48,9 +48,10 @@ type_alias_decl    ::= "type" tyvar_params name "=" type_expr ;
 
 local_decl         ::= "local" { decl } "in" { decl } "end" ;
 
-import_decl        ::= "import" upper_ident "." upper_ident ;
+import_decl        ::= "import" upper_ident "." upper_ident { "." upper_ident }
+                       [ "(" exposed_name { "," exposed_name } ")" ] ;
 
-use_decl           ::= "use" string_literal ;
+exposed_name       ::= ident | upper_ident ;
 
 signature_decl     ::= "signature" upper_ident "=" "sig"
                        { signature_spec }

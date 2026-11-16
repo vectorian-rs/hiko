@@ -73,7 +73,9 @@ fn plain_and_effect_examples_log_the_same_lines() {
 #[test]
 fn eprint_needs_its_capability() {
     for builtin in ["eprint", "eprintln"] {
-        let compiled = common::compile_source(&format!("val _ = {builtin} \"x\""));
+        let compiled = common::compile_source(&format!(
+            "import __Builtin.Stdio\nval _ = BuiltinStdio.{builtin} \"x\""
+        ));
         let build = |toml: &str| {
             let config = RunConfig::from_toml(toml).unwrap();
             let mut vm = config
@@ -100,15 +102,26 @@ fn eprint_needs_its_capability() {
 #[test]
 fn std_log_needs_only_the_capabilities_it_lists() {
     let policy: String = [
+        "stdio.print",
         "stdio.println",
+        "stdio.eprint",
         "stdio.eprintln",
-        "time.epoch_ms",
-        "convert.int_to_string",
-        "string.string_length",
-        "string.string_join",
-        "env.getenv",
-        "string.to_lower",
+        "stdio.read_line",
+        "stdio.read_stdin",
+        "time.now",
+        "int.to_string",
+        "string.length",
+        "string.join",
+        "env.get",
+        "string.lower",
         "string.trim",
+        "string.substring",
+        "string.contains",
+        "string.starts_with",
+        "string.ends_with",
+        "string.split",
+        "string.replace",
+        "string.upper",
     ]
     .iter()
     .map(|leaf| format!("[capabilities.{leaf}]\nenabled = true\n"))

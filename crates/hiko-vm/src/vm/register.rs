@@ -681,11 +681,7 @@ impl VM {
                 let Some(&(op, weight)) = func.code.get(pc) else {
                     fail!(error("unexpected end of register code"));
                 };
-                if let Some(fuel) = self
-                    .fuel_lease
-                    .as_mut()
-                    .and_then(|lease| lease.remaining.as_mut())
-                {
+                if let Some(fuel) = &mut self.fuel_remaining {
                     // An instruction worth more than the fuel left is paid
                     // in part now and the rest after the yield, so every
                     // slice makes progress and the total charged is exactly
@@ -898,17 +894,19 @@ mod tests {
         stack.expect("program failed")
     }
 
-    const FIB: &str = "
+    const FIB: &str = "import __Builtin.Stdio
+        import __Builtin.Int
         fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
-        val _ = println (int_to_string (fib 20))
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (fib 20))
     ";
 
-    const TAK: &str = "
+    const TAK: &str = "import __Builtin.Stdio
+        import __Builtin.Int
         fun tak (x, y, z) =
           if y < x
           then tak (tak (x - 1, y, z), tak (y - 1, z, x), tak (z - 1, x, y))
           else z
-        val _ = println (int_to_string (tak (18, 12, 6)))
+        val _ = BuiltinStdio.println (BuiltinInt.to_string (tak (18, 12, 6)))
     ";
 
     #[test]
@@ -983,8 +981,10 @@ mod tests {
         // stack limit it still fails only where the stack VM would.
         let src = |n: i64| {
             format!(
-                "fun d n = if n < 1 then 0 else 1 + d (n - 1)
-                 val _ = println (int_to_string (d {n}))"
+                "import __Builtin.Stdio
+                 import __Builtin.Int
+                 fun d n = if n < 1 then 0 else 1 + d (n - 1)
+                 val _ = BuiltinStdio.println (BuiltinInt.to_string (d {n}))"
             )
         };
         assert!(translates(&src(1), "d"));
@@ -1030,14 +1030,15 @@ mod tests {
     #[test]
     fn locals_rebound_while_still_on_the_stack() {
         // `let` rebinding and reads of a local that is overwritten later.
-        let src = "
+        let src = "import __Builtin.Stdio
+            import __Builtin.Int
             fun f (a : int, b) =
               let val c = a + b
                   val d = c * 2
                   val c = d - a
               in if c < d then c + d else a end
             fun loop (i, acc) = if i > 0 then loop (i - 1, acc + f (i, acc)) else acc
-            val _ = println (int_to_string (loop (10, 0)))
+            val _ = BuiltinStdio.println (BuiltinInt.to_string (loop (10, 0)))
         ";
         assert_same(src);
     }

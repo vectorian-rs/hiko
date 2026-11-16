@@ -51,7 +51,6 @@ module.exports = grammar({
       $.datatype_declaration,
       $.type_alias_declaration,
       $.local_declaration,
-      $.use_declaration,
       $.import_declaration,
       $.signature_declaration,
       $.structure_declaration,
@@ -122,16 +121,12 @@ module.exports = grammar({
       "end",
     ),
 
-    use_declaration: $ => seq(
-      "use",
-      field("path", $.string_literal),
-    ),
-
     import_declaration: $ => seq(
       "import",
       field("package", $._import_package_name),
       ".",
       field("module", $.upper_identifier),
+      repeat(seq(".", field("module", $.upper_identifier))),
       optional(field("exposures", $.import_exposure_list)),
     ),
 

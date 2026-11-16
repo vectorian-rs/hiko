@@ -166,9 +166,12 @@ builder policy does not allow it.
 Public Hiko module names should describe the semantic domain, not the historical
 Rust file where a builtin happened to live.
 
-Current raw builtins are still globally registered, and some stdlib modules wrap
-those raw functions. Future public module structure should move toward explicit,
-stable domains.
+Raw builtin names resolve only inside their owning compiler-provided `__Builtin`
+modules, not in ordinary source. This includes runtime-only numeric/date aliases
+and the typed Fiber join companions, even when the VM registers an alias without
+a policy leaf. Importing a module does not grant permission: policy-gated calls
+still require their individual runtime leaves. User bindings that share a raw
+name do not replace the primitive used by compiler-owned forwarders.
 
 Recommended ownership:
 

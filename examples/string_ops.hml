@@ -1,28 +1,32 @@
 (* string operations *)
+import Std.Int
+import Std.Stdio
+import Std.String
+
 val s = "  Hello, World!  "
 
-val trimmed = trim s
+val trimmed = String.trim s
 
-val _ = println trimmed
+val _ = Stdio.println trimmed
 
-val _ = println (if string_contains (trimmed, "World") then "found World" else "not found")
+val _ = Stdio.println (if String.contains "World" trimmed then "found World" else "not found")
 
-val _ = println (substring (trimmed, 7, 5))
+val _ = Stdio.println (String.substring 7 5 trimmed)
 
 val csv = "alice,bob,charlie"
 
-val names = split (csv, ",")
+val names = String.split "," csv
 
 fun print_list xs =
   case xs of
       [] => ()
     | x :: rest =>
       let
-        val _ = println ("  - " ^ x)
+        val _ = Stdio.println ("  - " ^ x)
       in
         print_list rest
       end
 
 val _ = print_list names
 
-val _ = println (int_to_string (string_length "café"))
+val _ = Stdio.println (Int.to_string (String.length "café"))

@@ -1,0 +1,6 @@
+(* Module-internal shadowing fixture for tests/run/test_global_bindings.hml. *)
+structure GlobalBindings = struct
+  val imported = 1
+  val imported = 2
+  fun read_imported () = imported
+end
