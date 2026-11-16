@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Public Import, Builtin and Policy-Key Cutover (#186)
+
+- **`use` removed**: local file inclusion is gone; `use` stays a reserved word
+  whose parse reports `use was removed; use import Proj.<Module> for local
+  modules under src/`. Local composition is `import Proj.<Module>` resolving
+  under the owning project's `src/`, with exact-spelling, symlink-refusing
+  resolution and entry-cycle detection.
+- **Nested, top-only imports**: import names take two or more upper-case
+  segments (`Acme.Net.Client`, lock key `"Net.Client"`, nested `modules/`
+  layout and cache URLs). Imports are top-level and must come before the
+  first declaration.
+- **Module-only builtins**: ordinary source can no longer name bare builtin
+  aliases (`println`, `spawn`, `int_to_string`, …). Each names its
+  replacement: `builtin `X` is internal; import Std.Y and use Y.z`. Raw
+  shapes stay reachable through compiler-owned `__Builtin` modules, whose
+  members dropped their `_raw` suffixes; `BuiltinProcess` is `BuiltinFiber`.
+  Structure `val` members now follow the language's non-recursive `val`
+  rule, so a member may alias the outer name it replaces.
+- **Policy keys follow the builtin map**: `capabilities.convert.*` and
+  `capabilities.math.*` became `int`/`float`/`char`/`word` keys named after
+  the module functions; `capabilities.process.*` folded into
+  `capabilities.fiber.*`, with the shared `await_process` leaf split into
+  `fiber.join_or_fail` and `fiber.join` and `fiber_await_all`'s key now
+  `capabilities.fiber.join_all`; `http` and `hash` keys nest
+  (`http.client.*`, `hash.blake3.*`); `exec`'s leaf is `run`. Old keys fail
+  to parse with an explicit rename hint. The dead `capabilities.date`
+  family was removed outright: date builtins are runtime aliases that were
+  always registered, so its leaves never changed behavior.
+- **Thin math wrappers**: `Std.Float.abs/sqrt/floor/ceil` and `Std.Int.abs`
+  now exist, completing the audit map for the formerly bare math builtins.
+- Repository programs, policies, fixtures, library sources, generated docs
+  and lock hashes migrated together from one inventory.
+
 ## 0.8.0
 
 ### Cloud Provider Integration

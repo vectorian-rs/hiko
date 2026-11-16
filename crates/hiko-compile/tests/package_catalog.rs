@@ -374,8 +374,7 @@ fn extensions_keep_exact_library_requirements_including_compiler_modules() {
     assert!(catalog.resolve(Some(&owner), "Std.Result").is_ok());
     assert!(error(catalog.resolve(Some(&owner), "Std.List")).contains("requires does not list"));
     assert!(
-        error(catalog.resolve(Some(&owner), "__Builtin.Process"))
-            .contains("requires does not list")
+        error(catalog.resolve(Some(&owner), "__Builtin.Fiber")).contains("requires does not list")
     );
 }
 

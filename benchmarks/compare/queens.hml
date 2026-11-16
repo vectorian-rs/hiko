@@ -1,4 +1,7 @@
 (* N-queens, counting all solutions; the queens placed so far are a list. *)
+import Std.Int
+import Std.Stdio
+
 fun safe (x, d, qs) =
   case qs of
       [] => true
@@ -10,4 +13,4 @@ and place (n, k, qs, c, acc) =
   if c = n then acc
   else place (n, k, qs, c + 1, if safe (c, 1, qs) then acc + queens (n, k + 1, c :: qs) else acc)
 
-val _ = println (int_to_string (queens (10, 0, [])))
+val _ = Stdio.println (Int.to_string (queens (10, 0, [])))

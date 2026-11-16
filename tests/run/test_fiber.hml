@@ -1,54 +1,58 @@
 (* Tests for Std-v0.1.0/modules/Fiber.hml *)
-use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+import Std.Fiber
+import Std.Stdio
+import Std.System
+import Std.Testing
+import Std.Time
 
 val joined = Fiber.join (Fiber.spawn (fn () => 42))
 
 val joined_value =
   case joined of
       Ok value => value
-    | Err err => panic ("join failed: " ^ Fiber.render_error err)
-    | _ => panic "join failed: unexpected result shape"
+    | Err err => System.panic ("join failed: " ^ Fiber.render_error err)
+    | _ => System.panic "join failed: unexpected result shape"
 
-val _ = assert_eq (joined_value, 42, "join")
+val _ = Testing.equal joined_value 42 "join"
 
 val both_value =
   case Fiber.both ((fn () => 21), (fn () => 21)) of
       Ok (left : int, right) => left + right
-    | Err err => panic ("both failed: " ^ Fiber.render_error err)
-    | _ => panic "both failed: unexpected result shape"
+    | Err err => System.panic ("both failed: " ^ Fiber.render_error err)
+    | _ => System.panic "both failed: unexpected result shape"
 
-val _ = assert_eq (both_value, 42, "both")
+val _ = Testing.equal both_value 42 "both"
 
 val all_values =
   case Fiber.all [fn () => 1, fn () => 2, fn () => 3] of
       Ok values => values
-    | Err err => panic ("all failed: " ^ Fiber.render_error err)
-    | _ => panic "all failed: unexpected result shape"
+    | Err err => System.panic ("all failed: " ^ Fiber.render_error err)
+    | _ => System.panic "all failed: unexpected result shape"
 
-val _ = assert_eq (all_values, [1, 2, 3], "all")
+val _ = Testing.equal all_values ([1, 2, 3]) "all"
 
 val first_value =
   case Fiber.first ((fn () => let
-    val _ = sleep 50
+    val _ = Time.sleep (Time.from_ms 50)
   in
     10
   end), (fn () => 20)) of
       Ok value => value
-    | Err err => panic ("first failed: " ^ Fiber.render_error err)
-    | _ => panic "first failed: unexpected result shape"
+    | Err err => System.panic ("first failed: " ^ Fiber.render_error err)
+    | _ => System.panic "first failed: unexpected result shape"
 
-val _ = assert_eq (first_value, 20, "first")
+val _ = Testing.equal first_value 20 "first"
 
 val any_value =
   case Fiber.any [fn () => let
-    val _ = sleep 50
+    val _ = Time.sleep (Time.from_ms 50)
   in
     1
   end, fn () => 2] of
       Ok value => value
-    | Err err => panic ("any failed: " ^ Fiber.render_error err)
-    | _ => panic "any failed: unexpected result shape"
+    | Err err => System.panic ("any failed: " ^ Fiber.render_error err)
+    | _ => System.panic "any failed: unexpected result shape"
 
-val _ = assert_eq (any_value, 2, "any")
+val _ = Testing.equal any_value 2 "any"
 
-val _ = println "fiber tests passed"
+val _ = Stdio.println "fiber tests passed"

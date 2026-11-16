@@ -7,6 +7,7 @@ name = "hiko"
 [defaults]
 policy = "software-developer-role"
 lockfile = "hiko.lock.toml"
+lib_cache = ".hiko-cache"
 
 [registries.local]
 url = "http://127.0.0.1:8000"

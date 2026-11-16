@@ -1,9 +1,10 @@
 import Std.Option
 import Std.Log
 import Std.String
+import Std.Testing
 
 fun check (actual, expected) =
-  assert_eq (actual, expected, "expected " ^ expected ^ ", got " ^ actual)
+  Testing.equal actual expected ("expected " ^ expected ^ ", got " ^ actual)
 
 (* Timestamps: the epoch, leap days, the end of a non-leap century year. *)
 val _ = check (Log.timestamp 0, "1970-01-01T00:00:00Z")
@@ -21,25 +22,25 @@ val _ = check (Log.kv "login" [("user", "ada"), ("ok", "true")], "login user=ada
 val _ = check (Log.kv "plain" [], "plain")
 
 (* Levels *)
-val _ = assert (Log.enabled (Log.Info, Log.Warn), "warn passes info")
-val _ = assert (Log.enabled (Log.Info, Log.Info), "info passes info")
-val _ = assert (not (Log.enabled (Log.Info, Log.Debug)), "debug does not pass info")
+val _ = Testing.check (Log.enabled (Log.Info, Log.Warn)) "warn passes info"
+val _ = Testing.check (Log.enabled (Log.Info, Log.Info)) "info passes info"
+val _ = Testing.check (not (Log.enabled (Log.Info, Log.Debug))) "debug does not pass info"
 val _ =
   case Log.parse_level " WARN " of
       Option.Some Log.Warn => ()
-    | _ => assert (false, "parse_level ignores case and spaces")
+    | _ => Testing.check false "parse_level ignores case and spaces"
 val _ =
   case Log.parse_level "verbose" of
       Option.None => ()
-    | _ => assert (false, "parse_level rejects unknown names")
+    | _ => Testing.check false "parse_level rejects unknown names"
 val _ =
   case Log.from_env "HIKO_LOG_TEST_SURELY_UNSET" Log.Debug of
       Log.Debug => ()
-    | _ => assert (false, "from_env falls back to the default")
+    | _ => Testing.check false "from_env falls back to the default"
 
 (* The effect: a handler sees each line at or above its level, in order. *)
 fun only_info_and_up line =
-  assert (not (String.contains "DEBUG" line), "a debug line passed an info handler")
+  Testing.check (not (String.contains "DEBUG" line)) "a debug line passed an info handler"
 
 val result =
   Log.handle_with only_info_and_up Log.Info (fn () =>
@@ -49,10 +50,10 @@ val result =
     in
       42
     end)
-val _ = assert (result = 42, "handle_with returns the body's value")
+val _ = Testing.check (result = 42) "handle_with returns the body's value"
 
 val _ =
-  Log.handle_with (fn line => assert (String.ends_with "WARN  app: careful" line, line)) Log.Trace
+  Log.handle_with (fn line => Testing.check (String.ends_with "WARN  app: careful" line) line) Log.Trace
     (fn () => Log.emit_warn "app" "careful")
 
 val discarded = Log.discard (fn () => let val _ = Log.emit_error "app" "dropped" in "done" end)

@@ -10,15 +10,15 @@ signature STDIO = sig
 end
 
 structure Stdio :> STDIO = struct
-  fun print text = BuiltinStdio.print_raw text
+  fun print text = BuiltinStdio.print text
 
-  fun println text = BuiltinStdio.println_raw text
+  fun println text = BuiltinStdio.println text
 
-  fun eprint text = BuiltinStdio.eprint_raw text
+  fun eprint text = BuiltinStdio.eprint text
 
-  fun eprintln text = BuiltinStdio.eprintln_raw text
+  fun eprintln text = BuiltinStdio.eprintln text
 
-  fun read_line () = BuiltinStdio.read_line_raw ()
+  fun read_line () = BuiltinStdio.read_line ()
 
-  fun read_stdin () = BuiltinStdio.read_stdin_raw ()
+  fun read_stdin () = BuiltinStdio.read_stdin ()
 end

@@ -111,7 +111,7 @@ impl ShapeParser {
             } else if self.consume_word("pid") {
                 // `'a pid`: what the child returns is not part of the pid.
                 ty = Shape::Pid;
-            } else if self.consume_word("BuiltinProcess.await_result") {
+            } else if self.consume_word("BuiltinFiber.await_result") {
                 // A datatype declared in Hiko source: not checked here.
                 ty = Shape::Var;
             } else if self.consume_word("Option.option") {

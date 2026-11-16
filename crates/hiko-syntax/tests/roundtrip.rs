@@ -393,13 +393,13 @@ fn rt_type_alias_multi_param() {
 // ── Imports ──────────────────────────────────────────────────────────
 
 #[test]
-fn rt_use() {
-    assert_roundtrip(r#"use "./foo.hml""#);
+fn rt_import() {
+    assert_roundtrip("import Std.List");
 }
 
 #[test]
-fn rt_use_escaped_path() {
-    assert_roundtrip(r#"use "./dir\\file.hml""#);
+fn rt_import_nested() {
+    assert_roundtrip("import Proj.Net.Client");
 }
 
 #[test]

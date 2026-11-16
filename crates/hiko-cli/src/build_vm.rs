@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use hiko_compile::compiler::LockedModuleSource;
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_compile::compiler::{
-    CompileError, Compiler, EmbeddedFile, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions,
-    codegen_message, local_use_files, resolve_directory_of,
+    CompileError, Compiler, EmbeddedModule, EmbeddedSources, ModuleLoaderOptions, codegen_message,
+    resolve_directory_of,
 };
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_syntax::{lexer::Lexer, parser::Parser};
@@ -71,7 +71,7 @@ pub fn parse_args(args: &[String]) -> Result<BuildVmOptions, String> {
 struct Sealed {
     modules: Vec<LockedModuleSource>,
     /// The entry script and its local files, with `--script`.
-    script: Option<(String, Vec<(String, String)>)>,
+    script: Option<String>,
 }
 
 /// Generate the crate. Returns its directory.
@@ -328,8 +328,7 @@ fn collect_sealed(
             let source = fs::read_to_string(path)
                 .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
             crate::check_script_project(path)?;
-            let files = local_use_files(path, &source).map_err(|e| format!("{e:?}"))?;
-            Some((source, files))
+            Some(source)
         }
         None => None,
     };
@@ -343,29 +342,34 @@ fn collect_sealed(
 /// artifact.
 #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 fn check_sealed_program(sealed: &Sealed, extensions: &[&'static Extension]) -> Result<(), String> {
-    let Some((source, files)) = &sealed.script else {
-        return Ok(());
-    };
+    // Validate embedded/extension namespaces even for an unsealed entry.
+    let source = sealed.script.as_deref().unwrap_or("");
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
     let modules: Vec<EmbeddedModule> = sealed
         .modules
         .iter()
-        .map(|m| EmbeddedModule {
-            import_name: leak(&m.import_name),
-            blake3: leak(&m.blake3),
-            source: leak(&m.source),
+        .map(|m| {
+            let (_, version, base_url) = m.owner.locked_identity().ok_or_else(|| {
+                format!("sealed module {} has no locked provenance", m.import_name)
+            })?;
+            Ok(EmbeddedModule {
+                import_name: leak(&m.import_name),
+                version: leak(version),
+                base_url: leak(base_url),
+                dependencies: Box::leak(
+                    m.dependencies
+                        .iter()
+                        .map(|name| leak(name))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
+                blake3: leak(&m.blake3),
+                source: leak(&m.source),
+            })
         })
-        .collect();
-    let files: Vec<EmbeddedFile> = files
-        .iter()
-        .map(|(path, source)| EmbeddedFile {
-            path: leak(path),
-            source: leak(source),
-        })
-        .collect();
+        .collect::<Result<_, String>>()?;
     let embedded: &'static EmbeddedSources = Box::leak(Box::new(EmbeddedSources {
         modules: Box::leak(modules.into_boxed_slice()),
-        files: Some(Box::leak(files.into_boxed_slice())),
     }));
     let tokens = Lexer::new(source, 0)
         .tokenize()
@@ -404,18 +408,13 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
             writeln!(rs, "//! | `{}` | `{}` |", m.import_name, m.blake3).unwrap();
         }
     }
-    if let Some((_, files)) = &sealed.script {
+    if sealed.script.is_some() {
         rs.push_str(
             "//!\n//! Program: `sealed/main.hml`, which the binary runs and nothing else.\n",
         );
-        for (path, _) in files {
-            writeln!(rs, "//! Local file: `{path}`").unwrap();
-        }
     }
-    rs.push_str(
-        "\nuse hiko_compile::compiler::{EmbeddedFile, EmbeddedModule, EmbeddedSources};\n\n",
-    );
-    if let Some((source, _)) = &sealed.script {
+    rs.push_str("\nuse hiko_compile::compiler::{EmbeddedModule, EmbeddedSources};\n\n");
+    if let Some(source) = &sealed.script {
         write(&out_dir.join("sealed/main.hml"), source)?;
         rs.push_str("pub static SCRIPT: &str = include_str!(\"../sealed/main.hml\");\n\n");
     }
@@ -425,32 +424,18 @@ fn write_sealed(out_dir: &Path, sealed: &Sealed) -> Result<(), String> {
     for (i, m) in sealed.modules.iter().enumerate() {
         let file = format!("sealed/modules/{i}.hml");
         write(&out_dir.join(&file), &m.source)?;
+        let (_, version, base_url) = m
+            .owner
+            .locked_identity()
+            .ok_or_else(|| format!("sealed module {} has no locked provenance", m.import_name))?;
         writeln!(
             rs,
-            "        EmbeddedModule {{ import_name: {:?}, blake3: {:?}, source: include_str!(\"../{file}\") }},",
-            m.import_name, m.blake3
+            "        EmbeddedModule {{ import_name: {:?}, version: {:?}, base_url: {:?}, dependencies: &{:?}, blake3: {:?}, source: include_str!(\"../{file}\") }},",
+            m.import_name, version, base_url, m.dependencies, m.blake3
         )
         .unwrap();
     }
-    rs.push_str("    ],\n");
-    match &sealed.script {
-        Some((_, files)) => {
-            rs.push_str("    files: Some(&[\n");
-            // Files are stored by index: a path may contain `..`.
-            for (i, (path, source)) in files.iter().enumerate() {
-                let file = format!("sealed/files/{i}.hml");
-                write(&out_dir.join(&file), source)?;
-                writeln!(
-                    rs,
-                    "        EmbeddedFile {{ path: {path:?}, source: include_str!(\"../{file}\") }},"
-                )
-                .unwrap();
-            }
-            rs.push_str("    ]),\n");
-        }
-        None => rs.push_str("    files: None,\n"),
-    }
-    rs.push_str("};\n");
+    rs.push_str("    ],\n};\n");
     write(&out_dir.join("src/embedded.rs"), &rs)?;
 
     let mut build = String::new();
@@ -567,12 +552,7 @@ mod tests {
     fn script_project(dir: &Path) -> PathBuf {
         write(
             &dir.join("main.hml"),
-            "import Std.Option\nuse \"./lib/greet.hml\"\nval _ = println (greeting (Option.is_some (Option.Some 1)))\n",
-        )
-        .unwrap();
-        write(
-            &dir.join("lib/greet.hml"),
-            "fun greeting (b : bool) = if b then \"sealed: some\" else \"sealed: none\"\n",
+            "import Std.Option\nimport __Builtin.Stdio\nval _ = BuiltinStdio.println (if Option.is_some (Option.Some 1) then \"sealed: some\" else \"sealed: none\")\n",
         )
         .unwrap();
         dir.join("main.hml")
@@ -696,7 +676,9 @@ mod tests {
         let embedded = read(out.join("src/embedded.rs"));
         let option_hash = "blake3:bfef3fd8c6aa36f674c79e39ce0948dfbfe7f15cf69adeb8231c51b79ee56a84";
         assert!(embedded.contains(&format!("| `Std.Option` | `{option_hash}` |")));
-        assert!(embedded.contains("path: \"lib/greet.hml\""));
+        assert!(embedded.contains("version: \"0.1.0\""));
+        assert!(embedded.contains("base_url: \"http://127.0.0.1:8000/Std-v0.1.0\""));
+        assert!(embedded.contains("dependencies: &[\"Aws\", \"Std\"]"));
         assert_eq!(
             read(module_file(&out, "Std.Option")),
             read(repo().join("libraries/Std-v0.1.0/modules/Option.hml"))
@@ -723,7 +705,7 @@ mod tests {
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
     #[test]
-    fn sealing_keeps_package_identity_for_the_future_catalog() {
+    fn sealing_keeps_package_identity_and_dependencies() {
         use hiko_compile::package::{
             ModuleCatalog, ModuleSources, PackageDefinition, PackageOwner, PinnedSource,
         };
@@ -814,7 +796,10 @@ mod tests {
         let main = read(out.join("src/main.rs"));
         assert!(main.contains("compile_file_with_options"));
         assert!(main.contains("embedded: Some(&embedded::SOURCES)"));
-        assert!(read(out.join("src/embedded.rs")).contains("files: None"));
+        assert!(
+            !read(out.join("src/embedded.rs")).contains("files"),
+            "sealed sources hold only modules"
+        );
     }
 
     fn github_config() -> RunConfig {
@@ -934,7 +919,11 @@ mod tests {
     #[test]
     fn script_with_an_extension_needs_it_linked_here() {
         let dir = temp_dir("script-ext");
-        write(&dir.join("main.hml"), "val _ = println \"x\"\n").unwrap();
+        write(
+            &dir.join("main.hml"),
+            "import __Builtin.Stdio\nval _ = BuiltinStdio.println \"x\"\n",
+        )
+        .unwrap();
         let options = BuildVmOptions {
             config_path: "run.toml".into(),
             script: Some(dir.join("main.hml")),
@@ -985,13 +974,20 @@ mod tests {
             };
             generate(&options, &config, &[&hiko_ext_aws::AWS])
         };
-        let err =
-            build("ext-s3", "import Aws.S3\nval _ = println \"hi\"\n").expect_err("not embedded");
+        let err = build(
+            "ext-s3",
+            "import Aws.S3\nimport __Builtin.Stdio\nval _ = BuiltinStdio.println \"hi\"\n",
+        )
+        .expect_err("not embedded");
         assert_eq!(
             err,
             "the script does not compile with only the embedded sources: module Aws.S3 of extension 'aws' needs Std.Result, which this artifact does not embed; build it with --lock and a lockfile that pins Std.Result"
         );
-        build("ext-none", "val _ = println \"hi\"\n").expect("needs nothing");
+        build(
+            "ext-none",
+            "import __Builtin.Stdio\nval _ = BuiltinStdio.println \"hi\"\n",
+        )
+        .expect("needs nothing");
     }
 
     #[cfg(all(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
@@ -1005,7 +1001,7 @@ mod tests {
         let dir = temp_dir("e2e-ext");
         write(
             &dir.join("main.hml"),
-            "import Github.Issue\nval _ = println \"extension linked\"\n",
+            "import Github.Issue\nimport __Builtin.Stdio\nval _ = BuiltinStdio.println \"extension linked\"\n",
         )
         .unwrap();
         let options = BuildVmOptions {

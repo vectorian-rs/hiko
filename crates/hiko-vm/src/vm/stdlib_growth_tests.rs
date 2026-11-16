@@ -93,61 +93,61 @@ const PROFILES: &[Profile] = &[
     Profile {
         name: "all",
         element: "Result.Ok n",
-        expression: "Result.unwrap_or_else (fn _ => panic \"unexpected Err\") (Result.all input)",
+        expression: "Result.unwrap_or_else (fn _ => BuiltinTesting.panic \"unexpected Err\") (Result.all input)",
         output: Output::List,
     },
     Profile {
         name: "sequence",
         element: "Result.Ok n",
-        expression: "Result.unwrap_or_else (fn _ => panic \"unexpected Err\") (Result.sequence input)",
+        expression: "Result.unwrap_or_else (fn _ => BuiltinTesting.panic \"unexpected Err\") (Result.sequence input)",
         output: Output::List,
     },
     Profile {
         name: "traverse",
         element: "n",
-        expression: "Result.unwrap_or_else (fn _ => panic \"unexpected Err\") (Result.traverse (fn x => Result.Ok x) input)",
+        expression: "Result.unwrap_or_else (fn _ => BuiltinTesting.panic \"unexpected Err\") (Result.traverse (fn x => Result.Ok x) input)",
         output: Output::List,
     },
     Profile {
         name: "validate_all",
         element: "Result.Ok n",
-        expression: "Result.unwrap_or_else (fn _ => panic \"unexpected Err\") (Result.validate_all input)",
+        expression: "Result.unwrap_or_else (fn _ => BuiltinTesting.panic \"unexpected Err\") (Result.validate_all input)",
         output: Output::List,
     },
     Profile {
         name: "validate_traverse",
         element: "n",
-        expression: "Result.unwrap_or_else (fn _ => panic \"unexpected Err\") (Result.validate_traverse (fn x => Result.Ok x) input)",
+        expression: "Result.unwrap_or_else (fn _ => BuiltinTesting.panic \"unexpected Err\") (Result.validate_traverse (fn x => Result.Ok x) input)",
         output: Output::List,
     },
     Profile {
         name: "validate_all_errors",
         element: "Result.Err n",
-        expression: "Result.fold (fn _ => panic \"unexpected Ok\") (fn errs => errs) (Result.validate_all input)",
+        expression: "Result.fold (fn _ => BuiltinTesting.panic \"unexpected Ok\") (fn errs => errs) (Result.validate_all input)",
         output: Output::List,
     },
     Profile {
         name: "validate_traverse_errors",
         element: "n",
-        expression: "Result.fold (fn _ => panic \"unexpected Ok\") (fn errs => errs) (Result.validate_traverse (fn x => Result.Err x) input)",
+        expression: "Result.fold (fn _ => BuiltinTesting.panic \"unexpected Ok\") (fn errs => errs) (Result.validate_traverse (fn x => Result.Err x) input)",
         output: Output::List,
     },
     Profile {
         name: "all_first_error",
         element: "if n = 1 then Result.Err n else Result.Ok n",
-        expression: "Result.fold (fn _ => panic \"unexpected Ok\") (fn err => err) (Result.all input)",
+        expression: "Result.fold (fn _ => BuiltinTesting.panic \"unexpected Ok\") (fn err => err) (Result.all input)",
         output: Output::FirstError,
     },
     Profile {
         name: "sequence_first_error",
         element: "if n = 1 then Result.Err n else Result.Ok n",
-        expression: "Result.fold (fn _ => panic \"unexpected Ok\") (fn err => err) (Result.sequence input)",
+        expression: "Result.fold (fn _ => BuiltinTesting.panic \"unexpected Ok\") (fn err => err) (Result.sequence input)",
         output: Output::FirstError,
     },
     Profile {
         name: "traverse_first_error",
         element: "n",
-        expression: "Result.fold (fn _ => panic \"unexpected Ok\") (fn err => err) (Result.traverse (fn x => Result.Err x) input)",
+        expression: "Result.fold (fn _ => BuiltinTesting.panic \"unexpected Ok\") (fn err => err) (Result.traverse (fn x => Result.Err x) input)",
         output: Output::FirstError,
     },
     Profile {
@@ -200,7 +200,7 @@ fn vm_for(program: &CompiledProgram, engine: Engine) -> VM {
 
 fn program(profile: &Profile, size: usize) -> CompiledProgram {
     compile_source_hermetic(&format!(
-        "import Std.List\nimport Std.Result\nimport Std.Log\n\
+        "import __Builtin.Testing\nimport Std.List\nimport Std.Result\nimport Std.Log\n\
          val size = {size}\n\
          fun build (n, acc) = if n = 0 then acc else build (n - 1, ({}) :: acc)\n\
          val input = build (size, [])\n\
@@ -490,9 +490,10 @@ fn stdlib_callback_failure_order() {
         ),
     ] {
         let program = compile_source_hermetic(&format!(
-            "import Std.List\nimport Std.Result\n\
-             fun visit (x : int) = let val _ = println (int_to_string x) in\n\
-             if x = 2 then panic \"sentinel\" else x end\n\
+            "import __Builtin.Stdio\nimport __Builtin.Int\nimport __Builtin.Testing\n\
+             import Std.List\nimport Std.Result\n\
+             fun visit (x : int) = let val _ = BuiltinStdio.println (BuiltinInt.to_string x) in\n\
+             if x = 2 then BuiltinTesting.panic \"sentinel\" else x end\n\
              val answer = {call}"
         ));
         for engine in engines() {

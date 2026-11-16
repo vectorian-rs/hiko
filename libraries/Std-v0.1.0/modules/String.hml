@@ -15,25 +15,25 @@ signature STRING = sig
 end
 
 structure String :> STRING = struct
-  fun length text = BuiltinString.length_raw text
+  fun length text = BuiltinString.length text
 
-  fun substring start len text = BuiltinString.substring_raw (text, start, len)
+  fun substring start len text = BuiltinString.substring (text, start, len)
 
-  fun contains needle text = BuiltinString.contains_raw (text, needle)
+  fun contains needle text = BuiltinString.contains (text, needle)
 
-  fun starts_with prefix text = BuiltinString.starts_with_raw (text, prefix)
+  fun starts_with prefix text = BuiltinString.starts_with (text, prefix)
 
-  fun ends_with suffix text = BuiltinString.ends_with_raw (text, suffix)
+  fun ends_with suffix text = BuiltinString.ends_with (text, suffix)
 
-  fun trim text = BuiltinString.trim_raw text
+  fun trim text = BuiltinString.trim text
 
-  fun split sep text = BuiltinString.split_raw (text, sep)
+  fun split sep text = BuiltinString.split (text, sep)
 
-  fun replace pattern replacement text = BuiltinString.replace_raw (text, pattern, replacement)
+  fun replace pattern replacement text = BuiltinString.replace (text, pattern, replacement)
 
-  fun join sep parts = BuiltinString.join_raw (parts, sep)
+  fun join sep parts = BuiltinString.join (parts, sep)
 
-  fun upper text = BuiltinString.upper_raw text
+  fun upper text = BuiltinString.upper text
 
-  fun lower text = BuiltinString.lower_raw text
+  fun lower text = BuiltinString.lower text
 end

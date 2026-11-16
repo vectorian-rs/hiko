@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use hiko_builtin_meta::{
-    BuiltinSurface, InternalBuiltinModule, internal_builtin_module, is_internal_builtin_package,
+    InternalBuiltinModule, internal_builtin_module, is_internal_builtin_package,
 };
 #[cfg(any(feature = "loader-integrity-blake3", feature = "loader-embedded"))]
 use hiko_common::blake3_hex;
@@ -97,104 +97,10 @@ impl ExtensionSurface {
 /// Sources compiled into a sealed `build-vm` artifact (#59).
 ///
 /// Named imports resolve only from `modules`, each checked against its
-/// BLAKE3 hash when it is loaded. When `files` is `Some`, local `use` resolves
-/// only from `files` and never reads the filesystem; their paths are relative
-/// to the entry script's directory, normalized by [`embedded_file_path`].
+/// BLAKE3 hash when it is loaded.
 #[derive(Debug)]
 pub struct EmbeddedSources {
     pub modules: &'static [EmbeddedModule],
-    pub files: Option<&'static [EmbeddedFile]>,
-}
-
-/// The local files (`use "..."`) that the script at `entry` uses, directly
-/// or through other local files, keyed as [`embedded_file_path`] names them
-/// relative to the script's directory. `build-vm --script` embeds these.
-/// `source` is the entry script's text, read once by the caller. A path that
-/// reaches its file through a symbolic link is an error. Sorted by key.
-pub fn local_use_files(entry: &Path, source: &str) -> Result<Vec<(String, String)>, CompileError> {
-    // Resolve from the script's real directory, as `hiko run` does.
-    let entry = std::fs::canonicalize(entry)
-        .map_err(|e| CompileError::codegen(format!("cannot resolve '{}': {e}", entry.display())))?;
-    let root = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut found = std::collections::BTreeMap::new();
-    let mut pending = vec![(PathBuf::new(), source.to_string())];
-    while let Some((dir, source)) = pending.pop() {
-        let tokens = Lexer::new(&source, 0)
-            .tokenize()
-            .map_err(|e| CompileError::codegen(format!("lex error: {}", e.message)))?;
-        let program = Parser::new(tokens)
-            .parse_program()
-            .map_err(|e| CompileError::codegen(format!("parse error: {}", e.message)))?;
-        let program = hiko_syntax::desugar::desugar_program(program);
-        let mut uses = Vec::new();
-        collect_uses(&program.decls, &mut uses);
-        for path in uses {
-            let key = embedded_file_path(&dir, path)?;
-            if found.contains_key(&key) {
-                continue;
-            }
-            // The artifact resolves `..` lexically; `hiko run` follows
-            // symbolic links. Resolve the path as written and refuse it if
-            // the two differ.
-            let written = root.join(&dir).join(path);
-            let canonical = std::fs::canonicalize(&written).map_err(|e| {
-                CompileError::codegen(format!(
-                    "cannot read local use '{}': {e}",
-                    written.display()
-                ))
-            })?;
-            if canonical != lexical_normalize(&root.join(&key)) {
-                return Err(CompileError::codegen(format!(
-                    "local use '{path}' resolves through a symbolic link to '{}'; a sealed program needs plain paths",
-                    canonical.display()
-                )));
-            }
-            let text = std::fs::read_to_string(&canonical).map_err(|e| {
-                CompileError::codegen(format!(
-                    "cannot read local use '{}': {e}",
-                    canonical.display()
-                ))
-            })?;
-            let key_dir = Path::new(&key)
-                .parent()
-                .unwrap_or(Path::new(""))
-                .to_path_buf();
-            found.insert(key, text.clone());
-            pending.push((key_dir, text));
-        }
-    }
-    Ok(found.into_iter().collect())
-}
-
-/// `path` with `.` dropped and `..` applied, without touching the file system.
-fn lexical_normalize(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// The paths of the `use` declarations in `decls`, including those inside
-/// `local` blocks (a desugared structure is one).
-fn collect_uses<'a>(decls: &'a [Decl], uses: &mut Vec<&'a str>) {
-    for decl in decls {
-        match &decl.kind {
-            DeclKind::Use(path) => uses.push(path),
-            DeclKind::Local(locals, body) => {
-                collect_uses(locals, uses);
-                collect_uses(body, uses);
-            }
-            _ => {}
-        }
-    }
 }
 
 /// The path of the first `use` in `tokens`, wherever it sits.
@@ -218,6 +124,8 @@ fn remote_use_refused(path: &str) -> CompileError {
 pub struct LockedModuleSource {
     /// Locked package provenance, preserved independently of transport.
     pub owner: PackageOwner,
+    /// Explicit dependency authority from the reviewed lock entry.
+    pub dependencies: Vec<String>,
     pub import_name: String,
     /// The lockfile hash, as written there.
     pub blake3: String,
@@ -232,44 +140,13 @@ pub struct LockedModuleSource {
 pub struct EmbeddedModule {
     /// Import name, such as `Std.List`.
     pub import_name: &'static str,
+    /// Locked provenance and dependency authority, never inferred from bytes.
+    pub version: &'static str,
+    pub base_url: &'static str,
+    pub dependencies: &'static [&'static str],
     /// Lockfile hash, `blake3:<hex>` or `<hex>`.
     pub blake3: &'static str,
     pub source: &'static str,
-}
-
-/// A local file (`use "..."`) in a sealed artifact.
-#[derive(Debug)]
-pub struct EmbeddedFile {
-    pub path: &'static str,
-    pub source: &'static str,
-}
-
-/// The key of an embedded local file: `path` joined to `base_dir` and
-/// normalized lexically (`.` dropped, `..` applied), with `/` separators.
-/// Absolute paths are refused. `build-vm` uses the same function to name the
-/// files it embeds, so a lookup matches exactly when the paths agree.
-pub fn embedded_file_path(base_dir: &Path, path: &str) -> Result<String, CompileError> {
-    use std::path::Component;
-    let mut parts: Vec<String> = Vec::new();
-    for component in base_dir.join(path).components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if parts.last().is_some_and(|p| p != "..") {
-                    parts.pop();
-                } else {
-                    parts.push("..".to_string());
-                }
-            }
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(CompileError::codegen(format!(
-                    "local use '{path}' is an absolute path; an embedded program can only use relative paths"
-                )));
-            }
-        }
-    }
-    Ok(parts.join("/"))
 }
 
 #[derive(Debug)]
@@ -654,6 +531,9 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
             )));
         }
         validate_remote_base_url(package_name, &package.base_url, path)?;
+        for dependency in &package.dependencies {
+            crate::package::validate_package_name(dependency)?;
+        }
         for (module_name, hash) in &package.modules {
             if module_name.trim().is_empty() {
                 return Err(CompileError::codegen(format!(
@@ -661,12 +541,13 @@ fn validate_lockfile(lockfile: &ImportLockfile, path: &Path) -> Result<(), Compi
                     path.display()
                 )));
             }
-            if module_name.contains('.') {
+            if module_name.split('.').any(str::is_empty) {
                 return Err(CompileError::codegen(format!(
-                    "module '{package_name}.{module_name}' in '{}' must be a single identifier",
+                    "module '{package_name}.{module_name}' in '{}' must use identifiers separated by dots",
                     path.display()
                 )));
             }
+            crate::package::module_file(module_name)?;
             if hash.trim().is_empty() {
                 return Err(CompileError::codegen(format!(
                     "module '{package_name}.{module_name}' in '{}' is missing a BLAKE3 hash",
@@ -808,21 +689,21 @@ fn validate_package_name(package_name: &str, context: &str) -> Result<(), Compil
             "{context} uses reserved package name '{package_name}'; names starting with '__' are reserved"
         )));
     }
-    Ok(())
+    crate::package::validate_package_name(package_name)
 }
 
+/// Split `Package.Module` or `Package.Nested.Module` into the package name
+/// and the dotted module path, with segments validated as identifiers by
+/// [`crate::package::import_path`]. `__Builtin` modules stay single-leaf.
 fn split_import_name(module_name: &str) -> Result<(&str, &str), CompileError> {
-    let Some((package, module)) = module_name.split_once('.') else {
-        return Err(CompileError::codegen(format!(
-            "named import '{module_name}' must use the shape Package.Module"
-        )));
-    };
-    if module.contains('.') {
-        return Err(CompileError::codegen(format!(
-            "named import '{module_name}' must use the shape Package.Module"
-        )));
-    }
-    if !is_internal_builtin_package(package) {
+    let (package, module) = crate::package::import_path(module_name)?;
+    if is_internal_builtin_package(package) {
+        if module.contains('.') {
+            return Err(CompileError::codegen(format!(
+                "named import '{module_name}' cannot nest; compiler-owned modules are single names"
+            )));
+        }
+    } else if package != "Proj" {
         validate_package_name(package, &format!("named import '{module_name}'"))?;
     }
     Ok((package, module))
@@ -881,7 +762,11 @@ fn resolve_embedded_module(
     })?;
     Ok(ResolvedImport::Embedded {
         key: ImportSourceKey::Synthetic(module.import_name),
-        owner: PackageOwner::embedded(module.import_name.split_once('.').map(|(name, _)| name)),
+        owner: PackageOwner::locked(
+            split_import_name(module.import_name)?.0,
+            module.version,
+            module.base_url,
+        ),
         display_name: module_name.to_string(),
         source: module.source,
         base_dir: PathBuf::new(),
@@ -1053,6 +938,8 @@ struct ImportLockfile {
 struct LockedPackage {
     version: String,
     base_url: String,
+    // Deliberately required: old metadata must fail closed.
+    dependencies: Vec<String>,
     #[serde(default)]
     modules: HashMap<String, String>,
 }
@@ -1063,7 +950,6 @@ enum ImportSourceKey {
     #[cfg(feature = "loader-integrity-blake3")]
     VerifiedFile(PathBuf),
     Synthetic(&'static str),
-    EmbeddedFile(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1074,7 +960,7 @@ struct ImportKey {
 
 fn entry_package_owner(entry: Option<&Path>, embedded: bool) -> Option<PackageOwner> {
     if embedded {
-        return Some(PackageOwner::embedded(None));
+        return Some(PackageOwner::embedded_project());
     }
     entry
         .and_then(Path::parent)
@@ -1212,6 +1098,9 @@ pub struct Compiler {
     base_dir: PathBuf,
     /// Provenance of the source being inferred or compiled, including cached ASTs.
     source_owner: Option<PackageOwner>,
+    /// Builtin names, interned once for builtin-module desugaring. The
+    /// interner is shared across imports, so the set never invalidates.
+    reserved_builtin_names: Option<std::collections::HashSet<Symbol>>,
     /// Entry file for file-based compilation. External named-import loader state is derived lazily from this.
     #[cfg_attr(not(feature = "loader-integrity-blake3"), allow(dead_code))]
     entry_file: Option<PathBuf>,
@@ -1342,6 +1231,9 @@ impl Compiler {
             };
             sources.push(LockedModuleSource {
                 owner,
+                dependencies: c.import_lockfile.as_ref().unwrap().packages[package_name]
+                    .dependencies
+                    .clone(),
                 import_name,
                 digest: normalize_blake3(&blake3),
                 blake3,
@@ -1391,6 +1283,7 @@ impl Compiler {
             entry_package_owner(entry_file.as_deref(), loader_options.embedded.is_some());
         let mut c = Compiler {
             functions: Vec::new(),
+            reserved_builtin_names: None,
             func_stack: vec![FuncCtx::new(None, 0)],
             constructor_tags: HashMap::new(),
             constructor_arities: HashMap::new(),
@@ -1444,6 +1337,7 @@ impl Compiler {
                 source: ImportSourceKey::File(entry.clone()),
             });
         }
+        c.validate_package_metadata()?;
         let surface = &c.loader_options.extensions;
         for ty in &surface.types {
             c.infer_ctx
@@ -1742,8 +1636,8 @@ impl Compiler {
 
     fn is_private_builtin(&self, name: &str) -> bool {
         self.compiling_builtin.is_some_and(|module| {
-            matches!(hiko_builtin_meta::builtin_meta(name).map(|meta| meta.surface),
-                Some(BuiltinSurface::ModuleOnly { owner, .. }) if owner == module.import_name)
+            hiko_builtin_meta::builtin_meta(name)
+                .is_some_and(|meta| meta.surface.is_owned_by(module.import_name))
         })
     }
 
@@ -2119,7 +2013,6 @@ impl Compiler {
             DeclKind::ImportWithNames(name, names) => {
                 self.compile_named_import_with_names(*name, names)
             }
-            DeclKind::Use(path) => self.compile_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before codegen")
             }
@@ -2162,54 +2055,161 @@ impl Compiler {
 
     // ── Local and named import handling ─────────────────────────────
 
-    fn resolve_local_use(&self, path: &str) -> Result<ResolvedImport, CompileError> {
-        if let Some((requires, importer)) = self.importing_extension {
-            return Err(CompileError::codegen(format!(
-                "module {importer} of extension '{}' declares use '{path}'; an extension module cannot use a file",
-                requires.extension
-            )));
+    /// Validate supplied metadata before any module can shadow a namespace.
+    fn validate_package_metadata(&self) -> Result<(), CompileError> {
+        let mut extensions = HashMap::new();
+        let mut extension_modules = HashSet::new();
+        for (name, _) in &self.loader_options.extensions.modules {
+            if !extension_modules.insert(name) {
+                return Err(CompileError::codegen(format!(
+                    "duplicate extension module {name}"
+                )));
+            }
+            let (package, _) = split_import_name(name)?;
+            crate::package::validate_package_name(package)?;
+            let provider = self
+                .loader_options
+                .extensions
+                .requires_for(name)
+                .map_or(package, |requires| requires.extension);
+            if let Some(previous) = extensions.insert(package, provider)
+                && previous != provider
+            {
+                return Err(CompileError::codegen(format!(
+                    "package name {package} collides between extensions {previous} and {provider}"
+                )));
+            }
         }
-        if let Some(files) = self.loader_options.embedded.and_then(|e| e.files) {
-            let key = embedded_file_path(&self.base_dir, path)?;
-            let file = files.iter().find(|f| f.path == key).ok_or_else(|| {
+        if let Some(embedded) = self.loader_options.embedded {
+            let mut packages: HashMap<&str, &EmbeddedModule> = HashMap::new();
+            let mut modules = HashSet::new();
+            for module in embedded.modules {
+                let (package, _) = split_import_name(module.import_name)?;
+                crate::package::validate_package_name(package)?;
+                if extensions.contains_key(package) {
+                    return Err(CompileError::codegen(format!(
+                        "package name {package} collides between embedded package and extension"
+                    )));
+                }
+                if module.version.is_empty() || module.base_url.is_empty() {
+                    return Err(CompileError::codegen(format!(
+                        "embedded package {package} needs a locked version and base URL"
+                    )));
+                }
+                for dependency in module.dependencies {
+                    crate::package::validate_package_name(dependency)?;
+                }
+                if !modules.insert(module.import_name) {
+                    return Err(CompileError::codegen(format!(
+                        "duplicate embedded module {}",
+                        module.import_name
+                    )));
+                }
+                if let Some(previous) = packages.insert(package, module)
+                    && (previous.version != module.version
+                        || previous.base_url != module.base_url
+                        || previous.dependencies != module.dependencies)
+                {
+                    return Err(CompileError::codegen(format!(
+                        "embedded package {package} has conflicting owner/dependency metadata"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_package_dependency(&mut self, import: &str) -> Result<(), CompileError> {
+        let Some(owner) = self.source_owner.clone() else {
+            return Ok(());
+        };
+        let Some((package, _, _)) = owner.locked_identity() else {
+            return Ok(());
+        };
+        if let Some(embedded) = self.loader_options.embedded {
+            let metadata = embedded
+                .modules
+                .iter()
+                .find(|module| {
+                    module
+                        .import_name
+                        .split_once('.')
+                        .is_some_and(|(name, _)| name == package)
+                })
+                .ok_or_else(|| {
+                    CompileError::codegen(format!(
+                        "package {package} has no embedded dependency metadata"
+                    ))
+                })?;
+            return owner.check_dependency(import, metadata.dependencies.iter().copied());
+        }
+        #[cfg(feature = "loader-integrity-blake3")]
+        {
+            let (lockfile, _, _) = self.ensure_import_loader(import, None)?;
+            let metadata = lockfile.packages.get(package).ok_or_else(|| {
                 CompileError::codegen(format!(
-                    "local use '{path}' ({key}) is not embedded in this artifact"
+                    "package {package} has no locked dependency metadata"
                 ))
             })?;
-            return Ok(ResolvedImport::Embedded {
-                key: ImportSourceKey::EmbeddedFile(file.path),
-                owner: PackageOwner::embedded(None),
-                display_name: path.to_string(),
-                source: file.source,
-                base_dir: Path::new(file.path)
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .to_path_buf(),
-                module: false,
-            });
+            owner.check_dependency(import, metadata.dependencies.iter().map(String::as_str))
         }
-        let resolved = self.base_dir.join(path);
-        let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
-            CompileError::codegen(format!(
-                "cannot resolve local use '{}': {e}",
-                resolved.display()
-            ))
-        })?;
-        Ok(ResolvedImport::File {
-            canonical,
-            display_name: path.to_string(),
-            owner: self.source_owner.clone(),
-        })
+        #[cfg(not(feature = "loader-integrity-blake3"))]
+        Err(CompileError::codegen(format!(
+            "package {package} needs dependency metadata; enable cargo feature 'loader-integrity-blake3'"
+        )))
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    fn check_extension_collisions<'a>(
+        &self,
+        packages: impl Iterator<Item = &'a str>,
+    ) -> Result<(), CompileError> {
+        for package in packages {
+            if self
+                .loader_options
+                .extensions
+                .modules
+                .iter()
+                .any(|(name, _)| {
+                    name.split_once('.')
+                        .is_some_and(|(prefix, _)| prefix == package)
+                })
+            {
+                return Err(CompileError::codegen(format!(
+                    "package name {package} collides between lockfile and extension"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn resolve_named_import(&mut self, module_name: &str) -> Result<ResolvedImport, CompileError> {
         let (package_name, leaf_module) = split_import_name(module_name)?;
+        self.check_package_dependency(module_name)?;
+        if package_name == "Proj" {
+            return self.resolve_proj_import(module_name, leaf_module);
+        }
         if let Some((requires, importer)) = self.importing_extension
             && self.loader_options.extensions.module(module_name).is_none()
         {
             self.check_extension_import(&requires, importer, module_name)?;
         }
         if let Some((import_name, source)) = self.loader_options.extensions.module(module_name) {
+            // Check names even for an extension-first entry. Missing or
+            // malformed lock diagnostics still belong to the actual library
+            // import, which supplies the extension's requires/install guidance.
+            // This preflight never loads source or grants dependency authority.
+            #[cfg(feature = "loader-integrity-blake3")]
+            if self.loader_options.embedded.is_none()
+                && self.import_lockfile.is_none()
+                && let Some(entry) = self.entry_file.as_deref()
+                && let Ok(path) = Compiler::project_lockfile_path(entry)
+                && let Ok(text) = std::fs::read_to_string(path)
+                && let Ok(table) = toml::from_str::<toml::Table>(&text)
+                && let Some(packages) = table.get("packages").and_then(toml::Value::as_table)
+            {
+                self.check_extension_collisions(packages.keys().map(String::as_str))?;
+            }
             return Ok(ResolvedImport::Synthetic {
                 import_name,
                 display_name: module_name.to_string(),
@@ -2232,6 +2232,44 @@ impl Compiler {
             return resolve_embedded_module(embedded, module_name, self.importing_extension);
         }
         self.resolve_external_named_import(module_name, package_name, leaf_module)
+    }
+
+    /// `Proj` names the package that owns the importing source: a project's
+    /// `src/`, or a library/extension package's own namespace. Never the
+    /// consuming project from inside a dependency.
+    fn resolve_proj_import(
+        &mut self,
+        module_name: &str,
+        module_path: &str,
+    ) -> Result<ResolvedImport, CompileError> {
+        let Some(owner) = self.source_owner.clone() else {
+            return Err(crate::package::missing_project(module_name));
+        };
+        if let Some(root) = owner.project_source_root() {
+            let canonical =
+                crate::package::project_module_file(root, module_path, module_name, owner.name())?;
+            return Ok(ResolvedImport::File {
+                canonical,
+                display_name: module_name.to_string(),
+                owner: Some(owner.clone()),
+            });
+        }
+        if owner.is_embedded_project() {
+            return Err(CompileError::codegen(format!(
+                "import {module_name}: this sealed artifact does not embed project modules; rebuild it from the project sources"
+            )));
+        }
+        match owner.owned_package_name() {
+            // A package's own `Proj` names its published namespace; both
+            // spellings select the same owner and module identity.
+            Some(package) => {
+                let qualified = format!("{package}.{module_path}");
+                self.resolve_named_import(&qualified)
+            }
+            None => Err(CompileError::codegen(format!(
+                "import {module_name} cannot resolve: compiler-owned modules do not own Proj"
+            ))),
+        }
     }
 
     /// `import`, a library module that the extension module `importer`
@@ -2347,7 +2385,7 @@ impl Compiler {
             let local_path = root
                 .join(format!("{package_name}-v{}", package.version))
                 .join("modules")
-                .join(format!("{leaf_module}.hml"));
+                .join(crate::package::module_file(leaf_module)?);
             if local_path.is_file() {
                 let source = std::fs::read_to_string(&local_path)
                     .map_err(|e| {
@@ -2377,8 +2415,12 @@ impl Compiler {
         }
 
         let module_url = format!(
-            "{}/modules/{leaf_module}.hml",
-            package.base_url.trim_end_matches('/')
+            "{}/modules/{}.hml",
+            package.base_url.trim_end_matches('/'),
+            crate::package::module_file(leaf_module)?
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/")
         );
         let cache_path = module_cache_path(cache_dir, &module_url, &expected_hash);
 
@@ -2463,6 +2505,7 @@ impl Compiler {
                 ))
             })?;
             validate_lockfile(&lockfile, lockfile_path)?;
+            self.check_extension_collisions(lockfile.packages.keys().map(String::as_str))?;
             validate_lockfile_against_manifest(
                 &lockfile,
                 lockfile_path,
@@ -2493,7 +2536,6 @@ impl Compiler {
             DeclKind::ImportWithNames(name, names) => {
                 self.infer_named_import_with_names(*name, names)
             }
-            DeclKind::Use(path) => self.infer_use(path),
             DeclKind::Signature(_) => {
                 unreachable!("signatures must be removed before inference pass")
             }
@@ -2578,7 +2620,23 @@ impl Compiler {
                 CompileError::codegen(format!("parse error in '{display_name}': {}", e.message))
             })?;
 
-        let program = hiko_syntax::desugar::desugar_program(program);
+        // Compiler-owned modules alias raw builtins under their own member
+        // names; those names must resolve to the builtins, not the members.
+        let program = match builtin_module {
+            Some(_) => {
+                let mut program = program;
+                if self.reserved_builtin_names.is_none() {
+                    self.reserved_builtin_names = Some(
+                        hiko_builtin_meta::builtins()
+                            .map(|meta| program.interner.intern(meta.name))
+                            .collect(),
+                    );
+                }
+                let reserved = self.reserved_builtin_names.as_ref().unwrap();
+                hiko_syntax::desugar::desugar_program_reserving(program, reserved)
+            }
+            None => hiko_syntax::desugar::desugar_program(program),
+        };
         let program = hiko_syntax::constfold::fold_program(program);
         self.interner = program.interner;
         self.infer_ctx.interner = self.interner.clone();
@@ -2624,11 +2682,6 @@ impl Compiler {
             },
         );
         Ok(())
-    }
-
-    fn infer_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let resolved = self.resolve_local_use(path)?;
-        self.infer_import_source(resolved)
     }
 
     fn infer_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
@@ -2731,11 +2784,6 @@ impl Compiler {
         result?;
         self.compiled_imports.insert(key);
         Ok(())
-    }
-
-    fn compile_use(&mut self, path: &str) -> Result<(), CompileError> {
-        let resolved = self.resolve_local_use(path)?;
-        self.compile_import_source(resolved.key())
     }
 
     fn compile_named_import(&mut self, module_name: Symbol) -> Result<(), CompileError> {
@@ -4002,14 +4050,21 @@ mod tests {
     }
 
     #[test]
-    fn local_uses_share_the_callers_type_work_budget() {
-        let root = unique_temp_dir("cumulative-use-budget");
+    fn project_modules_share_the_callers_type_work_budget() {
+        let root = unique_temp_dir("cumulative-proj-budget");
+        write_file(&root.join("hiko.toml"), "[project]\nname = 'budget'\n");
         let entry = root.join("main.hml");
-        write_file(&root.join("one.hml"), &import_budget_source("one"));
-        write_file(&root.join("two.hml"), &import_budget_source("two"));
-        let source = "val before = 1\nuse \"./one.hml\"\nuse \"./two.hml\"";
-        write_file(&entry, source);
-        assert_cumulative_import_budget(&root, &entry, source, ModuleLoaderOptions::default());
+        write_file(&root.join("src/One.hml"), &import_budget_source("one"));
+        write_file(&root.join("src/Two.hml"), &import_budget_source("two"));
+        // Every caller declaration references imported aliases, so each one
+        // costs expansion work and the budget error lands in the caller.
+        let mut source = String::from("import Proj.One\nimport Proj.Two\n");
+        source.push_str("type callerb0 = twoa8 twodup\n");
+        for i in 1..=4 {
+            source.push_str(&format!("type callerb{i} = callerb{} twodup\n", i - 1));
+        }
+        write_file(&entry, &source);
+        assert_cumulative_import_budget(&root, &entry, &source, ModuleLoaderOptions::default());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4018,13 +4073,17 @@ mod tests {
     fn named_import_shares_the_callers_type_work_budget() {
         let module = import_budget_source("module");
         let (root, entry) = write_local_package_project(&module, &blake3_hex(module.as_bytes()));
-        let source = "val before = 1\nimport Test.Answer";
+        let mut source = String::from("import Test.Answer\n");
+        source.push_str("type callerb0 = modulea8 moduledup\n");
+        for i in 1..=4 {
+            source.push_str(&format!("type callerb{i} = callerb{} moduledup\n", i - 1));
+        }
         let options = ModuleLoaderOptions {
             local_package_root: Some(root.join("libraries")),
             cache_dir: Some(root.join("unused-cache")),
             ..Default::default()
         };
-        assert_cumulative_import_budget(&root, &entry, source, options);
+        assert_cumulative_import_budget(&root, &entry, &source, options);
         assert!(
             !root.join("unused-cache").exists(),
             "hermetic local package must not fetch"
@@ -4083,34 +4142,23 @@ mod tests {
     }
 
     #[cfg(feature = "loader-embedded")]
-    /// Embedded sources with one module `Pkg.Greet` (its hash computed
-    /// unless `hash` is given) and the given local files.
-    fn embedded(
-        module_source: &str,
-        hash: Option<&str>,
-        files: Option<Vec<(&str, &str)>>,
-    ) -> ModuleLoaderOptions {
+    /// Embedded sources with one module `Pkg.Greet`, its hash computed
+    /// unless `hash` is given.
+    fn embedded(module_source: &str, hash: Option<&str>) -> ModuleLoaderOptions {
         let blake3 = match hash {
             Some(hash) => leak(hash.to_string()),
             None => leak(format!("blake3:{}", blake3_hex(module_source.as_bytes()))),
         };
         let modules = Box::leak(Box::new([EmbeddedModule {
             import_name: "Pkg.Greet",
+            version: "0.1.0",
+            base_url: "https://example.com/Pkg-v0.1.0",
+            dependencies: &[],
             blake3,
             source: leak(module_source.to_string()),
         }]));
-        let files = files.map(|files| {
-            let files: Vec<EmbeddedFile> = files
-                .into_iter()
-                .map(|(path, source)| EmbeddedFile {
-                    path: leak(path.to_string()),
-                    source: leak(source.to_string()),
-                })
-                .collect();
-            &*Box::leak(files.into_boxed_slice())
-        });
         ModuleLoaderOptions {
-            embedded: Some(Box::leak(Box::new(EmbeddedSources { modules, files }))),
+            embedded: Some(Box::leak(Box::new(EmbeddedSources { modules }))),
             ..ModuleLoaderOptions::default()
         }
     }
@@ -4122,7 +4170,7 @@ mod tests {
     #[test]
     fn embedded_named_import_resolves_without_a_lockfile() {
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
-        Compiler::compile_embedded(program, embedded(GREET, None, None))
+        Compiler::compile_embedded(program, embedded(GREET, None))
             .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
@@ -4131,7 +4179,7 @@ mod tests {
     fn embedded_module_with_a_wrong_hash_is_refused() {
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
         let wrong = format!("blake3:{}", "0".repeat(64));
-        let err = Compiler::compile_embedded(program, embedded(GREET, Some(&wrong), None))
+        let err = Compiler::compile_embedded(program, embedded(GREET, Some(&wrong)))
             .expect_err("a tampered module must not compile");
         assert!(
             format!("{err:?}").contains("failed BLAKE3 verification"),
@@ -4143,7 +4191,7 @@ mod tests {
     #[test]
     fn named_import_not_embedded_is_refused() {
         let program = parse_program("import Pkg.Other\nval x = 1");
-        let err = Compiler::compile_embedded(program, embedded(GREET, None, None))
+        let err = Compiler::compile_embedded(program, embedded(GREET, None))
             .expect_err("only embedded modules resolve");
         assert!(
             format!("{err:?}").contains("not embedded in this artifact"),
@@ -4153,25 +4201,12 @@ mod tests {
 
     #[cfg(feature = "loader-embedded")]
     #[test]
-    fn embedded_local_use_resolves_relative_to_the_using_file() {
-        let program = parse_program("use \"./lib/a.hml\"\nval y = a + b");
-        let files = vec![
-            ("lib/a.hml", "use \"./b.hml\"\nval a = 1"),
-            ("lib/b.hml", "val b = 2"),
-        ];
-        Compiler::compile_embedded(program, embedded(GREET, None, Some(files)))
-            .unwrap_or_else(|e| panic!("{e:?}"));
-    }
-
-    #[cfg(feature = "loader-embedded")]
-    #[test]
-    fn embedded_local_use_never_reads_the_filesystem() {
-        // Cargo.toml exists next to this crate, but it is not embedded.
-        let program = parse_program("use \"./Cargo.toml\"\nval y = 1");
-        let err = Compiler::compile_embedded(program, embedded(GREET, None, Some(vec![])))
-            .expect_err("only embedded files resolve");
+    fn embedded_program_cannot_reach_project_modules() {
+        let program = parse_program("import Proj.Helper\nval y = 1");
+        let err = Compiler::compile_embedded(program, embedded(GREET, None))
+            .expect_err("a sealed artifact has no project modules");
         assert!(
-            format!("{err:?}").contains("not embedded in this artifact"),
+            format!("{err:?}").contains("does not embed project modules"),
             "{err:?}"
         );
     }
@@ -4181,8 +4216,7 @@ mod tests {
     fn embedded_module_cannot_use_local_files() {
         let module = "use \"./x.hml\"\nstructure Greet = struct val hello = 1 end";
         let program = parse_program("import Pkg.Greet\nval x = Greet.hello");
-        let files = vec![("x.hml", "val z = 0")];
-        let err = Compiler::compile_embedded(program, embedded(module, None, Some(files)))
+        let err = Compiler::compile_embedded(program, embedded(module, None))
             .expect_err("a locked module may not use files");
         assert!(
             format!("{err:?}").contains("not allowed in a remote module"),
@@ -4219,91 +4253,29 @@ mod tests {
     }
 
     #[test]
-    fn a_used_module_decides_its_own_operators_even_inside_local() {
-        // `dbl`'s `+` is decided by nothing in m.hml, so the module is
-        // rejected wherever it is used; the importer's `dbl 21` must not
+    fn an_imported_project_module_decides_its_own_operators() {
+        // `dbl`'s `+` is decided by nothing in M.hml, so the module is
+        // rejected wherever it is imported; the importer's call site must not
         // decide it, or the cached module's type would depend on where it
         // was first used.
-        let dir = unique_temp_dir("use-in-local");
-        write_file(&dir.join("m.hml"), "fun dbl x = x + x\n");
+        let dir = unique_temp_dir("proj-module-operators");
+        write_file(&dir.join("hiko.toml"), "[project]\nname = 'ops'\n");
         write_file(
-            &dir.join("main.hml"),
-            "local use \"./m.hml\" in val y = dbl 21 end\n",
+            &dir.join("src/M.hml"),
+            "structure M = struct fun dbl x = x + x end\n",
         );
-        let err = compile_path(&dir.join("main.hml")).expect_err("m.hml leaves + undecided");
+        write_file(&dir.join("main.hml"), "import Proj.M\nval y = M.dbl 21\n");
+        let err = compile_path(&dir.join("main.hml")).expect_err("M.hml leaves + undecided");
         assert!(
             format!("{err:?}").contains("cannot tell whether"),
             "{err:?}"
         );
-        write_file(&dir.join("m.hml"), "fun dbl (x : int) = x + x\n");
+        write_file(
+            &dir.join("src/M.hml"),
+            "structure M = struct fun dbl (x : int) = x + x end\n",
+        );
         compile_path(&dir.join("main.hml")).unwrap_or_else(|e| panic!("{e:?}"));
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn local_use_files_finds_uses_inside_local_and_structures() {
-        let dir = unique_temp_dir("local-use-nested");
-        let source = "local use \"./a.hml\" in val x = a end\n\
-                      structure S = struct use \"./b.hml\" val y = b end";
-        write_file(&dir.join("main.hml"), source);
-        write_file(&dir.join("a.hml"), "val a = 1");
-        write_file(&dir.join("b.hml"), "val b = 2");
-        let files =
-            local_use_files(&dir.join("main.hml"), source).unwrap_or_else(|e| panic!("{e:?}"));
-        let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["a.hml", "b.hml"]);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn local_use_files_follows_uses_relative_to_each_file() {
-        let dir = unique_temp_dir("local-use-files");
-        write_file(&dir.join("main.hml"), "use \"./lib/a.hml\"\nval x = a");
-        write_file(
-            &dir.join("lib/a.hml"),
-            "use \"./b.hml\"\nuse \"../c.hml\"\nval a = b + c",
-        );
-        write_file(&dir.join("lib/b.hml"), "val b = 1");
-        write_file(&dir.join("c.hml"), "use \"./lib/b.hml\"\nval c = 2");
-        let main = dir.join("main.hml");
-        let source = std::fs::read_to_string(&main).unwrap();
-        let files = local_use_files(&main, &source).unwrap_or_else(|e| panic!("{e:?}"));
-        let keys: Vec<_> = files.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["c.hml", "lib/a.hml", "lib/b.hml"]);
-        assert_eq!(files[2].1, "val b = 1");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn local_use_files_refuses_a_path_through_a_symbolic_link() {
-        let dir = unique_temp_dir("local-use-symlink");
-        write_file(&dir.join("real/b.hml"), "val b = 1");
-        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
-        write_file(&dir.join("main.hml"), "");
-        let source = "use \"./link/b.hml\"\nval x = b";
-        let err = local_use_files(&dir.join("main.hml"), source).expect_err("link/ is a symlink");
-        assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
-        // Into the link and back out: the key is "b.hml", but `hiko run`
-        // reads the file next to the link's target.
-        // hop -> real/sub, so hop/.. is real/, which holds a different c.hml.
-        write_file(&dir.join("real/sub/x.hml"), "");
-        write_file(&dir.join("real/c.hml"), "val c = 2");
-        std::os::unix::fs::symlink(dir.join("real/sub"), dir.join("hop")).unwrap();
-        write_file(&dir.join("c.hml"), "val c = 3");
-        let source = "use \"./hop/../c.hml\"\nval x = c";
-        let err =
-            local_use_files(&dir.join("main.hml"), source).expect_err("hop/.. leaves the link");
-        assert!(format!("{err:?}").contains("symbolic link"), "{err:?}");
-    }
-
-    #[test]
-    fn embedded_file_paths_are_normalized_and_relative() {
-        let path = |base: &str, p: &str| embedded_file_path(Path::new(base), p).ok();
-        assert_eq!(path("", "a.hml").as_deref(), Some("a.hml"));
-        assert_eq!(path("", "./lib/../a.hml").as_deref(), Some("a.hml"));
-        assert_eq!(path("lib", "b.hml").as_deref(), Some("lib/b.hml"));
-        assert_eq!(path("lib", "../../up.hml").as_deref(), Some("../up.hml"));
-        assert_eq!(path("", "/etc/passwd.hml"), None);
     }
 
     #[test]
@@ -4659,8 +4631,12 @@ mod tests {
             compiled.main.code.clone()
         };
         assert_eq!(
-            code("val xs = [print \"a\", print \"b\", ()]\n"),
-            code("val xs = print \"a\" :: print \"b\" :: () :: []\n")
+            code(
+                "import __Builtin.Stdio\nval xs = [BuiltinStdio.print \"a\", BuiltinStdio.print \"b\", ()]\n"
+            ),
+            code(
+                "import __Builtin.Stdio\nval xs = BuiltinStdio.print \"a\" :: BuiltinStdio.print \"b\" :: () :: []\n"
+            )
         );
     }
 
@@ -4869,7 +4845,7 @@ mod tests {
     #[test]
     fn compile_accepts_internal_builtin_import_without_file_context() {
         let result = Compiler::compile(parse_program(
-            "import __Builtin.Path\nval joined = BuiltinPath.join_raw (\"alpha\", \"beta\")\n",
+            "import __Builtin.Path\nval joined = BuiltinPath.join (\"alpha\", \"beta\")\n",
         ));
         assert!(
             result.is_ok(),
@@ -4885,32 +4861,53 @@ mod tests {
             ("int list", "7", "case n of [] => 0 | x :: _ => x"),
         ] {
             let source = format!(
-                "structure BuiltinProcess = struct
+                "structure BuiltinFiber = struct
                    datatype 'a await_result = Forged of {payload} | Other of 'a
                  end
                  val result = case await_process_result (spawn (fn () => {child})) of
-                     BuiltinProcess.Forged n => {use_value}
-                   | BuiltinProcess.Other _ => 0\n"
+                     BuiltinFiber.Forged n => {use_value}
+                   | BuiltinFiber.Other _ => 0\n"
             );
-            for (before, after) in [
-                ("", ""),
-                ("", "import __Builtin.Process\n"),
-                ("import __Builtin.Process\n", ""),
-            ] {
+            for (before, after) in [("", ""), ("import __Builtin.Fiber\n", "")] {
                 let msg = compile_error(&format!("{before}{source}{after}"));
                 assert!(
-                    msg.contains("runtime-owned type 'BuiltinProcess.await_result'"),
+                    msg.contains("runtime-owned type 'BuiltinFiber.await_result'"),
                     "{msg}"
                 );
             }
         }
         // Copying the embedded source into user code does not grant its authority.
-        let source = internal_builtin_module("Process").unwrap().source;
+        let source = internal_builtin_module("Fiber").unwrap().source;
         let msg = compile_error(source);
         assert!(
-            msg.contains("runtime-owned type 'BuiltinProcess.error'"),
+            msg.contains("runtime-owned type 'BuiltinFiber.error'"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn compile_rejects_global_runtime_only_builtins() {
+        let cases: &[(&str, &str, &str)] = &[
+            #[cfg(feature = "builtin-convert")]
+            ("numeric_int32_add", "__Builtin.Numeric", "Std.Int32.add"),
+            #[cfg(feature = "builtin-date")]
+            ("date_utc_tz", "__Builtin.Date", "Std.Date.utc"),
+            #[cfg(feature = "builtin-process")]
+            ("await_process_result", "__Builtin.Fiber", "Std.Fiber.join"),
+            #[cfg(feature = "builtin-process")]
+            ("fiber_await_all", "__Builtin.Fiber", "Std.Fiber.join_all"),
+        ];
+        for &(name, owner, replacement) in cases {
+            for import in [String::new(), format!("import {owner}\n")] {
+                let message = compile_error(&format!("{import}val stolen = {name}"));
+                let (module, _) = replacement.rsplit_once('.').unwrap();
+                assert!(message.contains(&format!("import {module}")), "{message}");
+                assert!(
+                    message.contains(replacement.split_once('.').unwrap().1),
+                    "{message}"
+                );
+            }
+        }
     }
 
     #[cfg(feature = "builtin-json")]
@@ -4930,10 +4927,10 @@ mod tests {
 
     #[cfg(feature = "builtin-json")]
     #[test]
-    fn compile_json_raw_aliases_are_monomorphic() {
+    fn compile_json_alias_members_are_monomorphic() {
         for source in [
-            "val x : int = BuiltinJson.parse_raw \"[]\"",
-            "val s = BuiltinJson.to_string_raw (fn (x : int) => x)",
+            "val x : int = BuiltinJson.parse \"[]\"",
+            "val s = BuiltinJson.to_string (fn (x : int) => x)",
         ] {
             let message = compile_error(&format!("import __Builtin.Json\n{source}"));
             assert!(message.contains("type mismatch"), "{message}");
@@ -4963,12 +4960,34 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "builtin-convert")]
+    #[test]
+    fn compile_does_not_trust_extension_source_named_builtin_numeric() {
+        let options = ModuleLoaderOptions {
+            extensions: ExtensionSurface {
+                modules: vec![(
+                    "__Builtin.Numeric",
+                    internal_builtin_module("Numeric").unwrap().source,
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error =
+            Compiler::compile_with_options(parse_program("import __Builtin.Numeric"), options)
+                .unwrap_err();
+        assert!(
+            format!("{error:?}").contains("reserved package name '__Builtin'"),
+            "{error:?}"
+        );
+    }
+
     #[cfg(feature = "builtin-json")]
     #[test]
     fn compile_does_not_trust_extension_source_named_builtin_json() {
         for source in [
             internal_builtin_module("Json").unwrap().source,
-            "structure BuiltinJson = struct val parse_raw = json_parse end",
+            "structure BuiltinJson = struct val parse = json_parse end",
         ] {
             let options = ModuleLoaderOptions {
                 extensions: ExtensionSurface {
@@ -4982,7 +5001,7 @@ mod tests {
                     .unwrap_err();
             let message = format!("{error:?}");
             assert!(
-                message.contains("runtime-owned type") || message.contains("import Std.Json"),
+                message.contains("reserved package name '__Builtin'"),
                 "{message}"
             );
         }
@@ -5010,15 +5029,15 @@ mod tests {
     #[cfg(feature = "builtin-process")]
     #[test]
     fn bulk_join_signature_preserves_pid_payloads_and_protected_result_type() {
-        let source = "import __Builtin.Process\n\
-            fun bulk (pids : 'a pid list) = fiber_await_all pids\n\
-            val ints : int list BuiltinProcess.await_result = bulk [spawn (fn () => 1)]\n\
-            val strings : string list BuiltinProcess.await_result = bulk [spawn (fn () => \"text\")]\n\
-            val empty : int list BuiltinProcess.await_result = bulk []\n";
+        let source = "import __Builtin.Fiber\n\
+            fun bulk (pids : 'a pid list) = BuiltinFiber.await_all pids\n\
+            val ints : int list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn (fn () => 1)]\n\
+            val strings : string list BuiltinFiber.await_result = bulk [BuiltinFiber.spawn (fn () => \"text\")]\n\
+            val empty : int list BuiltinFiber.await_result = bulk []\n";
         Compiler::compile(parse_program(source)).unwrap();
         for source in [
-            "val bad = fiber_await_all [spawn (fn () => 1), spawn (fn () => \"text\")]",
-            "val bad : string list BuiltinProcess.await_result = fiber_await_all [spawn (fn () => 1)]",
+            "import __Builtin.Fiber\nval bad = BuiltinFiber.await_all [BuiltinFiber.spawn (fn () => 1), BuiltinFiber.spawn (fn () => \"text\")]",
+            "import __Builtin.Fiber\nval bad : string list BuiltinFiber.await_result = BuiltinFiber.await_all [BuiltinFiber.spawn (fn () => 1)]",
         ] {
             assert!(
                 matches!(
@@ -5036,23 +5055,18 @@ mod tests {
         let options = ModuleLoaderOptions {
             extensions: ExtensionSurface {
                 modules: vec![(
-                    "__Builtin.Process",
-                    "structure BuiltinProcess = struct
+                    "__Builtin.Fiber",
+                    "structure BuiltinFiber = struct
                     datatype 'a await_result = Forged of int | Other of 'a end",
                 )],
                 ..Default::default()
             },
             ..Default::default()
         };
-        let err =
-            Compiler::compile_with_options(parse_program("import __Builtin.Process"), options)
-                .unwrap_err();
-        let CompileError::Type(err) = err else {
-            panic!("expected type error: {err:?}")
-        };
+        let err = Compiler::compile_with_options(parse_program("import __Builtin.Fiber"), options)
+            .unwrap_err();
         assert!(
-            err.message
-                .contains("runtime-owned type 'BuiltinProcess.await_result'"),
+            format!("{err:?}").contains("reserved package name '__Builtin'"),
             "{err:?}"
         );
     }
@@ -5098,7 +5112,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5137,7 +5151,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5196,7 +5210,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nList = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5243,7 +5257,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5282,7 +5296,7 @@ val result = Box.get (Box.make 41)
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Std]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Std]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Std.modules]\nResult = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5318,6 +5332,7 @@ val result = Box.get (Box.make 41)
             r#"schema_version = 1
 
 [packages.Std]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Std-v0.1.0"
 
@@ -5356,6 +5371,7 @@ Prelude = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.Test]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Test-v0.1.0"
 
@@ -5390,7 +5406,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://example.com/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://example.com/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(&entry_path, "import Test.Answer\nval result = answer\n");
@@ -5444,7 +5460,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
         write_file(
@@ -5484,7 +5500,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{module_hash}\"\n"
             ),
         );
         (project_dir, entry_path, cache_path)
@@ -5521,16 +5537,6 @@ Answer = "blake3:deadbeef"
 
     #[cfg(feature = "loader-integrity-blake3")]
     #[test]
-    fn pinned_module_use_in_let_refused_when_script_used_file() {
-        assert_nested_use_refused(compile_with_pinned_module(
-            "pinned-let-use-script-used",
-            "val n = let use \"../helper.hml\" in helper end\n",
-            "use \"./helper.hml\"\nimport Test.Answer\nval m = n\n",
-        ));
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    #[test]
     fn pinned_module_use_in_let_refused_when_script_did_not_use_file() {
         assert_nested_use_refused(compile_with_pinned_module(
             "pinned-let-use-alone",
@@ -5543,14 +5549,10 @@ Answer = "blake3:deadbeef"
     #[test]
     fn pinned_module_use_in_let_in_fun_refused() {
         for (name, script) in [
-            (
-                "pinned-fun-use-script-used",
-                "use \"./helper.hml\"\nimport Test.Answer\nval m = f ()\n",
-            ),
             ("pinned-fun-use-alone", "import Test.Answer\nval m = f ()\n"),
             (
                 "pinned-fun-use-not-called",
-                "use \"./helper.hml\"\nimport Test.Answer\nval m = 1\n",
+                "import Test.Answer\nval m = 1\n",
             ),
         ] {
             assert_nested_use_refused(compile_with_pinned_module(
@@ -5571,7 +5573,7 @@ Answer = "blake3:deadbeef"
             assert_nested_use_refused(compile_with_pinned_module(
                 "pinned-nested-use",
                 module,
-                "use \"./helper.hml\"\nimport Test.Answer",
+                "import Test.Answer",
             ));
         }
     }
@@ -5584,47 +5586,12 @@ Answer = "blake3:deadbeef"
             "val broken = )\nuse \"../helper.hml\"",
             "val broken = unknown_name\nuse \"../helper.hml\"",
         ] {
-            for script in [
+            assert_nested_use_refused(compile_with_pinned_module(
+                "pinned-use-error-precedence",
+                module,
                 "import Test.Answer",
-                "use \"./helper.hml\"\nimport Test.Answer",
-            ] {
-                assert_nested_use_refused(compile_with_pinned_module(
-                    "pinned-use-error-precedence",
-                    module,
-                    script,
-                ));
-            }
+            ));
         }
-    }
-
-    #[cfg(feature = "loader-integrity-blake3")]
-    #[test]
-    fn pinned_module_cannot_reuse_locally_loaded_cache_file() {
-        let (project_dir, entry_path, cache_path) = write_pinned_module_project(
-            "pinned-local-cache-use",
-            "val n = let use \"../helper.hml\" in helper end",
-        );
-        // macOS temp paths can contain a symlink (/var -> /private/var).
-        // Use the canonical path so a path mismatch cannot mask the bypass.
-        let canonical = std::fs::canonicalize(cache_path).unwrap();
-        let canonical_project = std::fs::canonicalize(&project_dir).unwrap();
-        let entry_path = canonical_project.join(entry_path.file_name().unwrap());
-        let relative_cache = canonical.strip_prefix(&canonical_project).unwrap();
-        write_file(
-            &entry_path,
-            &format!(
-                "use \"./helper.hml\"\nuse \"./{}\"\nimport Test.Answer\nval m = n",
-                relative_cache.display()
-            ),
-        );
-        for helper in [41, 999] {
-            write_file(
-                &project_dir.join("helper.hml"),
-                &format!("val helper = {helper}"),
-            );
-            assert_nested_use_refused(compile_path(&entry_path));
-        }
-        std::fs::remove_dir_all(project_dir).ok();
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
@@ -5647,7 +5614,7 @@ Answer = "blake3:deadbeef"
             ),
             source,
         );
-        write_file(&entry_path, "use \"./helper.hml\"\nimport Test.Answer");
+        write_file(&entry_path, "import Test.Answer");
         assert_nested_use_refused(compile_path(&entry_path));
         std::fs::remove_dir_all(project_dir).ok();
     }
@@ -5656,8 +5623,8 @@ Answer = "blake3:deadbeef"
     #[test]
     fn pinned_module_embedded_nested_use_precedes_parse_error() {
         let module = "val n = let use \"../helper.hml\" in helper end\nval broken =";
-        let script = parse_program("use \"./helper.hml\"\nimport Pkg.Greet");
-        let options = embedded(module, None, Some(vec![("helper.hml", "val helper = 41")]));
+        let script = parse_program("import Pkg.Greet");
+        let options = embedded(module, None);
         let err = Compiler::compile_embedded(script, options).unwrap_err();
         assert!(
             format!("{err:?}")
@@ -5711,7 +5678,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:deadbeef\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n\n[packages.Test.modules]\nAnswer = \"blake3:deadbeef\"\n"
             ),
         );
         write_file(
@@ -5743,7 +5710,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:9/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{locked_hash}\"\n"
+                "schema_version = 1\n\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"http://127.0.0.1:9/Test-v0.1.0\"\n\n[packages.Test.modules]\nAnswer = \"blake3:{locked_hash}\"\n"
             ),
         );
         let entry_path = project_dir.join("main.hml");
@@ -5851,11 +5818,11 @@ Answer = "blake3:deadbeef"
             "[project]\nname = 'display-name'\n",
         );
         let entry = root.join("src/Main.hml");
-        write_file(&entry, "use \"./Util.hml\"");
-        write_file(&root.join("src/Util.hml"), "use \"./Main.hml\"");
-        let result = Compiler::compile_file(parse_program("use \"./Util.hml\""), &entry);
+        write_file(&entry, "import Proj.Util");
+        write_file(&root.join("src/Util.hml"), "import Proj.Main");
+        let result = Compiler::compile_file(parse_program("import Proj.Util"), &entry);
         assert!(
-            matches!(result, Err(CompileError::Codegen(ref message)) if message.contains("circular import detected while loading './Main.hml'")),
+            matches!(result, Err(CompileError::Codegen(ref message)) if message.contains("circular import detected") && message.contains("Proj.Main")),
             "{result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -5879,6 +5846,31 @@ Answer = "blake3:deadbeef"
         );
 
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[cfg(feature = "loader-integrity-blake3")]
+    #[test]
+    fn extension_first_import_cannot_shadow_a_locked_package() {
+        let source = "structure Answer = struct val value = 42 end";
+        let (root, entry) = write_local_package_project(source, &blake3_hex(source.as_bytes()));
+        let options = ModuleLoaderOptions {
+            extensions: ExtensionSurface {
+                modules: vec![("Test.Answer", "structure Answer = struct val value = 0 end")],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = Compiler::compile_file_with_options(
+            parse_program("import Test.Answer\nval result = Answer.value"),
+            &entry,
+            options,
+        );
+        let error = format!("{:?}", result.unwrap_err());
+        assert!(
+            error.contains("collides between lockfile and extension"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(feature = "loader-integrity-blake3")]
@@ -5973,7 +5965,7 @@ Answer = "blake3:deadbeef"
         write_file(
             &project_dir.join("hiko.lock.toml"),
             &format!(
-                "schema_version = 1\n[packages.Test]\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n[packages.Test.modules]\nCache = \"blake3:{hash}\"\n"
+                "schema_version = 1\n[packages.Test]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = \"{base_url}\"\n[packages.Test.modules]\nCache = \"blake3:{hash}\"\n"
             ),
         );
         write_file(&entry_path, "import Test.Cache\nval answer = Cache.value\n");
@@ -6004,6 +5996,7 @@ Answer = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.Other]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Other-v0.1.0"
 
@@ -6037,6 +6030,7 @@ List = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.Std]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/Std-v0.1.0"
 
@@ -6067,7 +6061,7 @@ Prelude = "blake3:deadbeef"
 
         write_file(
             &entry_path,
-            "import __Builtin.Path\nval joined = BuiltinPath.join_raw (\"alpha\", \"beta\")\n",
+            "import __Builtin.Path\nval joined = BuiltinPath.join (\"alpha\", \"beta\")\n",
         );
 
         let result = compile_path(&entry_path);
@@ -6081,19 +6075,22 @@ Prelude = "blake3:deadbeef"
 
     #[cfg(feature = "builtin-path")]
     #[test]
-    fn malformed_lockfile_does_not_affect_local_use_compile() {
-        let project_dir = unique_temp_dir("local-use-ignores-bad-lockfile");
+    fn malformed_lockfile_does_not_affect_project_module_compile() {
+        let project_dir = unique_temp_dir("proj-ignores-bad-lockfile");
         let entry_path = project_dir.join("main.hml");
-        let helper_path = project_dir.join("helper.hml");
 
+        write_file(&project_dir.join("hiko.toml"), "[project]\nname = 'p'\n");
         write_file(
             &project_dir.join("hiko.lock.toml"),
             "this = [ is not valid toml",
         );
-        write_file(&helper_path, "val local_answer = 7\n");
+        write_file(
+            &project_dir.join("src/Helper.hml"),
+            "structure Helper = struct val local_answer = 7 end\n",
+        );
         write_file(
             &entry_path,
-            "use \"./helper.hml\"\nval answer = local_answer\n",
+            "import Proj.Helper\nval answer = Helper.local_answer\n",
         );
 
         let result = compile_path(&entry_path);
@@ -6154,7 +6151,7 @@ Prelude = "blake3:deadbeef"
 
         write_file(
             &entry_path,
-            "import __Builtin.Hash\nval digest = BuiltinHash.blake3_raw \"abc\"\n",
+            "import __Builtin.Hash\nval digest = BuiltinHash.blake3 \"abc\"\n",
         );
 
         let result = compile_path(&entry_path);
@@ -6182,6 +6179,7 @@ Prelude = "blake3:deadbeef"
             r#"schema_version = 1
 
 [packages.__Builtin]
+dependencies = []
 version = "0.1.0"
 base_url = "http://127.0.0.1:8000/__Builtin-v0.1.0"
 
@@ -6204,21 +6202,37 @@ Filesystem = "blake3:deadbeef"
     }
 
     #[test]
-    fn use_rejects_nonexistent_file() {
-        let project_dir = unique_temp_dir("use-bad-path");
+    fn proj_import_without_a_project_names_the_fix() {
+        let dir = unique_temp_dir("proj-no-project");
+        let entry_path = dir.join("main.hml");
+        write_file(&entry_path, "import Proj.Helper\nval answer = 1\n");
+        let result = compile_path(&entry_path);
+        match result {
+            Err(CompileError::Codegen(message)) => assert!(
+                message.contains("requires an owning package; create hiko.toml"),
+                "{message}"
+            ),
+            other => panic!("expected the missing project to be named, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn proj_import_rejects_missing_module() {
+        let project_dir = unique_temp_dir("proj-missing-module");
         let entry_path = project_dir.join("main.hml");
 
-        write_file(
-            &entry_path,
-            "use \"./no_such_module.hml\"\nval answer = 1\n",
-        );
+        write_file(&project_dir.join("hiko.toml"), "[project]\nname = 'p'\n");
+        std::fs::create_dir_all(project_dir.join("src")).unwrap();
+        write_file(&entry_path, "import Proj.NoSuchModule\nval answer = 1\n");
 
         let result = compile_path(&entry_path);
         match result {
             Err(CompileError::Codegen(message)) => {
                 assert!(
-                    message.contains("cannot resolve local use"),
-                    "expected 'cannot resolve local use' in error, got: {message}"
+                    message.contains("missing from package Proj")
+                        && message.contains("NoSuchModule.hml"),
+                    "expected the missing module and expected path, got: {message}"
                 );
             }
             other => panic!("expected compile error for missing use path, got {other:?}"),

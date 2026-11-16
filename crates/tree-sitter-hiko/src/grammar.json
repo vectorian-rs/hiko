@@ -71,10 +71,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "use_declaration"
-        },
-        {
-          "type": "SYMBOL",
           "name": "import_declaration"
         },
         {
@@ -434,23 +430,6 @@
         }
       ]
     },
-    "use_declaration": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "use"
-        },
-        {
-          "type": "FIELD",
-          "name": "path",
-          "content": {
-            "type": "SYMBOL",
-            "name": "string_literal"
-          }
-        }
-      ]
-    },
     "import_declaration": {
       "type": "SEQ",
       "members": [
@@ -476,6 +455,26 @@
           "content": {
             "type": "SYMBOL",
             "name": "upper_identifier"
+          }
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "."
+              },
+              {
+                "type": "FIELD",
+                "name": "module",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "upper_identifier"
+                }
+              }
+            ]
           }
         },
         {

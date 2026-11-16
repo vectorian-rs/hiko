@@ -25,12 +25,28 @@ mod time;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSurface {
-    Public,
-    RuntimeOnly,
-    ModuleOnly {
+    /// Runtime aliases are private to their compiler-owned module, even
+    /// when the VM registers them without a capability leaf.
+    RuntimeOnly {
         owner: &'static str,
         replacement: &'static str,
     },
+    ModuleOnly {
+        /// The compiler-owned modules that may name this builtin; shared
+        /// primitives (exit, panic) list every module aliasing them.
+        owners: &'static [&'static str],
+        replacement: &'static str,
+    },
+}
+
+impl BuiltinSurface {
+    /// Only verified compiler-owned source may resolve a raw builtin name.
+    pub fn is_owned_by(self, module: &str) -> bool {
+        match self {
+            Self::RuntimeOnly { owner, .. } => owner == module,
+            Self::ModuleOnly { owners, .. } => owners.contains(&module),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +63,43 @@ impl BuiltinMeta {
     const fn module_only(
         name: &'static str,
         capability_path: &'static str,
+        owners: &'static [&'static str],
+        replacement: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: true,
+            surface: BuiltinSurface::ModuleOnly {
+                owners,
+                replacement,
+            },
+        }
+    }
+
+    /// Module-only builtin outside the core default; a policy enables it, and
+    /// only its owning compiler modules may name it.
+    const fn module_only_opt_in(
+        name: &'static str,
+        capability_path: &'static str,
+        owners: &'static [&'static str],
+        replacement: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            capability_path: Some(capability_path),
+            in_core_default: false,
+            surface: BuiltinSurface::ModuleOnly {
+                owners,
+                replacement,
+            },
+        }
+    }
+
+    /// Runtime-only builtin gated by a policy leaf of its own.
+    const fn runtime_gated(
+        name: &'static str,
+        capability_path: &'static str,
         owner: &'static str,
         replacement: &'static str,
     ) -> Self {
@@ -54,38 +107,22 @@ impl BuiltinMeta {
             name,
             capability_path: Some(capability_path),
             in_core_default: true,
-            surface: BuiltinSurface::ModuleOnly { owner, replacement },
-        }
-    }
-
-    /// Public builtin that the core-only VM registers by default.
-    const fn core(name: &'static str, capability_path: &'static str) -> Self {
-        Self {
-            name,
-            capability_path: Some(capability_path),
-            in_core_default: true,
-            surface: BuiltinSurface::Public,
-        }
-    }
-
-    /// Public builtin that is only registered when a policy enables it.
-    const fn opt_in(name: &'static str, capability_path: &'static str) -> Self {
-        Self {
-            name,
-            capability_path: Some(capability_path),
-            in_core_default: false,
-            surface: BuiltinSurface::Public,
+            surface: BuiltinSurface::RuntimeOnly { owner, replacement },
         }
     }
 
     /// Internal alias used by `__Builtin` modules. It has no policy leaf and
     /// is always registered.
-    const fn runtime_alias(name: &'static str) -> Self {
+    const fn runtime_alias(
+        name: &'static str,
+        owner: &'static str,
+        replacement: &'static str,
+    ) -> Self {
         Self {
             name,
             capability_path: None,
             in_core_default: true,
-            surface: BuiltinSurface::RuntimeOnly,
+            surface: BuiltinSurface::RuntimeOnly { owner, replacement },
         }
     }
 }
@@ -201,7 +238,7 @@ pub fn unrestricted_runtime_builtin_names() -> impl Iterator<Item = &'static str
     builtins()
         .filter(|meta| {
             meta.in_core_default
-                && meta.surface == BuiltinSurface::RuntimeOnly
+                && matches!(meta.surface, BuiltinSurface::RuntimeOnly { .. })
                 && meta.capability_path.is_none()
         })
         .map(|meta| meta.name)

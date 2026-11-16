@@ -831,7 +831,7 @@ mod tests {
         let script = root.join("tool.sh");
         write_executable(&script, "#!/bin/sh\necho first\n");
         let program = crate::test_support::compile_source_hermetic(&format!(
-            "val _ = exec ({:?}, [])",
+            "import __Builtin.Exec\nval _ = BuiltinExec.exec ({:?}, [])",
             script.to_string_lossy()
         ));
         let mut vm = VMBuilder::new(program)
@@ -870,7 +870,7 @@ mod tests {
         let script = root.join("tool.sh");
         write_executable(&script, "#!/bin/sh\necho first\n");
         let program = crate::test_support::compile_source_hermetic(&format!(
-            "val _ = exec ({:?}, [])",
+            "import __Builtin.Exec\nval _ = BuiltinExec.exec ({:?}, [])",
             script.to_string_lossy()
         ));
         let mut vm = VMBuilder::new(program)
@@ -981,7 +981,7 @@ mod tests {
 
         fn job(timeout_ms: u64) -> ExecJob {
             let program = crate::test_support::compile_source_hermetic(
-                "val result = exec (\"/bin/sleep\", [\"60\"])",
+                "import __Builtin.Exec\nval result = BuiltinExec.exec (\"/bin/sleep\", [\"60\"])",
             );
             let mut vm = crate::builder::VMBuilder::new(program)
                 .with_all()

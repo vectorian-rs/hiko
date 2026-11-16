@@ -2,7 +2,8 @@
  * fuel has used up the parent's fuel too, so the parent fails with a fuel
  * error when it resumes and never reaches the println below. Run with a
  * fuel limit that the child exceeds (the threaded runtime test uses 2,500). *)
-use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+import Std.Fiber
+import Std.Stdio
 
 val child = Fiber.spawn (fn () => let
   val x1 = 1
@@ -1511,4 +1512,4 @@ end)
 
 val _ = Fiber.join child
 
-val _ = println "unreachable: the tree has no fuel left"
+val _ = Stdio.println "unreachable: the tree has no fuel left"

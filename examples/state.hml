@@ -6,13 +6,17 @@
  *)
 
 (* A counter that increments 5 times *)
+import Std.Int
+import Std.Stdio
+import Std.Testing
+
 fun count_up (n, count) = if n = 0 then count else count_up (n - 1, count + 1)
 
 val result = count_up (5, 0)
 
-val _ = println ("Counter after 5 increments: " ^ int_to_string result)
+val _ = Stdio.println ("Counter after 5 increments: " ^ Int.to_string result)
 
-val _ = assert_eq (result, 5, "counter")
+val _ = Testing.equal result 5 "counter"
 
 (* Accumulate a sum: the accumulator is the state *)
 fun sum_list (xs, total : int) =
@@ -22,9 +26,9 @@ fun sum_list (xs, total : int) =
 
 val total = sum_list ([10, 20, 30, 40], 0)
 
-val _ = println ("Sum of [10,20,30,40]: " ^ int_to_string total)
+val _ = Stdio.println ("Sum of [10,20,30,40]: " ^ Int.to_string total)
 
-val _ = assert_eq (total, 100, "sum")
+val _ = Testing.equal total 100 "sum"
 
 (* A step that reads and updates the state returns (result, new state).
  * `increment` returns the old value and stores the old value plus one. *)
@@ -41,6 +45,6 @@ fun program state0 =
 
 val (sum, final_state) = program 0
 
-val _ = println ("Sum of 0+1+2 = " ^ int_to_string sum ^ ", final state " ^ int_to_string final_state)
+val _ = Stdio.println ("Sum of 0+1+2 = " ^ Int.to_string sum ^ ", final state " ^ Int.to_string final_state)
 
-val _ = assert_eq ((sum, final_state), (3, 3), "threaded state")
+val _ = Testing.equal ((sum, final_state)) ((3, 3)) "threaded state"

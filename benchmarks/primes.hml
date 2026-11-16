@@ -2,7 +2,10 @@
  * Compute primes less than 1000
  *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
+import Std.Int
+import Std.Stdio
+import Std.Testing
 
 fun interval m n =
   if m > n then []
@@ -21,5 +24,5 @@ fun sieve xs = case xs of
 
 val primes = sieve (interval 2 200)
 val count = List.length primes
-val _ = assert_eq (count, 46, "primes below 200")
-val _ = println ("primes below 200: " ^ int_to_string count)
+val _ = Testing.equal count 46 "primes below 200"
+val _ = Stdio.println ("primes below 200: " ^ Int.to_string count)

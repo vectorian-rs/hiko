@@ -39,15 +39,18 @@ fn exported_private_captures_survive_gc() {
 #[test]
 fn exported_private_captures_spawn() {
     let program = common::compile_source(
-        "local val xs = [9, 8] in
+        "import __Builtin.Fiber
+         import __Builtin.Stdio
+         import __Builtin.Testing
+         local val xs = [9, 8] in
              fun first (n : int) = if n = 0 then second 0 else second (n - 1)
              and second n = if n = 0 then (case xs of x :: _ => x | _ => 0) else first (n - 1)
              fun child () = first 4
              fun captured_child () = case xs of x :: _ => x | _ => 0
          end
-         val _ = assert_eq (await_process (spawn child), 9, \"child private captures\")
-         val _ = assert_eq (await_process (spawn captured_child), 9, \"direct closure transfer\")
-         val _ = println \"private captures passed\"",
+         val _ = BuiltinTesting.assert_eq (BuiltinFiber.await (BuiltinFiber.spawn child), 9, \"child private captures\")
+         val _ = BuiltinTesting.assert_eq (BuiltinFiber.await (BuiltinFiber.spawn captured_child), 9, \"direct closure transfer\")
+         val _ = BuiltinStdio.println \"private captures passed\"",
     );
     let mut runtime = Runtime::new();
     let root = runtime.spawn_root(program.clone());
@@ -70,10 +73,13 @@ fn exported_private_captures_spawn() {
 #[test]
 fn exported_private_captures_reject_unsendable_values() {
     let program = common::compile_source(
-        "local val r = rng_seed (string_to_bytes \"seed\") in
+        "import __Builtin.Bytes
+         import __Builtin.Fiber
+         import __Builtin.Random
+         local val r = BuiltinRandom.seed (BuiltinBytes.of_string \"seed\") in
              fun child () = let val _ = r in 1 end
          end
-         val _ = spawn child",
+         val _ = BuiltinFiber.spawn child",
     );
     let mut runtime = Runtime::new();
     let root = runtime.spawn_root(program);

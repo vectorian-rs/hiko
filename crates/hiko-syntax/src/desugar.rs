@@ -3,7 +3,15 @@ use crate::intern::{StringInterner, Symbol};
 use crate::span::Span;
 use std::collections::{HashMap, HashSet};
 
-pub fn desugar_program(mut program: Program) -> Program {
+pub fn desugar_program(program: Program) -> Program {
+    desugar_program_reserving(program, &HashSet::new())
+}
+
+/// Like [`desugar_program`], but names in `reserved` always resolve outside a
+/// structure, even where a member shares the name. The compiler desugars its
+/// own builtin modules this way: an alias member like `fun print text =
+/// print text` must reach the raw builtin its body names, not itself.
+pub fn desugar_program_reserving(mut program: Program, reserved: &HashSet<Symbol>) -> Program {
     let mut interner = std::mem::take(&mut program.interner);
     let signatures = collect_signatures(&program.decls);
     let mut decls = Vec::new();
@@ -18,8 +26,14 @@ pub fn desugar_program(mut program: Program) -> Program {
             } => {
                 let module_name = interner.resolve(name).to_string();
                 let signature = signature.and_then(|sig| signatures.get(&sig));
-                let members =
-                    desugar_structure(body, &[module_name], signature, opaque, &mut interner);
+                let members = desugar_structure(
+                    body,
+                    &[module_name],
+                    signature,
+                    opaque,
+                    &mut interner,
+                    reserved,
+                );
                 // One declaration, as in Standard ML: a later member or the
                 // signature may decide an earlier member's overloaded
                 // operator. A `local` with no private part binds exactly
@@ -77,7 +91,6 @@ fn desugar_decl(decl: Decl, interner: &mut StringInterner) -> Decl {
         | DeclKind::TypeAlias(_)
         | DeclKind::Import(_)
         | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
         | DeclKind::AbstractType(_)
         | DeclKind::ExportVal { .. }
         | DeclKind::Effect(_, _)) => kind,
@@ -99,18 +112,34 @@ fn desugar_structure(
     signature: Option<&SignatureDecl>,
     opaque: bool,
     interner: &mut StringInterner,
+    reserved: &HashSet<Symbol>,
 ) -> Vec<Decl> {
     let scope = collect_module_scope(&decls, module_path, interner, signature.is_some());
     let mut out = Vec::new();
-    let empty_values = HashSet::new();
+    // `val` is not recursive: its right-hand side reads the preceding
+    // binding, so member names not yet defined stay unrenamed there and
+    // resolve outside the structure (`val print = print` aliases the outer
+    // `print`). `fun` and `val rec` members stay mutually visible, except
+    // for `reserved` names, which always resolve outside the structure.
+    let mut pending: HashSet<Symbol> = scope.values.keys().copied().collect();
+    let mut union = HashSet::new();
     for decl in decls {
-        out.extend(rename_module_decl(
-            decl,
-            &scope,
-            &empty_values,
-            signature.is_some(),
-            signature.is_none(),
-        ));
+        let skip = if matches!(decl.kind, DeclKind::Val(_, _)) {
+            union.clear();
+            union.extend(reserved.iter().copied());
+            union.extend(pending.iter().copied());
+            &union
+        } else {
+            reserved
+        };
+        let mut bound = Vec::new();
+        bound_value_names(&decl, &mut bound);
+        let renamed =
+            rename_module_decl(decl, &scope, skip, signature.is_some(), signature.is_none());
+        for name in bound {
+            pending.remove(&name);
+        }
+        out.extend(renamed);
     }
     let mut out: Vec<Decl> = out
         .into_iter()
@@ -126,6 +155,38 @@ fn desugar_structure(
         ));
     }
     out
+}
+
+/// The value names a member declaration binds, without the qualified-symbol
+/// interning `collect_module_scope` does.
+fn bound_value_names(decl: &Decl, out: &mut Vec<Symbol>) {
+    match &decl.kind {
+        DeclKind::Val(pat, _) => pat_value_names(pat, out),
+        DeclKind::ValRec(name, _) => out.push(*name),
+        DeclKind::Fun(bindings) => out.extend(bindings.iter().map(|binding| binding.name)),
+        DeclKind::Local(_, body) => body.iter().for_each(|decl| bound_value_names(decl, out)),
+        _ => {}
+    }
+}
+
+fn pat_value_names(pat: &Pat, out: &mut Vec<Symbol>) {
+    match &pat.kind {
+        PatKind::Var(name) => out.push(*name),
+        PatKind::As(name, inner) => {
+            out.push(*name);
+            pat_value_names(inner, out);
+        }
+        PatKind::Tuple(items) | PatKind::List(items) => {
+            items.iter().for_each(|item| pat_value_names(item, out));
+        }
+        PatKind::Constructor(_, Some(payload)) => pat_value_names(payload, out),
+        PatKind::Cons(head, tail) => {
+            pat_value_names(head, out);
+            pat_value_names(tail, out);
+        }
+        PatKind::Ann(inner, _) | PatKind::Paren(inner) => pat_value_names(inner, out),
+        _ => {}
+    }
 }
 
 fn collect_module_scope(
@@ -211,7 +272,6 @@ fn collect_decl_exports(
         DeclKind::Signature(_)
         | DeclKind::Import(_)
         | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
         | DeclKind::Structure { .. }
         | DeclKind::AbstractType(_)
         | DeclKind::ExportVal { .. } => {}
@@ -458,7 +518,6 @@ fn rename_module_decl(
         }
         kind @ (DeclKind::Import(_)
         | DeclKind::ImportWithNames(_, _)
-        | DeclKind::Use(_)
         | DeclKind::AbstractType(_)
         | DeclKind::ExportVal { .. }) => vec![Decl {
             kind,

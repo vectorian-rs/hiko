@@ -1304,7 +1304,8 @@ mod tests {
 
     #[test]
     fn test_rebinding_a_builtin_name_does_not_change_earlier_calls() {
-        let vm = run("fun f n = int_to_string n
+        let vm = run("import __Builtin.Int
+             fun f n = BuiltinInt.to_string n
              fun int_to_string (n : int) = \"shadowed\"
              val a = f 7
              val b = int_to_string 7
@@ -1659,9 +1660,10 @@ mod tests {
     #[test]
     fn test_boundary_gc_runs_before_async_suspend() {
         let program = compile_program(
-            "fun churn n = if n = 0 then () else let val _ = (n, n) in churn (n - 1) end
+            "import __Builtin.Time
+             fun churn n = if n = 0 then () else let val _ = (n, n) in churn (n - 1) end
              val _ = churn 600
-             val _ = sleep 1",
+             val _ = BuiltinTime.sleep 1",
         );
         let mut vm = VMBuilder::new(program).with_core().build();
         vm.set_async_io(true);
@@ -2005,8 +2007,9 @@ mod tests {
         // Perform pops the payload before the clause runs. A GC forced in
         // between must still treat the payload as live, or the clause sees a
         // freed (and possibly reused) heap slot.
-        let src = "effect Ask of string
-             fun f () = perform Ask (int_to_string 12345)
+        let src = "import __Builtin.Int
+             effect Ask of string
+             fun f () = perform Ask (BuiltinInt.to_string 12345)
              val result = handle f ()
                with return x => x | Ask s k => s";
         for max in 1..64 {
@@ -2227,14 +2230,15 @@ mod tests {
     fn test_provider_clause_survives_gc() {
         // The clause closure and the string it captures must stay alive
         // while the handler is installed, under constant collection.
-        let src = "effect Ask of unit
+        let src = "import __Builtin.Int
+             effect Ask of unit
              fun with_name name f = handle f () with return x => x | Ask _ k => resume k (name ^ \"!\")
              fun body () =
                let val a = perform Ask ()
-                   val junk = int_to_string 999
+                   val junk = BuiltinInt.to_string 999
                    val b = perform Ask ()
                in a ^ b end
-             val result = with_name (int_to_string 12345) body";
+             val result = with_name (BuiltinInt.to_string 12345) body";
         let mut completed = false;
         for max in 1..96 {
             let mut vm = compile_vm(src);
@@ -2259,10 +2263,11 @@ mod tests {
         // Low object limits force a collection on nearly every allocation:
         // just before Perform (the payload) and in the clause (the concat).
         // The payload must stay rooted while the stack is unwound.
-        let src = "effect Fail of string
+        let src = "import __Builtin.Int
+             effect Fail of string
              fun dive n =
-               if n = 0 then perform Fail (int_to_string 12345)
-               else let val s = int_to_string n in dive (n - 1) end
+               if n = 0 then perform Fail (BuiltinInt.to_string 12345)
+               else let val s = BuiltinInt.to_string n in dive (n - 1) end
              val result = handle dive 20
                with return x => x | Fail s _ => s ^ \"!\"";
         let mut completed = false;
@@ -2544,7 +2549,10 @@ mod tests {
     #[test]
     fn test_output_sink_streams_print_and_println() {
         let sink = Arc::new(CaptureOutputSink::default());
-        let mut vm = compile_vm("val _ = print \"a\" val _ = println \"b\"");
+        let mut vm = compile_vm(
+            "import __Builtin.Stdio
+             val _ = BuiltinStdio.print \"a\" val _ = BuiltinStdio.println \"b\"",
+        );
         vm.enable_output_capture();
         vm.set_output_sink(sink.clone());
 
@@ -2557,7 +2565,7 @@ mod tests {
 
     #[test]
     fn test_io_limit_returns_runtime_error_on_stdout() {
-        let mut vm = compile_vm("val _ = println \"abcd\"");
+        let mut vm = compile_vm("import __Builtin.Stdio\nval _ = BuiltinStdio.println \"abcd\"");
         vm.enable_output_capture();
         vm.set_max_io_bytes(4);
 
@@ -2568,7 +2576,9 @@ mod tests {
 
     #[test]
     fn test_tracked_usage_reports_memory_and_io_bytes() {
-        let mut vm = compile_vm("val pair = (1, 2)\nval _ = println \"ok\"");
+        let mut vm = compile_vm(
+            "import __Builtin.Stdio\nval pair = (1, 2)\nval _ = BuiltinStdio.println \"ok\"",
+        );
         vm.enable_output_capture();
 
         vm.run().unwrap();
@@ -2580,7 +2590,10 @@ mod tests {
 
     #[test]
     fn test_read_stdin_uses_injected_buffer_once() {
-        let mut vm = compile_vm("val first = read_stdin () val second = read_stdin ()");
+        let mut vm = compile_vm(
+            "import __Builtin.Stdio
+             val first = BuiltinStdio.read_stdin () val second = BuiltinStdio.read_stdin ()",
+        );
         vm.set_stdin_override("{\"path\":\"src/main.rs\"}".to_string());
 
         vm.run().unwrap();
@@ -2645,7 +2658,7 @@ mod tests {
         fs::set_permissions(&script, perms).unwrap();
 
         let program = compile_program(&format!(
-            "val (code, out, err) = exec ({:?}, [])",
+            "import __Builtin.Exec\nval (code, out, err) = BuiltinExec.exec ({:?}, [])",
             script.to_string_lossy()
         ));
         let mut vm = VMBuilder::new(program)
@@ -2683,7 +2696,7 @@ mod tests {
         }
 
         let program = compile_program(&format!(
-            "val _ = exec ({:?}, [])",
+            "import __Builtin.Exec\nval _ = BuiltinExec.exec ({:?}, [])",
             denied.to_string_lossy()
         ));
         let mut vm = VMBuilder::new(program)
@@ -2705,14 +2718,18 @@ mod tests {
     #[test]
     fn test_fs_root_rejects_list_dir_traversal() {
         let root = temp_dir("fs-root-list");
-        let program = compile_program("val _ = list_dir \"../\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.list_entries \"../\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2726,14 +2743,18 @@ mod tests {
     #[test]
     fn test_fs_root_allows_create_dir_for_missing_nested_child() {
         let root = temp_dir("fs-root-create");
-        let program = compile_program("val _ = create_dir \"nested/a/b\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval _ = BuiltinFilesystem.create_directory \"nested/a/b\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
-                allow_read: false,
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
+                allow_read: true,
                 allow_write: true,
-                allow_delete: false,
+                allow_delete: true,
             })
             .build();
 
@@ -2747,14 +2768,17 @@ mod tests {
     #[test]
     fn test_fs_root_rejects_glob_traversal() {
         let root = temp_dir("fs-root-glob");
-        let program = compile_program("val _ = glob \"../*\"");
+        let program =
+            compile_program("import __Builtin.Filesystem\nval _ = BuiltinFilesystem.glob \"../*\"");
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2778,14 +2802,17 @@ mod tests {
         fs::write(outside.join("secret.txt"), "secret").unwrap();
         symlink(&outside, root.join("link")).unwrap();
 
-        let program = compile_program("val _ = walk_dir \".\"");
+        let program =
+            compile_program("import __Builtin.Filesystem\nval _ = BuiltinFilesystem.walk \".\"");
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2804,14 +2831,18 @@ mod tests {
         fs::write(root.join("a").join("b.txt"), "b").unwrap();
         fs::write(root.join("b.txt"), "b").unwrap();
 
-        let program = compile_program("val files = walk_dir \".\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval files = BuiltinFilesystem.walk \".\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 
@@ -2841,14 +2872,18 @@ mod tests {
         fs::write(root.join("file.txt"), "ok").unwrap();
         symlink(&root, root.join("loop")).unwrap();
 
-        let program = compile_program("val files = walk_dir \".\"");
+        let program = compile_program(
+            "import __Builtin.Filesystem\nval files = BuiltinFilesystem.walk \".\"",
+        );
         let mut vm = VMBuilder::new(program)
             .with_core()
             .with_filesystem(FilesystemPolicy {
                 root: root.to_string_lossy().to_string(),
+                // Importing __Builtin.Filesystem binds every member eagerly,
+                // so the policy must enable them all; the root still scopes them.
                 allow_read: true,
-                allow_write: false,
-                allow_delete: false,
+                allow_write: true,
+                allow_delete: true,
             })
             .build();
 

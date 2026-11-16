@@ -7,9 +7,14 @@
  * crate available on PATH.
  *)
 
-use "../libraries/Std-v0.1.0/modules/List.hml"
+import Std.List
+import Std.Exec
+import Std.Filesystem
+import Std.Stdio
+import Std.String
+import Std.System
 
-fun shell_quote s = "'" ^ string_replace (s, "'", "'\\''") ^ "'"
+fun shell_quote s = "'" ^ String.replace "'" "'\\''" s ^ "'"
 
 fun join_args args = case args of
       [] => ""
@@ -18,29 +23,29 @@ fun join_args args = case args of
 
 fun run_check name args = let
     val command = "tla"
-    val _ = println ("TLA  " ^ name)
-    val _ = println ("  " ^ command ^ " " ^ join_args args)
-    val (code, stdout, stderr) = exec (command, args)
-    val _ = if trim stdout = "" then () else print stdout
-    val _ = if trim stderr = "" then () else print stderr
+    val _ = Stdio.println ("TLA  " ^ name)
+    val _ = Stdio.println ("  " ^ command ^ " " ^ join_args args)
+    val (code, stdout, stderr) = Exec.run command args
+    val _ = if String.trim stdout = "" then () else Stdio.print stdout
+    val _ = if String.trim stderr = "" then () else Stdio.print stderr
   in
-    if code = 0 then println ("PASS " ^ name) else panic ("TLA check failed: " ^ name)
+    if code = 0 then Stdio.println ("PASS " ^ name) else System.panic ("TLA check failed: " ^ name)
   end
 
 fun run_expect_failure name args = let
     val command = "tla"
-    val _ = println ("TLA  " ^ name ^ " (expected failure)")
-    val _ = println ("  " ^ command ^ " " ^ join_args args)
-    val (code, stdout, stderr) = exec (command, args)
-    val _ = if trim stdout = "" then () else print stdout
-    val _ = if trim stderr = "" then () else print stderr
+    val _ = Stdio.println ("TLA  " ^ name ^ " (expected failure)")
+    val _ = Stdio.println ("  " ^ command ^ " " ^ join_args args)
+    val (code, stdout, stderr) = Exec.run command args
+    val _ = if String.trim stdout = "" then () else Stdio.print stdout
+    val _ = if String.trim stderr = "" then () else Stdio.print stderr
   in
-    if code = 0 then panic ("TLA negative check unexpectedly passed: " ^ name) else println ("PASS " ^ name ^ " failed as expected")
+    if code = 0 then System.panic ("TLA negative check unexpectedly passed: " ^ name) else Stdio.println ("PASS " ^ name ^ " failed as expected")
   end
 
 val trace_dir = "target/tla"
 
-val _ = if file_exists trace_dir then () else create_dir trace_dir
+val _ = Filesystem.run (fn () => if Filesystem.exists trace_dir then () else Filesystem.create_directory trace_dir)
 
 val checks = [("ProcessLifecycle validate", ["specs/tla/ProcessLifecycle.tla", "--config", "specs/tla/ProcessLifecycle.cfg", "--validate"]), ("ThreadedSchedulerImpl validate", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "--validate"]), ("NumericWidthSemantics model", ["specs/tla/NumericWidthSemantics.tla", "--config", "specs/tla/NumericWidthSemantics.cfg", "--allow-deadlock", "--trace-json", "target/tla/numeric_width_semantics.trace.json"]), ("WaitAnyLeftmost model", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost.trace.json"]), ("WaitAnyLeftmost right-notifier scenario", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmost.cfg", "--allow-deadlock", "--scenario", "@specs/tla/WaitAnyLeftmostRightNotifier.scenario", "--trace-json", "target/tla/wait_any_leftmost_right_notifier.trace.json"]), ("CancelIoRace model", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race.trace.json"]), ("CancelIoRace stale-completion scenario", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRace.cfg", "--allow-deadlock", "--scenario", "@specs/tla/CancelIoRaceStaleCompletion.scenario", "--trace-json", "target/tla/cancel_io_race_stale_completion.trace.json"]), ("WaitAnyLeftmost liveness", ["specs/tla/WaitAnyLeftmost.tla", "--config", "specs/tla/WaitAnyLeftmostLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/wait_any_leftmost_live.trace.json"]), ("CancelIoRace liveness", ["specs/tla/CancelIoRace.tla", "--config", "specs/tla/CancelIoRaceLive.cfg", "--check-liveness", "--allow-deadlock", "--trace-json", "target/tla/cancel_io_race_live.trace.json"]), ("ThreadedSchedulerImpl quick", ["specs/tla/ThreadedSchedulerImpl.tla", "--config", "specs/tla/ThreadedSchedulerImpl.cfg", "-c", "MaxProcesses=2", "--quick", "--max-states", "5000", "--allow-deadlock", "--trace-json", "target/tla/threaded_scheduler_impl.trace.json"])]
 
@@ -66,4 +71,4 @@ val _ = run_all checks
 
 val _ = run_all_expected_failures negative_checks
 
-val _ = println "All TLA checks passed"
+val _ = Stdio.println "All TLA checks passed"

@@ -13,10 +13,12 @@
    same lines to stderr. *)
 import Std.List
 import Std.Log
+import Std.Int
+import Std.Stdio
 
 fun validate (name, quantity) =
   if quantity <= 0 then
-    let val _ = Log.emit_warn "shop" ("skipping " ^ name ^ ": quantity " ^ int_to_string quantity)
+    let val _ = Log.emit_warn "shop" ("skipping " ^ name ^ ": quantity " ^ Int.to_string quantity)
     in false end
   else
     let val _ = Log.emit_debug "shop" ("valid: " ^ name)
@@ -31,9 +33,9 @@ fun process orders =
 
 fun run orders =
   let
-    val _ = Log.emit_info "shop" ("processing " ^ int_to_string (List.length orders) ^ " orders")
+    val _ = Log.emit_info "shop" ("processing " ^ Int.to_string (List.length orders) ^ " orders")
     val total = process orders
-    val _ = Log.emit_info "shop" (Log.kv "done" [("total", int_to_string total)])
+    val _ = Log.emit_info "shop" (Log.kv "done" [("total", Int.to_string total)])
   in
     total
   end
@@ -42,4 +44,4 @@ val orders = [("apples", 3), ("pears", 0), ("plums", 5)]
 
 val total = Log.to_stderr (Log.from_env "HIKO_LOG" Log.Info) (fn () => run orders)
 
-val _ = println ("total: " ^ int_to_string total)
+val _ = Stdio.println ("total: " ^ Int.to_string total)

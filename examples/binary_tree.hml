@@ -1,4 +1,7 @@
 (* Binary search tree with insert, search, and in-order traversal *)
+import Std.Int
+import Std.Stdio
+
 datatype tree =
     Leaf
   | Node of tree * int * tree
@@ -28,7 +31,7 @@ fun print_list xs =
       [] => ()
     | x :: rest =>
       let
-        val _ = print (int_to_string x ^ " ")
+        val _ = Stdio.print (Int.to_string x ^ " ")
       in
         print_list rest
       end
@@ -40,12 +43,12 @@ fun from_list xs =
 
 val tree = from_list [5, 3, 7, 1, 4, 6, 8, 2]
 
-val _ = print "In-order: "
+val _ = Stdio.print "In-order: "
 
 val _ = print_list (to_list tree)
 
-val _ = println ""
+val _ = Stdio.println ""
 
-val _ = println ("Contains 4: " ^ if contains tree 4 then "yes" else "no")
+val _ = Stdio.println ("Contains 4: " ^ if contains tree 4 then "yes" else "no")
 
-val _ = println ("Contains 9: " ^ if contains tree 9 then "yes" else "no")
+val _ = Stdio.println ("Contains 9: " ^ if contains tree 9 then "yes" else "no")

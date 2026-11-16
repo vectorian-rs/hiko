@@ -1,5 +1,9 @@
 (* Tests for Std-v0.1.0/modules/Fiber.hml: both and all fail fast. *)
-use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+import Std.Fiber
+import Std.Stdio
+import Std.System
+import Std.Testing
+import Std.Time
 
 fun is_error_message expected result =
   case result of
@@ -11,31 +15,31 @@ fun is_error_message expected result =
    for a minute, and the test checks that the file finishes well before. *)
 fun slow () =
   let
-    val _ = sleep 60000
+    val _ = Time.sleep (Time.from_ms 60000)
   in
     1
   end
 
 val both_left_fails =
-  is_error_message "left" (Fiber.both ((fn () => panic "left"), slow))
+  is_error_message "left" (Fiber.both ((fn () => System.panic "left"), slow))
 
-val _ = assert_eq (both_left_fails, 1, "both: a failing left fiber cancels the right")
+val _ = Testing.equal both_left_fails 1 "both: a failing left fiber cancels the right"
 
 val both_right_fails =
-  is_error_message "right" (Fiber.both (slow, (fn () => panic "right")))
+  is_error_message "right" (Fiber.both (slow, (fn () => System.panic "right")))
 
-val _ = assert_eq (both_right_fails, 1, "both: a failing right fiber cancels the left")
+val _ = Testing.equal both_right_fails 1 "both: a failing right fiber cancels the left"
 
 val all_fails =
-  is_error_message "third" (Fiber.all [slow, slow, (fn () => panic "third"), slow])
+  is_error_message "third" (Fiber.all [slow, slow, (fn () => System.panic "third"), slow])
 
-val _ = assert_eq (all_fails, 1, "all: the first failure cancels the rest")
+val _ = Testing.equal all_fails 1 "all: the first failure cancels the rest"
 
 val all_in_order =
-  case Fiber.all [(fn () => let val _ = sleep 30 in 1 end), (fn () => 2), (fn () => let val _ = sleep 10 in 3 end)] of
+  case Fiber.all [(fn () => let val _ = Time.sleep (Time.from_ms 30) in 1 end), (fn () => 2), (fn () => let val _ = Time.sleep (Time.from_ms 10) in 3 end)] of
       Ok values => values
-    | Err err => panic ("all failed: " ^ Fiber.render_error err)
+    | Err err => System.panic ("all failed: " ^ Fiber.render_error err)
 
-val _ = assert_eq (all_in_order, [1, 2, 3], "all: values in input order, not finishing order")
+val _ = Testing.equal all_in_order ([1, 2, 3]) "all: values in input order, not finishing order"
 
-val _ = println "fiber fail-fast tests passed"
+val _ = Stdio.println "fiber fail-fast tests passed"

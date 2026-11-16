@@ -1,4 +1,6 @@
 (* Hello, world. *)
+import Std.Stdio
+
 val greeting = "Hello, world!"
 
-val _ = println greeting
+val _ = Stdio.println greeting

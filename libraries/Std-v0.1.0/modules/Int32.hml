@@ -22,41 +22,41 @@ end
 structure Int32 :> INT32 = struct
   type t = int
 
-  val min_value = BuiltinNumeric.int32_min_value_raw ()
+  val min_value = BuiltinNumeric.int32_min_value ()
 
-  val max_value = BuiltinNumeric.int32_max_value_raw ()
+  val max_value = BuiltinNumeric.int32_max_value ()
 
-  fun of_int value = BuiltinNumeric.int32_of_int_raw value
+  fun of_int value = BuiltinNumeric.int32_of_int value
 
   fun checked_of_int value =
     let
-      val (ok, result) = BuiltinNumeric.int32_checked_of_int_raw value
+      val (ok, result) = BuiltinNumeric.int32_checked_of_int value
     in
       if ok then Option.Some result else Option.None
     end
 
-  fun to_int value = BuiltinNumeric.int32_to_int_raw value
+  fun to_int value = BuiltinNumeric.int32_to_int value
 
-  fun add rhs value = BuiltinNumeric.int32_add_raw (value, rhs)
+  fun add rhs value = BuiltinNumeric.int32_add (value, rhs)
 
   fun checked_add rhs value =
     let
-      val (ok, result) = BuiltinNumeric.int32_checked_add_raw (value, rhs)
+      val (ok, result) = BuiltinNumeric.int32_checked_add (value, rhs)
     in
       if ok then Option.Some result else Option.None
     end
 
-  fun wrapping_add rhs value = BuiltinNumeric.int32_wrapping_add_raw (value, rhs)
+  fun wrapping_add rhs value = BuiltinNumeric.int32_wrapping_add (value, rhs)
 
-  fun saturating_add rhs value = BuiltinNumeric.int32_saturating_add_raw (value, rhs)
+  fun saturating_add rhs value = BuiltinNumeric.int32_saturating_add (value, rhs)
 
-  fun sub rhs value = BuiltinNumeric.int32_sub_raw (value, rhs)
+  fun sub rhs value = BuiltinNumeric.int32_sub (value, rhs)
 
-  fun mul rhs value = BuiltinNumeric.int32_mul_raw (value, rhs)
+  fun mul rhs value = BuiltinNumeric.int32_mul (value, rhs)
 
-  fun div divisor value = BuiltinNumeric.int32_div_raw (value, divisor)
+  fun div divisor value = BuiltinNumeric.int32_div (value, divisor)
 
-  fun rem divisor value = BuiltinNumeric.int32_rem_raw (value, divisor)
+  fun rem divisor value = BuiltinNumeric.int32_rem (value, divisor)
 
-  fun neg value = BuiltinNumeric.int32_neg_raw value
+  fun neg value = BuiltinNumeric.int32_neg value
 end

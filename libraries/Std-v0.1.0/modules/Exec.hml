@@ -8,5 +8,5 @@ structure Exec :> EXEC = struct
   (* Advanced, policy-gated process execution. Prefer domain-specific
    * capabilities when available. Returns (exit_code, stdout, stderr).
    *)
-  fun run command args = BuiltinExec.exec_raw (command, args)
+  fun run command args = BuiltinExec.exec (command, args)
 end

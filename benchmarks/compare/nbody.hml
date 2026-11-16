@@ -1,6 +1,10 @@
 (* Benchmarks Game n-body, functional: five bodies as tuples, each step
  * builds new bodies. Float arithmetic; prints the final energy as an int
  * (energy * 1e9, floored), so every language prints the same line. *)
+import Std.Float
+import Std.Int
+import Std.Stdio
+
 val pi = 3.141592653589793
 val solar_mass = 4.0 * pi * pi
 val days = 365.24
@@ -44,7 +48,7 @@ fun pull ((x, y, z, vx, vy, vz, m), others, i, j, dt) =
             val dy = y - oy
             val dz = z - oz
             val d2 = dx * dx + dy * dy + dz * dz
-            val mag = dt / (d2 * sqrt d2)
+            val mag = dt / (d2 * Float.sqrt d2)
           in
             pull ((x, y, z, vx - dx * om * mag, vy - dy * om * mag, vz - dz * om * mag, m), rest, i, j + 1, dt)
           end
@@ -69,7 +73,7 @@ fun potential ((x, y, z, _, _, _, m), others, e) =
           val dy = y - oy
           val dz = z - oz
         in
-          potential ((x, y, z, 0.0, 0.0, 0.0, m), rest, e - m * om / sqrt (dx * dx + dy * dy + dz * dz))
+          potential ((x, y, z, 0.0, 0.0, 0.0, m), rest, e - m * om / Float.sqrt (dx * dx + dy * dy + dz * dz))
         end
 
 fun energy (bs, e) =
@@ -79,4 +83,4 @@ fun energy (bs, e) =
         energy (rest, potential ((x, y, z, vx, vy, vz, m), rest, e + 0.5 * m * (vx * vx + vy * vy + vz * vz)))
 
 val final = advance (offset initial, 20000)
-val _ = println (int_to_string (floor (energy (final, 0.0) * 1000000000.0)))
+val _ = Stdio.println (Int.to_string (Float.floor (energy (final, 0.0) * 1000000000.0)))

@@ -1,7 +1,12 @@
-use "../../libraries/Std-v0.1.0/modules/Fiber.hml"
+import Std.Fiber
+import Std.Stdio
+import Std.String
+import Std.System
+import Std.Testing
+import Std.Time
 
 val cancelled = Fiber.spawn (fn () => let
-  val _ = sleep 999999
+  val _ = Time.sleep (Time.from_ms 999999)
 in
   42
 end)
@@ -16,7 +21,7 @@ fun is_error_message expected result =
 
 val cancelled_status = is_error_message "cancelled" (Fiber.join cancelled)
 
-val _ = assert_eq (cancelled_status, 1, "cancelled join")
+val _ = Testing.equal cancelled_status 1 "cancelled join"
 
 val joined_twice = Fiber.spawn (fn () => 42)
 
@@ -28,18 +33,18 @@ val first_join_status =
 
 val second_join_status = is_error_message "result unavailable/reaped; ownership no longer known" (Fiber.join joined_twice)
 
-val _ = assert_eq (first_join_status, 1, "first join ok")
+val _ = Testing.equal first_join_status 1 "first join ok"
 
-val _ = assert_eq (second_join_status, 1, "second join already joined")
+val _ = Testing.equal second_join_status 1 "second join already joined"
 
-val failed = Fiber.spawn (fn () => panic "boom")
+val failed = Fiber.spawn (fn () => System.panic "boom")
 
 val after_failure =
   case Fiber.join failed of
       Ok _ => 0
-    | Err err => if string_contains (Fiber.render_error err, "boom") then 41 else 0
+    | Err err => if String.contains "boom" (Fiber.render_error err) then 41 else 0
     | _ => 0
 
-val _ = assert_eq (after_failure + 1, 42, "parent continues after child failure")
+val _ = Testing.equal (after_failure + 1) 42 "parent continues after child failure"
 
-val _ = println "fiber error tests passed"
+val _ = Stdio.println "fiber error tests passed"

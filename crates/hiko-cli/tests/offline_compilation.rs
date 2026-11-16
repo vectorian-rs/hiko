@@ -33,7 +33,7 @@ impl Registry {
         let stop = Arc::new(AtomicBool::new(false));
         let (count, stopping) = (requests.clone(), stop.clone());
         let package = format!(
-            "name = \"Pkg\"\nversion = \"0.1.0\"\n[modules]\nAnswer = \"blake3:{}\"\n",
+            "name = \"Pkg\"\nversion = \"0.1.0\"\ndependencies = []\n[modules]\nAnswer = \"blake3:{}\"\n",
             blake3_hex(MODULE.as_bytes())
         );
         let worker = thread::spawn(move || {
@@ -127,7 +127,7 @@ impl Project {
         let hash = blake3_hex(MODULE.as_bytes());
         let base = format!("{}/Pkg-v0.1.0", registry.url);
         fs::write(root.join("hiko.lock.toml"), format!(
-            "schema_version = 1\n[packages.Pkg]\nversion = \"0.1.0\"\nbase_url = {base:?}\n[packages.Pkg.modules]\nAnswer = \"blake3:{hash}\"\n"
+            "schema_version = 1\n[packages.Pkg]\ndependencies = []\nversion = \"0.1.0\"\nbase_url = {base:?}\n[packages.Pkg.modules]\nAnswer = \"blake3:{hash}\"\n"
         )).unwrap();
         let cached = module_cache_path(
             &root.join("cache"),

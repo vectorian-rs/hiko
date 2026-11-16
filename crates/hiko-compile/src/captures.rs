@@ -199,7 +199,6 @@ impl<'a> PrivateCaptures<'a> {
             | DeclKind::Effect(_, _)
             | DeclKind::Import(_)
             | DeclKind::ImportWithNames(_, _)
-            | DeclKind::Use(_)
             | DeclKind::Signature(_)
             | DeclKind::Structure { .. } => false,
         }

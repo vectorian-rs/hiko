@@ -7,9 +7,9 @@ signature TESTING = sig
 end
 
 structure Testing :> TESTING = struct
-  fun check condition message = BuiltinTesting.assert_raw (condition, message)
+  fun check condition message = BuiltinTesting.assert (condition, message)
 
-  fun equal actual expected message = BuiltinTesting.assert_eq_raw (actual, expected, message)
+  fun equal actual expected message = BuiltinTesting.assert_eq (actual, expected, message)
 
-  fun fail message = BuiltinTesting.panic_raw message
+  fun fail message = BuiltinTesting.panic message
 end

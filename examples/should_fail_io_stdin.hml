@@ -2,4 +2,6 @@
  * Example:
  *   printf 'abcdef' | hiko run --config hiko.toml --policy should-fail-io examples/should_fail_io_stdin.hml
  *)
-val _ = read_stdin ()
+import Std.Stdio
+
+val _ = Stdio.read_stdin ()

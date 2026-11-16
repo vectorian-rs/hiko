@@ -4,6 +4,8 @@
  * chains steps so the first Err stops the computation.
  *)
 import Std.Result
+import Std.Int
+import Std.Stdio
 
 fun divide a b = if b = 0 then Result.Err "division by zero" else Result.Ok (a / b)
 
@@ -15,8 +17,8 @@ val good = safe_compute ()
 
 val _ =
   case good of
-      Result.Ok n => println ("Success: " ^ int_to_string n)
-    | Result.Err msg => println ("Error: " ^ msg)
+      Result.Ok n => Stdio.println ("Success: " ^ Int.to_string n)
+    | Result.Err msg => Stdio.println ("Error: " ^ msg)
 
 fun bad_compute () =
   divide 100 0
@@ -26,5 +28,5 @@ val bad = bad_compute ()
 
 val _ =
   case bad of
-      Result.Ok n => println ("Success: " ^ int_to_string n)
-    | Result.Err msg => println ("Error: " ^ msg)
+      Result.Ok n => Stdio.println ("Success: " ^ Int.to_string n)
+    | Result.Err msg => Stdio.println ("Error: " ^ msg)

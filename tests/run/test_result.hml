@@ -1,106 +1,109 @@
 (* Tests for Std-v0.1.0/modules/Result.hml *)
-use "../../libraries/Std-v0.1.0/modules/Result.hml"
+import Std.Result
+import Std.Stdio
+import Std.String
+import Std.Testing
 
-val _ = assert (Result.is_ok (Result.Ok 1), "is_ok Ok")
+val _ = Testing.check (Result.is_ok (Result.Ok 1)) "is_ok Ok"
 
-val _ = assert (Result.is_err (Result.Err "boom"), "is_err Err")
+val _ = Testing.check (Result.is_err (Result.Err "boom")) "is_err Err"
 
-val _ = assert (not (Result.is_ok (Result.Err "boom")), "not is_ok Err")
+val _ = Testing.check (not (Result.is_ok (Result.Err "boom"))) "not is_ok Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.Ok 42), 42, "unwrap_or Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.Ok 42)) 42 "unwrap_or Ok"
 
-val _ = assert_eq (Result.unwrap_or 7 (Result.Err "boom"), 7, "unwrap_or Err")
+val _ = Testing.equal (Result.unwrap_or 7 (Result.Err "boom")) 7 "unwrap_or Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.map (fn x => x + 1) (Result.Ok 41)), 42, "map Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.map (fn x => x + 1) (Result.Ok 41))) 42 "map Ok"
 
-val _ = assert (Result.is_err (Result.map (fn x => x + 1) (Result.Err "boom")), "map Err")
+val _ = Testing.check (Result.is_err (Result.map (fn x => x + 1) (Result.Err "boom"))) "map Err"
 
-val _ = assert_eq (Result.unwrap_or_else (fn err => err) (Result.map_err (fn _ => "fail") (Result.Err "boom")), "fail", "map_err Err")
+val _ = Testing.equal (Result.unwrap_or_else (fn err => err) (Result.map_err (fn _ => "fail") (Result.Err "boom"))) "fail" "map_err Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Ok 41)), 42, "and_then Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Ok 41))) 42 "and_then Ok"
 
-val _ = assert (Result.is_err (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Err "boom")), "and_then Err")
+val _ = Testing.check (Result.is_err (Result.and_then (fn x => Result.Ok (x + 1)) (Result.Err "boom"))) "and_then Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.flatten (Result.Ok (Result.Ok 42))), 42, "flatten Ok Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.flatten (Result.Ok (Result.Ok 42)))) 42 "flatten Ok Ok"
 
-val _ = assert_eq (Result.unwrap_or_else (fn err => err) (Result.flatten (Result.Ok (Result.Err "boom"))), "boom", "flatten Ok Err")
+val _ = Testing.equal (Result.unwrap_or_else (fn err => err) (Result.flatten (Result.Ok (Result.Err "boom")))) "boom" "flatten Ok Err"
 
-val _ = assert_eq (Result.unwrap_or_else (fn err => err) (Result.flatten (Result.Err "outer")), "outer", "flatten Err")
+val _ = Testing.equal (Result.unwrap_or_else (fn err => err) (Result.flatten (Result.Err "outer"))) "outer" "flatten Err"
 
-val _ = assert_eq (Result.fold (fn x => x + 1) (fn _ => 0) (Result.Ok 41), 42, "fold Ok")
+val _ = Testing.equal (Result.fold (fn x => x + 1) (fn _ => 0) (Result.Ok 41)) 42 "fold Ok"
 
-val _ = assert_eq (Result.fold (fn _ => 0) (fn err => string_length err) (Result.Err "boom"), 4, "fold Err")
+val _ = Testing.equal (Result.fold (fn _ => 0) (fn err => String.length err) (Result.Err "boom")) 4 "fold Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.or_else (fn _ => Result.Ok 42) (Result.Err "boom")), 42, "or_else Err")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.or_else (fn _ => Result.Ok 42) (Result.Err "boom"))) 42 "or_else Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.compose (fn x => Result.Ok (x + 1)) (fn y => Result.Ok (y * 2)) 20), 42, "compose Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.compose (fn x => Result.Ok (x + 1)) (fn y => Result.Ok (y * 2)) 20)) 42 "compose Ok"
 
-val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.compose (fn _ => Result.Err "first") (fn y => Result.Ok (y * 2)) 20), "first", "compose Err")
+val _ = Testing.equal (Result.fold (fn _ => "ok") (fn err => err) (Result.compose (fn _ => Result.Err "first") (fn y => Result.Ok (y * 2)) 20)) "first" "compose Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.tee (fn _ => ()) (Result.Ok 42)), 42, "tee preserves Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.tee (fn _ => ()) (Result.Ok 42))) 42 "tee preserves Ok"
 
-val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.tee_err (fn _ => ()) (Result.Err "boom")), "boom", "tee_err preserves Err")
+val _ = Testing.equal (Result.fold (fn _ => "ok") (fn err => err) (Result.tee_err (fn _ => ()) (Result.Err "boom"))) "boom" "tee_err preserves Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.map2 (fn x => fn y => x + y) (Result.Ok 20) (Result.Ok 22)), 42, "map2 Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.map2 (fn x => fn y => x + y) (Result.Ok 20) (Result.Ok 22))) 42 "map2 Ok"
 
-val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.map2 (fn (x : int) => fn y => x + y) (Result.Err "left") (Result.Err "right")), "left", "map2 first Err")
+val _ = Testing.equal (Result.fold (fn _ => "ok") (fn err => err) (Result.map2 (fn (x : int) => fn y => x + y) (Result.Err "left") (Result.Err "right"))) "left" "map2 first Err"
 
-val _ = assert_eq (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.both (Result.Ok 20) (Result.Ok 22)), 42, "both Ok")
+val _ = Testing.equal (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.both (Result.Ok 20) (Result.Ok 22))) 42 "both Ok"
 
-val _ = assert_eq (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.fanout (fn x => Result.Ok (x + 1)) (fn x => Result.Ok (x * 2)) 20), 61, "fanout Ok")
+val _ = Testing.equal (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.fanout (fn x => Result.Ok (x + 1)) (fn x => Result.Ok (x * 2)) 20)) 61 "fanout Ok"
 
-val _ = assert_eq (Result.fold (fn xs => case xs of 1 :: 2 :: 3 :: [] => 6 | _ => 0) (fn _ => 0) (Result.all [Result.Ok 1, Result.Ok 2, Result.Ok 3]), 6, "all Ok")
+val _ = Testing.equal (Result.fold (fn xs => case xs of 1 :: 2 :: 3 :: [] => 6 | _ => 0) (fn _ => 0) (Result.all [Result.Ok 1, Result.Ok 2, Result.Ok 3])) 6 "all Ok"
 
-val _ = assert_eq (Result.fold (fn _ => "ok") (fn err => err) (Result.all [Result.Ok 1, Result.Err "first", Result.Err "second"]), "first", "all first Err")
+val _ = Testing.equal (Result.fold (fn _ => "ok") (fn err => err) (Result.all [Result.Ok 1, Result.Err "first", Result.Err "second"])) "first" "all first Err"
 
-val _ = assert_eq (Result.fold (fn xs => case xs of 2 :: 4 :: 6 :: [] => 12 | _ => 0) (fn _ => 0) (Result.traverse (fn x => Result.Ok (x * 2)) [1, 2, 3]), 12, "traverse Ok")
+val _ = Testing.equal (Result.fold (fn xs => case xs of 2 :: 4 :: 6 :: [] => 12 | _ => 0) (fn _ => 0) (Result.traverse (fn x => Result.Ok (x * 2)) [1, 2, 3])) 12 "traverse Ok"
 
-val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of left :: right :: [] => string_length left + string_length right | _ => 0) (Result.validate2 (fn (x : int) => fn y => x + y) (Result.Err "a") (Result.Err "bb")), 3, "validate2 accumulates errors")
+val _ = Testing.equal (Result.fold (fn _ => 0) (fn errs => case errs of left :: right :: [] => String.length left + String.length right | _ => 0) (Result.validate2 (fn (x : int) => fn y => x + y) (Result.Err "a") (Result.Err "bb"))) 3 "validate2 accumulates errors"
 
-val _ = assert_eq (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.validate_both (Result.Ok 20) (Result.Ok 22)), 42, "validate_both Ok")
+val _ = Testing.equal (Result.fold (fn pair => case pair of (left, right) => left + right) (fn _ => 0) (Result.validate_both (Result.Ok 20) (Result.Ok 22))) 42 "validate_both Ok"
 
-val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of _ :: _ :: [] => 2 | _ => 0) (Result.validate_all [Result.Ok 1, Result.Err "a", Result.Err "b"]), 2, "validate_all accumulates errors")
+val _ = Testing.equal (Result.fold (fn _ => 0) (fn errs => case errs of _ :: _ :: [] => 2 | _ => 0) (Result.validate_all [Result.Ok 1, Result.Err "a", Result.Err "b"])) 2 "validate_all accumulates errors"
 
-val _ = assert_eq (Result.fold (fn _ => 0) (fn errs => case errs of _ :: _ :: [] => 2 | _ => 0) (Result.validate_traverse (fn x => if x = 0 then Result.Err "zero" else Result.Ok x) [1, 0, 2, 0]), 2, "validate_traverse accumulates errors")
+val _ = Testing.equal (Result.fold (fn _ => 0) (fn errs => case errs of _ :: _ :: [] => 2 | _ => 0) (Result.validate_traverse (fn x => if x = 0 then Result.Err "zero" else Result.Ok x) [1, 0, 2, 0])) 2 "validate_traverse accumulates errors"
 
 
 (* apply, lift2, lift3 and lift4 *)
 
 fun errors result = Result.unwrap_or_else (fn errs => errs) (Result.map (fn _ => []) result)
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.apply (Result.Ok (fn x => x + 1)) (Result.Ok 41)), 42, "apply Ok Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.apply (Result.Ok (fn x => x + 1)) (Result.Ok 41))) 42 "apply Ok Ok"
 
-val _ = assert_eq (errors (Result.apply (Result.Err ["f"]) (Result.Err ["x"])), ["f", "x"], "apply keeps both errors in order")
+val _ = Testing.equal (errors (Result.apply (Result.Err ["f"]) (Result.Err ["x"]))) (["f", "x"]) "apply keeps both errors in order"
 
-val _ = assert_eq (errors (Result.apply (Result.Ok (fn x => x)) (Result.Err ["x"])), ["x"], "apply Ok Err")
+val _ = Testing.equal (errors (Result.apply (Result.Ok (fn x => x)) (Result.Err ["x"]))) (["x"]) "apply Ok Err"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.lift2 (fn a => fn b => a * b) (Result.Ok 6) (Result.Ok 7)), 42, "lift2 Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.lift2 (fn a => fn b => a * b) (Result.Ok 6) (Result.Ok 7))) 42 "lift2 Ok"
 
-val _ = assert_eq (Result.unwrap_or (0, "", 0) (Result.lift3 (fn a => fn b => fn c => (a, b, c)) (Result.Ok 1) (Result.Ok "b") (Result.Ok 3)), (1, "b", 3), "lift3 Ok")
-
-val _ =
-  assert_eq (errors (Result.lift3 (fn a => fn b => fn c => (a, b, c))
-    (Result.Err ["id"]) (Result.Ok "b") (Result.Err ["email"])), ["id", "email"], "lift3 keeps every error")
+val _ = Testing.equal (Result.unwrap_or (0, "", 0) (Result.lift3 (fn a => fn b => fn c => (a, b, c)) (Result.Ok 1) (Result.Ok "b") (Result.Ok 3))) ((1, "b", 3)) "lift3 Ok"
 
 val _ =
-  assert_eq (errors (Result.lift3 (fn id => fn (first, last) => fn email => (id, first, last, email))
+  Testing.equal (errors (Result.lift3 (fn a => fn b => fn c => (a, b, c))
+    (Result.Err ["id"]) (Result.Ok "b") (Result.Err ["email"]))) (["id", "email"]) "lift3 keeps every error"
+
+val _ =
+  Testing.equal (errors (Result.lift3 (fn id => fn (first, last) => fn email => (id, first, last, email))
     (Result.Err ["id"])
     (Result.lift2 (fn f => fn l => (f, l)) (Result.Err ["first"]) (Result.Err ["last"]))
-    (Result.Err ["email"])), ["id", "first", "last", "email"], "nested lifts keep every error in order")
+    (Result.Err ["email"]))) (["id", "first", "last", "email"]) "nested lifts keep every error in order"
 
-val _ = assert_eq (Result.unwrap_or 0 (Result.lift4 (fn a => fn b => fn c => fn d => a + b + c + d) (Result.Ok 1) (Result.Ok 2) (Result.Ok 3) (Result.Ok 4)), 10, "lift4 Ok")
+val _ = Testing.equal (Result.unwrap_or 0 (Result.lift4 (fn a => fn b => fn c => fn d => a + b + c + d) (Result.Ok 1) (Result.Ok 2) (Result.Ok 3) (Result.Ok 4))) 10 "lift4 Ok"
 
-val _ = assert_eq (errors (Result.apply (Result.Err ["f"]) (Result.Ok 1)), ["f"], "apply Err Ok")
+val _ = Testing.equal (errors (Result.apply (Result.Err ["f"]) (Result.Ok 1))) (["f"]) "apply Err Ok"
 
-val _ = assert_eq (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Err ["a"]) (Result.Ok 2)), ["a"], "lift2 first Err")
+val _ = Testing.equal (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Err ["a"]) (Result.Ok 2))) (["a"]) "lift2 first Err"
 
-val _ = assert_eq (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Ok 1) (Result.Err ["b"])), ["b"], "lift2 second Err")
+val _ = Testing.equal (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Ok 1) (Result.Err ["b"]))) (["b"]) "lift2 second Err"
 
-val _ = assert_eq (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Err ["a1", "a2"]) (Result.Err ["b"])), ["a1", "a2", "b"], "lift2 keeps multi-error lists in order")
+val _ = Testing.equal (errors (Result.lift2 (fn (a : int) => fn b => a + b) (Result.Err ["a1", "a2"]) (Result.Err ["b"]))) (["a1", "a2", "b"]) "lift2 keeps multi-error lists in order"
 
 val _ =
-  assert_eq (errors (Result.lift4 (fn (a : int) => fn b => fn c => fn d => a + b + c + d)
-    (Result.Err ["a"]) (Result.Ok 2) (Result.Err ["c"]) (Result.Err ["d"])), ["a", "c", "d"], "lift4 keeps every error")
+  Testing.equal (errors (Result.lift4 (fn (a : int) => fn b => fn c => fn d => a + b + c + d)
+    (Result.Err ["a"]) (Result.Ok 2) (Result.Err ["c"]) (Result.Err ["d"]))) (["a", "c", "d"]) "lift4 keeps every error"
 
 fun count_up (n, acc) = if n = 0 then acc else count_up (n - 1, n :: acc)
 
@@ -108,6 +111,6 @@ val many = count_up (100000, [])
 
 fun length_of (xs, n) = case xs of [] => n | _ :: rest => length_of (rest, n + 1)
 
-val _ = assert_eq (length_of (errors (Result.apply (Result.Err many) (Result.Err many)), 0), 200000, "apply appends long error lists")
+val _ = Testing.equal (length_of (errors (Result.apply (Result.Err many) (Result.Err many)), 0)) 200000 "apply appends long error lists"
 
-val _ = println "result tests passed"
+val _ = Stdio.println "result tests passed"
