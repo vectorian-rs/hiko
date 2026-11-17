@@ -37,8 +37,14 @@ structure Report = struct
           first :: insert (check, rest)
 
   (* Worst first, by Health.urgency; checks with the same status keep their
-     order. *)
-  fun ordered checks = List.foldl (fn (sorted, check) => insert (check, sorted)) [] checks
+     order. Four stable filters cover the closed status domain in linear
+     traversals. Filter/append use bounded call stack, but allocate temporary
+     lists: this is not constant heap or unchanged low-limit success. *)
+  fun ordered checks =
+    List.append (List.filter (Health.has_status Health.Critical) checks)
+      (List.append (List.filter (Health.has_status Health.Unknown) checks)
+        (List.append (List.filter (Health.has_status Health.Warning) checks)
+          (List.filter (Health.has_status Health.Healthy) checks)))
 
   (* `text` repeated `n` times, by doubling. *)
   fun repeat (text, n) =
