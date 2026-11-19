@@ -4,6 +4,9 @@
 under [#205](https://github.com/vectorian-rs/hiko/issues/205). This document is a
 reviewable foundation, not approval to change the VM, public API or budgets.
 The name `Std.JsonDoc` and every signature/policy key below are proposed.
+See the [standards and implementation comparison](json-document-comparison.md)
+for primary sources and the remaining input-profile, Unicode/BOM, conformance,
+indexing and parser-reuse gates. This is architecture, not a complete parser spec.
 
 Goal: parse once, access indexed native data, and materialize only requested
 Hiko values. Do not silently cache text operations or replace `Std.Json.json`.
