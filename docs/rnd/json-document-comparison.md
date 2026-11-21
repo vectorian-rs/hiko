@@ -17,6 +17,8 @@ Keep those recommendations, but close the input-profile and implementation gates
 below before treating the design as an implementation-ready parser contract.
 The [simd-json owned-DOM spike](#simd-json-owned-dom-feasibility-264) is **NO-GO
 as-is** under the foundation's fidelity/admission requirements; #265 must wait.
+[#264 rev2's Rust reader](json-reader.md) is a separate forward-only implementation,
+not the proposed persistent document or a completed Hiko runtime integration.
 
 ## What established implementations do
 
