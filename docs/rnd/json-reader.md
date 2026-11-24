@@ -79,9 +79,13 @@ the root as1; public primitives plus a fixed stack enforce the SAME bound during
 explicit navigation and skip. Jiter's aggregate skip/DOM methods are never used.
 
 number_text preserves spelling and range: 1.00, -0, uint above i64 and huge exponents.
-i64/u64 accept integer tokens only and check range; 1.0 is not an integer token.
+i64/u64 accept integer tokens only and check range; 1.0 is not an integer token;
+-0 reads as 0 for both.
 f64 is explicitly approximate, rejects nonfinite output and nonzero mantissas that
 underflow to zero; genuine signed zero is retained. No implicit numeric narrowing.
+RFC 8259 leaves number range to implementations. Refusing underflow is deliberate:
+JavaScript, Python and serde_json return 0 for 1e-400. No relaxed mode; callers
+needing another policy read number_text.
 
 ## Admission model and source audit
 

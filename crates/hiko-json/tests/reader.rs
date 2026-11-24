@@ -494,3 +494,21 @@ fn frozen_extra_reader_inputs() {
         assert_eq!(validate(bytes), accepted, "{name}");
     }
 }
+
+#[test]
+fn invalid_value_byte_is_syntax_and_minus_zero_is_u64() {
+    use jiter::{JiterErrorType, JsonErrorType};
+    for bytes in [&b"[@]"[..], b"{\"a\":x}", b"@"] {
+        let mut scratch = Scratch::default();
+        let mut r = Reader::new(bytes, &mut scratch, Limits::default()).unwrap();
+        assert_eq!(
+            r.finish().unwrap_err().kind,
+            ErrorKind::Syntax(JiterErrorType::JsonError(JsonErrorType::ExpectedSomeValue)),
+            "{bytes:?}"
+        );
+    }
+    let mut scratch = Scratch::default();
+    let mut r = Reader::new(b"-0", &mut scratch, Limits::default()).unwrap();
+    assert_eq!(r.root().unwrap().u64().unwrap(), 0);
+    r.finish().unwrap();
+}
