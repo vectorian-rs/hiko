@@ -124,6 +124,8 @@ hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features =
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 sortedvec = "0.5"
+# #264 feasibility tests only; not a runtime JSON backend.
+simd-json = { version = "=0.19.0", default-features = false, features = ["runtime-detection", "swar-number-parsing"] }
 
 # Model checking of the threaded runtime: RUSTFLAGS="--cfg loom".
 [target.'cfg(loom)'.dependencies]

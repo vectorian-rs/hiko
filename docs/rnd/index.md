@@ -5,6 +5,7 @@ Experimental ideas and design sketches that are not necessarily implemented.
 | File | Status | Summary |
 |---|---|---|
 | [`agent-scripting.md`](agent-scripting.md) | R&D/design-only | Sketch for using Hiko as a typed, policy-limited scripting layer for coding agents. |
+| [`json-reader.md`](json-reader.md) | Experimental Rust implementation | Borrowing forward-only reader over jiter; exact numeric text, explicit validation, bounded scratch/work model; not wired into Hiko (#264). |
 | [`json-document.md`](json-document.md) | Proposal, not implemented | Native-backed JSON: indexed access, exact numbers, GC/view ownership, resource accounting, compatibility and approval-gated delivery (#256). |
 | [`json-document-comparison.md`](json-document-comparison.md) | Source-backed design review | RFC/ECMA and Python, JavaScript/V8, Go, Rust and .NET comparison; parser-profile, conformance, indexing and reuse gates (#256). |
 | [`effects-design.md`](effects-design.md) | R&D/design-only | Effects as capability requests, proposed syntax and effect rows, implementation strategies A to F, comparisons with OCaml 5, Koka, Eff, Frank, Links, and Haskell, staging plan, open questions. |

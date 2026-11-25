@@ -1,10 +1,11 @@
 # JSON documents: standards and implementation comparison
 
-**Status: research/design review, not an implemented parser or accepted API.**
+**Status: research/feasibility, not a runtime parser or accepted API.**
 Supports the [native-document foundation](json-document.md) for
-[#256](https://github.com/vectorian-rs/hiko/issues/256). This is source inspection,
-not independent acceptance, a conformance run or a new performance measurement.
-Pinned versions below are representative implementations, not claims of latest.
+[#256](https://github.com/vectorian-rs/hiko/issues/256). The simd-json spike below
+adds untimed tests; other comparisons are source inspection. Neither constitutes
+independent acceptance, full conformance or performance measurement. Cross-language
+versions below are representative implementations, not claims of latest.
 
 ## Verdict
 
@@ -14,6 +15,10 @@ Go, Rust and .NET support retaining numeric text before explicit conversion.
 No standard prescribes the object index, memory layout, GC model or capability API.
 Keep those recommendations, but close the input-profile and implementation gates
 below before treating the design as an implementation-ready parser contract.
+The [simd-json owned-DOM spike](#simd-json-owned-dom-feasibility-264) is **NO-GO
+as-is** under the foundation's fidelity/admission requirements; #265 must wait.
+[#264 rev2's Rust reader](json-reader.md) is a separate forward-only implementation,
+not the proposed persistent document or a completed Hiko runtime integration.
 
 ## What established implementations do
 
@@ -166,6 +171,115 @@ admission contract. The implementation plan must prove bounded reservations or
 hooks cover library allocations, overflow, refusals and cleanup. General-purpose
 libraries do not automatically supply Hiko host-work or capability enforcement.
 
+## simd-json owned-DOM feasibility (#264)
+
+Base: `56b71433dfaacef21e93ee517bb867de12cd26ea`. Dev-only
+[test source](../../crates/hiko-vm/tests/json_backend_feasibility.rs), not a selected
+production representation. Pin `simd-json =0.19.0`, default features OFF,
+`runtime-detection` + `swar-number-parsing`; serde_impl, 128bit, big-int-as-float
+and approx-number-parsing OFF. Cargo.lock pins halfbrown0.4.0/value-trait0.12.3.
+Crate SHA256: `e8f2e4d523646f7da6dde3983bd18ede0babc21c258ab708b3dd93ea0259719d`.
+
+[Pre-probe freeze](https://github.com/vectorian-rs/hiko/issues/264#issuecomment-7049827486):
+61 named inputs: 52 literals, six dense fixtures and depth127/128/129. Dense
+arrays contain n zeroes; objects contain `"k{i}":"v"` for i=0..n-1, no whitespace,
+n=64/128/256. Each test prints input name/hex for independent byte/hash checks.
+Canonical manifest SHA256:
+`edd3b313ac2ec4a2c27f6167b2350b46c45f6f071a3499fc4d80bb7fda36d873`.
+Manifest is compact JSON in fixture order (CORPUS, each dense array/object pair,
+then depths), with each row's name, bytes, lowercase hex, sha256 in that order.
+The corrected run's 61 inputs match the freeze byte-for-byte. Initial generator
+escaping corrupted two fixtures; that failed log remains evidence, not a backend
+failure. Input bytes and acceptance requirements were not changed to fix it.
+
+Reproduce (no timing, calibration or allocator override):
+
+```sh
+cargo +1.99.1 test --locked -p hiko-vm --test json_backend_feasibility -- --nocapture --test-threads=1
+```
+
+Source audit: [simd-json0.19.0](https://docs.rs/crate/simd-json/0.19.0/source/)
+`lib.rs`, `stage2.rs`, `value/owned.rs`, `numberparse/correct.rs`,
+`value/owned/serialize.rs`, and value-trait0.12.3's generator. x86 runtime dispatch
+selects AVX2/PCLMUL or SSE4.2, otherwise native fallback; aarch64 uses NEON.
+Local execution is aarch64; other dispatch paths are source-audited, not locally
+executed. No forced-fallback or comprehensive parser-soundness test is claimed.
+Owned parsing mutates caller bytes to unescape, copies them into aligned scratch,
+builds a transient tape, then allocates owned strings/containers. The mutable
+caller copy and scratch can die before DOM access; immutable Hiko input would
+need a charged mutable copy. Owned does not mean zero-copy.
+
+### Observed profile and fidelity blockers
+
+Six tests pass, recording backend behavior rather than endorsing it as Hiko policy:
+
+- Scalar/container roots and JSON whitespace accepted; second roots, suffixes,
+  comments, invalid numbers/escapes/controls, trailing commas and later malformed
+  values rejected before root publication. This is a targeted corpus, not JSONTestSuite/fuzzing.
+- Literal Unicode and paired surrogates accepted; lone surrogates in keys, values
+  and discarded duplicates rejected. Invalid UTF-8 rejected at the byte API;
+  public Hiko strings cannot contain it. BOM/NBSP rejected; BOM reports backend
+  InternalError, not a finished Hiko diagnostic/profile decision.
+- Configured depth128 accepts127/128 and refuses129 with DepthLimitExceeded;
+  backend default is1024. This does not silently adopt Hiko's proposed profile.
+- u64 above i64 remains exact; checked i64 extraction fails. But `1.00`/`1.0`
+  and `1e3`/`1000.0` lose spelling distinctions; integer `-0` writes `0`.
+  `9007199254740993.0` rounds to9007199254740992; `1e-400` becomes0.
+  Above-u64 integers, a100-digit integer and ±1e400 are refused, although valid
+  JSON syntax. Owned numeric nodes cannot implement exact number_text/writing.
+- Small duplicate objects retain both decoded equal keys and lookup returns the
+  first, not proposed last-wins. OwnedDeserializer::parse_map uses unchecked
+  insertion for at most32 members, normal deduplicating insertion above32.
+  The small case is executed; the larger branch is source-audited. This is neither
+  the foundation's unique sorted index nor a uniform last-wins representation.
+
+### Capacity/admission and lifetime findings
+
+Dense observations below are capacities/lengths, NOT allocation peaks or RSS.
+A/O means array/object; caller copy capacity equals its byte length locally.
+
+| n | Copy bytes A/O | Structural length A/O | Tape slots A/O | DOM slots A/O | Output capacity A/O |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 129/631 | 129/257 | 129/257 | 64/112 | 1024/1024 |
+| 128 | 257/1299 | 257/513 | 257/513 | 128/224 | 1024/2048 |
+| 256 | 513/2707 | 513/1025 | 513/1025 | 256/448 | 1024/4096 |
+
+Both zero/full input hints and fresh/reused buffers succeed; structural length
+exceeds initial hint/128 capacity. Tape and OwnedValue slots are24 bytes locally;
+object key/value string capacities total246/530/1170 bytes. Object slot counts
+are not bucket bytes. Private scratch capacities, allocator metadata, native
+stack and old+new growth overlap are unmeasured; these columns cannot be summed
+into total native memory. The tape is a separate parse, not the owned-path peak.
+
+**Admission NO-GO as-is:** Buffers::with_max_depth uses infallible capacity
+constructors; fill_tape reserves string/index storage and replaces aligned input;
+build_tape reserves tape/stack; owned construction allocates Vec/Box/map/String.
+AlignedBuf uses alloc/handle_alloc_error, not fallible Hiko-budget refusal.
+DumpGenerator also owns/grows output; a checked writer could bound output alone,
+not repair parse admission. No caller quota/allocator hook covers these sites.
+A conservative up-front byte estimate alone does not make growth fallible or
+charge every old+new reservation and work boundary. No such integration is proved;
+post-parse capacities are NOT a memory-refusal test. No quota was raised to pass.
+
+The safe Rc-owner/owned-typed-path prototype demonstrates child survival after
+root/input/scratch drop, literal fields, array positions, null/empty distinction,
+and final owner release. No self-reference, leaked allocation, unsafe code or
+borrowed-to-static cast is used in the test. It retains the WHOLE DOM, replays
+O(depth) lookups and copies path bytes; it is not a constant-time arena node view
+or a Hiko GC test. Production still needs traced owner/input edges as applicable,
+charge-once native retention, metered views/indexes, failure/cancellation cleanup,
+and last-collected-view release. Rc's non-Send is not a VM sendability check.
+
+**Decision:** NO-GO for OwnedValue as-is; stop before #265. Prefer investigating
+a mature backend/raw-token and fallible-allocation adapter with explicit hooks
+under a revised approved plan. A fork/upstream change or different backend needs
+review; a number-range/token compromise is a separate contract decision, not a
+workaround. No custom parser, hidden cache or narrowing path was added. If those
+gates are solved, the minimal provisional surface remains parse/kind/field/item/
+length/scalar extraction/number_text; writing and independent detach stay #266.
+No API/profile is frozen here. Existing #256 fixtures, 1e9 guards and all legacy
+APIs/pins remain unchanged. No native speed, memory win or runtime readiness claim.
+
 ## Outcome and remaining authority
 
 Retain the opaque owner/views, explicit whole-owner retention, exact tokens,
@@ -174,6 +288,6 @@ boundaries. API names, sorted indexing, integer-token-only conversion, underflow
 errors, narrow capability leaves and non-sendability are still Hiko decisions,
 not standards requirements endorsed by this survey.
 
-The foundation and this comparison may be reviewed/merged as design research.
-That does not authorize native code or settle the open profile/parser decisions.
+The foundation and this comparison remain design/feasibility research.
+That does not authorize production native code or settle open parser decisions.
 No existing APIs, numeric behavior, grants, budgets, examples or pins change.

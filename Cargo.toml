@@ -7,6 +7,7 @@ members = [
     "crates/hiko-types",
     "crates/hiko-compile",
     "crates/hiko-vm",
+    "crates/hiko-json",
     "crates/hiko-cli",
     "crates/tree-sitter-hiko",
     "extensions/hiko-ext-github",
