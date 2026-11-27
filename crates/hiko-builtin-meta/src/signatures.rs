@@ -120,6 +120,24 @@ pub fn builtin_type_signature(name: &str) -> Option<BuiltinTypeSignature> {
         "json_length" => "string -> int",
         "json_parse" => "string -> BuiltinJson.json",
         "json_to_string" => "BuiltinJson.json -> string",
+        "json_reader_of_string" => "string -> BuiltinJsonReader.reader",
+        "json_reader_kind" | "json_reader_read_string" | "json_reader_read_number_text" => {
+            "BuiltinJsonReader.reader -> string"
+        }
+        "json_reader_begin_object"
+        | "json_reader_begin_array"
+        | "json_reader_read_null"
+        | "json_reader_skip"
+        | "json_reader_finish_object"
+        | "json_reader_finish_array"
+        | "json_reader_finish"
+        | "json_reader_close" => "BuiltinJsonReader.reader -> unit",
+        "json_reader_next_field" => "BuiltinJsonReader.reader -> string Option.option",
+        "json_reader_find_next_field" => "string * BuiltinJsonReader.reader -> bool",
+        "json_reader_next_item" | "json_reader_read_bool" => "BuiltinJsonReader.reader -> bool",
+        "json_reader_read_int" => "BuiltinJsonReader.reader -> int",
+        "json_reader_read_word" => "BuiltinJsonReader.reader -> word",
+        "json_reader_read_float" => "BuiltinJsonReader.reader -> float",
 
         // Environment, time, date
         "getenv" => "string -> string",

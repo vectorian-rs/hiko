@@ -5,9 +5,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "builtin-json-reader")]
+pub(crate) mod json_reader;
+
 /// Error returned when a heap allocation exceeds the configured object limit.
 #[derive(Debug, Clone)]
 pub enum HeapLimitExceeded {
+    #[cfg(feature = "builtin-json-reader")]
+    NativeAdmissionRequired,
     Objects {
         live: usize,
         limit: usize,
@@ -34,6 +39,10 @@ pub struct IoLimitExceeded {
 impl std::fmt::Display for HeapLimitExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "builtin-json-reader")]
+            Self::NativeAdmissionRequired => {
+                f.write_str("JSON reader allocation requires VM pre-admission")
+            }
             Self::Objects { live, limit } => {
                 write!(f, "heap limit exceeded: {live} objects (max {limit})")
             }
@@ -197,6 +206,8 @@ pub struct Heap {
     #[cfg(test)]
     phase_peak_bytes: Option<usize>,
     host_resources: HashMap<HostHandleId, HostResource>,
+    #[cfg(all(test, feature = "builtin-json-reader"))]
+    json_reader_test_fault: Option<json_reader::AdmissionStage>,
     next_host_handle_id: u64,
     io_bytes_used: u64,
     /// Cumulative I/O bytes across the process tree, when limited.
@@ -287,6 +298,8 @@ impl Drop for Heap {
                 self.metrics_overflow,
             );
         }
+        #[cfg(feature = "builtin-json-reader")]
+        self.drop_json_reader_payloads();
         // A finished process stops counting against its tree's memory, and
         // its host resources, dropped with it, against the tree's limits.
         if let Some(budget) = &self.memory_budget {
@@ -331,6 +344,8 @@ impl Heap {
             #[cfg(test)]
             phase_peak_bytes: None,
             host_resources: HashMap::new(),
+            #[cfg(all(test, feature = "builtin-json-reader"))]
+            json_reader_test_fault: None,
             next_host_handle_id: 1,
             io_bytes_used: 0,
             io_budget: None,
@@ -890,6 +905,10 @@ impl Heap {
         resource: HostResource,
     ) -> Result<Value, HeapLimitExceeded> {
         let kind = resource.kind();
+        #[cfg(feature = "builtin-json-reader")]
+        if kind == HostHandleKind::JsonReader {
+            return Err(HeapLimitExceeded::NativeAdmissionRequired);
+        }
 
         // Charge the tree's total, then its per-kind limit; all or nothing.
         if let Some(budget) = &self.host_resource_budget {
@@ -966,6 +985,8 @@ impl Heap {
 
     fn host_handle_kind_name(kind: HostHandleKind) -> &'static str {
         match kind {
+            #[cfg(feature = "builtin-json-reader")]
+            HostHandleKind::JsonReader => "json_reader",
             HostHandleKind::Unsupported => "unsupported",
             HostHandleKind::Extension(kind) => kind,
         }
@@ -1007,6 +1028,8 @@ impl Heap {
                 .clone()
                 .downcast::<T>()
                 .map_err(|_| format!("{context}: {kind} host handle has an unexpected type")),
+            #[cfg(feature = "builtin-json-reader")]
+            HostResource::JsonReader(_) => Err(format!("{context}: expected {kind}")),
             HostResource::Unsupported => Err(format!("{context}: expected {kind}")),
         }
     }
@@ -1082,6 +1105,11 @@ impl Heap {
                     attempted_bytes: object_bytes,
                 })?;
         }
+        Ok(self.alloc_charged(obj, object_bytes))
+    }
+
+    // Caller has admitted the complete operation; no budget check may fail here.
+    fn alloc_charged(&mut self, obj: HeapObject, object_bytes: usize) -> GcRef {
         self.alloc_since_gc += 1;
         let idx = if let Some(idx) = self.free_list.pop() {
             self.objects[idx as usize] = Some(obj);
@@ -1105,7 +1133,7 @@ impl Heap {
         if let Some(peak) = &mut self.phase_peak_bytes {
             *peak = (*peak).max(self.current_bytes);
         }
-        Ok(GcRef(idx))
+        GcRef(idx)
     }
 
     pub fn get(&self, r: GcRef) -> Result<&HeapObject, &'static str> {

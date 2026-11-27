@@ -1,11 +1,14 @@
-# Experimental Rust on-demand JSON reader
+# Experimental forward-only JSON reader
 
-Implemented in [hiko-json](../../crates/hiko-json/src/lib.rs) for
-[#264 rev2](https://github.com/vectorian-rs/hiko/issues/264), not registered in Hiko.
-There is no Std.JsonReader/JsonDoc module, builtin, capability, GC object or new VM ABI.
-Existing text/ADT APIs and #256 fixtures/1e9 guards remain unchanged. #265 rev3 is
-approved; its shared-core/owned-adapter section is implemented here, not yet the
-VM integration. This crate is experimental and publish=false.
+The [hiko-json](../../crates/hiko-json/src/lib.rs) reader from
+[#264 rev2](https://github.com/vectorian-rs/hiko/issues/264) now has the
+[#265 rev3](https://github.com/vectorian-rs/hiko/issues/265) owned frontend and
+`Std.JsonReader` integration. The independent `builtin-json-reader` build feature
+is default-off and not implied by `builtin-json`. Runtime authority separately
+requires `capabilities.json_reader = true`; older JSON grants do not enable it.
+There is no JsonDoc/random-access view, DOM/cache or serialization extension.
+Existing text/ADT APIs and #256 fixtures/1e9 guards remain unchanged.
+The Rust crate is experimental and publish=false.
 
 ## Model and API
 
@@ -149,24 +152,65 @@ OwnedReader retains Arc<str>, scratch and core state, and can safely move betwee
 operations. next_field/next_item end markers leave the frame open until matching
 finish_object/finish_array. A pending child must first be consumed; remaining-field
 search skips unmatched values. finish drains all open frames/root and checks EOF.
-This standalone Rust frontend permits repeated finish; the approved Hiko finish
-will instead release its owner, so subsequent finish fails. Hiko close will discard,
-not validate. No persistent VM Poisoned/Validated states are introduced by S1.
+This standalone Rust frontend permits repeated finish; Hiko finish instead
+releases its owner, so subsequent finish fails. Hiko close discards, not validates.
+No persistent VM Poisoned/Validated states are introduced.
 
 admission_bytes is a conservative fresh-construction estimate covering input,
 two buffers and fixed state/decoder allowance. estimated_bytes uses retained
 capacities. Both are canonical estimates, not allocator profiling or RSS. A VM
 must reserve BEFORE construction/output work; this standalone adapter is not that
-reservation ledger. Runtime object_bytes/slot release/GC/authority integration
-remains S2–S4, not a source-inspection proof. The approved VM starting tariff is
+reservation ledger. The VM now does this using short-lived reservations and one
+persistent handle object_bytes slot, with immediate payload/slot release and rooted
+allocation preflight. Resource pressure forces a checked collection before retrying
+admission. Other native kinds are not retrofitted. The VM starting tariff is
 json_parse's45+ceil(2180*n/1024) once, then45 per subsequent API call, not32*n.
 It is an existing-rate proxy, not newly calibrated reader performance.
+
+## Hiko surface and lifetime
+
+Import [Std.JsonReader](../../libraries/Std-v0.1.0/modules/JsonReader.hml).
+`reader` is the protected opaque `BuiltinJsonReader.reader` type; aliases share
+one mutable cursor. Identity equality and `<json-reader>` display expose no input.
+Handles, including nested captures/results, cannot cross process boundaries.
+Kind/live-ID checks protect the script boundary, not arbitrary trusted hosts
+fabricating raw heap references/IDs. Reader ID exhaustion is refused.
+
+Operations are `of_string`, `kind`, `begin_object`, `begin_array`, `next_field`,
+`find_next_field`, `next_item`, `read_null`, `read_bool`, `read_string`,
+`read_number_text`, `read_int`, `read_word`, `read_float`, `skip`, `finish_object`,
+`finish_array`, `finish`, `close`. `find_next_field name reader` is name-first and
+searches only remaining literal keys, retaining source-order duplicates.
+`next_field` returns `string Option.option`; end markers leave the frame open.
+A pending child must be consumed before advancing; matching container finish drains
+and pops it. Final finish drains all frames/root and checks EOF, then closes.
+Repeated finish fails; close is idempotent discard without suffix validation.
+A valid-owner operation failure closes every alias before reporting the error;
+policy/invalid-handle denial touches no owner. Earlier values are not rolled back.
+No process-resumption guarantee is added.
+
+```toml
+[capabilities]
+json_reader = true
+[limits]
+max_host_work = 10_000_000
+max_host_resources = 32
+[limits.host_resources]
+json_reader = 32
+```
+
+The limits cover estimated native input/scratch/fixed state and output overlap,
+not actual RSS, allocator metadata or calibrated native work. Closing drops the
+payload before refunding bytes; later GC refunds only base handle bytes. One tree
+shares byte and total/per-kind slot budgets. Unreachable open readers can be
+collected under resource pressure; reachable readers still refuse admission.
 
 ## Reproduction and limitations
 
 ```sh
 cargo +1.99.1 test --locked -p hiko-json -- --nocapture --test-threads=1
 cargo +1.99.1 clippy --locked -p hiko-json --all-targets -- -D warnings
+cargo +1.99.1 test --locked -p hiko-vm --no-default-features --features builtin-json-reader --test json_reader
 ```
 
 [Pre-probe freeze](https://github.com/vectorian-rs/hiko/issues/264#issuecomment-7067454829):
@@ -178,5 +222,7 @@ long escaped keys/strings, admission/poison/reuse failures, shared-profile serde
 differential checks and4096 deterministic generated byte inputs. This is not a
 JSONTestSuite/full-conformance or fuzz-campaign claim. No timed benchmark runs.
 Resource evidence is source audit plus visible capacity/cursor counters, not a
-complete native-allocation profiler. These local guards are not yet VM accounting,
-GC/cancellation, capability, process-transfer or production host-charge integration.
+complete native-allocation profiler. The #264 freeze is historical, not evidence
+for the integrated #265 head. VM tests cover reservations, GC, release, authority
+and process boundaries separately. No reader timing/calibration, full conformance,
+physical-memory bound, independent review or production performance is established.

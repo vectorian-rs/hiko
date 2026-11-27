@@ -31,6 +31,7 @@ builtin-all = [
     "builtin-default",
     "builtin-regex",
     "builtin-json",
+    "builtin-json-reader",
     "builtin-date",
 ]
 # Test and fuzz builds: check every generalization by levels against a walk
@@ -40,6 +41,7 @@ builtin-stdio = ["hiko-builtin-meta/builtin-stdio"]
 builtin-convert = ["hiko-builtin-meta/builtin-convert"]
 builtin-string = ["hiko-builtin-meta/builtin-string"]
 builtin-regex = ["hiko-builtin-meta/builtin-regex"]
+builtin-json-reader = ["hiko-builtin-meta/builtin-json-reader"]
 builtin-json = ["hiko-builtin-meta/builtin-json"]
 builtin-math = ["hiko-builtin-meta/builtin-math"]
 builtin-bytes = ["hiko-builtin-meta/builtin-bytes"]

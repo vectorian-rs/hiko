@@ -1556,6 +1556,7 @@ dependencies = [
  "hiko-builtin-meta",
  "hiko-common",
  "hiko-compile",
+ "hiko-json",
  "hiko-syntax",
  "hiko-types",
  "jiff",

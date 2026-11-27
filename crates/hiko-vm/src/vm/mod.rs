@@ -29,6 +29,8 @@ mod child_globals;
 mod dispatch;
 mod gc;
 mod host;
+#[cfg(feature = "builtin-json-reader")]
+pub(crate) mod json_reader;
 #[cfg(feature = "register-vm")]
 mod register;
 #[cfg(feature = "register-vm")]
@@ -250,6 +252,8 @@ enum BuiltinKind {
     ReadFile,
     /// An async extension builtin, by index into `BuiltinTable::async_fns`.
     Async(u16),
+    #[cfg(feature = "builtin-json-reader")]
+    JsonReader(json_reader::ReaderOp),
 }
 
 /// `HttpResponseFormat` without its data, so `BuiltinKind` stays `Copy`.
@@ -263,6 +267,10 @@ enum HttpFormat {
 
 impl BuiltinKind {
     fn of(name: &str) -> Self {
+        #[cfg(feature = "builtin-json-reader")]
+        if let Some(op) = json_reader::ReaderOp::of(name) {
+            return Self::JsonReader(op);
+        }
         match name {
             "print" => Self::Print,
             "println" => Self::Println,

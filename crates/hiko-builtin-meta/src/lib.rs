@@ -11,6 +11,8 @@ mod hash;
 mod http;
 mod internal;
 mod json;
+mod json_reader;
+pub use json_reader::BUILTINS as JSON_READER_BUILTINS;
 mod math;
 mod path;
 mod process;
@@ -178,6 +180,8 @@ const BUILTIN_FAMILIES: &[&[BuiltinMeta]] = &[
     system::BUILTINS,
     #[cfg(feature = "builtin-testing")]
     testing::BUILTINS,
+    #[cfg(feature = "builtin-json-reader")]
+    json_reader::BUILTINS,
 ];
 
 /// Every builtin family with the Cargo feature that compiles it in, whether
@@ -188,6 +192,7 @@ const ALL_FAMILIES: &[(&str, &[BuiltinMeta])] = &[
     ("builtin-string", string::BUILTINS),
     ("builtin-regex", regex::BUILTINS),
     ("builtin-json", json::BUILTINS),
+    ("builtin-json-reader", json_reader::BUILTINS),
     ("builtin-math", math::BUILTINS),
     ("builtin-bytes", bytes::BUILTINS),
     ("builtin-hash", hash::BUILTINS),
@@ -222,6 +227,15 @@ pub fn missing_builtin_feature(name: &str) -> Option<&'static str> {
         .iter()
         .find(|(_, family)| family.iter().any(|meta| meta.name == name))
         .map(|(feature, _)| *feature)
+}
+
+/// Policy syntax for an availability diagnostic; legacy leaf wording is stable.
+pub fn capability_enable_hint(path: &str) -> String {
+    if path == "capabilities.json_reader" {
+        "set capabilities.json_reader = true".into()
+    } else {
+        format!("enable [{path}]")
+    }
 }
 
 pub fn capability_path_for_builtin(name: &str) -> Option<&'static str> {

@@ -103,6 +103,25 @@ Features are unchanged; availability never implies runtime permission.
 | json_length | builtin-json | capabilities.json.length | Std.Json.length | capabilities.json.length | primitive: existing scalar/codec operation |
 | json_parse | builtin-json | capabilities.json.parse | Std.Json.parse | capabilities.json.parse | primitive: existing scalar/codec operation |
 | json_to_string | builtin-json | capabilities.json.to_string | Std.Json.to_string | capabilities.json.to_string | primitive: existing scalar/codec operation |
+| json_reader_of_string | builtin-json-reader | capabilities.json_reader | Std.JsonReader.of_string | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_kind | builtin-json-reader | capabilities.json_reader | Std.JsonReader.kind | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_begin_object | builtin-json-reader | capabilities.json_reader | Std.JsonReader.begin_object | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_begin_array | builtin-json-reader | capabilities.json_reader | Std.JsonReader.begin_array | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_next_field | builtin-json-reader | capabilities.json_reader | Std.JsonReader.next_field | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_find_next_field | builtin-json-reader | capabilities.json_reader | Std.JsonReader.find_next_field | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_next_item | builtin-json-reader | capabilities.json_reader | Std.JsonReader.next_item | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_null | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_null | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_bool | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_bool | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_string | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_string | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_number_text | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_number_text | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_int | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_int | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_word | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_word | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_read_float | builtin-json-reader | capabilities.json_reader | Std.JsonReader.read_float | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_skip | builtin-json-reader | capabilities.json_reader | Std.JsonReader.skip | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_finish_object | builtin-json-reader | capabilities.json_reader | Std.JsonReader.finish_object | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_finish_array | builtin-json-reader | capabilities.json_reader | Std.JsonReader.finish_array | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_finish | builtin-json-reader | capabilities.json_reader | Std.JsonReader.finish | capabilities.json_reader | primitive: bounded forward native cursor |
+| json_reader_close | builtin-json-reader | capabilities.json_reader | Std.JsonReader.close | capabilities.json_reader | primitive: bounded forward native cursor |
 | list_dir | builtin-filesystem | capabilities.filesystem.list_entries | Std.Filesystem.list_entries | capabilities.filesystem.list_entries | primitive: host I/O; effect wrapper composes handling |
 | monotonic_ms | builtin-time | capabilities.time.monotonic_now | Std.Time.monotonic_now | capabilities.time.monotonic_now | primitive: host clock/scheduler boundary |
 | numeric_float32_add | builtin-convert | - | Std.Float32.add | - | primitive: checked/width-specific representation |

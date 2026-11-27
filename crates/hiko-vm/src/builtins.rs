@@ -66,6 +66,8 @@ use crate::value::HeapObject;
 ))]
 use crate::value::Value;
 
+#[cfg(any(feature = "builtin-json", feature = "builtin-json-reader"))]
+pub(crate) mod json_work;
 pub(crate) mod support;
 
 #[cfg(any(feature = "builtin-json", feature = "builtin-http"))]
@@ -234,6 +236,9 @@ fn append_builtin_entries(_entries: &mut Vec<(&'static str, BuiltinFn)>) {
 
     #[cfg(feature = "builtin-testing")]
     _entries.extend(testing::entries());
+
+    #[cfg(feature = "builtin-json-reader")]
+    _entries.extend(crate::vm::json_reader::entries());
 }
 
 #[cfg(test)]

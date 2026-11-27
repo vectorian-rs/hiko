@@ -38,6 +38,9 @@ impl OwnedReader {
             + DECODER_FIXED_ALLOWANCE
             + 2 * mem::size_of::<usize>()
     }
+    pub fn input_bytes(&self) -> usize {
+        self.input.len()
+    }
     pub fn capacities(&self) -> (usize, usize) {
         self.scratch.capacities()
     }

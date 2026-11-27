@@ -139,6 +139,33 @@ replacement and `import Std.Json`; source cannot redefine `BuiltinJson.json`.
 The existing `capabilities.json.json_parse` and
 `capabilities.json.json_to_string` policy keys still control these operations.
 
+## Forward-only JSON reader
+
+`import Std.JsonReader` exposes an opaque, shared mutable cursor, not a DOM or
+random-access view. Build with the independent `builtin-json-reader` feature
+(default-off; `builtin-json` does not imply it), then separately grant
+`json_reader = true` in `[capabilities]`. No older JSON grant enables it.
+The `__Builtin.JsonReader` primitives are module-private.
+
+Create with `of_string`, classify with `kind`, enter objects/arrays with
+`begin_object`/`begin_array`, and advance with `next_field`/`next_item`.
+`find_next_field name reader` searches remaining literal fields in source order,
+including duplicates. `next_field` returns `string Option.option`; import
+`Std.Option` to match `Option.Some`/`Option.None`. Consume pending values before
+advancing: use `read_null`, `read_bool`, `read_string`, `read_number_text`,
+`read_int`, `read_word`, `read_float`, or `skip`. Int/word require checked integer
+tokens; raw number text retains spelling; floats reject nonfinite/underflow results.
+
+Matching `finish_object`/`finish_array` drains and pops a container, including after
+an end marker. `finish` drains all frames/root and validates EOF, then closes;
+repeating it fails. `close` is idempotent discard without validation. Failures on
+a valid owner release it, invalidating all aliases; earlier results remain valid.
+Handles have identity equality and cannot cross process boundaries, even nested.
+Input is limited to 1 MiB and depth128. Native payload/output admission, slot
+release and tariff details are in the [reader contract](../rnd/json-reader.md#hiko-surface-and-lifetime)
+and [execution bounds](../architecture/execution-bounds.md). No calibrated reader
+speed or complete physical-memory bound is established.
+
 ## bytes
 
 | Builtin           | Type                         | Description                    |

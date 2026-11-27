@@ -78,6 +78,15 @@ impl VM {
         objects: usize,
         bytes: usize,
     ) -> Result<(), RuntimeError> {
+        self.allocation_safepoint_for(objects, bytes, false)
+    }
+
+    pub(super) fn allocation_safepoint_for(
+        &mut self,
+        objects: usize,
+        bytes: usize,
+        resource_pressure: bool,
+    ) -> Result<(), RuntimeError> {
         self.gc_failed()?;
         let object_limit = |heap: &Heap| {
             heap.max_objects().filter(|&limit| {
@@ -87,7 +96,8 @@ impl VM {
             })
         };
         // Whole-instruction limit pressure wins even when cadence is also due.
-        let forced = object_limit(&self.heap).is_some()
+        let forced = resource_pressure
+            || object_limit(&self.heap).is_some()
             || self.heap.ensure_can_allocate_bytes(bytes).is_err();
         if forced || self.heap.should_collect() {
             self.gc_collect_checked(&[], forced)?;

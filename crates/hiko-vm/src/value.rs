@@ -38,6 +38,8 @@ pub enum HostHandleKind {
     /// A kind an extension defines, by name. The name is also the key for
     /// its per-kind limit (`limits.host_resources`).
     Extension(&'static str),
+    #[cfg(feature = "builtin-json-reader")]
+    JsonReader,
 }
 
 /// VM-owned opaque native resource. Heap values store only a small typed handle;
@@ -50,11 +52,16 @@ pub enum HostResource {
         kind: &'static str,
         value: Arc<dyn std::any::Any + Send + Sync>,
     },
+    /// One fallibly allocated owner; temporarily leased by VM dispatch, never GC.
+    #[cfg(feature = "builtin-json-reader")]
+    JsonReader(Vec<hiko_json::OwnedReader>),
 }
 
 impl std::fmt::Debug for HostResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "builtin-json-reader")]
+            HostResource::JsonReader(_) => f.write_str("JsonReader"),
             HostResource::Unsupported => f.write_str("Unsupported"),
             HostResource::Extension { kind, .. } => write!(f, "Extension({kind})"),
         }
@@ -64,6 +71,8 @@ impl std::fmt::Debug for HostResource {
 impl HostResource {
     pub fn kind(&self) -> HostHandleKind {
         match self {
+            #[cfg(feature = "builtin-json-reader")]
+            HostResource::JsonReader(_) => HostHandleKind::JsonReader,
             HostResource::Unsupported => HostHandleKind::Unsupported,
             HostResource::Extension { kind, .. } => HostHandleKind::Extension(kind),
         }

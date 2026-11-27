@@ -943,16 +943,17 @@ fn enforce_strict_or_exit(
 
 fn strict_message(violation: &StrictViolation, surface: &RuntimeSurface) -> String {
     if let Some(path) = violation.capability_path {
+        let hint = hiko_builtin_meta::capability_enable_hint(path);
         match surface {
             RuntimeSurface::CheckOnly => format!(
-                "builtin '{}' is not enabled for checking without a policy (pass --config and enable [{}])",
-                violation.builtin, path
+                "builtin '{}' is not enabled for checking without a policy (pass --config and {})",
+                violation.builtin, hint
             ),
             RuntimeSurface::Policy(policy) => format!(
-                "builtin '{}' is not enabled by the active policy (layer: RunConfig::build_vm; {}; enable [{}])",
+                "builtin '{}' is not enabled by the active policy (layer: RunConfig::build_vm; {}; {})",
                 violation.builtin,
                 policy.error_context(),
-                path
+                hint
             ),
         }
     } else if builtin_meta(&violation.builtin)
@@ -983,10 +984,10 @@ fn runtime_error_message(message: &str, policy: &ResolvedPolicy) -> String {
     };
     if let Some(path) = meta.capability_path {
         return format!(
-            "builtin '{}' was not registered by the active policy-filtered VM (layer: RunConfig::build_vm; {}; enable [{}])",
+            "builtin '{}' was not registered by the active policy-filtered VM (layer: RunConfig::build_vm; {}; {})",
             name,
             policy.error_context(),
-            path
+            hiko_builtin_meta::capability_enable_hint(path)
         );
     }
     if matches!(meta.surface, BuiltinSurface::RuntimeOnly { .. }) {

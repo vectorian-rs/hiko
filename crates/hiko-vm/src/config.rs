@@ -594,6 +594,9 @@ pub struct Capabilities {
     pub regex: RegexCapabilities,
     #[serde(default)]
     pub json: JsonCapabilities,
+    /// Authority for the independent forward-only reader family; default false.
+    #[serde(default)]
+    pub json_reader: bool,
     #[serde(default)]
     pub bytes: BytesCapabilities,
     #[serde(default)]
@@ -621,6 +624,12 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
+    fn json_reader_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        hiko_builtin_meta::JSON_READER_BUILTINS
+            .iter()
+            .filter(|_| self.json_reader)
+            .map(|meta| meta.name)
+    }
     fn apply(&self, builder: VMBuilder) -> VMBuilder {
         let mut builder = builder;
         for name in unrestricted_runtime_builtin_names() {
@@ -633,7 +642,10 @@ impl Capabilities {
         let builder = self.word.apply(builder);
         let builder = self.string.apply(builder);
         let builder = self.regex.apply(builder);
-        let builder = self.json.apply(builder);
+        let mut builder = self.json.apply(builder);
+        for name in self.json_reader_names() {
+            builder = builder.register_builtin_name(name);
+        }
         let builder = self.bytes.apply(builder);
         let builder = self.hash.apply(builder);
         let builder = self.random.apply(builder);
@@ -660,6 +672,9 @@ impl Capabilities {
         self.string.emit(out);
         self.regex.emit(out);
         self.json.emit(out);
+        for name in self.json_reader_names() {
+            out.push_str(&format!("            .register_builtin_name({name:?})\n"));
+        }
         self.bytes.emit(out);
         self.hash.emit(out);
         self.random.emit(out);
@@ -684,6 +699,7 @@ impl Capabilities {
         self.string.extend_enabled(&mut out);
         self.regex.extend_enabled(&mut out);
         self.json.extend_enabled(&mut out);
+        out.extend(self.json_reader_names());
         self.bytes.extend_enabled(&mut out);
         self.hash.extend_enabled(&mut out);
         self.random.extend_enabled(&mut out);
@@ -1306,7 +1322,12 @@ folders = ["."]
             let Some(path) = meta.capability_path else {
                 continue;
             };
-            let config = RunConfig::from_toml(&format!("[{path}]\nenabled = true\n"))
+            let source = if path == "capabilities.json_reader" {
+                "[capabilities]\njson_reader = true\n".to_owned()
+            } else {
+                format!("[{path}]\nenabled = true\n")
+            };
+            let config = RunConfig::from_toml(&source)
                 .unwrap_or_else(|err| panic!("{}: [{path}] is rejected: {err}", meta.name));
             assert!(
                 config.enabled_builtin_names().contains(meta.name),
