@@ -136,7 +136,7 @@ fn whole_input_proxy_tariff_fits_one_mib_in_ten_million_credits() {
 }
 
 #[test]
-fn work_and_output_refusals_close_valid_owner_without_parsing_or_double_refund() {
+fn work_and_actual_output_refusals_close_valid_owner_without_double_refund() {
     for work in [false, true] {
         let mut vm = machine("val unused = 0");
         vm.heap.set_max_bytes(1_000_000);
@@ -250,6 +250,174 @@ val total = 42
         assert!(matches!(vm.get_global("total"), Some(Value::Int(42))));
         assert_eq!(vm.heap.host_resource_count(), 0);
         assert!(!vm.gc_test_trace.as_ref().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn parsed_text_survives_gc_while_owner_is_leased() {
+    for (text, field, op, expected) in [
+        (r#"["\u0061\u0062"]"#, false, ReaderOp::ReadString, "ab"),
+        (r#"[1.00]"#, false, ReaderOp::ReadNumberText, "1.00"),
+        (r#"{"\u0061\u0062":null}"#, true, ReaderOp::NextField, "ab"),
+    ] {
+        let mut vm = machine("val unused = 0");
+        vm.heap.set_max_bytes(1_000_000);
+        let r = open(&mut vm, text);
+        invoke(
+            &mut vm,
+            if field {
+                ReaderOp::BeginObject
+            } else {
+                ReaderOp::BeginArray
+            },
+            r,
+        )
+        .unwrap();
+        if !field {
+            invoke(&mut vm, ReaderOp::NextItem, r).unwrap();
+        }
+        // Two unreachable objects can fund the field's two output objects.
+        vm.heap.alloc(HeapObject::String("garbage".into())).unwrap();
+        vm.heap.set_max_objects(vm.heap.live_count());
+        vm.gc_test_trace = Some(Vec::new());
+        let Value::Heap(mut output) = invoke(&mut vm, op, r).unwrap() else {
+            panic!()
+        };
+        if field {
+            let HeapObject::Data { fields, .. } = vm.heap.get(output).unwrap() else {
+                panic!()
+            };
+            let Value::Heap(s) = fields[0] else { panic!() };
+            output = s;
+        }
+        let HeapObject::String(s) = vm.heap.get(output).unwrap() else {
+            panic!()
+        };
+        assert_eq!(&**s, expected);
+        assert!(!vm.gc_test_trace.as_ref().unwrap().is_empty());
+        assert_eq!(vm.heap.host_resource_count(), 1);
+        assert!(vm.heap.json_reader(r).is_ok());
+        invoke(&mut vm, ReaderOp::Close, r).unwrap();
+    }
+}
+
+#[test]
+fn repeated_small_fields_do_not_force_gc_or_charge_unread_suffix() {
+    let n = 128;
+    let text = format!(
+        "{{{}\"padding\":\"{}\"}}",
+        "\"ab\":null,".repeat(n),
+        "x".repeat(65_536)
+    );
+    let mut vm = machine("val unused = 0");
+    vm.heap.set_max_bytes(1_000_000);
+    let input = Value::Heap(vm.heap.alloc(HeapObject::String(text.into())).unwrap());
+    vm.stack.push(input);
+    let r = invoke(&mut vm, ReaderOp::OfString, input).unwrap();
+    invoke(&mut vm, ReaderOp::BeginObject, r).unwrap();
+    let before = vm.heap.live_bytes();
+    let (_, field_bytes) = Heap::json_output_bound(2, true).unwrap();
+    vm.heap.set_max_bytes(before + n * field_bytes);
+    vm.heap.begin_test_phase();
+    vm.gc_test_trace = Some(Vec::new());
+    for i in 1..=n {
+        invoke(&mut vm, ReaderOp::NextField, r).unwrap();
+        invoke(&mut vm, ReaderOp::ReadNull, r).unwrap();
+        assert_eq!(
+            vm.heap.memory_budget().unwrap().used(),
+            (before + i * field_bytes) as u64
+        );
+    }
+    assert!(vm.gc_test_trace.as_ref().unwrap().is_empty());
+    assert_eq!(vm.heap.end_test_phase(), before + n * field_bytes);
+    invoke(&mut vm, ReaderOp::Close, r).unwrap();
+}
+
+#[test]
+fn absent_field_admits_one_object_and_kind_admits_its_actual_name() {
+    for (text, field, len) in [("{}", true, 0), ("null", false, 4)] {
+        let mut vm = machine("val unused = 0");
+        vm.heap.set_max_bytes(1_000_000);
+        let input = Value::Heap(vm.heap.alloc(HeapObject::String(text.into())).unwrap());
+        vm.stack.push(input);
+        let r = invoke(&mut vm, ReaderOp::OfString, input).unwrap();
+        if field {
+            invoke(&mut vm, ReaderOp::BeginObject, r).unwrap();
+        }
+        let (_, actual) = Heap::json_output_bound(len, false).unwrap();
+        let before = vm.heap.live_bytes();
+        vm.heap.set_max_bytes(before + actual);
+        invoke(
+            &mut vm,
+            if field {
+                ReaderOp::NextField
+            } else {
+                ReaderOp::Kind
+            },
+            r,
+        )
+        .unwrap();
+        assert_eq!(vm.heap.live_bytes(), before + actual);
+        invoke(&mut vm, ReaderOp::Close, r).unwrap();
+    }
+}
+
+#[test]
+fn tiny_outputs_admit_actual_size_not_unread_input() {
+    let padding = "x".repeat(32_768);
+    for (text, field, op, len) in [
+        (
+            format!("[\"ok\",\"{padding}\"]"),
+            false,
+            ReaderOp::ReadString,
+            2,
+        ),
+        (
+            format!("[12,\"{padding}\"]"),
+            false,
+            ReaderOp::ReadNumberText,
+            2,
+        ),
+        (
+            format!("{{\"k\":0,\"padding\":\"{padding}\"}}"),
+            true,
+            ReaderOp::NextField,
+            1,
+        ),
+    ] {
+        let mut vm = machine("val unused = 0");
+        vm.heap.set_max_bytes(1_000_000);
+        let input = Value::Heap(vm.heap.alloc(HeapObject::String(text.into())).unwrap());
+        vm.stack.push(input); // Keep the source object live as well as its native owner.
+        let r = invoke(&mut vm, ReaderOp::OfString, input).unwrap();
+        invoke(
+            &mut vm,
+            if field {
+                ReaderOp::BeginObject
+            } else {
+                ReaderOp::BeginArray
+            },
+            r,
+        )
+        .unwrap();
+        if !field {
+            invoke(&mut vm, ReaderOp::NextItem, r).unwrap();
+        }
+        let before = vm.heap.live_bytes();
+        let (_, actual) = Heap::json_output_bound(len, field).unwrap();
+        vm.heap.set_max_bytes(before + actual);
+        vm.gc_test_trace = Some(Vec::new());
+        vm.heap.begin_test_phase();
+        let output = invoke(&mut vm, op, r).unwrap();
+        assert!(matches!(output, Value::Heap(_)));
+        assert_eq!(vm.heap.live_bytes(), before + actual);
+        assert_eq!(
+            vm.heap.memory_budget().unwrap().used(),
+            (before + actual) as u64
+        );
+        assert_eq!(vm.heap.end_test_phase(), before + actual);
+        assert!(vm.gc_test_trace.as_ref().unwrap().is_empty());
+        invoke(&mut vm, ReaderOp::Close, r).unwrap();
     }
 }
 

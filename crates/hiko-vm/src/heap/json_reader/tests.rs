@@ -1,5 +1,11 @@
 use super::*;
 
+impl Heap {
+    fn new_json_reader(&mut self, input: Arc<str>) -> Result<Value, String> {
+        self.create_json_reader(Creation::new(input)?, 0)
+    }
+}
+
 #[test]
 fn close_releases_slots_immediately_and_refunds_payload_once() {
     let mut heap = Heap::new();
@@ -132,8 +138,10 @@ fn lease_error_drops_owner_then_closes_aliases_and_refunds_once() {
     heap.set_max_host_resources(1);
     let input: Arc<str> = "1.0".into();
     let value = heap.new_json_reader(input.clone()).unwrap();
-    let result = heap.with_json_reader(value, |r, _| r.read_int().map_err(|e| e.to_string()));
+    let mut owners = heap.take_json_reader(value).unwrap();
+    let result = owners[0].read_int();
     assert!(result.is_err());
+    heap.end_json_reader(value, owners, false).unwrap();
     assert!(heap.json_reader(value).is_err());
     assert_eq!(heap.host_resource_count(), 0);
     assert_eq!(Arc::strong_count(&input), 1);
@@ -171,6 +179,41 @@ fn output_admission_transfers_without_double_charging_or_partial_failure() {
             .is_err()
     );
     assert_eq!(heap.live_count(), 0);
+    assert_eq!(heap.memory_budget().unwrap().used(), 0);
+}
+
+#[test]
+fn actual_output_reservation_leaves_shared_headroom_for_sibling() {
+    let mut heap = Heap::new();
+    heap.set_max_bytes(1_000_000);
+    let input: Arc<str> = format!("\"ok\"{}", " ".repeat(32_768)).into();
+    let reader = heap.new_json_reader(input.clone()).unwrap();
+    let before = heap.current_bytes;
+    let mut owners = heap.take_json_reader(reader).unwrap();
+    assert_eq!(heap.current_bytes, before); // Leasing never refunds the owner.
+    let output = Output::Text(owners[0].read_string().unwrap());
+    let (objects, bytes) = output.layout().unwrap();
+    let peer = HeapObject::String("peer".into());
+    let peer_bytes = peer.estimated_bytes();
+    heap.set_max_bytes(before + bytes + peer_bytes);
+    let mut sibling = Heap::new();
+    sibling.share_tree_budgets(&heap);
+    let admission = heap.reserve_json_output(objects, bytes).unwrap();
+    assert_eq!(
+        heap.memory_budget().unwrap().used(),
+        (before + bytes) as u64
+    );
+    sibling.alloc(peer).unwrap(); // Can allocate even DURING output admission.
+    heap.alloc_json_output(output, admission).unwrap();
+    assert_eq!(
+        heap.memory_budget().unwrap().used(),
+        (before + bytes + peer_bytes) as u64
+    );
+    heap.end_json_reader(reader, owners, false).unwrap();
+    assert_eq!(Arc::strong_count(&input), 1);
+    heap.collect(std::iter::empty());
+    assert_eq!(heap.memory_budget().unwrap().used(), peer_bytes as u64);
+    drop(sibling);
     assert_eq!(heap.memory_budget().unwrap().used(), 0);
 }
 

@@ -2,7 +2,7 @@
 //! roots are still on the interpreter stack at the preflight boundary.
 use super::*;
 use crate::builtins::{json_work::*, support::host_work};
-use crate::heap::json_reader::Output;
+use crate::heap::json_reader::{Creation, Output};
 use crate::value::BuiltinFn;
 use hiko_json::Kind;
 
@@ -29,6 +29,16 @@ operations! {
     FinishArray => "json_reader_finish_array", Finish => "json_reader_finish",
     Close => "json_reader_close",
 }
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Null => "null",
+        Kind::Boolean => "boolean",
+        Kind::Number => "number",
+        Kind::String => "string",
+        Kind::Array => "array",
+        Kind::Object => "object",
+    }
+}
 fn placeholder(_: &[Value], _: &mut Heap) -> Result<Value, String> {
     Err("JSON reader requires VM dispatch".into())
 }
@@ -50,11 +60,7 @@ impl VM {
     ) -> Result<(), String> {
         let pressure = creation && self.heap.json_reader_resource_pressure();
         self.allocation_safepoint_for(objects, bytes, pressure)
-            .map_err(|e| e.message)?;
-        if creation {
-            self.heap.ensure_json_reader_resource()?;
-        }
-        Ok(())
+            .map_err(|e| e.message)
     }
     pub(super) fn call_json_reader(
         &mut self,
@@ -69,34 +75,26 @@ impl VM {
     fn json_reader_operation(&mut self, op: ReaderOp, arg: Value) -> Result<Value, String> {
         if op == ReaderOp::OfString {
             let input = self.reader_string(arg)?;
-            if input.len() > hiko_json::Limits::default().max_input_bytes {
-                return Err(hiko_json::Error {
-                    kind: hiko_json::ErrorKind::InputLimit,
-                    offset: 0,
-                }
-                .to_string());
-            }
-            let bytes = Heap::json_reader_creation_bytes(input.len())?;
-            self.prepare_json_reader_call(1, bytes, true)?;
-            self.heap.charge_host_work(host_work(
+            let work = host_work(
                 JSON_PARSE_HOST_WORK,
                 JSON_PARSE_PER_KIB_HOST_WORK,
                 input.len(),
-            ))?;
-            return self.heap.new_json_reader(input);
+            );
+            let creation = Creation::new(input)?;
+            self.prepare_json_reader_call(1, creation.bytes, true)?;
+            return self.heap.create_json_reader(creation, work);
         }
         // Curried public name->reader maps to the private (name,reader) pair.
         let (reader, name) = if op == ReaderOp::FindNextField {
-            let Value::Heap(r) = arg else {
-                return Err("expected (String, JSON reader)".into());
+            let pair = match arg {
+                Value::Heap(r) => match self.heap.get(r).map_err(str::to_owned)? {
+                    HeapObject::Tuple(t) if t.len() == 2 => Some((t[1], t[0])),
+                    _ => None,
+                },
+                _ => None,
             };
-            let HeapObject::Tuple(pair) = self.heap.get(r).map_err(str::to_owned)? else {
-                return Err("expected (String, JSON reader)".into());
-            };
-            if pair.len() != 2 {
-                return Err("expected (String, JSON reader)".into());
-            }
-            (pair[1], Some(pair[0]))
+            let (reader, name) = pair.ok_or("expected (String, JSON reader)")?;
+            (reader, Some(name))
         } else {
             (arg, None)
         };
@@ -110,100 +108,55 @@ impl VM {
             charged?;
             return Ok(Value::Unit);
         }
-        let input_bytes = self.heap.json_reader(reader)?.input_bytes();
-        // Once live-owner dispatch succeeds, ANY failure releases the payload.
+        // No heap borrow survives parsing/GC. Arguments remain VM roots, keeping
+        // this handle's payload charge/slot alive while its owner is local.
+        let mut owners = self.heap.take_json_reader(reader)?;
         let result = (|| {
-            let (objects, bytes) = match op {
-                ReaderOp::Kind => Heap::json_output_bound(7, false)?,
-                ReaderOp::ReadString | ReaderOp::ReadNumberText => {
-                    Heap::json_output_bound(input_bytes, false)?
-                }
-                ReaderOp::NextField => Heap::json_output_bound(input_bytes, true)?,
-                _ => (0, 0),
-            };
-            self.prepare_json_reader_call(objects, bytes, false)?;
+            self.gc_failed().map_err(|e| e.message)?;
             self.heap.charge_host_work(JSON_PARSE_HOST_WORK)?;
             let name = name.map(|value| self.reader_string(value)).transpose()?;
+            let r = &mut owners[0];
+            let unit = |res: hiko_json::Result<()>| res.map(|()| Output::Scalar(Value::Unit));
+            let output = match op {
+                ReaderOp::Kind => r.kind().map(|kind| Output::Text(kind_name(kind))),
+                ReaderOp::BeginObject => unit(r.begin_object()),
+                ReaderOp::BeginArray => unit(r.begin_array()),
+                ReaderOp::NextField => r.next_field().map(Output::Field),
+                ReaderOp::FindNextField => {
+                    let name = name.as_deref().ok_or("missing JSON reader field name")?;
+                    r.find_next_field(name)
+                        .map(|found| Output::Scalar(Value::Bool(found)))
+                }
+                ReaderOp::NextItem => r.next_item().map(|b| Output::Scalar(Value::Bool(b))),
+                ReaderOp::ReadNull => unit(r.read_null()),
+                ReaderOp::ReadBool => r.read_bool().map(|b| Output::Scalar(Value::Bool(b))),
+                ReaderOp::ReadInt => r.read_int().map(|n| Output::Scalar(Value::Int(n))),
+                ReaderOp::ReadWord => r.read_word().map(|n| Output::Scalar(Value::Word(n))),
+                ReaderOp::ReadFloat => r.read_float().map(|x| Output::Scalar(Value::Float(x))),
+                ReaderOp::ReadString => r.read_string().map(Output::Text),
+                ReaderOp::ReadNumberText => r.read_number_text().map(Output::Text),
+                ReaderOp::Skip => unit(r.skip()),
+                ReaderOp::FinishObject => unit(r.finish_object()),
+                ReaderOp::FinishArray => unit(r.finish_array()),
+                ReaderOp::Finish => unit(r.finish()),
+                ReaderOp::OfString | ReaderOp::Close => {
+                    return Err("invalid JSON reader dispatch".into());
+                }
+            }
+            .map_err(|e| e.to_string())?;
+            // Text already lives in accounted owner scratch/input (or static
+            // kind names). Do not copy it or reserve the unread input. GC cannot
+            // invalidate this local owner or the rooted handle's ledger slot.
+            let (objects, bytes) = output.layout()?;
+            self.prepare_json_reader_call(objects, bytes, false)?;
             let admission = self.heap.reserve_json_output(objects, bytes)?;
-            self.heap.with_json_reader(reader, |r, heap| {
-                let output = match op {
-                    ReaderOp::Kind => Output::Text(match r.kind().map_err(|e| e.to_string())? {
-                        Kind::Null => "null",
-                        Kind::Boolean => "boolean",
-                        Kind::Number => "number",
-                        Kind::String => "string",
-                        Kind::Array => "array",
-                        Kind::Object => "object",
-                    }),
-                    ReaderOp::BeginObject => {
-                        r.begin_object().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::BeginArray => {
-                        r.begin_array().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::NextField => {
-                        Output::Field(r.next_field().map_err(|e| e.to_string())?)
-                    }
-                    ReaderOp::FindNextField => {
-                        let name = name.as_deref().ok_or("missing JSON reader field name")?;
-                        Output::Scalar(Value::Bool(
-                            r.find_next_field(name).map_err(|e| e.to_string())?,
-                        ))
-                    }
-                    ReaderOp::NextItem => {
-                        Output::Scalar(Value::Bool(r.next_item().map_err(|e| e.to_string())?))
-                    }
-                    ReaderOp::ReadNull => {
-                        r.read_null().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::ReadBool => {
-                        Output::Scalar(Value::Bool(r.read_bool().map_err(|e| e.to_string())?))
-                    }
-                    ReaderOp::ReadInt => {
-                        Output::Scalar(Value::Int(r.read_int().map_err(|e| e.to_string())?))
-                    }
-                    ReaderOp::ReadWord => {
-                        Output::Scalar(Value::Word(r.read_word().map_err(|e| e.to_string())?))
-                    }
-                    ReaderOp::ReadFloat => {
-                        Output::Scalar(Value::Float(r.read_float().map_err(|e| e.to_string())?))
-                    }
-                    ReaderOp::ReadString => {
-                        Output::Text(r.read_string().map_err(|e| e.to_string())?)
-                    }
-                    ReaderOp::ReadNumberText => {
-                        Output::Text(r.read_number_text().map_err(|e| e.to_string())?)
-                    }
-                    ReaderOp::Skip => {
-                        r.skip().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::FinishObject => {
-                        r.finish_object().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::FinishArray => {
-                        r.finish_array().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::Finish => {
-                        r.finish().map_err(|e| e.to_string())?;
-                        Output::Scalar(Value::Unit)
-                    }
-                    ReaderOp::OfString | ReaderOp::Close => {
-                        return Err("invalid JSON reader dispatch".into());
-                    }
-                };
-                heap.alloc_json_output(output, admission)
-            })
+            self.heap.alloc_json_output(output, admission)
         })();
-        if result.is_err() || op == ReaderOp::Finish {
-            self.heap.close_json_reader(reader)?;
-        }
-        result
+        let cleanup =
+            self.heap
+                .end_json_reader(reader, owners, result.is_ok() && op != ReaderOp::Finish);
+        // Always clean up, but never replace the operation's original error.
+        result.and_then(|value| cleanup.map(|()| value))
     }
 }
 

@@ -242,8 +242,11 @@ cannot multiply a script's budget.
   the tree's budget when garbage collection frees them and when its process
   ends. JSON reader payloads use the handle's existing byte-accounting slot;
   close drops the payload before refunding it, leaving only the base handle charge.
-  Construction/output reservations cover overlap before allocation. Other native
-  resources remain outside byte accounting. These estimates are not allocator/RSS
+  Construction/output reservations cover overlap before allocation. Reader outputs
+  are parsed into already-accounted scratch/input, then admitted at their actual
+  size, not the unread input size. A local owner lease keeps that text stable and
+  charged across rooted output GC; it is restored on success or dropped before
+  error/finish refunds. Other native resources remain outside byte accounting. These estimates are not allocator/RSS
   measurements. Each process collects only its own heap, so a process can fail with a
   memory error because of data that another live process in the tree holds.
 - `max_heap` (an object count) and the per-operation limits stay per process;

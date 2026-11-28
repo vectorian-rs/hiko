@@ -11,7 +11,7 @@ pub(crate) mod json_reader;
 /// Error returned when a heap allocation exceeds the configured object limit.
 #[derive(Debug, Clone)]
 pub enum HeapLimitExceeded {
-    #[cfg(feature = "builtin-json-reader")]
+    /// Native payloads require their dedicated admission path (in every build).
     NativeAdmissionRequired,
     Objects {
         live: usize,
@@ -39,7 +39,6 @@ pub struct IoLimitExceeded {
 impl std::fmt::Display for HeapLimitExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(feature = "builtin-json-reader")]
             Self::NativeAdmissionRequired => {
                 f.write_str("JSON reader allocation requires VM pre-admission")
             }
@@ -861,6 +860,17 @@ impl Heap {
         }
     }
 
+    /// Release one removed resource's budgets and per-kind count.
+    /// Peak counters are monotonic.
+    fn unregister_host_resource(&mut self, kind: HostHandleKind) {
+        self.release_host_resource_budgets(kind);
+        let count = self.host_resources_by_kind.entry(kind).or_insert(0);
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.host_resources_by_kind.remove(&kind);
+        }
+    }
+
     pub fn max_host_work(&self) -> Option<u64> {
         self.host_work_budget.as_ref().map(|budget| budget.limit())
     }
@@ -955,13 +965,7 @@ impl Heap {
             }
             Err(err) => {
                 self.host_resources.remove(&id);
-                self.release_host_resource_budgets(kind);
-                // Decrement the count since we failed to allocate
-                let count = self.host_resources_by_kind.entry(kind).or_insert(0);
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    self.host_resources_by_kind.remove(&kind);
-                }
+                self.unregister_host_resource(kind);
                 Err(err)
             }
         }
@@ -1277,16 +1281,10 @@ impl Heap {
         let bytes_before = self.current_bytes;
         for i in 0..self.objects.len() {
             if self.objects[i].is_some() && !self.marks[i] {
-                if let Some(HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref()
-                    && self.host_resources.remove(id).is_some()
+                if let Some(&HeapObject::HostHandle { id, kind }) = self.objects[i].as_ref()
+                    && self.host_resources.remove(&id).is_some()
                 {
-                    self.release_host_resource_budgets(*kind);
-                    // Decrement the per-kind count. Peak counters are monotonic.
-                    let count = self.host_resources_by_kind.entry(*kind).or_insert(0);
-                    *count = count.saturating_sub(1);
-                    if *count == 0 {
-                        self.host_resources_by_kind.remove(kind);
-                    }
+                    self.unregister_host_resource(kind);
                 }
                 self.current_bytes = self.current_bytes.saturating_sub(self.object_bytes[i]);
                 self.objects[i] = None;

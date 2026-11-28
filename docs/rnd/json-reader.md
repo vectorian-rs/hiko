@@ -2,7 +2,7 @@
 
 The [hiko-json](../../crates/hiko-json/src/lib.rs) reader from
 [#264 rev2](https://github.com/vectorian-rs/hiko/issues/264) now has the
-[#265 rev3](https://github.com/vectorian-rs/hiko/issues/265) owned frontend and
+[#265 rev4](https://github.com/vectorian-rs/hiko/issues/265) owned frontend and
 `Std.JsonReader` integration. The independent `builtin-json-reader` build feature
 is default-off and not implied by `builtin-json`. Runtime authority separately
 requires `capabilities.json_reader = true`; older JSON grants do not enable it.
@@ -159,10 +159,18 @@ No persistent VM Poisoned/Validated states are introduced.
 admission_bytes is a conservative fresh-construction estimate covering input,
 two buffers and fixed state/decoder allowance. estimated_bytes uses retained
 capacities. Both are canonical estimates, not allocator profiling or RSS. A VM
-must reserve BEFORE construction/output work; this standalone adapter is not that
-reservation ledger. The VM now does this using short-lived reservations and one
-persistent handle object_bytes slot, with immediate payload/slot release and rooted
-allocation preflight. Resource pressure forces a checked collection before retrying
+must reserve BEFORE construction and output allocation; this standalone adapter is
+not that reservation ledger. The VM uses short-lived reservations and one persistent
+handle object_bytes slot, with immediate payload/slot release. For each operation it
+charges work, parses into already-accounted scratch/input, then admits the ACTUAL
+output size (including one object for None, two for Some). It never reserves the
+whole input or unread suffix for a small output. A local owner lease keeps the
+text stable across the rooted VM allocation safepoint; its handle remains rooted
+and charged while its resource-table owner slot is temporarily empty. No parser or
+heap borrow survives GC, no unaccounted intermediate text copy is made, and no Hiko
+code runs during the lease. Success restores the owner; failure/finish drops it
+before close/refund. One cleanup path preserves the original operation error.
+Resource pressure forces a checked collection before retrying
 admission. Other native kinds are not retrofitted. The VM starting tariff is
 json_parse's45+ceil(2180*n/1024) once, then45 per subsequent API call, not32*n.
 It is an existing-rate proxy, not newly calibrated reader performance.

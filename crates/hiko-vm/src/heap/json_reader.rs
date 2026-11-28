@@ -46,10 +46,40 @@ impl Reservation {
     }
 }
 
+/// Validated once before the creation safepoint; contains no new allocation.
+pub(crate) struct Creation {
+    input: Arc<str>,
+    pub(crate) bytes: usize,
+}
+impl Creation {
+    pub(crate) fn new(input: Arc<str>) -> Result<Self, String> {
+        if input.len() > Limits::default().max_input_bytes {
+            return Err(hiko_json::Error {
+                kind: hiko_json::ErrorKind::InputLimit,
+                offset: 0,
+            }
+            .to_string());
+        }
+        let bytes = Heap::json_reader_creation_bytes(input.len())?;
+        Ok(Self { input, bytes })
+    }
+}
+
 pub(crate) enum Output<'a> {
     Scalar(Value),
     Text(&'a str),
     Field(Option<&'a str>),
+}
+
+impl Output<'_> {
+    pub(crate) fn layout(&self) -> Result<(usize, usize), String> {
+        match self {
+            Self::Scalar(_) => Ok((0, 0)),
+            Self::Text(s) => Heap::json_output_bound(s.len(), false),
+            Self::Field(Some(s)) => Heap::json_output_bound(s.len(), true),
+            Self::Field(None) => Heap::json_output_bound(0, false),
+        }
+    }
 }
 
 impl Heap {
@@ -74,39 +104,31 @@ impl Heap {
         }
         .estimated_bytes()
     }
+    /// The first exhausted slot budget (total, then per-kind), if any.
+    fn full_json_reader_budget(&self) -> Option<HeapLimitExceeded> {
+        let total = self.host_resource_budget.as_ref().map(|b| (b, None));
+        let kind = self
+            .host_resource_kind_budget(HostHandleKind::JsonReader)
+            .map(|b| (b, Some("json_reader")));
+        let (b, kind) = total
+            .into_iter()
+            .chain(kind)
+            .find(|(b, _)| b.remaining() == 0)?;
+        Some(HeapLimitExceeded::HostResources {
+            kind: kind.map(str::to_owned),
+            live: b.used() as usize,
+            limit: b.limit() as usize,
+        })
+    }
     pub(crate) fn json_reader_resource_pressure(&self) -> bool {
-        self.host_resource_budget
-            .as_ref()
-            .is_some_and(|b| b.remaining() == 0)
-            || self
-                .host_resource_kind_budget(HostHandleKind::JsonReader)
-                .is_some_and(|b| b.remaining() == 0)
+        self.full_json_reader_budget().is_some()
     }
     pub(crate) fn ensure_json_reader_resource(&self) -> Result<(), String> {
         if self.next_host_handle_id == u64::MAX {
             return Err("JSON reader host handle IDs exhausted".into());
         }
-        for (b, kind) in [
-            (&self.host_resource_budget, None),
-            (
-                &self
-                    .host_resource_kind_budget(HostHandleKind::JsonReader)
-                    .cloned(),
-                Some("json_reader"),
-            ),
-        ] {
-            if let Some(b) = b
-                && b.remaining() == 0
-            {
-                return Err(HeapLimitExceeded::HostResources {
-                    kind: kind.map(str::to_owned),
-                    live: b.used() as usize,
-                    limit: b.limit() as usize,
-                }
-                .to_string());
-            }
-        }
-        Ok(())
+        self.full_json_reader_budget()
+            .map_or(Ok(()), |e| Err(e.to_string()))
     }
     pub(crate) fn reserve_json_output(
         &mut self,
@@ -153,16 +175,13 @@ impl Heap {
         }
         Ok(reservation)
     }
-    pub(crate) fn new_json_reader(&mut self, input: Arc<str>) -> Result<Value, String> {
-        if input.len() > Limits::default().max_input_bytes {
-            return Err(hiko_json::Error {
-                kind: hiko_json::ErrorKind::InputLimit,
-                offset: 0,
-            }
-            .to_string());
-        }
+    pub(crate) fn create_json_reader(
+        &mut self,
+        creation: Creation,
+        work: u64,
+    ) -> Result<Value, String> {
+        let Creation { input, bytes } = creation;
         self.ensure_json_reader_resource()?;
-        let bytes = Self::json_reader_creation_bytes(input.len())?;
         let mut admission = self.reserve_json_output(1, bytes)?;
         if let Some(b) = &self.host_resource_budget {
             b.try_charge(1).map_err(|live| {
@@ -190,6 +209,7 @@ impl Heap {
         }
         #[cfg(test)]
         self.json_admission_checkpoint(AdmissionStage::Slots)?;
+        self.charge_host_work(work)?;
         // Reserve owner storage before constructing its two buffers. No allocator
         // override or replaying Parser is used. Global allocator OOM may abort,
         // as for existing heap objects; reservation errors are recoverable.
@@ -290,16 +310,7 @@ impl Heap {
         if let Some(HeapObject::HostHandle { id, .. }) = self.objects[r.0 as usize].as_mut() {
             *id = HostHandleId(0);
         }
-        self.release_host_resource_budgets(HostHandleKind::JsonReader);
-        let count = self
-            .host_resources_by_kind
-            .entry(HostHandleKind::JsonReader)
-            .or_insert(0);
-        *count -= 1;
-        if *count == 0 {
-            self.host_resources_by_kind
-                .remove(&HostHandleKind::JsonReader);
-        }
+        self.unregister_host_resource(HostHandleKind::JsonReader);
         let slot = &mut self.object_bytes[r.0 as usize];
         let payload = *slot - Self::json_handle_bytes();
         *slot -= payload;
@@ -309,34 +320,35 @@ impl Heap {
         }
         Ok(())
     }
-    /// No GC while leased. No reader borrows survive the callback. Payload
-    /// remains charged in the handle's slot even while its Vec is local.
-    pub(crate) fn with_json_reader<T>(
+    /// Lease to VM dispatch, not to Hiko. The caller MUST keep the handle rooted
+    /// across GC and end the lease before returning. Its object_bytes charge and
+    /// resource slots stay live; the empty table entry is never script-visible.
+    pub(crate) fn take_json_reader(&mut self, value: Value) -> Result<Vec<OwnedReader>, String> {
+        let (_, id) = self.json_handle(value)?;
+        match self.host_resources.get_mut(&id) {
+            Some(HostResource::JsonReader(v)) if v.len() == 1 => Ok(mem::take(v)),
+            None => Err("JSON reader is closed or dangling".into()),
+            _ => Err("invalid JSON reader resource entry".into()),
+        }
+    }
+    /// Output borrows have ended. On error/finish, destroy the local owner BEFORE
+    /// closing/refunding its table entry. This is the sole lease cleanup owner.
+    pub(crate) fn end_json_reader(
         &mut self,
         value: Value,
-        f: impl FnOnce(&mut OwnedReader, &mut Heap) -> Result<T, String>,
-    ) -> Result<T, String> {
-        self.json_reader(value)?;
-        let (_, id) = self.json_handle(value)?;
-        let Some(HostResource::JsonReader(owners)) = self.host_resources.get_mut(&id) else {
-            return Err("invalid JSON reader resource entry".into());
-        };
-        let mut owners = mem::take(owners);
-        let result = f(&mut owners[0], self);
-        match result {
-            Ok(value) => {
-                let Some(HostResource::JsonReader(slot)) = self.host_resources.get_mut(&id) else {
-                    return Err("JSON reader lease entry lost".into());
-                };
-                *slot = owners;
-                Ok(value)
-            }
-            Err(error) => {
-                drop(owners);
-                self.close_json_reader(value)?;
-                Err(error)
-            }
+        owners: Vec<OwnedReader>,
+        keep: bool,
+    ) -> Result<(), String> {
+        if !keep {
+            drop(owners);
+            return self.close_json_reader(value);
         }
+        let (_, id) = self.json_handle(value)?;
+        let Some(HostResource::JsonReader(slot)) = self.host_resources.get_mut(&id) else {
+            return Err("JSON reader lease entry lost".into());
+        };
+        *slot = owners;
+        Ok(())
     }
     pub(super) fn drop_json_reader_payloads(&mut self) {
         for resource in self.host_resources.values_mut() {
@@ -362,12 +374,7 @@ impl Heap {
         admission: Reservation,
     ) -> Result<Value, String> {
         let base = size_of::<HeapObject>();
-        let bytes = match &output {
-            Output::Scalar(_) => 0,
-            Output::Text(s) => base + s.len(),
-            Output::Field(Some(s)) => 2 * base + s.len(),
-            Output::Field(None) => base,
-        };
+        let (_, bytes) = output.layout()?;
         // The complete output fits BEFORE its Arc allocation/heap registration.
         admission.commit(bytes)?;
         Ok(match output {
