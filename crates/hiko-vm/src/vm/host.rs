@@ -631,6 +631,8 @@ impl VM {
                 }
                 Ok(HeapObject::Bytes(b)) => format!("<bytes:{}>", b.len()),
                 Ok(HeapObject::HostHandle { kind, .. }) => match kind {
+                    #[cfg(feature = "builtin-json-reader")]
+                    crate::value::HostHandleKind::JsonReader => "<json-reader>".to_string(),
                     crate::value::HostHandleKind::Unsupported => "<host-handle>".to_string(),
                     crate::value::HostHandleKind::Extension(kind) => format!("<{kind}>"),
                 },

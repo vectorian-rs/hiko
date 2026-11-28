@@ -1,10 +1,14 @@
-# Experimental Rust on-demand JSON reader
+# Experimental forward-only JSON reader
 
-Implemented in [hiko-json](../../crates/hiko-json/src/lib.rs) for
-[#264 rev2](https://github.com/vectorian-rs/hiko/issues/264), not registered in Hiko.
-There is no Std.JsonReader/JsonDoc module, builtin, capability, GC object or new VM ABI.
-Existing text/ADT APIs and #256 fixtures/1e9 guards remain unchanged. #265 runtime
-integration needs its own approved plan. This crate is experimental and publish=false.
+The [hiko-json](../../crates/hiko-json/src/lib.rs) reader from
+[#264 rev2](https://github.com/vectorian-rs/hiko/issues/264) now has the
+[#265 rev4](https://github.com/vectorian-rs/hiko/issues/265) owned frontend and
+`Std.JsonReader` integration. The independent `builtin-json-reader` build feature
+is default-off and not implied by `builtin-json`. Runtime authority separately
+requires `capabilities.json_reader = true`; older JSON grants do not enable it.
+There is no JsonDoc/random-access view, DOM/cache or serialization extension.
+Existing text/ADT APIs and #256 fixtures/1e9 guards remain unchanged.
+The Rust crate is experimental and publish=false.
 
 ## Model and API
 
@@ -29,7 +33,7 @@ nested key decoding. Keys use a single append/truncate stack, not a buffer per k
 Value operations: kind, null, bool, string, number_text, i64, u64, f64, object,
 array and skip. Scalars are consumed once. kind is a non-consuming classification,
 not proof of valid token contents. number_text borrows original input; string
-borrows input/decoder scratch through its value guard and cannot outlive it.
+borrows decoded scratch through its value guard and cannot outlive it.
 Owned application outputs/copies are the caller's responsibility, not reader scratch.
 
 ```rust
@@ -96,7 +100,14 @@ allocator metadata/rounding, code/static tables and application-owned output are
 outside this scratch model. It is not RSS or an exact physical/native-stack bound.
 
 Before parsing, reserve a checked canonical work charge of32*n+256 for n input
-bytes, plus one BEFORE each backend cursor/token call. This conservative abstract
+bytes, plus one BEFORE each frontend core request and each backend helper call.
+Guard constructors/key access/completed-guard end checks do not enter the core;
+api_calls counts core entries, not every Rust public method invocation.
+Backend calls include requested float conversion; classification peeks are cached
+per pending value, including the peek returned by array advancement. Stats report
+API calls, backend helpers, classification peeks and float conversions separately.
+This revised shared-core counter protocol supersedes #264's helper counts; it is
+NOT the VM host-work tariff. This conservative abstract
 schedule covers a UTF-8 pass, forward token scanning/validation, decoding, active
 key copies/comparisons and scalar conversion. Syntax bytes progress only forward;
 no root reparsing or repeated field rewind occurs. Key lengths/copies sum to at
@@ -106,10 +117,10 @@ calls spend call credits even without advancing. These credits are not CPU cycle
 wall time or calibrated production Hiko host charges; no speed claim is made.
 
 Two buffers are reserved fallibly to at least n bytes each: jiter decoded strings
-and active decoded keys. Source audit of jiter0.19.0 string_decoder.rs shows clear,
+and active decoded keys/temporary returned strings. Source audit of jiter0.19.0 string_decoder.rs shows clear,
 reserve(min(remaining,8192)) and decoded writes no larger than raw source. All live
-keys belong to distinct consumed source ranges, so their summed decoded lengths
-are at most n. Neither buffer needs hidden growth under the pinned call paths.
+keys and a current decoded value belong to disjoint consumed source ranges, so
+their summed decoded lengths are at most n. Neither buffer needs hidden growth under the pinned call paths.
 No aggregate JsonValue/NumberAny/BigInt path or optional num-bigint feature is used.
 Typed entry points check kinds first: upstream wrong_type/wrong_num otherwise invokes
 NumberAny even while reporting a string/bool/null type error on numeric input.
@@ -117,20 +128,97 @@ Float conversion uses lexical-parse-float1.0.6 fixed-limb StackVec fallback; ins
 number_decoder.rs and lexical bigint.rs rather than assuming float means allocation.
 
 The scratch charge includes both retained capacities, old+new overlap when replacing
-each buffer, fixed Rust reader/guard payloads at depth128, skip stack and a canonical
+each buffer, fixed Rust reader/guard payloads and shared frames at depth128, plus a canonical
 64KiB allowance for fixed decoder/conversion payloads. This allowance is an estimate,
 not a compiler frame-size measurement. Preflight computes the sequential replacement
 peak before allocation; replacements use fresh try_reserve_exact buffers. OS failure
-may leave an already-grown buffer reusable but never leaks it. Drop returns jiter's
-buffer to Scratch and clears logical contents. No global allocator override or
+may leave an already-grown buffer reusable but never leaks it. Every backend lease
+returns jiter's buffer to Scratch, including on syntax errors; Drop clears contents. No global allocator override or
 allocate-first/estimate-later budget path is used. Upstream code contains unsafe;
 this wrapper forbids new unsafe code and performs no lifetime widening.
+
+## Shared core and owned frontend (#265 rev3 S1)
+
+Both Reader and OwnedReader use one input-independent core: absolute offset,
+cached classification and fixed128-frame traversal state. Lending guards retain
+only completion bookkeeping. Public Jiter leases operate on input[offset..],
+return tape before the next operation, and never replay a prefix or retain a
+borrow of their frontend. Jiter's Parser is private and is not used directly.
+No self-reference, unsafe lifetime widening, backend change or extra grammar.
+Decoded strings are copied into pre-reserved scratch, then lent to the caller;
+raw numbers still borrow original input. No copied borrowed input or DOM cache.
+
+OwnedReader retains Arc<str>, scratch and core state, and can safely move between
+operations. next_field/next_item end markers leave the frame open until matching
+finish_object/finish_array. A pending child must first be consumed; remaining-field
+search skips unmatched values. finish drains all open frames/root and checks EOF.
+This standalone Rust frontend permits repeated finish; Hiko finish instead
+releases its owner, so subsequent finish fails. Hiko close discards, not validates.
+No persistent VM Poisoned/Validated states are introduced.
+
+admission_bytes is a conservative fresh-construction estimate covering input,
+two buffers and fixed state/decoder allowance. estimated_bytes uses retained
+capacities. Both are canonical estimates, not allocator profiling or RSS. A VM
+must reserve BEFORE construction and output allocation; this standalone adapter is
+not that reservation ledger. The VM uses short-lived reservations and one persistent
+handle object_bytes slot, with immediate payload/slot release. For each operation it
+charges work, parses into already-accounted scratch/input, then admits the ACTUAL
+output size (including one object for None, two for Some). It never reserves the
+whole input or unread suffix for a small output. A local owner lease keeps the
+text stable across the rooted VM allocation safepoint; its handle remains rooted
+and charged while its resource-table owner slot is temporarily empty. No parser or
+heap borrow survives GC, no unaccounted intermediate text copy is made, and no Hiko
+code runs during the lease. Success restores the owner; failure/finish drops it
+before close/refund. One cleanup path preserves the original operation error.
+Resource pressure forces a checked collection before retrying
+admission. Other native kinds are not retrofitted. The VM starting tariff is
+json_parse's45+ceil(2180*n/1024) once, then45 per subsequent API call, not32*n.
+It is an existing-rate proxy, not newly calibrated reader performance.
+
+## Hiko surface and lifetime
+
+Import [Std.JsonReader](../../libraries/Std-v0.1.0/modules/JsonReader.hml).
+`reader` is the protected opaque `BuiltinJsonReader.reader` type; aliases share
+one mutable cursor. Identity equality and `<json-reader>` display expose no input.
+Handles, including nested captures/results, cannot cross process boundaries.
+Kind/live-ID checks protect the script boundary, not arbitrary trusted hosts
+fabricating raw heap references/IDs. Reader ID exhaustion is refused.
+
+Operations are `of_string`, `kind`, `begin_object`, `begin_array`, `next_field`,
+`find_next_field`, `next_item`, `read_null`, `read_bool`, `read_string`,
+`read_number_text`, `read_int`, `read_word`, `read_float`, `skip`, `finish_object`,
+`finish_array`, `finish`, `close`. `find_next_field name reader` is name-first and
+searches only remaining literal keys, retaining source-order duplicates.
+`next_field` returns `string Option.option`; end markers leave the frame open.
+A pending child must be consumed before advancing; matching container finish drains
+and pops it. Final finish drains all frames/root and checks EOF, then closes.
+Repeated finish fails; close is idempotent discard without suffix validation.
+A valid-owner operation failure closes every alias before reporting the error;
+policy/invalid-handle denial touches no owner. Earlier values are not rolled back.
+No process-resumption guarantee is added.
+
+```toml
+[capabilities]
+json_reader = true
+[limits]
+max_host_work = 10_000_000
+max_host_resources = 32
+[limits.host_resources]
+json_reader = 32
+```
+
+The limits cover estimated native input/scratch/fixed state and output overlap,
+not actual RSS, allocator metadata or calibrated native work. Closing drops the
+payload before refunding bytes; later GC refunds only base handle bytes. One tree
+shares byte and total/per-kind slot budgets. Unreachable open readers can be
+collected under resource pressure; reachable readers still refuse admission.
 
 ## Reproduction and limitations
 
 ```sh
 cargo +1.99.1 test --locked -p hiko-json -- --nocapture --test-threads=1
 cargo +1.99.1 clippy --locked -p hiko-json --all-targets -- -D warnings
+cargo +1.99.1 test --locked -p hiko-vm --no-default-features --features builtin-json-reader --test json_reader
 ```
 
 [Pre-probe freeze](https://github.com/vectorian-rs/hiko/issues/264#issuecomment-7067454829):
@@ -142,5 +230,7 @@ long escaped keys/strings, admission/poison/reuse failures, shared-profile serde
 differential checks and4096 deterministic generated byte inputs. This is not a
 JSONTestSuite/full-conformance or fuzz-campaign claim. No timed benchmark runs.
 Resource evidence is source audit plus visible capacity/cursor counters, not a
-complete native-allocation profiler. These local guards are not yet VM accounting,
-GC/cancellation, capability, process-transfer or production host-charge integration.
+complete native-allocation profiler. The #264 freeze is historical, not evidence
+for the integrated #265 head. VM tests cover reservations, GC, release, authority
+and process boundaries separately. No reader timing/calibration, full conformance,
+physical-memory bound, independent review or production performance is established.

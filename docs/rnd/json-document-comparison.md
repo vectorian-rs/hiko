@@ -16,9 +16,10 @@ No standard prescribes the object index, memory layout, GC model or capability A
 Keep those recommendations, but close the input-profile and implementation gates
 below before treating the design as an implementation-ready parser contract.
 The [simd-json owned-DOM spike](#simd-json-owned-dom-feasibility-264) is **NO-GO
-as-is** under the foundation's fidelity/admission requirements; #265 must wait.
-[#264 rev2's Rust reader](json-reader.md) is a separate forward-only implementation,
-not the proposed persistent document or a completed Hiko runtime integration.
+as-is** under the foundation's fidelity/admission requirements; its DOM path stopped.
+[#264 rev2's reader and #265 integration](json-reader.md) are a separate forward-only
+implementation, not the proposed persistent document. The integration keeps the
+DOM/random-access/serialization proposal out of scope.
 
 ## What established implementations do
 

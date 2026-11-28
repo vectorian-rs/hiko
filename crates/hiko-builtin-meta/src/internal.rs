@@ -19,6 +19,7 @@ impl InternalBuiltinModule {
         match self.leaf_name {
             "Fiber" => PROCESS_RUNTIME_TYPES,
             "Json" => &[("BuiltinJson.json", 0)],
+            "JsonReader" => &[("BuiltinJsonReader.reader", 0)],
             _ => &[],
         }
     }
@@ -71,6 +72,29 @@ const JSON_SOURCE: &str = r#"structure BuiltinJson = struct
   fun get value = json_get value
   fun keys value = json_keys value
   fun length value = json_length value
+end
+"#;
+
+const JSON_READER_SOURCE: &str = r#"structure BuiltinJsonReader = struct
+  fun of_string value = json_reader_of_string value
+  fun kind value = json_reader_kind value
+  fun begin_object value = json_reader_begin_object value
+  fun begin_array value = json_reader_begin_array value
+  fun next_field value = json_reader_next_field value
+  fun find_next_field value = json_reader_find_next_field value
+  fun next_item value = json_reader_next_item value
+  fun read_null value = json_reader_read_null value
+  fun read_bool value = json_reader_read_bool value
+  fun read_string value = json_reader_read_string value
+  fun read_number_text value = json_reader_read_number_text value
+  fun read_int value = json_reader_read_int value
+  fun read_word value = json_reader_read_word value
+  fun read_float value = json_reader_read_float value
+  fun skip value = json_reader_skip value
+  fun finish_object value = json_reader_finish_object value
+  fun finish_array value = json_reader_finish_array value
+  fun finish value = json_reader_finish value
+  fun close value = json_reader_close value
 end
 "#;
 
@@ -345,6 +369,7 @@ const MODULES: &[InternalBuiltinModule] = &[
     module!("PathJoin", "builtin-path", PATH_JOIN_SOURCE),
     module!("SystemExit", "builtin-system", SYSTEM_EXIT_SOURCE),
     module!("SystemPanic", "builtin-testing", SYSTEM_PANIC_SOURCE),
+    module!("JsonReader", "builtin-json-reader", JSON_READER_SOURCE),
 ];
 
 pub fn is_internal_builtin_package(package_name: &str) -> bool {

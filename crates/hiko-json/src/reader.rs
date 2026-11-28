@@ -1,12 +1,10 @@
-use crate::{Error, ErrorKind, Result};
-use jiter::{Jiter, Peek};
+use crate::core::{Context, State, at};
+use crate::{ErrorKind, Result};
 use std::{mem, ops::Range};
 
-const MAX_DEPTH: usize = 128;
-// Canonical conservative allowance for fixed backend decoder/conversion payloads.
-// lexical-parse-float uses fixed StackVec limbs, not an allocating bigint.
-// This is an accounting estimate, never an exact native stack/RSS measurement.
-const DECODER_FIXED_ALLOWANCE: usize = 64 * 1024;
+pub(crate) const MAX_DEPTH: usize = 128;
+// Fixed decoder/conversion payload estimate; not actual native stack or RSS.
+pub(crate) const DECODER_FIXED_ALLOWANCE: usize = 64 * 1024;
 
 /// Independent experimental reader limits, not Hiko VM configuration.
 #[derive(Clone, Copy, Debug)]
@@ -16,7 +14,6 @@ pub struct Limits {
     pub max_work: u64,
     pub max_depth: usize,
 }
-
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -31,10 +28,10 @@ impl Default for Limits {
 /// Reusable exclusively borrowed storage. No cached document or tree.
 #[derive(Default, Debug)]
 pub struct Scratch {
-    tape: Vec<u8>,
-    keys: String,
+    pub(crate) tape: Vec<u8>,
+    pub(crate) keys: String,
+    pub(crate) text_start: Option<usize>,
 }
-
 impl Scratch {
     pub fn retained_bytes(&self) -> usize {
         self.tape.capacity().saturating_add(self.keys.capacity())
@@ -42,8 +39,7 @@ impl Scratch {
     pub fn capacities(&self) -> (usize, usize) {
         (self.tape.capacity(), self.keys.capacity())
     }
-
-    fn peak_for(&self, n: usize) -> Option<usize> {
+    pub(crate) fn peak_for(&self, n: usize) -> Option<usize> {
         let mut live = self.tape.capacity().checked_add(self.keys.capacity())?;
         let mut peak = live;
         if self.tape.capacity() < n {
@@ -55,8 +51,7 @@ impl Scratch {
         }
         peak.checked_add(fixed_state_bytes())
     }
-
-    fn prepare(&mut self, n: usize) -> Result<()> {
+    pub(crate) fn prepare(&mut self, n: usize) -> Result<()> {
         if self.tape.capacity() < n {
             let mut tape = Vec::new();
             tape.try_reserve_exact(n)
@@ -69,21 +64,29 @@ impl Scratch {
                 .map_err(|_| at(ErrorKind::Allocation, 0))?;
             self.keys = keys;
         }
+        self.clear();
+        Ok(())
+    }
+    pub(crate) fn release_text(&mut self) {
+        if let Some(start) = self.text_start.take() {
+            self.keys.truncate(start);
+        }
+    }
+    pub(crate) fn clear(&mut self) {
         self.tape.clear();
         self.keys.clear();
-        Ok(())
+        self.text_start = None;
     }
 }
 
 /// Canonical estimated state/guard/decoder payload, not machine stack or RSS.
-fn fixed_state_bytes() -> usize {
+pub(crate) fn fixed_state_bytes() -> usize {
     mem::size_of::<Reader<'_, '_>>()
         + MAX_DEPTH
             * (mem::size_of::<Value<'_, '_, '_>>()
                 + mem::size_of::<Field<'_, '_, '_>>()
                 + mem::size_of::<Object<'_, '_, '_>>()
                 + mem::size_of::<Array<'_, '_, '_>>())
-        + MAX_DEPTH
         + DECODER_FIXED_ALLOWANCE
 }
 
@@ -97,293 +100,84 @@ pub enum Kind {
     Object,
 }
 
+/// Untimed counters. API and backend credits are standalone abstract units.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub advanced_bytes: usize,
     pub backend_calls: u64,
     pub charged_work: u64,
     pub peak_scratch_bytes: usize,
+    pub api_calls: u64,
+    pub classification_peeks: u64,
+    pub float_conversions: u64,
 }
 
-/// One forward-only cursor borrowing both immutable input and reusable scratch.
+/// Lending frontend over the same input-independent core as OwnedReader.
 pub struct Reader<'input, 'scratch> {
     cursor: Cursor<'input, 'scratch>,
     root_started: bool,
     root_done: bool,
 }
-
 impl<'i, 's> Reader<'i, 's> {
     pub fn new(input: &'i [u8], scratch: &'s mut Scratch, limits: Limits) -> Result<Self> {
-        if input.len() > limits.max_input_bytes {
-            return Err(at(ErrorKind::InputLimit, 0));
-        }
-        if limits.max_depth > MAX_DEPTH {
-            return Err(at(ErrorKind::DepthLimit, 0));
-        }
-        // Canonical abstract byte-work schedule: 32 credits per input byte for
-        // validation/scanning/decoding/key copies/conversion, plus 256 fixed;
-        // every backend invocation additionally costs one. Not CPU calibration.
-        let prepaid = u64::try_from(input.len())
-            .ok()
-            .and_then(|n| n.checked_mul(32))
-            .and_then(|n| n.checked_add(256))
-            .ok_or_else(|| at(ErrorKind::WorkLimit, 0))?;
-        if prepaid > limits.max_work {
-            return Err(at(ErrorKind::WorkLimit, 0));
-        }
-        let peak = scratch
-            .peak_for(input.len())
-            .ok_or_else(|| at(ErrorKind::ScratchLimit, 0))?;
-        if peak > limits.max_scratch_bytes {
-            return Err(at(ErrorKind::ScratchLimit, 0));
-        }
-        // Range-only jiter string skipping does not check UTF-8. Validate once,
-        // before any parsing; this alone is NOT whole-document JSON validation.
-        let input =
-            std::str::from_utf8(input).map_err(|e| at(ErrorKind::InvalidUtf8, e.valid_up_to()))?;
-        scratch.prepare(input.len())?;
-        let parser = Jiter::with_tape(input.as_bytes(), mem::take(&mut scratch.tape));
+        let (state, input) = State::new(input, scratch, limits)?;
         Ok(Self {
             cursor: Cursor {
                 input,
-                parser: Some(parser),
                 scratch,
-                limits,
-                poisoned: false,
-                depth: 0,
-                stats: Stats {
-                    charged_work: prepaid,
-                    peak_scratch_bytes: peak,
-                    ..Stats::default()
-                },
+                state,
             },
             root_started: false,
             root_done: false,
         })
     }
-
     pub fn root(&mut self) -> Result<Value<'_, 'i, 's>> {
-        self.cursor.healthy()?;
+        self.cursor.state.healthy()?;
         if self.root_started {
-            return self.cursor.fail(ErrorKind::Consumed);
+            return self.cursor.state.fail(ErrorKind::Consumed);
         }
         self.root_started = true;
         Ok(Value::new(&mut self.cursor, &mut self.root_done))
     }
-
-    /// Validate everything remaining, then require EOF. Earlier extraction alone
-    /// does not certify the input. Dropped unfinished children cannot be resumed.
+    /// Unopened root is drained; an unfinished lending guard is an error.
+    /// Earlier extraction does not validate the suffix. Repeated finish succeeds.
     pub fn finish(&mut self) -> Result<()> {
-        self.cursor.healthy()?;
+        self.cursor.state.healthy()?;
         if !self.root_started {
             self.root()?.skip()?;
         }
         if !self.root_done {
-            return self.cursor.fail(ErrorKind::UnconsumedChild);
+            return self.cursor.state.fail(ErrorKind::UnconsumedChild);
         }
-        self.cursor.step(|p| p.finish())
+        self.cursor.call(|c| c.eof())
     }
-
     pub fn stats(&self) -> Stats {
         Stats {
-            advanced_bytes: self.cursor.position(),
-            ..self.cursor.stats
+            advanced_bytes: self.cursor.state.offset,
+            ..self.cursor.state.stats
         }
     }
 }
 
 struct Cursor<'i, 's> {
     input: &'i str,
-    parser: Option<Jiter<'i>>,
     scratch: &'s mut Scratch,
-    limits: Limits,
-    poisoned: bool,
-    depth: usize,
-    stats: Stats,
+    state: State,
 }
-
+impl Cursor<'_, '_> {
+    fn call<T>(&mut self, f: impl FnOnce(&mut Context<'_>) -> Result<T>) -> Result<T> {
+        let mut c = Context {
+            input: self.input,
+            scratch: self.scratch,
+            state: &mut self.state,
+        };
+        c.api()?;
+        f(&mut c)
+    }
+}
 impl Drop for Cursor<'_, '_> {
     fn drop(&mut self) {
-        if let Some(parser) = self.parser.take() {
-            self.scratch.tape = parser.into_tape();
-        }
-        self.scratch.tape.clear();
-        self.scratch.keys.clear();
-    }
-}
-
-fn at(kind: ErrorKind, offset: usize) -> Error {
-    Error { kind, offset }
-}
-
-fn syntax(poisoned: &mut bool, e: jiter::JiterError) -> Error {
-    *poisoned = true;
-    at(ErrorKind::Syntax(e.error_type), e.index)
-}
-
-impl<'i> Cursor<'i, '_> {
-    fn position(&self) -> usize {
-        self.parser.as_ref().map_or(0, Jiter::current_index)
-    }
-    fn healthy(&self) -> Result<()> {
-        if self.poisoned {
-            Err(at(ErrorKind::Poisoned, self.position()))
-        } else {
-            Ok(())
-        }
-    }
-    fn fail<T>(&mut self, kind: ErrorKind) -> Result<T> {
-        self.fail_at(kind, self.position())
-    }
-    fn fail_at<T>(&mut self, kind: ErrorKind, offset: usize) -> Result<T> {
-        self.poisoned = true;
-        Err(at(kind, offset))
-    }
-    fn charge(&mut self) -> Result<()> {
-        self.healthy()?;
-        if self.stats.charged_work >= self.limits.max_work {
-            return self.fail(ErrorKind::WorkLimit);
-        }
-        self.stats.charged_work += 1;
-        self.stats.backend_calls += 1;
-        Ok(())
-    }
-    fn step<'a, T>(
-        &'a mut self,
-        f: impl FnOnce(&'a mut Jiter<'i>) -> jiter::JiterResult<T>,
-    ) -> Result<T> {
-        self.charge()?;
-        let p = self
-            .parser
-            .as_mut()
-            .ok_or_else(|| at(ErrorKind::InternalInvariant, 0))?;
-        f(p).map_err(|e| syntax(&mut self.poisoned, e))
-    }
-    fn kind(&mut self) -> Result<Kind> {
-        let p = self.step(|p| p.peek())?;
-        match p {
-            Peek::Null => Ok(Kind::Null),
-            Peek::True | Peek::False => Ok(Kind::Boolean),
-            Peek::String => Ok(Kind::String),
-            Peek::Array => Ok(Kind::Array),
-            Peek::Object => Ok(Kind::Object),
-            _ if p.is_num() => Ok(Kind::Number),
-            // A byte that starts no value is malformed input, not a kind mismatch.
-            _ => self.fail(ErrorKind::Syntax(jiter::JiterErrorType::JsonError(
-                jiter::JsonErrorType::ExpectedSomeValue,
-            ))),
-        }
-    }
-    fn require_kind(&mut self, expected: Kind) -> Result<()> {
-        if self.kind()? != expected {
-            return self.fail(ErrorKind::WrongKind);
-        }
-        Ok(())
-    }
-    fn enter(&mut self, expected: Kind) -> Result<()> {
-        self.require_kind(expected)?;
-        if self.depth >= self.limits.max_depth {
-            return self.fail(ErrorKind::DepthLimit);
-        }
-        self.depth += 1;
-        Ok(())
-    }
-    fn number(&mut self) -> Result<&'i str> {
-        self.require_kind(Kind::Number)?;
-        let start = self.position();
-        self.step(|p| p.next_number_bytes().map(|_| ()))?;
-        self.input
-            .get(start..self.position())
-            .ok_or_else(|| at(ErrorKind::InternalInvariant, start))
-    }
-    fn string(&mut self) -> Result<&str> {
-        // Typed jiter next_* errors can call wrong_num -> NumberAny. Reject
-        // mismatched kinds first, and use known_str so that path is unreachable.
-        self.require_kind(Kind::String)?;
-        self.step(|p| p.known_str())
-    }
-    fn key(&mut self, first: bool, retain: bool) -> Result<Option<Range<usize>>> {
-        self.charge()?;
-        // Split borrows: the key borrows the parser while scratch is written.
-        let Self {
-            parser: Some(p),
-            scratch,
-            poisoned,
-            ..
-        } = self
-        else {
-            return Err(at(ErrorKind::InternalInvariant, 0));
-        };
-        let key = if first { p.next_object() } else { p.next_key() };
-        match key {
-            Ok(Some(key)) => {
-                let start = scratch.keys.len();
-                if retain {
-                    if key.len() > scratch.keys.capacity() - start {
-                        *poisoned = true;
-                        return Err(at(ErrorKind::InternalInvariant, p.current_index()));
-                    }
-                    scratch.keys.push_str(key);
-                }
-                Ok(Some(start..scratch.keys.len()))
-            }
-            Ok(None) => Ok(None),
-            Err(e) => Err(syntax(poisoned, e)),
-        }
-    }
-
-    // Iterative skip using public primitives; no DOM and no backend aggregate
-    // skip (which has its own independent depth policy). Stack storage is fixed.
-    fn skip(&mut self) -> Result<()> {
-        let mut objects = [false; MAX_DEPTH];
-        let mut level = 0;
-        loop {
-            match self.kind()? {
-                Kind::Object => {
-                    self.enter(Kind::Object)?;
-                    if self.key(true, false)?.is_some() {
-                        objects[level] = true;
-                        level += 1;
-                        continue;
-                    }
-                    self.depth -= 1;
-                }
-                Kind::Array => {
-                    self.enter(Kind::Array)?;
-                    if self.step(|p| p.next_array())?.is_some() {
-                        objects[level] = false;
-                        level += 1;
-                        continue;
-                    }
-                    self.depth -= 1;
-                }
-                Kind::String => {
-                    self.step(|p| p.next_bytes().map(|_| ()))?;
-                }
-                Kind::Number => {
-                    self.number()?;
-                }
-                Kind::Null => self.step(|p| p.next_null())?,
-                Kind::Boolean => {
-                    self.step(|p| p.next_bool())?;
-                }
-            }
-            loop {
-                if level == 0 {
-                    return Ok(());
-                }
-                let more = if objects[level - 1] {
-                    self.key(false, false)?.is_some()
-                } else {
-                    self.step(|p| p.array_step())?.is_some()
-                };
-                if more {
-                    break;
-                }
-                level -= 1;
-                self.depth -= 1;
-            }
-        }
+        self.scratch.clear();
     }
 }
 
@@ -392,7 +186,6 @@ pub struct Value<'r, 'i, 's> {
     cursor: Option<&'r mut Cursor<'i, 's>>,
     complete: Option<&'r mut bool>,
 }
-
 impl<'r, 'i, 's> Value<'r, 'i, 's> {
     fn new(cursor: &'r mut Cursor<'i, 's>, complete: &'r mut bool) -> Self {
         Self {
@@ -405,9 +198,9 @@ impl<'r, 'i, 's> Value<'r, 'i, 's> {
             .cursor
             .as_deref_mut()
             .ok_or_else(|| at(ErrorKind::Consumed, 0))?;
-        c.healthy()?;
+        c.state.healthy()?;
         if self.complete.as_deref().copied().unwrap_or(true) {
-            return c.fail(ErrorKind::Consumed);
+            return c.state.fail(ErrorKind::Consumed);
         }
         Ok(c)
     }
@@ -417,42 +210,29 @@ impl<'r, 'i, 's> Value<'r, 'i, 's> {
         }
     }
     pub fn kind(&mut self) -> Result<Kind> {
-        self.cursor()?.kind()
+        self.cursor()?.call(|c| c.kind())
     }
     pub fn null(&mut self) -> Result<()> {
-        let c = self.cursor()?;
-        c.require_kind(Kind::Null)?;
-        c.step(|p| p.known_null())?;
+        self.cursor()?.call(|c| c.null())?;
         self.mark_complete();
         Ok(())
     }
     pub fn bool(&mut self) -> Result<bool> {
-        let c = self.cursor()?;
-        c.require_kind(Kind::Boolean)?;
-        let b = c.step(|p| p.next_bool())?;
+        let b = self.cursor()?.call(|c| c.boolean())?;
         self.mark_complete();
         Ok(b)
     }
     pub fn number_text(&mut self) -> Result<&'i str> {
-        let n = self.cursor()?.number()?;
+        let c = self.cursor()?;
+        let range = c.call(|c| c.number())?;
+        let text = &c.input[range];
         self.mark_complete();
-        Ok(n)
+        Ok(text)
     }
     fn integer<T: std::str::FromStr>(&mut self) -> Result<T> {
-        let n = self.number_text()?;
-        let c = self
-            .cursor
-            .as_deref_mut()
-            .ok_or_else(|| at(ErrorKind::Consumed, 0))?;
-        let start = c.position() - n.len();
-        if !integer_token(n) {
-            return c.fail_at(ErrorKind::IntegerTokenRequired, start);
-        }
-        // JSON's only signed zero token; unsigned parsers reject its sign.
-        let digits = if n == "-0" { "0" } else { n };
-        digits
-            .parse()
-            .or_else(|_| c.fail_at(ErrorKind::NumberRange, start))
+        let value = self.cursor()?.call(|c| c.integer())?;
+        self.mark_complete();
+        Ok(value)
     }
     pub fn i64(&mut self) -> Result<i64> {
         self.integer()
@@ -461,44 +241,22 @@ impl<'r, 'i, 's> Value<'r, 'i, 's> {
         self.integer()
     }
     pub fn f64(&mut self) -> Result<f64> {
-        let n = self.number_text()?;
-        let c = self
-            .cursor
-            .as_deref_mut()
-            .ok_or_else(|| at(ErrorKind::Consumed, 0))?;
-        let start = c.position() - n.len();
-        c.charge()?;
-        // lexical-parse-float's fixed-capacity bigint fallback is audited in the
-        // resource note. Never invoke JsonValue/NumberAny or bigint allocation.
-        let f = match jiter::NumberFloat::from_bytes(n.as_bytes(), false) {
-            Ok(f) => f.0,
-            Err(e) => {
-                let kind = ErrorKind::Syntax(jiter::JiterErrorType::JsonError(e.error_type));
-                return c.fail_at(kind, start + e.index);
-            }
-        };
-        if !f.is_finite() {
-            return c.fail(ErrorKind::NonFinite);
-        }
-        if f == 0.0
-            && n.bytes()
-                .take_while(|b| *b != b'e' && *b != b'E')
-                .any(|b| matches!(b, b'1'..=b'9'))
-        {
-            return c.fail(ErrorKind::Underflow);
-        }
+        let f = self.cursor()?.call(|c| c.float())?;
+        self.mark_complete();
         Ok(f)
     }
     pub fn string(&mut self) -> Result<&str> {
         self.cursor()?;
         self.mark_complete();
-        self.cursor
+        let c = self
+            .cursor
             .as_deref_mut()
-            .ok_or_else(|| at(ErrorKind::Consumed, 0))?
-            .string()
+            .ok_or_else(|| at(ErrorKind::Consumed, 0))?;
+        let range = c.call(|c| c.string())?;
+        Ok(&c.scratch.keys[range])
     }
     pub fn skip(&mut self) -> Result<()> {
-        self.cursor()?.skip()?;
+        self.cursor()?.call(|c| c.skip())?;
         self.mark_complete();
         Ok(())
     }
@@ -509,79 +267,66 @@ impl<'r, 'i, 's> Value<'r, 'i, 's> {
         Ok(Array(self.into_container(Kind::Array)?))
     }
     fn into_container(mut self, kind: Kind) -> Result<Container<'r, 'i, 's>> {
-        self.cursor()?.enter(kind)?;
+        self.cursor()?.call(|c| c.enter(kind))?;
         match (self.cursor.take(), self.complete.take()) {
             (Some(cursor), Some(complete)) => Ok(Container {
                 cursor,
                 complete,
-                first: true,
                 child_done: true,
             }),
             _ => Err(at(ErrorKind::Consumed, 0)),
         }
     }
 }
-
-fn integer_token(n: &str) -> bool {
-    !n.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'))
-}
-
 impl Drop for Value<'_, '_, '_> {
     fn drop(&mut self) {
         if !self.complete.as_deref().copied().unwrap_or(true)
             && let Some(c) = &mut self.cursor
         {
-            c.poisoned = true;
+            c.state.poisoned = true;
         }
     }
 }
 
-/// Shared object/array state; dropping it unfinished poisons the cursor.
+// The booleans are lending-guard completion only; navigation lives in core::State.
 struct Container<'r, 'i, 's> {
     cursor: &'r mut Cursor<'i, 's>,
     complete: &'r mut bool,
-    first: bool,
     child_done: bool,
 }
-
 impl Container<'_, '_, '_> {
-    /// Whether another child may be read; false once the container closed.
     fn ready(&mut self) -> Result<bool> {
-        self.cursor.healthy()?;
+        self.cursor.state.healthy()?;
         if !self.child_done {
-            return self.cursor.fail(ErrorKind::UnconsumedChild);
+            return self.cursor.state.fail(ErrorKind::UnconsumedChild);
         }
         Ok(!*self.complete)
     }
-    /// Record the result of advancing: open a child or close the container.
     fn advanced(&mut self, more: bool) {
         if more {
             self.child_done = false;
         } else {
             *self.complete = true;
-            self.cursor.depth -= 1;
         }
     }
 }
 impl Drop for Container<'_, '_, '_> {
     fn drop(&mut self) {
         if !*self.complete {
-            self.cursor.poisoned = true;
+            self.cursor.state.poisoned = true;
+        } else {
+            self.cursor.state.pop_ended();
         }
     }
 }
-
 pub struct Object<'r, 'i, 's>(Container<'r, 'i, 's>);
-
 impl<'i, 's> Object<'_, 'i, 's> {
     fn advance(&mut self) -> Result<Option<Range<usize>>> {
-        let c = &mut self.0;
-        if !c.ready()? {
+        if !self.0.ready()? {
             return Ok(None);
         }
-        let first = mem::replace(&mut c.first, false);
-        let key = c.cursor.key(first, true)?;
-        c.advanced(key.is_some());
+        let key = self.0.cursor.call(|c| c.key(true))?;
+        self.0.advanced(key.is_some());
         Ok(key)
     }
     fn field(&mut self, key: Range<usize>) -> Field<'_, 'i, 's> {
@@ -595,14 +340,14 @@ impl<'i, 's> Object<'_, 'i, 's> {
     pub fn next_field(&mut self) -> Result<Option<Field<'_, 'i, 's>>> {
         Ok(self.advance()?.map(|key| self.field(key)))
     }
-    /// Search only remaining fields, preserving source order and duplicates.
+    /// Searches only remaining fields; literal names, source order, duplicates.
     pub fn find_next_field(&mut self, name: &str) -> Result<Option<Field<'_, 'i, 's>>> {
         while let Some(key) = self.advance()? {
             let c = &mut self.0;
             if c.cursor.scratch.keys[key.clone()] == *name {
                 return Ok(Some(self.field(key)));
             }
-            c.cursor.skip()?;
+            c.cursor.call(|c| c.skip())?;
             c.cursor.scratch.keys.truncate(key.start);
             c.child_done = true;
         }
@@ -615,7 +360,6 @@ impl<'i, 's> Object<'_, 'i, 's> {
         Ok(())
     }
 }
-
 pub struct Field<'r, 'i, 's> {
     cursor: &'r mut Cursor<'i, 's>,
     complete: &'r mut bool,
@@ -627,14 +371,14 @@ impl<'i, 's> Field<'_, 'i, 's> {
         &self.cursor.scratch.keys[self.key.clone()]
     }
     pub fn value(&mut self) -> Result<Value<'_, 'i, 's>> {
-        self.cursor.healthy()?;
+        self.cursor.state.healthy()?;
         if self.consumed {
-            return self.cursor.fail(ErrorKind::Consumed);
+            return self.cursor.state.fail(ErrorKind::Consumed);
         }
         Ok(Value::new(self.cursor, &mut self.consumed))
     }
     pub fn finish(mut self) -> Result<()> {
-        self.cursor.healthy()?;
+        self.cursor.state.healthy()?;
         if !self.consumed {
             self.value()?.skip()?;
         }
@@ -647,26 +391,20 @@ impl Drop for Field<'_, '_, '_> {
         if self.consumed {
             *self.complete = true;
         } else {
-            self.cursor.poisoned = true;
+            self.cursor.state.poisoned = true;
         }
     }
 }
-
 pub struct Array<'r, 'i, 's>(Container<'r, 'i, 's>);
-
 impl<'i, 's> Array<'_, 'i, 's> {
     pub fn next_value(&mut self) -> Result<Option<Value<'_, 'i, 's>>> {
         let c = &mut self.0;
         if !c.ready()? {
             return Ok(None);
         }
-        let next = if mem::replace(&mut c.first, false) {
-            c.cursor.step(|p| p.next_array())?
-        } else {
-            c.cursor.step(|p| p.array_step())?
-        };
-        c.advanced(next.is_some());
-        Ok(next.map(|_| Value::new(c.cursor, &mut c.child_done)))
+        let more = c.cursor.call(|c| c.array_next())?;
+        c.advanced(more);
+        Ok(more.then(|| Value::new(c.cursor, &mut c.child_done)))
     }
     pub fn finish(mut self) -> Result<()> {
         while let Some(mut value) = self.next_value()? {

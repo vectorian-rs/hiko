@@ -26,6 +26,7 @@ pub enum Shape {
     Word,
     Pid,
     Rng,
+    JsonReader,
     /// A type variable or nominal Hiko datatype, unconstrained by this shape checker.
     Var,
     /// Tuple with N fields of specific shapes.
@@ -152,6 +153,7 @@ impl ShapeParser {
             "bytes" => Ok(Shape::Bytes),
             "word" => Ok(Shape::Word),
             "rng" => Ok(Shape::Rng),
+            "BuiltinJsonReader.reader" => Ok(Shape::JsonReader),
             "BuiltinJson.json" => Ok(Shape::Var),
             other => Err(format!("unknown type '{}'", other)),
         }
@@ -260,6 +262,7 @@ pub fn check_shape(value: &SendableValue, shape: &Shape) -> Result<(), String> {
             _ => Err(format!("expected pid, got {}", value_kind(value))),
         },
         Shape::Rng => Err("rng cannot cross process boundary".into()),
+        Shape::JsonReader => Err("JSON reader cannot cross process boundary".into()),
         Shape::Tuple(expected_elems) => match value {
             SendableValue::Tuple(fields) => {
                 if fields.len() != expected_elems.len() {
@@ -379,6 +382,16 @@ pub fn check_value_shape(value: Value, heap: &Heap, shape: &Shape) -> Result<(),
                 vm_value_kind(value, heap)
             )),
         },
+        Shape::JsonReader => {
+            #[cfg(feature = "builtin-json-reader")]
+            {
+                check_host_handle(value, heap, HostHandleKind::JsonReader, "JSON reader")
+            }
+            #[cfg(not(feature = "builtin-json-reader"))]
+            {
+                Err("JSON reader is not in this build".into())
+            }
+        }
         Shape::Rng => match value {
             Value::Heap(r) => match heap.get(r).map_err(|e| e.to_string())? {
                 HeapObject::Rng { .. } => Ok(()),
@@ -1564,7 +1577,7 @@ mod tests {
     }
 
     fn unsampleable_builtin_reasons() -> HashMap<&'static str, &'static str> {
-        HashMap::from([
+        let mut reasons = HashMap::from([
             (
                 "print",
                 "VM intercept normalizes the raw helper result to unit; covered by VM output tests",
@@ -1599,7 +1612,14 @@ mod tests {
             ),
             ("exit", "non-returning process exit"),
             ("panic", "polymorphic non-returning error path"),
-        ])
+        ]);
+        for meta in hiko_builtin_meta::JSON_READER_BUILTINS {
+            reasons.insert(
+                meta.name,
+                "VM-owned preflight/lease dispatch; tested in vm/json_reader",
+            );
+        }
+        reasons
     }
 
     #[test]

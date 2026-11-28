@@ -189,19 +189,66 @@ fn number(text: &str) -> Result<J> {
     Ok(f)
 }
 
+fn walk_owned(r: &mut hiko_json::OwnedReader) -> Result<J> {
+    Ok(match r.kind()? {
+        Kind::Null => {
+            r.read_null()?;
+            J::Null
+        }
+        Kind::Boolean => J::Bool(r.read_bool()?),
+        Kind::String => J::String(r.read_string()?.to_owned()),
+        Kind::Number => number(r.read_number_text()?)?,
+        Kind::Array => {
+            r.begin_array()?;
+            let mut items = Vec::new();
+            while r.next_item()? {
+                items.push(walk_owned(r)?);
+            }
+            r.finish_array()?;
+            J::Array(items)
+        }
+        Kind::Object => {
+            r.begin_object()?;
+            let mut map = Map::new();
+            while let Some(key) = r.next_field()? {
+                let key = key.to_owned();
+                map.insert(key, walk_owned(r)?);
+            }
+            r.finish_object()?;
+            J::Object(map)
+        }
+    })
+}
+
 fn hiko(bytes: &[u8]) -> Result<J> {
-    let mut scratch = Scratch::default();
-    let mut r = Reader::new(bytes, &mut scratch, Limits::default())?;
-    let j = walk(r.root()?)?;
-    r.finish()?;
-    Ok(j)
+    let borrowed = (|| {
+        let mut scratch = Scratch::default();
+        let mut r = Reader::new(bytes, &mut scratch, Limits::default())?;
+        let j = walk(r.root()?)?;
+        r.finish()?;
+        Ok(j)
+    })();
+    if let Ok(input) = std::str::from_utf8(bytes) {
+        let owned = (|| {
+            let mut r = hiko_json::OwnedReader::new(input.into(), Limits::default())?;
+            let j = walk_owned(&mut r)?;
+            r.finish()?;
+            Ok(j)
+        })();
+        assert_eq!(borrowed, owned, "frontend extraction parity {bytes:?}");
+    }
+    borrowed
 }
 
 fn validate(bytes: &[u8]) -> bool {
     let mut scratch = Scratch::default();
-    Reader::new(bytes, &mut scratch, Limits::default())
-        .and_then(|mut r| r.finish())
-        .is_ok()
+    let borrowed = Reader::new(bytes, &mut scratch, Limits::default()).and_then(|mut r| r.finish());
+    if let Ok(input) = std::str::from_utf8(bytes) {
+        let owned = hiko_json::OwnedReader::new(input.into(), Limits::default())
+            .and_then(|mut r| r.finish());
+        assert_eq!(borrowed, owned, "frontend validation parity {bytes:?}");
+    }
+    borrowed.is_ok()
 }
 
 /// Structural equality; floats within 1 ULP (serde's default float parse is

@@ -145,7 +145,8 @@ pub(crate) fn string_pair(
     feature = "builtin-json",
     feature = "builtin-random",
     feature = "builtin-regex",
-    feature = "builtin-string"
+    feature = "builtin-string",
+    feature = "builtin-json-reader"
 ))]
 pub(crate) fn host_work(base: u64, per_kib: u64, bytes: usize) -> u64 {
     base.saturating_add((bytes as u64).saturating_mul(per_kib).div_ceil(1024))

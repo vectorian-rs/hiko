@@ -225,9 +225,13 @@ const LEGACY: &[(&str, &[u8], bool)] = &[
 
 fn validate(bytes: &[u8]) -> bool {
     let mut scratch = Scratch::default();
-    Reader::new(bytes, &mut scratch, Limits::default())
-        .and_then(|mut r| r.finish())
-        .is_ok()
+    let borrowed = Reader::new(bytes, &mut scratch, Limits::default()).and_then(|mut r| r.finish());
+    if let Ok(input) = std::str::from_utf8(bytes) {
+        let owned = hiko_json::OwnedReader::new(input.into(), Limits::default())
+            .and_then(|mut r| r.finish());
+        assert_eq!(borrowed, owned, "frontend parity {bytes:?}");
+    }
+    borrowed.is_ok()
 }
 
 #[test]

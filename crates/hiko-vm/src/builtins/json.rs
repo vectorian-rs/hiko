@@ -8,8 +8,7 @@ use std::mem::size_of;
 // for the densest JSON (one-character tokens), since the cost follows the
 // number of tokens: text with longer tokens is charged up to about 4x what
 // it costs.
-const JSON_PARSE_HOST_WORK: u64 = 45;
-const JSON_PARSE_PER_KIB_HOST_WORK: u64 = 2_180;
+use super::json_work::{JSON_PARSE_HOST_WORK, JSON_PARSE_PER_KIB_HOST_WORK};
 const JSON_SERIALIZE_HOST_WORK: u64 = 55;
 const JSON_SERIALIZE_PER_KIB_HOST_WORK: u64 = 2_410;
 const JSON_ACCESS_HOST_WORK: u64 = 45;

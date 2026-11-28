@@ -14,6 +14,10 @@
 
 entry = "scripts/example.hml"
 
+# Independent forward-reader authority; requires builtin-json-reader in the build.
+[capabilities]
+json_reader = true
+
 [limits]
 max_work = 100_000_000
 max_memory_bytes = 268435456

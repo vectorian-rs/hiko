@@ -76,7 +76,8 @@ fn work_is_charged_before_each_backend_invocation() {
         bytes,
         &mut scratch,
         Limits {
-            max_work: 32 * bytes.len() as u64 + 256 + 1,
+            // One API credit, then one classification helper; the next helper refuses.
+            max_work: 32 * bytes.len() as u64 + 256 + 2,
             ..Limits::default()
         },
     )
@@ -241,7 +242,8 @@ fn float_conversion_has_its_own_pre_call_work_charge() {
         b"1.0",
         &mut scratch,
         Limits {
-            max_work: 32 * 3 + 256 + 2,
+            // API + classification + raw token helper; float conversion refuses.
+            max_work: 32 * 3 + 256 + 3,
             ..Limits::default()
         },
     )

@@ -1,0 +1,30 @@
+import __Builtin.JsonReader
+
+(* Forward-only cursor: aliases share state. Consume children before advancing.
+ * Selected reads do not validate the suffix. finish validates/drains then closes;
+ * close discards without validation. Errors invalidate the shared cursor.
+ * Readers cannot cross process boundaries. Requires capabilities.json_reader. *)
+structure JsonReader = struct
+  type reader = BuiltinJsonReader.reader
+
+  fun of_string value = BuiltinJsonReader.of_string value
+  fun kind value = BuiltinJsonReader.kind value
+  fun begin_object value = BuiltinJsonReader.begin_object value
+  fun begin_array value = BuiltinJsonReader.begin_array value
+  fun next_field value = BuiltinJsonReader.next_field value
+  (* Searches remaining literal keys only, in source/duplicate order. *)
+  fun find_next_field name reader = BuiltinJsonReader.find_next_field (name, reader)
+  fun next_item value = BuiltinJsonReader.next_item value
+  fun read_null value = BuiltinJsonReader.read_null value
+  fun read_bool value = BuiltinJsonReader.read_bool value
+  fun read_string value = BuiltinJsonReader.read_string value
+  fun read_number_text value = BuiltinJsonReader.read_number_text value
+  fun read_int value = BuiltinJsonReader.read_int value
+  fun read_word value = BuiltinJsonReader.read_word value
+  fun read_float value = BuiltinJsonReader.read_float value
+  fun skip value = BuiltinJsonReader.skip value
+  fun finish_object value = BuiltinJsonReader.finish_object value
+  fun finish_array value = BuiltinJsonReader.finish_array value
+  fun finish value = BuiltinJsonReader.finish value
+  fun close value = BuiltinJsonReader.close value
+end

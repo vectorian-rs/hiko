@@ -47,8 +47,11 @@
 //! ```
 #![forbid(unsafe_code)]
 
+mod core;
 mod error;
+mod owned;
 mod reader;
 
 pub use error::{Error, ErrorKind, Result};
+pub use owned::OwnedReader;
 pub use reader::{Array, Field, Kind, Limits, Object, Reader, Scratch, Stats, Value};

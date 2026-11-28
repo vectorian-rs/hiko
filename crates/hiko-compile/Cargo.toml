@@ -31,6 +31,7 @@ builtin-all = [
     "builtin-default",
     "builtin-regex",
     "builtin-json",
+    "builtin-json-reader",
     "builtin-date",
 ]
 loader-all = ["loader-named-imports", "loader-http", "loader-integrity-blake3", "loader-embedded"]
@@ -44,6 +45,7 @@ builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-types/builtin-stdio"]
 builtin-convert = ["hiko-builtin-meta/builtin-convert", "hiko-types/builtin-convert"]
 builtin-string = ["hiko-builtin-meta/builtin-string", "hiko-types/builtin-string"]
 builtin-regex = ["hiko-builtin-meta/builtin-regex", "hiko-types/builtin-regex"]
+builtin-json-reader = ["hiko-builtin-meta/builtin-json-reader", "hiko-types/builtin-json-reader"]
 builtin-json = ["hiko-builtin-meta/builtin-json", "hiko-types/builtin-json"]
 builtin-math = ["hiko-builtin-meta/builtin-math", "hiko-types/builtin-math"]
 builtin-bytes = ["hiko-builtin-meta/builtin-bytes", "hiko-types/builtin-bytes"]

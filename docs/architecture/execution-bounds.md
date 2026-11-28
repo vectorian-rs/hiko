@@ -210,7 +210,7 @@ wall-clock guarantee. Collection remains synchronous/nonmoving.
 | `max_http_response_bytes`, `max_file_read_bytes`, `max_exec_output_bytes` | bytes read by one HTTP response, file read, or exec stream | Cumulative bytes across calls (that is `max_io_bytes`) |
 | `http_timeout_ms`, `http_connect_timeout_ms` | wall-clock duration of one HTTP call, including the body | Total time spent across many calls |
 | `exec_timeout_ms` | wall-clock duration of one `exec` call | Processes that detach from the child's process group |
-| `max_memory_bytes` | accounted heap bytes | Native resources held behind host handles |
+| `max_memory_bytes` | accounted heap bytes, including JSON reader payloads | Other native resources held behind host handles |
 | `max_host_resources` / `limits.host_resources` | total and per-kind live opaque native host handles, per process tree | Size of the native object behind each handle |
 | `max_heap` | live heap object count of one process | Object byte size |
 | `max_live_processes`, `max_spawns` | spawned processes alive at once, and spawned in total, per process tree | Work each process does (that is `max_work` and the other tree budgets) |
@@ -235,11 +235,19 @@ cannot multiply a script's budget.
 - **I/O bytes and host work** are charged to the tree as they are used.
 - **Host resources** are the live native handles in the tree. Creating one
   charges the total and its kind. Collecting its handle, or the end of the
-  process that holds it, returns the charge. A handle sent to a child is a new
-  resource in the child.
+  process that holds it, returns the charge. JSON reader close, successful finish,
+  or operation failure releases its slot immediately. Host handles cannot cross
+  process boundaries, including inside captures/results.
 - **Memory** is the sum of the live heaps in the tree. A heap returns bytes to
   the tree's budget when garbage collection frees them and when its process
-  ends. Each process collects only its own heap, so a process can fail with a
+  ends. JSON reader payloads use the handle's existing byte-accounting slot;
+  close drops the payload before refunding it, leaving only the base handle charge.
+  Construction/output reservations cover overlap before allocation. Reader outputs
+  are parsed into already-accounted scratch/input, then admitted at their actual
+  size, not the unread input size. A local owner lease keeps that text stable and
+  charged across rooted output GC; it is restored on success or dropped before
+  error/finish refunds. Other native resources remain outside byte accounting. These estimates are not allocator/RSS
+  measurements. Each process collects only its own heap, so a process can fail with a
   memory error because of data that another live process in the tree holds.
 - `max_heap` (an object count) and the per-operation limits stay per process;
   children inherit the parent's values.
@@ -434,7 +442,7 @@ For latency-sensitive use:
    and tighten the per-operation limits (`http_timeout_ms`, `exec_timeout_ms`,
    `max_*_bytes`) below their defaults where scripts only need small payloads.
 5. Set `max_memory_bytes` and, where useful, `max_heap`.
-6. Set `max_host_resources` and per-kind `limits.host_resources` caps when a build has builtins that create native handles (none do today).
+6. Set `max_host_resources` and per-kind `limits.host_resources` caps when a build creates native handles, including `json_reader` for `Std.JsonReader`.
 7. Use the runtime-managed async I/O path for operations that may block.
 8. Treat sync HTTP/file/exec builtins as bounded but non-preemptive host calls.
    The longest pause one call of a CPU-bound builtin causes is in the
@@ -461,9 +469,13 @@ max_file_read_bytes = 8_388_608
 max_exec_output_bytes = 1_048_576
 ```
 
-With the calibrated unit, `max_host_work = 10_000_000` is about 0.12 s of
-builtin work on the reference machine: for example, parsing about 37 MiB of
-JSON.
+The historical calibrated unit puts `max_host_work = 10_000_000` near 0.12 s
+of builtin work on its reference machine, not a wall-clock guarantee. At the
+current `json_parse` tariff, one parse fits at most 4,697,226 input bytes (about
+4.48 MiB): `45 + ceil(2180*n/1024)`. `Std.JsonReader` reuses this starting tariff
+once at creation, then charges 45 per API call; this is an existing-rate proxy,
+NOT a calibration or speed claim for the reader. Its input is capped at 1 MiB
+and depth at 128; cancellation still occurs at slice boundaries.
 
 Then tune using representative scripts. Increase `max_work` for pure Hiko loops,
 `max_host_work` for CPU-heavy builtins, `max_io_bytes` for large payloads,

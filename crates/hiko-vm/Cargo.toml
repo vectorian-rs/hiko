@@ -39,6 +39,7 @@ builtin-all = [
     "builtin-default",
     "builtin-regex",
     "builtin-json",
+    "builtin-json-reader",
     "builtin-date",
 ]
 builtin-stdio = ["hiko-builtin-meta/builtin-stdio", "hiko-compile/builtin-stdio"]
@@ -49,6 +50,8 @@ builtin-regex = [
     "hiko-compile/builtin-regex",
     "dep:regex",
 ]
+# Reader availability is separate from legacy JSON and runtime grants.
+builtin-json-reader = ["dep:hiko-json", "hiko-builtin-meta/builtin-json-reader", "hiko-compile/builtin-json-reader"]
 builtin-json = [
     "hiko-builtin-meta/builtin-json",
     "hiko-compile/builtin-json",
@@ -100,6 +103,7 @@ hiko-builtin-meta = { version = "0.8.0", path = "../hiko-builtin-meta", default-
 hiko-common = { version = "0.8.0", path = "../hiko-common", default-features = false }
 hiko-compile = { version = "0.8.0", path = "../hiko-compile", default-features = false }
 hiko-syntax = { version = "0.8.0", path = "../hiko-syntax" }
+hiko-json = { version = "0.8.0", path = "../hiko-json", optional = true }
 dashmap = "6"
 getrandom = { version = "0.3", optional = true }
 glob = { version = "0.3", optional = true }

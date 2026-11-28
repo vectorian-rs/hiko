@@ -158,6 +158,9 @@ fn alloc_heap_value(
     object: HeapObject,
 ) -> Result<Value, ProcessFailure> {
     heap.alloc(object).map(Value::Heap).map_err(|e| match e {
+        crate::heap::HeapLimitExceeded::NativeAdmissionRequired => {
+            ProcessFailure::runtime(e.to_string())
+        }
         crate::heap::HeapLimitExceeded::Objects { limit, live } => {
             ProcessFailure::HeapObjectLimitExceeded { limit, live }
         }
@@ -178,6 +181,9 @@ fn deserialize_with_heap_limit(
     )
     .map_err(ProcessFailure::runtime)?;
     deserialize(sendable, heap).map_err(|e| match e {
+        crate::heap::HeapLimitExceeded::NativeAdmissionRequired => {
+            ProcessFailure::runtime(e.to_string())
+        }
         crate::heap::HeapLimitExceeded::Objects { limit, live } => {
             ProcessFailure::HeapObjectLimitExceeded { limit, live }
         }

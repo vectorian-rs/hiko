@@ -31,12 +31,14 @@ builtin-all = [
     "builtin-default",
     "builtin-regex",
     "builtin-json",
+    "builtin-json-reader",
     "builtin-date",
 ]
 builtin-stdio = []
 builtin-convert = []
 builtin-string = []
 builtin-regex = []
+builtin-json-reader = []
 builtin-json = []
 builtin-math = []
 builtin-bytes = []

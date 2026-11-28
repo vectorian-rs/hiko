@@ -98,6 +98,13 @@ impl VM {
             self.stack.truncate(callee_pos);
             return self.push(result);
         }
+        #[cfg(feature = "builtin-json-reader")]
+        if let BuiltinKind::JsonReader(op) = kind {
+            let arg = self.stack[callee_pos + 1];
+            let result = self.call_json_reader(op, arg)?;
+            self.stack.truncate(callee_pos);
+            return self.push(result);
+        }
         if let BuiltinKind::Async(idx) = kind {
             return self.call_async_builtin(builtin_id, idx, callee_pos);
         }
